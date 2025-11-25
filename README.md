@@ -2,25 +2,23 @@
 
 > Type-safe AI agent framework for Elixir with OpenAI-compatible models
 
-[![Elixir](https://img.shields.io/badge/elixir-~%3E%201.15-purple.svg)](https://elixir-lang.org)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Elixir](https://img.shields.io/badge/elixir-~%3E%201.17-purple.svg)](https://elixir-lang.org)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-working%20mvp-brightgreen.svg)](SUCCESS.md)
 
-**✅ VERIFIED WORKING** - Tested with local LM Studio and multi-tool chaining!
+Yggdrasil AI is a type-safe AI agent framework for Elixir with support for any OpenAI-compatible API.
 
-Yggdrasil AI is an Elixir port of [Pydantic AI](https://ai.pydantic.dev/), bringing type-safe AI agents to the BEAM ecosystem with support for any OpenAI-compatible API.
+## Proven Working Features
 
-## 🎯 Proven Working Features
+- **Basic Q&A** - Tested with LM Studio (qwen/qwen3-30b)
+- **Custom Instructions** - AI follows instructions
+- **Tool Calling** - AI autonomously calls Elixir functions
+- **Multi-Tool Chaining** - AI chains multiple tools to solve problems
+- **Usage Tracking** - Accurate token counting
+- **Multi-Provider** - Same API works with OpenAI, Groq, Ollama, LM Studio
+- **Local Execution** - Run locally with LM Studio or Ollama
 
-✅ **Basic Q&A** - Tested with LM Studio (qwen/qwen3-30b)
-✅ **Custom Instructions** - AI follows instructions (rhyming responses verified!)
-✅ **Tool Calling** - AI autonomously calls Elixir functions
-✅ **Multi-Tool Chaining** - AI chains multiple tools to solve problems
-✅ **Usage Tracking** - Accurate token counting (28 input, 84 output verified)
-✅ **Multi-Provider** - Same API works with OpenAI, Groq, Ollama, LM Studio
-✅ **Zero Cost** - Run locally with LM Studio or Ollama
-
-## 🚀 Quick Start
+## Quick Start
 
 ```elixir
 # 1. Create an agent
@@ -36,7 +34,7 @@ IO.puts(result.output) # "4"
 IO.puts("Tokens: #{result.usage.total_tokens}")
 ```
 
-## 💡 Real Example - Tool Calling
+## Real Example - Tool Calling
 
 ```elixir
 defmodule MathTools do
@@ -63,24 +61,24 @@ IO.puts(result.output) # "(12 + 8) * 5 = 100"
 IO.puts("Tool calls: #{result.usage.tool_calls}") # 2
 ```
 
-**The AI decides which tools to call and in what order!** 🤖
+The AI decides which tools to call and in what order.
 
-## 🎯 Supported Providers
+## Supported Providers
 
 | Provider | Model String | Status |
 |----------|-------------|--------|
-| **LM Studio** | `lmstudio:qwen/qwen3-30b` | ✅ **TESTED & WORKING** |
-| OpenAI | `openai:gpt-4` | ✅ Supported |
-| **Anthropic** | `anthropic:claude-sonnet-4-5-20250929` | ✅ **TESTED & WORKING** |
-| **Google Gemini** | `gemini:gemini-2.0-flash-exp` | ✅ **Native API** |
-| Groq | `groq:llama-3.1-70b-versatile` | ✅ Supported |
-| Ollama | `ollama:llama2` | ✅ Supported |
-| **vLLM** | `vllm:model` + `:base_url` | ✅ Supported |
-| OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | ✅ Supported |
-| Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | ✅ Supported |
-| Custom | `custom:model` + `:base_url` | ✅ Supported |
+| LM Studio | `lmstudio:qwen/qwen3-30b` | Tested & Working |
+| OpenAI | `openai:gpt-4` | Supported |
+| Anthropic | `anthropic:claude-sonnet-4-5-20250929` | Tested & Working |
+| Google Gemini | `gemini:gemini-2.0-flash-exp` | Native API |
+| Groq | `groq:llama-3.1-70b-versatile` | Supported |
+| Ollama | `ollama:llama2` | Supported |
+| vLLM | `vllm:model` + `:base_url` | Supported |
+| OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | Supported |
+| Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | Supported |
+| Custom | `custom:model` + `:base_url` | Supported |
 
-## 🤖 Choosing Your Agent Type
+## Choosing Your Agent Type
 
 ### When to Use `ReActAgent` (Enhanced Planning)
 
@@ -93,19 +91,19 @@ agent = Yggdrasil.ReActAgent.new("lmstudio:qwen/qwen3-30b",
 )
 ```
 
-**✅ Perfect for:**
+**Perfect for:**
 - **Research tasks** - "Find X, analyze Y, compare Z"
 - **Multi-step workflows** - Tasks requiring 3+ steps
 - **Complex calculations** - Math/logic problems with dependencies
 - **Data analysis** - Gather → Process → Report workflows
 - **Debugging** - Systematic problem investigation
 
-**Features you get:**
-- 🧠 **Structured planning** - Agent creates a plan before acting
-- ✅ **Built-in todo list** - Agent tracks its own progress
-- 📝 **Note-taking** - Agent documents findings
-- 🎯 **Explicit completion** - Must call `final_answer` to finish
-- 🔁 **Loop prevention** - Avoids repeating the same actions
+**Features:**
+- **Structured planning** - Agent creates a plan before acting
+- **Built-in todo list** - Agent tracks its own progress
+- **Note-taking** - Agent documents findings
+- **Explicit completion** - Must call `final_answer` to finish
+- **Loop prevention** - Avoids repeating the same actions
 
 **Example:**
 ```elixir
@@ -141,7 +139,7 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 )
 ```
 
-**✅ Perfect for:**
+**Perfect for:**
 - **Simple Q&A** - Direct questions with simple answers
 - **Single-step tasks** - One tool call, one answer
 - **Custom workflows** - You control the agent's behavior via instructions
@@ -149,10 +147,10 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 - **Conversational** - Back-and-forth chat interfaces
 
 **When you want:**
-- ⚡ **Speed** - No planning overhead
-- 🎨 **Full control** - You design the workflow
-- 🪶 **Lightweight** - Minimal token usage
-- 🔧 **Custom patterns** - Implement your own agent pattern
+- **Speed** - No planning overhead
+- **Full control** - You design the workflow
+- **Lightweight** - Minimal token usage
+- **Custom patterns** - Implement your own agent pattern
 
 **Example:**
 ```elixir
@@ -173,9 +171,9 @@ agent = Yggdrasil.new("openai:gpt-4",
 
 | Feature | `ReActAgent` | Standard `Agent` |
 |---------|--------------|------------------|
-| **Planning** | ✅ Built-in structured planning | ❌ No planning (you control flow) |
-| **Todo tracking** | ✅ Automatic task breakdown | ❌ Manual (via custom tools) |
-| **Completion** | ✅ Explicit `final_answer` required | ✅ Stops naturally |
+| **Planning** | Built-in structured planning | No planning (you control flow) |
+| **Todo tracking** | Automatic task breakdown | Manual (via custom tools) |
+| **Completion** | Explicit `final_answer` required | Stops naturally |
 | **Best for** | Complex multi-step problems | Simple tasks, custom workflows |
 | **Token usage** | Higher (planning + tracking) | Lower (direct execution) |
 | **Learning curve** | Easy (automatic) | Easy (manual control) |
@@ -224,7 +222,7 @@ end
 
 ---
 
-## ⚡ Test It Now
+## Test It Now
 
 ### Option 1: IEx (Fastest)
 ```bash
@@ -253,9 +251,9 @@ mix run examples/tools_simple.exs
 mix run -e 'agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b-a3b-2507"); {:ok, r} = Yggdrasil.run(agent, "Hi!"); IO.puts(r.output)'
 ```
 
-## 💡 Key Features
+## Key Features
 
-### 🆓 Run Locally (Zero Cost!)
+### Run Locally (Zero Cost)
 ```elixir
 # LM Studio - any model, beautiful UI
 agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b")
@@ -269,7 +267,7 @@ agent = Yggdrasil.new("vllm:qwen/qwen3-30b",
 )
 ```
 
-### 🔄 Switch Providers (One Line!)
+### Switch Providers (One Line)
 ```elixir
 # Development - use free local
 agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b")
@@ -283,7 +281,7 @@ agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929")
 # Same code, just change the model string!
 ```
 
-### 🔧 Tool Calling
+### Tool Calling
 ```elixir
 # Define any Elixir function
 def search_database(_ctx, %{"query" => q}), do: DB.search(q)
@@ -296,7 +294,7 @@ agent = Yggdrasil.new("openai:gpt-4",
 # AI calls it automatically when needed!
 ```
 
-### 🎯 Tools with Context (User ID, Database, etc.)
+### Tools with Context (User ID, Database, etc.)
 ```elixir
 # Define tools that use context
 def get_user_balance(ctx, _args) do
@@ -326,7 +324,7 @@ deps = %{
 
 **See [examples/tools_with_context.exs](examples/tools_with_context.exs) for complete example!**
 
-### 📅 Built-in DateTime Tools
+### Built-in DateTime Tools
 ```elixir
 alias Yggdrasil.Tools.DateTimeTools
 
@@ -351,17 +349,17 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 ```
 
 **Features:**
-- ✓ Current date/time in multiple formats (ISO8601, US, EU, human-readable)
-- ✓ Timezone support (America/New_York, Europe/London, etc.)
-- ✓ Date arithmetic (add/subtract days)
-- ✓ Date differences (days, weeks, months, years)
-- ✓ Weekend detection
-- ✓ Week and month information
-- ✓ Date parsing in various formats
+- Current date/time in multiple formats (ISO8601, US, EU, human-readable)
+- Timezone support (America/New_York, Europe/London, etc.)
+- Date arithmetic (add/subtract days)
+- Date differences (days, weeks, months, years)
+- Weekend detection
+- Week and month information
+- Date parsing in various formats
 
 **See [examples/datetime_tools_demo.exs](examples/datetime_tools_demo.exs) for complete example!**
 
-### 📝 Built-in String Tools
+### Built-in String Tools
 ```elixir
 alias Yggdrasil.Tools.StringTools
 
@@ -388,19 +386,19 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 ```
 
 **Features:**
-- ✓ Text transformation (uppercase, lowercase, capitalize)
-- ✓ String operations (replace, split, join, trim, substring)
-- ✓ Pattern matching (contains, starts_with, ends_with)
-- ✓ String analysis (length, count occurrences, extract words)
-- ✓ Number extraction and parsing
-- ✓ Palindrome detection
-- ✓ Case-sensitive and case-insensitive operations
+- Text transformation (uppercase, lowercase, capitalize)
+- String operations (replace, split, join, trim, substring)
+- Pattern matching (contains, starts_with, ends_with)
+- String analysis (length, count occurrences, extract words)
+- Number extraction and parsing
+- Palindrome detection
+- Case-sensitive and case-insensitive operations
 
 **Available tools:** `string_length`, `replace_text`, `split_text`, `join_text`, `count_occurrences`, `to_uppercase`, `to_lowercase`, `capitalize_text`, `trim_text`, `substring`, `contains`, `starts_with`, `ends_with`, `reverse_text`, `repeat_text`, `extract_words`, `pad_text`, `is_palindrome`, `extract_numbers`
 
 **See [examples/string_tools_demo.exs](examples/string_tools_demo.exs) for complete example!**
 
-### 🔍 Built-in Web Search (Brave API)
+### Built-in Web Search (Brave API)
 ```elixir
 alias Yggdrasil.Tools.BraveSearch
 
@@ -424,11 +422,11 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 ```
 
 **Features:**
-- ✓ Web search for current information
-- ✓ News search for latest developments
-- ✓ Automatic source citation (URLs)
-- ✓ Configurable result count, country, language
-- ✓ Safe search options
+- Web search for current information
+- News search for latest developments
+- Automatic source citation (URLs)
+- Configurable result count, country, language
+- Safe search options
 
 **Rate Limits:**
 - Free Plan: 1 query/second, 2,000 queries/month
@@ -439,7 +437,7 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 
 **See [examples/brave_search_demo.exs](examples/brave_search_demo.exs) for complete example!**
 
-### ✅ Built-in Todo Tracking
+### Built-in Todo Tracking
 ```elixir
 alias Yggdrasil.Tools.TodoTools
 
@@ -478,15 +476,15 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 1. Tools return `__update_context__` with updated todos
 2. AgentRunner merges updates into state
 3. Before each model request, todos injected into system prompt
-4. AI sees current progress: ⏳ In Progress, 📝 Pending, ✅ Completed
+4. AI sees current progress: In Progress, Pending, Completed
 
 **Features:**
-- ✓ AI automatically breaks down complex tasks
-- ✓ Self-organizing - AI tracks its own progress
-- ✓ Persistent across multiple runs (via deps)
-- ✓ Priority levels (high 🔴, medium 🟡, low 🟢)
-- ✓ Status tracking (pending, in_progress, completed)
-- ✓ 20 unit tests
+- AI automatically breaks down complex tasks
+- Self-organizing - AI tracks its own progress
+- Persistent across multiple runs (via deps)
+- Priority levels (high, medium, low)
+- Status tracking (pending, in_progress, completed)
+- 20 unit tests
 
 **Perfect For:**
 - Multi-step workflows
@@ -496,7 +494,7 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 
 **See [examples/todo_tools_demo.exs](examples/todo_tools_demo.exs) for complete example!**
 
-### 📚 Anthropic Extended Context (1M tokens)
+### Anthropic Extended Context (1M tokens)
 ```elixir
 # Enable 1M token context window for large documents
 agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
@@ -511,7 +509,7 @@ agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
 )
 ```
 
-### 🧠 Anthropic Extended Thinking
+### Anthropic Extended Thinking
 ```elixir
 # Enable thinking mode for complex reasoning
 agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
@@ -527,7 +525,7 @@ agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
 {:ok, result} = Yggdrasil.run(agent, "Solve this complex problem...")
 ```
 
-### 💬 Conversations
+### Conversations
 ```elixir
 {:ok, r1} = Yggdrasil.run(agent, "Tell me a joke")
 {:ok, r2} = Yggdrasil.run(agent, "Explain it",
@@ -535,7 +533,7 @@ agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
 )
 ```
 
-### 🔗 LiveView Integration (Named Agents)
+### LiveView Integration (Named Agents)
 ```elixir
 # Start named agent linked to LiveView
 {:ok, agent_pid} = MyApp.DistributedAgent.start_agent(
@@ -552,7 +550,7 @@ agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
 
 **See [examples/DISTRIBUTED_AGENTS.md](examples/DISTRIBUTED_AGENTS.md) for complete guide.**
 
-### 🌊 Streaming
+### Streaming
 ```elixir
 {:ok, stream} = Yggdrasil.run_stream(agent, "Write a poem")
 
@@ -564,7 +562,7 @@ end)
 |> Stream.run()
 ```
 
-### 📝 Logging
+### Logging
 
 Yggdrasil includes comprehensive logging at all levels:
 
@@ -609,7 +607,7 @@ Configure log level in your `config/config.exs`:
 config :logger, level: :info  # or :debug, :warning, :error
 ```
 
-### 📊 Telemetry & Monitoring
+### Telemetry & Monitoring
 
 ```elixir
 # Attach default telemetry handler (logs all events)
@@ -635,7 +633,7 @@ Yggdrasil.Telemetry.attach_default_handler()
 - `[:yggdrasil, :model, :request, :start|stop|exception]`
 - `[:yggdrasil, :tool, :execute, :start|stop|exception]` - **includes tool_name!**
 
-## 📦 Installation
+## Installation
 
 Add to your `mix.exs`:
 
@@ -653,7 +651,7 @@ Then:
 mix deps.get
 ```
 
-## 📖 Documentation
+## Documentation
 
 - **[docs/SUCCESS.md](docs/SUCCESS.md)** - Verified test results
 - **[docs/QUICKSTART.md](docs/QUICKSTART.md)** - 30 second start guide
@@ -662,7 +660,7 @@ mix deps.get
 - **[docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)** - Architecture details
 - **[examples/](examples/)** - Working code examples
 
-## 🔥 Examples Directory
+## Examples Directory
 
 See [examples/](examples/) for working scripts:
 
@@ -688,7 +686,7 @@ See [examples/](examples/) for working scripts:
 - `LIVEVIEW_INTEGRATION.md` - LiveView patterns
 - `DISTRIBUTED_AGENTS.md` - Named agents & clustering
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 User Code
@@ -708,18 +706,18 @@ Yggdrasil.AgentRunner (execution loop)
 └─→ Usage (track tokens)
 ```
 
-## 📊 Stats
+## Stats
 
 ```
 Lines of Code:    ~2,100
 Source Files:     16 modules
 Tests:            18 passing
 Providers:        7 supported
-Status:           ✅ WORKING MVP
-Verified:         ✅ Tool calling with LM Studio
+Status:           Working MVP
+Verified:         Tool calling with LM Studio
 ```
 
-## 🎓 Learn More
+## Learn More
 
 ### Guides
 - Getting started → See this README
@@ -728,12 +726,12 @@ Verified:         ✅ Tool calling with LM Studio
 - Architecture → See `PROJECT_STRUCTURE.md`
 
 ### Real Test Results
-- Basic Q&A → ✅ Rhyming response verified
-- Tool calling → ✅ Weather tool verified
-- Multi-tool → ✅ Calculator chaining verified
-- Token tracking → ✅ Accurate counts verified
+- Basic Q&A → Rhyming response verified
+- Tool calling → Weather tool verified
+- Multi-tool → Calculator chaining verified
+- Token tracking → Accurate counts verified
 
-## 🤝 Contributing
+## Contributing
 
 Contributions welcome! This is an MVP with lots of room for improvement.
 
@@ -745,11 +743,11 @@ Contributions welcome! This is an MVP with lots of room for improvement.
 - [ ] More examples
 - [ ] Performance benchmarks
 
-## 📄 License
+## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+Apache 2.0 License - see [LICENSE](LICENSE) for details.
 
-## 🙏 Credits
+## Credits
 
 - Inspired by [Pydantic AI](https://ai.pydantic.dev/) by the Pydantic team
 - Built with [openai_ex](https://github.com/cyberchitta/openai_ex)
@@ -757,9 +755,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
-**From concept to working framework in one session!** 🚀
-
-**Status: WORKING! Try it yourself!** ✅
+**Quick Start:**
 
 ```bash
 iex -S mix
