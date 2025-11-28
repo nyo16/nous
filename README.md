@@ -1,3 +1,5 @@
+![Yggdrasil AI](doc/images/header.jpeg)
+
 # Yggdrasil AI
 
 > Type-safe AI agent framework for Elixir with OpenAI-compatible models
