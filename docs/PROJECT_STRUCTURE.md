@@ -535,8 +535,8 @@ end
 
 ### Layer 8: Infrastructure
 
-#### `Yggdrasil.Application`
-**File:** `lib/exadantic/application.ex`
+#### Yggdrasil.Application
+**File:** `lib/yggdrasil/application.ex`
 
 ```elixir
 defmodule Yggdrasil.Application do

@@ -118,12 +118,12 @@ defmodule Yggdrasil.ReActAgent do
   @doc """
   Create a new ReAct agent.
 
-  Wraps `Agent.new/2` with additional ReAct-specific tools and instructions.
+  Wraps `Yggdrasil.Agent.new/2` with additional ReAct-specific tools and instructions.
 
   ## Parameters
 
   - `model_string` - Model in format "provider:model-name"
-  - `opts` - Configuration options (same as Agent.new/2)
+  - `opts` - Configuration options (same as `Yggdrasil.Agent.new/2`)
 
   ## Options
 
@@ -218,11 +218,11 @@ defmodule Yggdrasil.ReActAgent do
   @doc """
   Run the ReAct agent synchronously.
 
-  Wraps `Agent.run/3` with additional ReAct context initialization.
+  Wraps `Yggdrasil.Agent.run/3` with additional ReAct context initialization.
 
   ## Options
 
-  Same as `Agent.run/3`, with automatic initialization of:
+  Same as `Yggdrasil.Agent.run/3`, with automatic initialization of:
   - `todos: []` - Empty todo list
   - `plans: []` - Empty plans list
   - `notes: []` - Empty notes list
@@ -248,7 +248,7 @@ defmodule Yggdrasil.ReActAgent do
 
   ## Returns
 
-  Same as `Agent.run/3`:
+  Same as `Yggdrasil.Agent.run/3`:
 
       {:ok, %{
         output: "Final answer text...",
@@ -296,7 +296,7 @@ defmodule Yggdrasil.ReActAgent do
   @doc """
   Run the ReAct agent with streaming.
 
-  Wraps `Agent.run_stream/3` with ReAct context initialization.
+  Wraps `Yggdrasil.Agent.run_stream/3` with ReAct context initialization.
 
   ## Example
 

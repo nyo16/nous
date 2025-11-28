@@ -3,7 +3,7 @@
 > Type-safe AI agent framework for Elixir with OpenAI-compatible models
 
 [![Elixir](https://img.shields.io/badge/elixir-~%3E%201.17-purple.svg)](https://elixir-lang.org)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/nyo16/yggdrasil/blob/master/LICENSE)
 [![Status](https://img.shields.io/badge/status-working%20mvp-brightgreen.svg)](SUCCESS.md)
 
 Yggdrasil AI is a type-safe AI agent framework for Elixir with support for any OpenAI-compatible API.
@@ -218,7 +218,7 @@ defmodule MyApp.CustomAgent do
 end
 ```
 
-**See [lib/exadantic/react_agent.ex](lib/exadantic/react_agent.ex) for a complete example!**
+**See [lib/yggdrasil/react_agent.ex](lib/yggdrasil/react_agent.ex) for a complete example!**
 
 ---
 
@@ -548,7 +548,7 @@ agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
 # When LiveView dies → Agent dies automatically! ✨
 ```
 
-**See [examples/DISTRIBUTED_AGENTS.md](examples/DISTRIBUTED_AGENTS.md) for complete guide.**
+**See [Distributed Agents Guide](distributed_agents.html) for complete guide.**
 
 ### Streaming
 ```elixir
@@ -658,11 +658,11 @@ mix deps.get
 - **[docs/LOCAL_LLM_GUIDE.md](docs/LOCAL_LLM_GUIDE.md)** - Local model setup
 - **[docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)** - Complete code examples
 - **[docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)** - Architecture details
-- **[examples/](examples/)** - Working code examples
+- **[Examples Overview](examples_overview.html)** - Working code examples
 
 ## Examples Directory
 
-See [examples/](examples/) for working scripts:
+See the [Examples Overview](examples_overview.html) for working scripts:
 
 ### Core Examples
 - `test_lm_studio.exs` - Basic LM Studio test (VERIFIED ✅)
@@ -745,7 +745,7 @@ Contributions welcome! This is an MVP with lots of room for improvement.
 
 ## License
 
-Apache 2.0 License - see [LICENSE](LICENSE) for details.
+Apache 2.0 License - see [LICENSE](https://github.com/nyo16/yggdrasil/blob/master/LICENSE) for details.
 
 ## Credits
 
