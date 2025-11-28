@@ -125,12 +125,25 @@ defmodule Yggdrasil.Models.OpenAICompatible do
 
   @impl true
   def request_stream(model, messages, settings) do
+    start_time = System.monotonic_time()
+
     Logger.debug("""
     OpenAI-compatible streaming request starting
       Provider: #{model.provider}
       Model: #{model.model}
       Messages: #{length(messages)}
     """)
+
+    # Emit start event for streaming
+    :telemetry.execute(
+      [:yggdrasil, :model, :stream, :start],
+      %{system_time: System.system_time(), monotonic_time: start_time},
+      %{
+        provider: model.provider,
+        model_name: model.model,
+        message_count: length(messages)
+      }
+    )
 
     client = Model.to_client(model)
     openai_messages = Messages.to_openai_messages(messages)
@@ -141,18 +154,48 @@ defmodule Yggdrasil.Models.OpenAICompatible do
 
     case Chat.Completions.create(client, params) do
       {:ok, stream} ->
-        Logger.info("Streaming started for #{model.provider}:#{model.model}")
+        duration = System.monotonic_time() - start_time
+        duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
+        Logger.info("Streaming started for #{model.provider}:#{model.model} (connected in #{duration_ms}ms)")
+
+        # Emit connected event (stream is ready to consume)
+        :telemetry.execute(
+          [:yggdrasil, :model, :stream, :connected],
+          %{duration: duration},
+          %{
+            provider: model.provider,
+            model_name: model.model
+          }
+        )
+
         # Transform OpenAI.Ex stream events to our format
         transformed_stream = Stream.map(stream, &parse_stream_chunk/1)
         {:ok, transformed_stream}
 
       {:error, error} ->
+        duration = System.monotonic_time() - start_time
+        duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
         Logger.error("""
         OpenAI-compatible streaming request failed
           Provider: #{model.provider}
           Model: #{model.model}
+          Duration: #{duration_ms}ms
           Error: #{inspect(error)}
         """)
+
+        # Emit exception event
+        :telemetry.execute(
+          [:yggdrasil, :model, :stream, :exception],
+          %{duration: duration},
+          %{
+            provider: model.provider,
+            model_name: model.model,
+            kind: :error,
+            reason: error
+          }
+        )
 
         wrapped_error = Errors.ModelError.exception(
           provider: model.provider,

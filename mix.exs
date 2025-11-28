@@ -57,6 +57,9 @@ defmodule Yggdrasil.MixProject do
       # Telemetry
       {:telemetry, "~> 1.2"},
 
+      # Note: For Prometheus metrics, users can add {:prom_ex, "~> 1.11"} and {:plug, "~> 1.18"}
+      # to their deps. The Yggdrasil.PromEx.Plugin will automatically be available.
+
       # Dev/Test
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -121,6 +124,9 @@ defmodule Yggdrasil.MixProject do
         "Infrastructure": [
           Yggdrasil.Telemetry,
           Yggdrasil.Errors
+        ],
+        "Integrations": [
+          Yggdrasil.PromEx.Plugin
         ]
       ]
     ]
