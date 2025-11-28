@@ -37,21 +37,39 @@ Also supports legacy markers (`<<<<<<< SEARCH` / `>>>>>>> REPLACE`).
 | `delete_file` | Delete files |
 | `execute_command` | Run shell commands |
 
+## Setup
+
+1. Set your API key:
+```bash
+export ANTHROPIC_API_KEY=your_key_here
+```
+
+2. Start IEx:
+```bash
+iex -S mix
+```
+
 ## Usage
 
 ```elixir
 # Create an agent
-agent = Coderex.CodeAgent.new("anthropic:claude-sonnet-4-20250514", cwd: "/path/to/project")
+agent = Coderex.CodeAgent.new("anthropic:claude-haiku-4-5-20251001", cwd: "/path/to/project")
 
 # Run a task
 {:ok, result} = Coderex.CodeAgent.run(agent, "Add a docstring to the main function")
+
+# Access the response
+result.response
 ```
 
 ## Demo
 
 ```bash
-# Run the diff formatter demo
+# Run the diff formatter demo (no API key needed)
 mix run demo_diff.exs
+
+# Run the full agent demo (requires API key)
+ANTHROPIC_API_KEY=your_key mix run examples/demo.exs
 ```
 
 Example output:

@@ -22,10 +22,10 @@ IO.puts("Demo directory: #{demo_dir}\n")
 
 # Create the agent
 # You can use other models like:
+#   - "anthropic:claude-sonnet-4-20250514" (more capable)
 #   - "openai:gpt-4"
-#   - "anthropic:claude-sonnet-4-20250514"
 #   - "lmstudio:qwen/qwen3-30b" (local)
-agent = Coderex.new("anthropic:claude-sonnet-4-20250514",
+agent = Coderex.CodeAgent.new("anthropic:claude-haiku-4-5-20251001",
   model_settings: %{temperature: 0.2, max_tokens: 4096}
 )
 
@@ -43,33 +43,32 @@ Create a simple Elixir module called `Calculator` in `lib/calculator.ex` that ha
 After creating the file, read it back and confirm the contents.
 """
 
-case Coderex.run(agent, task, cwd: demo_dir) do
+case Coderex.CodeAgent.run(agent, task, cwd: demo_dir) do
   {:ok, result} ->
-    IO.puts("\n" <> "─" |> String.duplicate(50))
-    IO.puts("\n📝 Agent Response:\n")
-    IO.puts(result.output)
-    IO.puts("\n" <> "─" |> String.duplicate(50))
-    IO.puts("\n📊 Stats:")
-    IO.puts("  • Iterations: #{result.iterations}")
-    IO.puts("  • Tool calls: #{result.usage.tool_calls}")
-    IO.puts("  • Total tokens: #{result.usage.total_tokens}")
+    IO.puts("\n" <> String.duplicate("─", 50))
+    IO.puts("\nAgent Response:\n")
+    IO.puts(result.response)
+    IO.puts("\n" <> String.duplicate("─", 50))
+    IO.puts("\nStats:")
+    IO.puts("  - Iterations: #{result.iterations}")
+    IO.puts("  - Tool calls: #{length(result.tool_calls)}")
 
     # Check if the file was created
     calculator_path = Path.join([demo_dir, "lib", "calculator.ex"])
     if File.exists?(calculator_path) do
-      IO.puts("\n✅ File created successfully at: #{calculator_path}")
+      IO.puts("\nFile created successfully at: #{calculator_path}")
       IO.puts("\nFile contents:")
-      IO.puts("─" |> String.duplicate(50))
+      IO.puts(String.duplicate("─", 50))
       IO.puts(File.read!(calculator_path))
     else
-      IO.puts("\n❌ File was not created")
+      IO.puts("\nFile was not created")
     end
 
   {:error, error} ->
-    IO.puts("\n❌ Error: #{inspect(error)}")
+    IO.puts("\nError: #{inspect(error)}")
 end
 
-IO.puts("\n" <> "─" |> String.duplicate(50))
+IO.puts("\n" <> String.duplicate("─", 50))
 IO.puts("Demo complete!")
 IO.puts("Demo files are in: #{demo_dir}")
 IO.puts("You can delete them with: rm -rf #{demo_dir}")

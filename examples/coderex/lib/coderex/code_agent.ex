@@ -14,7 +14,7 @@ defmodule Coderex.CodeAgent do
   ## Usage
 
       # Create an agent
-      agent = Coderex.CodeAgent.new("anthropic:claude-sonnet-4-20250514")
+      agent = Coderex.CodeAgent.new("anthropic:claude-haiku-4-5-20251001")
 
       # Run with a coding task
       {:ok, result} = Coderex.CodeAgent.run(agent, "Create a hello world function in lib/hello.ex")
@@ -91,7 +91,7 @@ defmodule Coderex.CodeAgent do
 
   ## Example
 
-      agent = Coderex.CodeAgent.new("anthropic:claude-sonnet-4-20250514",
+      agent = Coderex.CodeAgent.new("anthropic:claude-haiku-4-5-20251001",
         instructions: "Focus on Elixir code",
         model_settings: %{temperature: 0.3}
       )
@@ -146,11 +146,25 @@ defmodule Coderex.CodeAgent do
 
     deps = Map.merge(extra_deps, %{cwd: cwd})
 
-    Yggdrasil.run(agent, prompt,
-      deps: deps,
-      message_history: message_history,
-      max_iterations: max_iterations
-    )
+    # Check for API key before running
+    case check_api_key(agent.model) do
+      :ok ->
+        try do
+          Yggdrasil.run(agent, prompt,
+            deps: deps,
+            message_history: message_history,
+            max_iterations: max_iterations
+          )
+        rescue
+          e in FunctionClauseError ->
+            {:error, format_error(e)}
+          e ->
+            {:error, "Unexpected error: #{Exception.message(e)}"}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc """
@@ -183,11 +197,82 @@ defmodule Coderex.CodeAgent do
 
     deps = Map.merge(extra_deps, %{cwd: cwd})
 
-    Yggdrasil.run_stream(agent, prompt,
-      deps: deps,
-      message_history: message_history,
-      max_iterations: max_iterations
-    )
+    # Check for API key before running
+    case check_api_key(agent.model) do
+      :ok ->
+        try do
+          Yggdrasil.run_stream(agent, prompt,
+            deps: deps,
+            message_history: message_history,
+            max_iterations: max_iterations
+          )
+        rescue
+          e in FunctionClauseError ->
+            {:error, format_error(e)}
+          e ->
+            {:error, "Unexpected error: #{Exception.message(e)}"}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Check if the required API key is set for the provider
+  defp check_api_key(%{provider: provider}) do
+    check_provider_api_key(provider)
+  end
+
+  defp check_api_key(model) when is_binary(model) do
+    cond do
+      String.starts_with?(model, "anthropic:") -> check_provider_api_key(:anthropic)
+      String.starts_with?(model, "openai:") -> check_provider_api_key(:openai)
+      String.starts_with?(model, "google:") -> check_provider_api_key(:google)
+      true -> :ok
+    end
+  end
+
+  defp check_provider_api_key(:anthropic) do
+    case System.get_env("ANTHROPIC_API_KEY") do
+      nil -> {:error, "ANTHROPIC_API_KEY environment variable is not set. Please set it with: export ANTHROPIC_API_KEY=your_key"}
+      "" -> {:error, "ANTHROPIC_API_KEY environment variable is empty. Please set a valid API key."}
+      _ -> :ok
+    end
+  end
+
+  defp check_provider_api_key(:openai) do
+    case System.get_env("OPENAI_API_KEY") do
+      nil -> {:error, "OPENAI_API_KEY environment variable is not set. Please set it with: export OPENAI_API_KEY=your_key"}
+      "" -> {:error, "OPENAI_API_KEY environment variable is empty. Please set a valid API key."}
+      _ -> :ok
+    end
+  end
+
+  defp check_provider_api_key(:google) do
+    case System.get_env("GOOGLE_API_KEY") do
+      nil -> {:error, "GOOGLE_API_KEY environment variable is not set. Please set it with: export GOOGLE_API_KEY=your_key"}
+      "" -> {:error, "GOOGLE_API_KEY environment variable is empty. Please set a valid API key."}
+      _ -> :ok
+    end
+  end
+
+  defp check_provider_api_key(_provider) do
+    # Unknown provider, let it through and fail later if needed
+    :ok
+  end
+
+  # Format error messages for common issues
+  defp format_error(%FunctionClauseError{} = e) do
+    cond do
+      String.contains?(Exception.message(e), "Anthropix.init") ->
+        "Anthropic API key is missing or invalid. Please set ANTHROPIC_API_KEY environment variable."
+
+      String.contains?(Exception.message(e), "api_key") ->
+        "API key is missing or invalid. Please check your environment variables."
+
+      true ->
+        "Configuration error: #{Exception.message(e)}"
+    end
   end
 
   # Define core tools with proper schemas
