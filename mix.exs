@@ -2,7 +2,7 @@ defmodule Yggdrasil.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/yourusername/exadantic"
+  @source_url "https://github.com/nyo16/yggdrasil"
 
   def project do
     [
@@ -57,6 +57,9 @@ defmodule Yggdrasil.MixProject do
       # Telemetry
       {:telemetry, "~> 1.2"},
 
+      # Note: For Prometheus metrics, users can add {:prom_ex, "~> 1.11"} and {:plug, "~> 1.18"}
+      # to their deps. The Yggdrasil.PromEx.Plugin will automatically be available.
+
       # Dev/Test
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -75,48 +78,55 @@ defmodule Yggdrasil.MixProject do
         "docs/LOCAL_LLM_GUIDE.md",
         "docs/IMPLEMENTATION_GUIDE.md",
         "docs/PROJECT_STRUCTURE.md",
-        "examples/README.md"
+        {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
+        {"examples/DISTRIBUTED_AGENTS.md", filename: "distributed_agents", title: "Distributed Agents"},
+        {"examples/LIVEVIEW_INTEGRATION.md", filename: "liveview_integration", title: "LiveView Integration"}
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,
       groups_for_modules: [
-        "Core": [
+        "Core API": [
           Yggdrasil,
           Yggdrasil.Agent,
-          Yggdrasil.AgentRunner
+          Yggdrasil.ReActAgent
         ],
-        "Data Types": [
-          Yggdrasil.Types,
-          Yggdrasil.Usage,
+        "Agent Execution": [
+          Yggdrasil.AgentRunner,
+          Yggdrasil.AgentServer,
           Yggdrasil.RunContext
         ],
-        "Models": [
+        "Model Providers": [
           Yggdrasil.Model,
           Yggdrasil.ModelParser,
+          Yggdrasil.ModelDispatcher,
           Yggdrasil.Models.Behaviour,
-          Yggdrasil.Models.OpenAICompatible
+          Yggdrasil.Models.OpenAICompatible,
+          Yggdrasil.Models.Anthropic,
+          Yggdrasil.Models.Gemini
         ],
-        "Tools": [
+        "Tool System": [
           Yggdrasil.Tool,
           Yggdrasil.ToolSchema,
           Yggdrasil.ToolExecutor
         ],
-        "Messages": [
+        "Built-in Tools": [
+          Yggdrasil.Tools.BraveSearch,
+          Yggdrasil.Tools.DateTimeTools,
+          Yggdrasil.Tools.StringTools,
+          Yggdrasil.Tools.TodoTools,
+          Yggdrasil.Tools.ReActTools
+        ],
+        "Data Types": [
+          Yggdrasil.Types,
+          Yggdrasil.Usage,
           Yggdrasil.Messages
         ],
-        "Output": [
-          Yggdrasil.Output
-        ],
         "Infrastructure": [
-          Yggdrasil.Application,
-          Yggdrasil.Telemetry
-        ],
-        "Errors": [
+          Yggdrasil.Telemetry,
           Yggdrasil.Errors
         ],
-        "Testing": [
-          Yggdrasil.Testing.MockModel,
-          Yggdrasil.Testing.TestHelpers
+        "Integrations": [
+          Yggdrasil.PromEx.Plugin
         ]
       ]
     ]

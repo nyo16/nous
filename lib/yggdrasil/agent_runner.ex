@@ -83,7 +83,7 @@ defmodule Yggdrasil.AgentRunner do
         Logger.info("""
         Agent run completed: #{agent.name}
           Duration: #{duration_ms}ms
-          Iterations: #{state.iteration}
+          Iterations: #{agent_result.iterations}
           Tokens: #{agent_result.usage.total_tokens} (in: #{agent_result.usage.input_tokens}, out: #{agent_result.usage.output_tokens})
           Tool calls: #{agent_result.usage.tool_calls}
           Requests: #{agent_result.usage.requests}
@@ -98,7 +98,7 @@ defmodule Yggdrasil.AgentRunner do
             output_tokens: agent_result.usage.output_tokens,
             tool_calls: agent_result.usage.tool_calls,
             requests: agent_result.usage.requests,
-            iterations: state.iteration
+            iterations: agent_result.iterations
           },
           %{
             agent_name: agent.name,
@@ -242,6 +242,7 @@ defmodule Yggdrasil.AgentRunner do
              %{
                output: output,
                usage: new_usage,
+               iterations: new_state.iteration,
                all_messages: messages ++ [response],
                new_messages: [response],
                deps: state.deps  # Return updated deps so todos are accessible

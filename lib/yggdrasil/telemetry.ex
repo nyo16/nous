@@ -32,6 +32,20 @@ defmodule Yggdrasil.Telemetry do
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string, kind: atom, reason: term}`
 
+  ## Model Streaming Events
+
+    * `[:yggdrasil, :model, :stream, :start]` - Dispatched before starting a streaming request
+      * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
+      * Metadata: `%{provider: atom, model_name: string, message_count: integer}`
+
+    * `[:yggdrasil, :model, :stream, :connected]` - Dispatched when stream connection is established
+      * Measurement: `%{duration: native_time}`
+      * Metadata: `%{provider: atom, model_name: string}`
+
+    * `[:yggdrasil, :model, :stream, :exception]` - Dispatched when streaming request fails
+      * Measurement: `%{duration: native_time}`
+      * Metadata: `%{provider: atom, model_name: string, kind: atom, reason: term}`
+
   ## Tool Events
 
     * `[:yggdrasil, :tool, :execute, :start]` - Dispatched before tool execution
@@ -60,7 +74,7 @@ defmodule Yggdrasil.Telemetry do
   ## Custom Handlers
 
       :telemetry.attach(
-        "my-exadantic-handler",
+        "my-yggdrasil-handler",
         [:yggdrasil, :agent, :run, :stop],
         fn _event, measurements, metadata, _config ->
           MyApp.Metrics.track_agent_run(
@@ -98,13 +112,16 @@ defmodule Yggdrasil.Telemetry do
       [:yggdrasil, :model, :request, :start],
       [:yggdrasil, :model, :request, :stop],
       [:yggdrasil, :model, :request, :exception],
+      [:yggdrasil, :model, :stream, :start],
+      [:yggdrasil, :model, :stream, :connected],
+      [:yggdrasil, :model, :stream, :exception],
       [:yggdrasil, :tool, :execute, :start],
       [:yggdrasil, :tool, :execute, :stop],
       [:yggdrasil, :tool, :execute, :exception]
     ]
 
     :telemetry.attach_many(
-      "exadantic-default-handler",
+      "yggdrasil-default-handler",
       events,
       &handle_event/4,
       nil
@@ -115,7 +132,7 @@ defmodule Yggdrasil.Telemetry do
   Detaches the default handler.
   """
   def detach_default_handler do
-    :telemetry.detach("exadantic-default-handler")
+    :telemetry.detach("yggdrasil-default-handler")
   end
 
   # Event handlers
@@ -160,6 +177,27 @@ defmodule Yggdrasil.Telemetry do
 
     Logger.error(
       "[Yggdrasil] Model #{metadata.provider}:#{metadata.model_name} failed after #{duration_ms}ms: " <>
+        "#{inspect(metadata.reason)}"
+    )
+  end
+
+  defp handle_event([:yggdrasil, :model, :stream, :start], _measurements, metadata, _config) do
+    Logger.debug("[Yggdrasil] Stream request to #{metadata.provider}:#{metadata.model_name}")
+  end
+
+  defp handle_event([:yggdrasil, :model, :stream, :connected], measurements, metadata, _config) do
+    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
+
+    Logger.debug(
+      "[Yggdrasil] Stream #{metadata.provider}:#{metadata.model_name} connected in #{duration_ms}ms"
+    )
+  end
+
+  defp handle_event([:yggdrasil, :model, :stream, :exception], measurements, metadata, _config) do
+    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
+
+    Logger.error(
+      "[Yggdrasil] Stream #{metadata.provider}:#{metadata.model_name} failed after #{duration_ms}ms: " <>
         "#{inspect(metadata.reason)}"
     )
   end
