@@ -1,4 +1,4 @@
-![Yggdrasil AI](doc/images/header.jpeg)
+![Yggdrasil AI](images/header.jpeg)
 
 # Yggdrasil AI
 
@@ -655,11 +655,7 @@ mix deps.get
 
 ## Documentation
 
-- **[docs/SUCCESS.md](docs/SUCCESS.md)** - Verified test results
-- **[docs/QUICKSTART.md](docs/QUICKSTART.md)** - 30 second start guide
-- **[docs/LOCAL_LLM_GUIDE.md](docs/LOCAL_LLM_GUIDE.md)** - Local model setup
-- **[docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)** - Complete code examples
-- **[docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)** - Architecture details
+- **[LLM Council Design](docs/llm_council_design.md)** - Multi-agent council architecture
 - **[Examples Overview](examples_overview.html)** - Working code examples
 
 ## Examples Directory

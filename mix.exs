@@ -12,6 +12,7 @@ defmodule Yggdrasil.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       docs: docs(),
+      aliases: aliases(),
       description: "Type-safe AI agent framework for Elixir with OpenAI-compatible models",
       source_url: @source_url,
       package: package(),
@@ -73,11 +74,7 @@ defmodule Yggdrasil.MixProject do
       main: "readme",
       extras: [
         "README.md",
-        "docs/QUICKSTART.md",
-        "docs/SUCCESS.md",
-        "docs/LOCAL_LLM_GUIDE.md",
-        "docs/IMPLEMENTATION_GUIDE.md",
-        "docs/PROJECT_STRUCTURE.md",
+        "docs/llm_council_design.md",
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
         {"examples/DISTRIBUTED_AGENTS.md", filename: "distributed_agents", title: "Distributed Agents"},
         {"examples/LIVEVIEW_INTEGRATION.md", filename: "liveview_integration", title: "LiveView Integration"}
@@ -139,5 +136,15 @@ defmodule Yggdrasil.MixProject do
         "GitHub" => @source_url
       }
     ]
+  end
+
+  defp aliases do
+    [docs: ["docs", &copy_images/1]]
+  end
+
+  defp copy_images(_) do
+    File.mkdir_p!("doc/images")
+    File.cp!("images/header.jpeg", "doc/images/header.jpeg")
+    File.cp!("images/logo.jpeg", "doc/images/logo.jpeg")
   end
 end
