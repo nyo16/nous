@@ -24,6 +24,7 @@ defmodule Yggdrasil.Model do
           base_url: String.t() | nil,
           api_key: String.t() | nil,
           organization: String.t() | nil,
+          receive_timeout: non_neg_integer(),
           default_settings: map()
         }
 
@@ -34,6 +35,7 @@ defmodule Yggdrasil.Model do
     :base_url,
     :api_key,
     :organization,
+    receive_timeout: 60_000,  # 60 seconds default (OpenaiEx default is 15s which is too short for local models)
     default_settings: %{}
   ]
 
@@ -51,6 +53,8 @@ defmodule Yggdrasil.Model do
     * `:base_url` - Custom API base URL
     * `:api_key` - API key (defaults to environment config)
     * `:organization` - Organization ID (for OpenAI)
+    * `:receive_timeout` - HTTP receive timeout in milliseconds (default: 60000).
+      Increase this for local models that may take longer to respond.
     * `:default_settings` - Default model settings (temperature, max_tokens, etc.)
 
   ## Example
@@ -58,6 +62,11 @@ defmodule Yggdrasil.Model do
       model = Model.new(:openai, "gpt-4",
         api_key: "sk-...",
         default_settings: %{temperature: 0.7, max_tokens: 1000}
+      )
+
+      # For slow local models, increase the timeout
+      model = Model.new(:lmstudio, "qwen/qwen3-4b",
+        receive_timeout: 120_000  # 2 minutes
       )
 
   """
@@ -69,6 +78,7 @@ defmodule Yggdrasil.Model do
       base_url: Keyword.get(opts, :base_url, default_base_url(provider)),
       api_key: Keyword.get(opts, :api_key, default_api_key(provider)),
       organization: Keyword.get(opts, :organization),
+      receive_timeout: Keyword.get(opts, :receive_timeout, default_receive_timeout(provider)),
       default_settings: Keyword.get(opts, :default_settings, %{})
     }
   end
@@ -90,7 +100,7 @@ defmodule Yggdrasil.Model do
   def to_client(%__MODULE__{} = model) do
     # OpenaiEx.new(token, organization \\ nil, project \\ nil)
     # It uses simple positional arguments, not keyword opts
-    # We'll need to set base_url and finch separately
+    # We'll need to set base_url, finch, and receive_timeout separately
 
     client = OpenaiEx.new(
       model.api_key || "not-needed",
@@ -104,10 +114,11 @@ defmodule Yggdrasil.Model do
       client
     end
 
-    # Set finch pool name
-    client = %{client | finch_name: Application.get_env(:yggdrasil, :finch, Yggdrasil.Finch)}
-
-    client
+    # Set finch pool name and receive timeout
+    %{client |
+      finch_name: Application.get_env(:yggdrasil, :finch, Yggdrasil.Finch),
+      receive_timeout: model.receive_timeout
+    }
   end
 
   # Private functions
@@ -135,4 +146,13 @@ defmodule Yggdrasil.Model do
   defp default_api_key(:lmstudio), do: "not-needed"
   defp default_api_key(:vllm), do: nil  # vLLM API key is optional
   defp default_api_key(:custom), do: nil
+
+  # Default receive timeouts per provider
+  # Local providers get longer timeouts since they're typically slower
+  @spec default_receive_timeout(provider()) :: non_neg_integer()
+  defp default_receive_timeout(:ollama), do: 120_000     # 2 minutes for local Ollama
+  defp default_receive_timeout(:lmstudio), do: 120_000   # 2 minutes for local LM Studio
+  defp default_receive_timeout(:vllm), do: 120_000       # 2 minutes for local vLLM
+  defp default_receive_timeout(:custom), do: 120_000     # 2 minutes for custom endpoints
+  defp default_receive_timeout(_provider), do: 60_000    # 60 seconds for cloud providers
 end
