@@ -13,9 +13,9 @@ Welcome to Yggdrasil AI examples! This directory contains 28+ working examples d
 - 🏆 **[Specialized Projects](#-specialized-projects)** - Production multi-agent systems
 
 **Browse by:**
-- 📁 **[By Level](by_level/)** - Beginner → Intermediate → Advanced
-- 🔧 **[By Feature](by_feature/)** - Tools, Streaming, Patterns, etc.
-- 🌐 **[By Provider](by_provider/)** - Anthropic, OpenAI, Local, etc.
+- 📁 **[By Level](by_level/README.md)** - Beginner → Intermediate → Advanced
+- 🔧 **[By Feature](by_feature/README.md)** - Tools, Streaming, Patterns, etc.
+- 🌐 **[By Provider](by_provider/README.md)** - Anthropic, OpenAI, Local, etc.
 
 ---
 
@@ -79,9 +79,9 @@ Production-ready patterns and architecture:
 1. **[genserver_agent_example.ex](genserver_agent_example.ex)** - GenServer wrapper patterns
 2. **[liveview_agent_example.ex](liveview_agent_example.ex)** - Phoenix LiveView integration
 3. **[distributed_agent_example.ex](distributed_agent_example.ex)** - Distributed agents via Registry
-4. **[council/](council/)** - Multi-LLM deliberation system
-5. **[trading_desk/](trading_desk/)** - Enterprise multi-agent coordination
-6. **[coderex/](coderex/)** - AI code editor with specialized tools
+4. **[council/](council/README.md)** - Multi-LLM deliberation system
+5. **[trading_desk/](trading_desk/README.md)** - Enterprise multi-agent coordination
+6. **[coderex/](coderex/README.md)** - AI code editor with specialized tools
 
 **What you'll learn:** Production patterns, web integration, distributed systems, multi-agent coordination
 
@@ -89,13 +89,13 @@ Production-ready patterns and architecture:
 
 Complete application examples showing production patterns:
 
-- **[council/](council/)** - **Multi-LLM Deliberation System**
+- **[council/](council/README.md)** - **Multi-LLM Deliberation System**
   3-stage voting system where multiple AI models collaborate to find best responses
 
-- **[trading_desk/](trading_desk/)** - **Enterprise Multi-Agent System**
+- **[trading_desk/](trading_desk/README.md)** - **Enterprise Multi-Agent System**
   4 specialized agents (Market, Risk, Trading, Research) with supervisor coordination
 
-- **[coderex/](coderex/)** - **AI Code Editor**
+- **[coderex/](coderex/README.md)** - **AI Code Editor**
   Complete code editing agent with SEARCH/REPLACE format and file management tools
 
 **Best for:** Understanding production architecture, team coordination, specialized tool patterns
@@ -105,26 +105,26 @@ Complete application examples showing production patterns:
 ## 📁 Browse by Category
 
 ### By Level
-- **[by_level/beginner/](by_level/beginner/)** - Start here (5 examples)
-- **[by_level/intermediate/](by_level/intermediate/)** - Core patterns (10+ examples)
-- **[by_level/advanced/](by_level/advanced/)** - Production ready (6+ examples)
+- **[by_level/beginner/](by_level/beginner/README.md)** - Start here (5 examples)
+- **[by_level/intermediate/](by_level/README.md#-intermediate-1-hour-total)** - Core patterns (10+ examples)
+- **[by_level/advanced/](by_level/README.md#-advanced-deep-dive)** - Production ready (6+ examples)
 
 ### By Feature
-- **[by_feature/tools/](by_feature/tools/)** - Tool calling and function execution
-- **[by_feature/streaming/](by_feature/streaming/)** - Real-time response handling
-- **[by_feature/patterns/](by_feature/patterns/)** - Agent reasoning patterns
-- **[by_feature/providers/](by_feature/providers/)** - Multi-provider examples
+- **[by_feature/tools/](by_feature/README.md#-tools-function-calling--actions)** - Tool calling and function execution
+- **[by_feature/streaming/](by_feature/README.md#-streaming-real-time-responses)** - Real-time response handling
+- **[by_feature/patterns/](by_feature/README.md#-patterns-agent-reasoning--architecture)** - Agent reasoning patterns
+- **[by_feature/providers/](by_feature/README.md#-providers-multi-provider-support)** - Multi-provider examples
 
 ### By Provider
-- **[by_provider/anthropic/](by_provider/anthropic/)** - Claude examples
-- **[by_provider/openai/](by_provider/openai/)** - GPT examples
-- **[by_provider/local/](by_provider/local/)** - LM Studio, Ollama examples
-- **[by_provider/gemini/](by_provider/gemini/)** - Google Gemini examples
+- **[by_provider/anthropic/](by_provider/README.md#-anthropic-claude)** - Claude examples
+- **[by_provider/openai/](by_provider/README.md#-openai-gpt)** - GPT examples
+- **[by_provider/local/](by_provider/README.md#-local-free)** - LM Studio, Ollama examples
+- **[by_provider/gemini/](by_provider/README.md#-google-gemini)** - Google Gemini examples
 
 ### Quick Resources
 
-- **[templates/](templates/)** - Copy-paste starter files for common patterns
-- **[guides/](guides/)** - Comprehensive guides for tool development, best practices, troubleshooting
+- **[templates/](templates/README.md)** - Copy-paste starter files for common patterns
+- **[guides/](guides/README.md)** - Comprehensive guides for tool development, best practices, troubleshooting
 
 ---
 
@@ -362,4 +362,4 @@ IO.inspect(result.all_messages, label: "All Messages")
 
 **All examples are tested and working!** ✅
 
-Need help? Check the main [README.md](../README.md) or [SUCCESS.md](../SUCCESS.md) for verified test results.
+Need help? Check the main [README.md](../README.md) for more information.

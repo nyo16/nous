@@ -404,7 +404,7 @@ spawn(fn -> run_agent() end)
 
 ### Next Steps
 After mastering LiveView integration, explore:
-- 🏦 **[Trading Desk](trading_desk/)** - Multi-agent systems for complex applications
+- 🏦 **[Trading Desk](trading_desk/README.md)** - Multi-agent systems for complex applications
 - 📊 **Production Patterns** → [guides/best_practices.md](guides/best_practices.md)
 - 🔧 **Advanced Tools** → [custom_tools_guide.exs](custom_tools_guide.exs)
 

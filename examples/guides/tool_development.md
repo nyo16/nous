@@ -7,7 +7,7 @@ Complete guide for creating powerful, production-ready tools for Yggdrasil AI ag
 **New to tool development?** Start with:
 1. [custom_tools_guide.exs](../custom_tools_guide.exs) - Interactive tutorial
 2. [templates/tool_agent.exs](../templates/tool_agent.exs) - Copy-paste starter
-3. [by_feature/tools/](../by_feature/tools/) - Working examples
+3. [by_feature/tools/](../by_feature/README.md#-tools-function-calling--actions) - Working examples
 
 ## Table of Contents
 
@@ -642,7 +642,7 @@ end
 
 1. **Start with examples**: Try [custom_tools_guide.exs](../custom_tools_guide.exs)
 2. **Use templates**: Copy [templates/tool_agent.exs](../templates/tool_agent.exs)
-3. **Study production tools**: Check [trading_desk/](../trading_desk/)
+3. **Study production tools**: Check [trading_desk/](../trading_desk/README.md)
 4. **Read related guides**:
    - [best_practices.md](best_practices.md) - Production deployment
    - [troubleshooting.md](troubleshooting.md) - Common issues

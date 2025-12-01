@@ -825,7 +825,7 @@ end
 
 ## Next Steps
 
-1. **Review examples**: Study production patterns in [trading_desk/](../trading_desk/)
+1. **Review examples**: Study production patterns in [trading_desk/](../trading_desk/README.md)
 2. **Set up monitoring**: Implement telemetry and health checks
 3. **Test thoroughly**: Load test, security test, chaos engineering
 4. **Start small**: Deploy to staging environment first

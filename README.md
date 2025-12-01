@@ -6,7 +6,7 @@
 
 [![Elixir](https://img.shields.io/badge/elixir-~%3E%201.17-purple.svg)](https://elixir-lang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/nyo16/yggdrasil/blob/master/LICENSE)
-[![Status](https://img.shields.io/badge/status-working%20mvp-brightgreen.svg)](SUCCESS.md)
+[![Status](https://img.shields.io/badge/status-working%20mvp-brightgreen.svg)](#features)
 
 Yggdrasil AI is a type-safe AI agent framework for Elixir with support for any OpenAI-compatible API. Features include tool calling, multi-provider support, local LLM execution, and built-in utilities for dates, strings, web search, and task tracking.
 
@@ -92,7 +92,7 @@ agent = Yggdrasil.ReActAgent.new("lmstudio:qwen/qwen3-30b",
 )
 ```
 
-See [examples/react_agent_enhanced_demo.exs](examples/react_agent_enhanced_demo.exs) or [by_feature/patterns/](examples/by_feature/patterns/)
+See [examples/react_agent_enhanced_demo.exs](examples/react_agent_enhanced_demo.exs) or [by_feature/patterns/](examples/by_feature/README.md#-patterns-agent-reasoning--architecture)
 
 ### Standard Agent (Flexible & Simple)
 
@@ -115,7 +115,7 @@ alias Yggdrasil.Tools.DateTimeTools
 tools: [&DateTimeTools.current_date/2, &DateTimeTools.date_difference/2, &DateTimeTools.add_days/2]
 ```
 
-See [examples/datetime_tools_demo.exs](examples/datetime_tools_demo.exs) or [by_feature/tools/](examples/by_feature/tools/)
+See [examples/datetime_tools_demo.exs](examples/datetime_tools_demo.exs) or [by_feature/tools/](examples/by_feature/README.md#-tools-function-calling--actions)
 
 ### String Tools
 Text manipulation: uppercase, replace, split, palindrome detection, number extraction.
@@ -125,7 +125,7 @@ alias Yggdrasil.Tools.StringTools
 tools: [&StringTools.to_uppercase/2, &StringTools.replace_text/2, &StringTools.extract_numbers/2]
 ```
 
-See [examples/string_tools_demo.exs](examples/string_tools_demo.exs) or [by_feature/tools/](examples/by_feature/tools/)
+See [examples/string_tools_demo.exs](examples/string_tools_demo.exs) or [by_feature/tools/](examples/by_feature/README.md#-tools-function-calling--actions)
 
 ### Todo Tools
 Automatic task breakdown and progress tracking for multi-step workflows.
@@ -138,7 +138,7 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 )
 ```
 
-See [examples/todo_tools_demo.exs](examples/todo_tools_demo.exs) or [by_feature/tools/](examples/by_feature/tools/)
+See [examples/todo_tools_demo.exs](examples/todo_tools_demo.exs) or [by_feature/tools/](examples/by_feature/README.md#-tools-function-calling--actions)
 
 ### Brave Search (Web Search)
 Search the web for current information. Requires `BRAVE_API_KEY` ([get free key](https://brave.com/search/api/)).
@@ -148,7 +148,7 @@ alias Yggdrasil.Tools.BraveSearch
 tools: [&BraveSearch.web_search/2, &BraveSearch.news_search/2]
 ```
 
-See [examples/brave_search_demo.exs](examples/brave_search_demo.exs) or [by_feature/tools/](examples/by_feature/tools/)
+See [examples/brave_search_demo.exs](examples/brave_search_demo.exs) or [by_feature/tools/](examples/by_feature/README.md#-tools-function-calling--actions)
 
 ## Features
 
@@ -253,17 +253,17 @@ Events: `[:yggdrasil, :agent, :run, :*]`, `[:yggdrasil, :model, :request, :*]`, 
 - [cost_tracking_example.exs](examples/cost_tracking_example.exs) - Monitor token usage
 
 **🔴 Advanced** (45+ minutes each)
-- [Trading Desk](examples/trading_desk/) - Production multi-agent system
-- [Council](examples/council/) - Multi-LLM deliberation
-- [Coderex](examples/coderex/) - AI code editor with SEARCH/REPLACE
+- [Trading Desk](examples/trading_desk/README.md) - Production multi-agent system
+- [Council](examples/council/README.md) - Multi-LLM deliberation
+- [Coderex](examples/coderex/README.md) - AI code editor with SEARCH/REPLACE
 
 **Browse by:**
-- [Skill Level](examples/by_level/) - Beginner → Intermediate → Advanced
-- [Provider](examples/by_provider/) - Anthropic, OpenAI, Local, etc.
-- [Feature](examples/by_feature/) - Tools, Streaming, Patterns, etc.
+- [Skill Level](examples/by_level/README.md) - Beginner → Intermediate → Advanced
+- [Provider](examples/by_provider/README.md) - Anthropic, OpenAI, Local, etc.
+- [Feature](examples/by_feature/README.md) - Tools, Streaming, Patterns, etc.
 
 **Quick Templates:**
-- [templates/](examples/templates/) - Copy-paste starter files
+- [templates/](examples/templates/README.md) - Copy-paste starter files
 
 ## Architecture
 

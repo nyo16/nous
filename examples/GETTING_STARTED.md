@@ -102,9 +102,9 @@ Choose your adventure:
 
 ### Browse Examples
 
-- **[By Level](by_level/)** - Beginner → Advanced progression
-- **[By Feature](by_feature/)** - Find specific capabilities
-- **[By Provider](by_provider/)** - Platform-specific examples
+- **[By Level](by_level/README.md)** - Beginner → Advanced progression
+- **[By Feature](by_feature/README.md)** - Find specific capabilities
+- **[By Provider](by_provider/README.md)** - Platform-specific examples
 
 ---
 
@@ -149,7 +149,7 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 IO.puts(result.output)
 ```
 
-**Next:** Check out [templates/](templates/) for more patterns!
+**Next:** Check out [templates/](templates/README.md) for more patterns!
 
 ---
 
@@ -164,4 +164,4 @@ You know you're ready to continue when:
 
 **Time taken:** 5 minutes ⚡
 
-**Next step:** Explore the [learning paths](README.md#-learning-paths) or jump into [specific features](by_feature/)!
+**Next step:** Explore the [learning paths](README.md#-learning-paths) or jump into [specific features](by_feature/README.md)!

@@ -507,12 +507,12 @@ end
 ### Related Examples
 - 📱 **[LiveView Integration](LIVEVIEW_INTEGRATION.md)** - Core patterns and best practices
 - 📱 **[LiveView Agent](liveview_agent_example.ex)** - Basic agent integration
-- 🏦 **[Trading Desk](trading_desk/)** - Multi-agent systems
-- 🏛️ **[Council](council/)** - Multi-LLM conversation
+- 🏦 **[Trading Desk](trading_desk/README.md)** - Multi-agent systems
+- 🏛️ **[Council](council/README.md)** - Multi-LLM conversation
 
 ### Next Steps
 After mastering LiveView chat, explore:
-- 🏦 **[Trading Desk](trading_desk/)** - Enterprise multi-agent architectures
+- 🏦 **[Trading Desk](trading_desk/README.md)** - Enterprise multi-agent architectures
 - 📊 **Production Patterns** → [guides/best_practices.md](guides/best_practices.md)
 - 🔧 **Advanced Tools** → [custom_tools_guide.exs](custom_tools_guide.exs)
 

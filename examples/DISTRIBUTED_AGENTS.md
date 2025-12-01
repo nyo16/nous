@@ -374,13 +374,13 @@ end
 - ✅ Basic Elixir Registry knowledge
 
 ### Related Examples
-- 🏦 **[Trading Desk](trading_desk/)** - Production multi-agent system with registry
+- 🏦 **[Trading Desk](trading_desk/README.md)** - Production multi-agent system with registry
 - 📱 **[LiveView Integration](LIVEVIEW_INTEGRATION.md)** - Web UI with distributed agents
 - 📱 **[LiveView Chat](liveview_chat_example.ex)** - User-specific chat agents
 
 ### Next Steps
 After mastering distributed agents, explore:
-- 🏛️ **[Council](council/)** - Multi-agent deliberation and consensus
+- 🏛️ **[Council](council/README.md)** - Multi-agent deliberation and consensus
 - 📊 **Production Patterns** → [guides/best_practices.md](guides/best_practices.md)
 - 🌐 **Clustering** → Advanced Elixir distribution patterns
 
