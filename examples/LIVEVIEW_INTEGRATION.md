@@ -385,3 +385,29 @@ spawn(fn -> run_agent() end)
 ```
 
 **The `spawn_link/1` ensures graceful shutdown!** 🎯
+
+---
+
+## 🔗 Learning Path Integration
+
+### Prerequisites
+- ✅ Basic agent usage → [basic_hello_world.exs](basic_hello_world.exs)
+- ✅ Conversation history → [conversation_history_example.exs](conversation_history_example.exs)
+- ✅ Streaming patterns → [streaming_example.exs](streaming_example.exs)
+- ✅ Error handling → [error_handling_example.exs](error_handling_example.exs)
+- ✅ Basic Phoenix LiveView knowledge
+
+### Related Examples
+- 📱 **[LiveView Chat](liveview_chat_example.ex)** - Complete chat interface implementation
+- 📱 **[LiveView Agent](liveview_agent_example.ex)** - Basic agent integration
+- 📊 **[Streaming Example](streaming_example.exs)** - Understanding streaming patterns
+
+### Next Steps
+After mastering LiveView integration, explore:
+- 🏦 **[Trading Desk](trading_desk/)** - Multi-agent systems for complex applications
+- 📊 **Production Patterns** → [guides/best_practices.md](guides/best_practices.md)
+- 🔧 **Advanced Tools** → [custom_tools_guide.exs](custom_tools_guide.exs)
+
+---
+
+**Built with Yggdrasil AI** - Type-safe AI agents for Elixir

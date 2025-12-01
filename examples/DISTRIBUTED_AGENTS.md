@@ -362,3 +362,40 @@ end
 **Complex case:** Use DistributedAgent GenServer - get naming + linking
 
 **See `examples/distributed_agent_example.ex` for complete code!**
+
+---
+
+## 🔗 Learning Path Integration
+
+### Prerequisites
+- ✅ Basic agent usage → [basic_hello_world.exs](basic_hello_world.exs)
+- ✅ GenServer patterns → [genserver_agent_example.ex](genserver_agent_example.ex)
+- ✅ OTP supervision → [by_feature/patterns/supervisor_example.exs](by_feature/patterns/supervisor_example.exs)
+- ✅ Basic Elixir Registry knowledge
+
+### Related Examples
+- 🏦 **[Trading Desk](trading_desk/)** - Production multi-agent system with registry
+- 📱 **[LiveView Integration](LIVEVIEW_INTEGRATION.md)** - Web UI with distributed agents
+- 📱 **[LiveView Chat](liveview_chat_example.ex)** - User-specific chat agents
+
+### Next Steps
+After mastering distributed agents, explore:
+- 🏛️ **[Council](council/)** - Multi-agent deliberation and consensus
+- 📊 **Production Patterns** → [guides/best_practices.md](guides/best_practices.md)
+- 🌐 **Clustering** → Advanced Elixir distribution patterns
+
+## 🎓 What You'll Learn
+
+This pattern demonstrates:
+
+- ✅ **Named Process Management** - Registry-based agent discovery
+- ✅ **Process Linking** - Automatic cleanup and lifecycle management
+- ✅ **Distributed Architecture** - Cluster-wide agent coordination
+- ✅ **Conversation Persistence** - Stateful agents across requests
+- ✅ **Multi-User Systems** - Isolated agents per user/session
+- ✅ **Monitoring and Introspection** - Registry queries and agent management
+- ✅ **Fault Tolerance** - Graceful degradation and recovery
+
+---
+
+**Built with Yggdrasil AI** - Type-safe AI agents for Elixir

@@ -1,6 +1,23 @@
 # Yggdrasil AI - Examples
 
-This directory contains working examples demonstrating various features of Yggdrasil AI.
+Welcome to Yggdrasil AI examples! This directory contains 28+ working examples demonstrating all features, from simple Q&A to production-ready multi-agent systems.
+
+## 🚀 Quick Start (5 minutes)
+
+**New to Yggdrasil?** → [GETTING_STARTED.md](GETTING_STARTED.md) - Get running in 5 minutes!
+
+**Want to explore?** Choose your path:
+- 🥇 **[Beginner Path](#-beginner-path-15-minutes)** - Basic usage, tools, providers (15 min)
+- 🥈 **[Intermediate Path](#-intermediate-path-1-hour)** - Streaming, conversation, patterns (1 hour)
+- 🥉 **[Advanced Path](#-advanced-path-deep-dive)** - GenServer, LiveView, distributed systems
+- 🏆 **[Specialized Projects](#-specialized-projects)** - Production multi-agent systems
+
+**Browse by:**
+- 📁 **[By Level](by_level/)** - Beginner → Intermediate → Advanced
+- 🔧 **[By Feature](by_feature/)** - Tools, Streaming, Patterns, etc.
+- 🌐 **[By Provider](by_provider/)** - Anthropic, OpenAI, Local, etc.
+
+---
 
 ## 🎯 Quick Tests (Verified Working!)
 
@@ -25,6 +42,89 @@ mix run examples/calculator_demo.exs
 **What it does:** Multi-tool chaining - AI solves (12 + 8) * 5
 **Verified:** ✅ Multi-tool chaining working
 **Output:** AI autonomously calls add() then multiply()
+
+---
+
+## 📚 Learning Paths
+
+### 🥇 Beginner Path (15 minutes)
+
+Start here if you're new to Yggdrasil. Complete these 5 examples in order:
+
+1. **[basic_hello_world.exs](basic_hello_world.exs)** *(new)* - Absolute minimal example (30 seconds)
+2. **[simple_working.exs](simple_working.exs)** - Auto-detect provider, basic Q&A (2 min)
+3. **[tools_simple.exs](tools_simple.exs)** - Single tool usage (3 min) ✅ *Verified*
+4. **[calculator_demo.exs](calculator_demo.exs)** - Tool chaining (5 min) ✅ *Verified*
+5. **[comparing_providers.exs](comparing_providers.exs)** - Switch providers (5 min)
+
+**What you'll learn:** Basic usage, tool calling, provider switching
+
+### 🥈 Intermediate Path (1 hour)
+
+Ready for more? These examples show core patterns:
+
+1. **[streaming_example.exs](streaming_example.exs)** *(new)* - Real-time responses (10 min)
+2. **[conversation_history_example.exs](conversation_history_example.exs)** *(new)* - Multi-turn state (10 min)
+3. **[with_tools_working.exs](with_tools_working.exs)** - Complex tool usage (10 min)
+4. **[error_handling_example.exs](error_handling_example.exs)** *(new)* - Graceful failures (10 min)
+5. **[react_agent_demo.exs](react_agent_demo.exs)** - ReAct reasoning patterns (15 min)
+6. **[telemetry_demo.exs](telemetry_demo.exs)** - Observability and monitoring (5 min)
+
+**What you'll learn:** Streaming, conversation management, error handling, reasoning patterns
+
+### 🥉 Advanced Path (Deep dive)
+
+Production-ready patterns and architecture:
+
+1. **[genserver_agent_example.ex](genserver_agent_example.ex)** - GenServer wrapper patterns
+2. **[liveview_agent_example.ex](liveview_agent_example.ex)** - Phoenix LiveView integration
+3. **[distributed_agent_example.ex](distributed_agent_example.ex)** - Distributed agents via Registry
+4. **[council/](council/)** - Multi-LLM deliberation system
+5. **[trading_desk/](trading_desk/)** - Enterprise multi-agent coordination
+6. **[coderex/](coderex/)** - AI code editor with specialized tools
+
+**What you'll learn:** Production patterns, web integration, distributed systems, multi-agent coordination
+
+### 🏆 Specialized Projects
+
+Complete application examples showing production patterns:
+
+- **[council/](council/)** - **Multi-LLM Deliberation System**
+  3-stage voting system where multiple AI models collaborate to find best responses
+
+- **[trading_desk/](trading_desk/)** - **Enterprise Multi-Agent System**
+  4 specialized agents (Market, Risk, Trading, Research) with supervisor coordination
+
+- **[coderex/](coderex/)** - **AI Code Editor**
+  Complete code editing agent with SEARCH/REPLACE format and file management tools
+
+**Best for:** Understanding production architecture, team coordination, specialized tool patterns
+
+---
+
+## 📁 Browse by Category
+
+### By Level
+- **[by_level/beginner/](by_level/beginner/)** - Start here (5 examples)
+- **[by_level/intermediate/](by_level/intermediate/)** - Core patterns (10+ examples)
+- **[by_level/advanced/](by_level/advanced/)** - Production ready (6+ examples)
+
+### By Feature
+- **[by_feature/tools/](by_feature/tools/)** - Tool calling and function execution
+- **[by_feature/streaming/](by_feature/streaming/)** - Real-time response handling
+- **[by_feature/patterns/](by_feature/patterns/)** - Agent reasoning patterns
+- **[by_feature/providers/](by_feature/providers/)** - Multi-provider examples
+
+### By Provider
+- **[by_provider/anthropic/](by_provider/anthropic/)** - Claude examples
+- **[by_provider/openai/](by_provider/openai/)** - GPT examples
+- **[by_provider/local/](by_provider/local/)** - LM Studio, Ollama examples
+- **[by_provider/gemini/](by_provider/gemini/)** - Google Gemini examples
+
+### Quick Resources
+
+- **[templates/](templates/)** - Copy-paste starter files for common patterns
+- **[guides/](guides/)** - Comprehensive guides for tool development, best practices, troubleshooting
 
 ---
 

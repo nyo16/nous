@@ -495,9 +495,45 @@ end
 - [Yggdrasil Docs](../README.md)
 - [ReAct Paper](https://arxiv.org/abs/2210.03629)
 
+## 🔗 Learning Path Integration
+
+### Prerequisites
+- ✅ Basic agent usage → [basic_hello_world.exs](basic_hello_world.exs)
+- ✅ LiveView fundamentals → [liveview_agent_example.ex](liveview_agent_example.ex)
+- ✅ LiveView integration patterns → [LIVEVIEW_INTEGRATION.md](LIVEVIEW_INTEGRATION.md)
+- ✅ Streaming patterns → [streaming_example.exs](streaming_example.exs)
+- ✅ Conversation history → [conversation_history_example.exs](conversation_history_example.exs)
+
+### Related Examples
+- 📱 **[LiveView Integration](LIVEVIEW_INTEGRATION.md)** - Core patterns and best practices
+- 📱 **[LiveView Agent](liveview_agent_example.ex)** - Basic agent integration
+- 🏦 **[Trading Desk](trading_desk/)** - Multi-agent systems
+- 🏛️ **[Council](council/)** - Multi-LLM conversation
+
+### Next Steps
+After mastering LiveView chat, explore:
+- 🏦 **[Trading Desk](trading_desk/)** - Enterprise multi-agent architectures
+- 📊 **Production Patterns** → [guides/best_practices.md](guides/best_practices.md)
+- 🔧 **Advanced Tools** → [custom_tools_guide.exs](custom_tools_guide.exs)
+
+## 🎓 What You'll Learn
+
+This comprehensive chat example demonstrates:
+
+- ✅ **Real-time UI Updates** - LiveView reactivity and streaming
+- ✅ **Agent State Management** - Persistent conversation handling
+- ✅ **Process Architecture** - AgentServer GenServer patterns
+- ✅ **Error Handling** - Graceful failure and recovery
+- ✅ **Production Features** - Rate limiting, persistence, validation
+- ✅ **User Experience** - Streaming, typing indicators, stop controls
+- ✅ **Security Patterns** - Input validation and content filtering
+
 ## Support
 
 For issues or questions:
-- GitHub Issues: https://github.com/yourusername/exadantic_ai/issues
+- GitHub Issues: https://github.com/yourusername/yggdrasil/issues
 - Example Code: `examples/liveview_chat_example.ex`
-- AgentServer: `lib/exadantic/agent_server.ex`
+
+---
+
+**Built with Yggdrasil AI** - Type-safe AI agents for Elixir

@@ -2,9 +2,20 @@
 
 # 🏦 Trading Desk - Multi-Agent AI System
 
-A sophisticated example demonstrating **an army of AI agents** working together to analyze trading decisions.
+**Advanced multi-agent pattern** demonstrating production-ready AI coordination where specialized agents collaborate through intelligent routing and response synthesis.
 
-## 🎯 Architecture
+## 🎯 What is Trading Desk?
+
+Trading Desk showcases **enterprise-grade multi-agent architecture** with:
+
+- **5 specialized agents** with domain-specific expertise
+- **Intelligent query routing** based on keywords and intent
+- **18 custom tools** across market, risk, trading, and research domains
+- **Parallel agent execution** for complex multi-faceted queries
+- **Response synthesis** combining insights from multiple agents
+- **Production OTP supervision** with proper fault tolerance
+
+## 🏗️ Architecture
 
 ```
                     ┌─────────────────────┐
@@ -330,6 +341,34 @@ This pattern works for ANY multi-agent system:
 7. ✅ **Distribution** - Works across Elixir cluster
 
 **This is how you build real AI applications with Elixir!** 🚀
+
+## 🔗 Learning Path Integration
+
+### Prerequisites
+- ✅ Basic agent usage → [basic_hello_world.exs](../basic_hello_world.exs)
+- ✅ Tool calling → [tools_simple.exs](../tools_simple.exs)
+- ✅ GenServer patterns → [distributed_agent_example.ex](../distributed_agent_example.ex)
+- ✅ OTP supervision → [supervisor_example.exs](../by_feature/patterns/supervisor_example.exs)
+
+### Next Steps
+After mastering Trading Desk, explore:
+- 🏛️ **[Council](../council/)** - Multi-LLM deliberation and consensus building
+- 🔧 **[Coderex](../coderex/)** - Code editing and SEARCH/REPLACE operations
+- 🌐 **[Phoenix LiveView](../by_feature/liveview/)** - Real-time web interfaces
+- 📊 **Production Patterns** → [best_practices.md](../guides/best_practices.md)
+
+## 🎓 What You'll Learn
+
+This example demonstrates:
+
+- ✅ **Production OTP Architecture** - Proper supervision trees and GenServer patterns
+- ✅ **Multi-Agent Coordination** - Orchestrating specialized AI agents
+- ✅ **Intelligent Routing** - Query analysis and agent selection
+- ✅ **Tool Composition** - Domain-specific tool sets for different agents
+- ✅ **Parallel Execution** - Concurrent agent queries for complex requests
+- ✅ **Response Synthesis** - Combining insights from multiple specialists
+- ✅ **Fault Tolerance** - Process isolation and graceful degradation
+- ✅ **Named Process Registry** - Service discovery for distributed agents
 
 ---
 
