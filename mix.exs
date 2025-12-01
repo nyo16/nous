@@ -75,9 +75,21 @@ defmodule Yggdrasil.MixProject do
       extras: [
         "README.md",
         "docs/llm_council_design.md",
+
+        # Examples and Tutorials
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
+        {"examples/GETTING_STARTED.md", filename: "getting_started", title: "Getting Started (5 min)"},
+
+        # Learning Guides
         {"examples/DISTRIBUTED_AGENTS.md", filename: "distributed_agents", title: "Distributed Agents"},
-        {"examples/LIVEVIEW_INTEGRATION.md", filename: "liveview_integration", title: "LiveView Integration"}
+        {"examples/LIVEVIEW_INTEGRATION.md", filename: "liveview_integration", title: "LiveView Integration"},
+        {"examples/LIVEVIEW_CHAT_GUIDE.md", filename: "liveview_chat", title: "LiveView Chat Guide"},
+
+        # Production Guides
+        {"examples/guides/best_practices.md", filename: "best_practices", title: "Production Best Practices"},
+        {"examples/guides/tool_development.md", filename: "tool_development", title: "Tool Development Guide"},
+        {"examples/guides/troubleshooting.md", filename: "troubleshooting", title: "Troubleshooting Guide"},
+        {"examples/guides/migration_guide.md", filename: "migration_guide", title: "Migration Guide"}
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,

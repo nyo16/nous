@@ -92,7 +92,7 @@ agent = Yggdrasil.ReActAgent.new("lmstudio:qwen/qwen3-30b",
 )
 ```
 
-See [examples/react_agent_enhanced_demo.exs](examples/react_agent_enhanced_demo.exs)
+See [examples/react_agent_enhanced_demo.exs](examples/react_agent_enhanced_demo.exs) or [by_feature/patterns/](examples/by_feature/patterns/)
 
 ### Standard Agent (Flexible & Simple)
 
@@ -115,7 +115,7 @@ alias Yggdrasil.Tools.DateTimeTools
 tools: [&DateTimeTools.current_date/2, &DateTimeTools.date_difference/2, &DateTimeTools.add_days/2]
 ```
 
-See [examples/datetime_tools_demo.exs](examples/datetime_tools_demo.exs)
+See [examples/datetime_tools_demo.exs](examples/datetime_tools_demo.exs) or [by_feature/tools/](examples/by_feature/tools/)
 
 ### String Tools
 Text manipulation: uppercase, replace, split, palindrome detection, number extraction.
@@ -125,7 +125,7 @@ alias Yggdrasil.Tools.StringTools
 tools: [&StringTools.to_uppercase/2, &StringTools.replace_text/2, &StringTools.extract_numbers/2]
 ```
 
-See [examples/string_tools_demo.exs](examples/string_tools_demo.exs)
+See [examples/string_tools_demo.exs](examples/string_tools_demo.exs) or [by_feature/tools/](examples/by_feature/tools/)
 
 ### Todo Tools
 Automatic task breakdown and progress tracking for multi-step workflows.
@@ -138,7 +138,7 @@ agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b",
 )
 ```
 
-See [examples/todo_tools_demo.exs](examples/todo_tools_demo.exs)
+See [examples/todo_tools_demo.exs](examples/todo_tools_demo.exs) or [by_feature/tools/](examples/by_feature/tools/)
 
 ### Brave Search (Web Search)
 Search the web for current information. Requires `BRAVE_API_KEY` ([get free key](https://brave.com/search/api/)).
@@ -148,7 +148,7 @@ alias Yggdrasil.Tools.BraveSearch
 tools: [&BraveSearch.web_search/2, &BraveSearch.news_search/2]
 ```
 
-See [examples/brave_search_demo.exs](examples/brave_search_demo.exs)
+See [examples/brave_search_demo.exs](examples/brave_search_demo.exs) or [by_feature/tools/](examples/by_feature/tools/)
 
 ## Features
 
@@ -176,7 +176,7 @@ def get_balance(ctx, _args), do: DB.get_balance(ctx.deps.database, ctx.deps.user
 )
 ```
 
-See [examples/tools_with_context.exs](examples/tools_with_context.exs)
+See [examples/tools_with_context.exs](examples/tools_with_context.exs) or [custom_tools_guide.exs](examples/custom_tools_guide.exs)
 
 ### Conversations
 
@@ -216,7 +216,7 @@ agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
 )
 ```
 
-See [distributed_agent_example.ex](examples/distributed_agent_example.ex)
+See [distributed_agent_example.ex](examples/distributed_agent_example.ex) or [DISTRIBUTED_AGENTS.md](examples/DISTRIBUTED_AGENTS.md)
 
 ## Logging & Telemetry
 
@@ -234,24 +234,36 @@ Events: `[:yggdrasil, :agent, :run, :*]`, `[:yggdrasil, :model, :request, :*]`, 
 
 ## Examples
 
-See the examples below for all working scripts.
+**🚀 [Get Started in 5 Minutes](examples/GETTING_STARTED.md)** - Quick setup guide with local or cloud options.
 
-**Core:**
-- `test_lm_studio.exs` - Basic LM Studio test
-- `calculator_demo.exs` - Multi-tool chaining
-- `anthropic_with_tools.exs` - Claude tool calling
-- `complete_tool_example.exs` - Real-world 4-tool demo
+**📚 [Full Examples Collection](examples/README.md)** - Comprehensive learning path from beginner to production.
 
-**Providers:**
-- `anthropic_example.exs` - Native Anthropic API
-- `anthropic_long_context.exs` - 1M token context
-- `anthropic_thinking_mode.exs` - Extended thinking
-- `vllm_example.exs` - vLLM server
+### Learning Path Overview
 
-**Integration:**
-- `liveview_agent_example.ex` - Phoenix LiveView
-- `distributed_agent_example.ex` - Named agents with Registry
-- `genserver_agent_example.ex` - GenServer wrapper
+**🟢 Beginner** (5-15 minutes each)
+- [basic_hello_world.exs](examples/basic_hello_world.exs) - 30-second minimal example
+- [test_lm_studio.exs](examples/test_lm_studio.exs) - Local LM Studio setup
+- [tools_simple.exs](examples/tools_simple.exs) - Basic tool calling
+- [calculator_demo.exs](examples/calculator_demo.exs) - Multi-tool chaining
+
+**🟡 Intermediate** (15-45 minutes each)
+- [streaming_example.exs](examples/streaming_example.exs) - Real-time responses
+- [conversation_history_example.exs](examples/conversation_history_example.exs) - Multi-turn chat
+- [error_handling_example.exs](examples/error_handling_example.exs) - Graceful failure handling
+- [cost_tracking_example.exs](examples/cost_tracking_example.exs) - Monitor token usage
+
+**🔴 Advanced** (45+ minutes each)
+- [Trading Desk](examples/trading_desk/) - Production multi-agent system
+- [Council](examples/council/) - Multi-LLM deliberation
+- [Coderex](examples/coderex/) - AI code editor with SEARCH/REPLACE
+
+**Browse by:**
+- [Skill Level](examples/by_level/) - Beginner → Intermediate → Advanced
+- [Provider](examples/by_provider/) - Anthropic, OpenAI, Local, etc.
+- [Feature](examples/by_feature/) - Tools, Streaming, Patterns, etc.
+
+**Quick Templates:**
+- [templates/](examples/templates/) - Copy-paste starter files
 
 ## Architecture
 
