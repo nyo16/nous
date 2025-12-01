@@ -216,7 +216,7 @@ agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929",
 )
 ```
 
-See [Distributed Agents Guide](distributed_agents.html)
+See [distributed_agent_example.ex](examples/distributed_agent_example.ex)
 
 ## Logging & Telemetry
 
@@ -234,7 +234,7 @@ Events: `[:yggdrasil, :agent, :run, :*]`, `[:yggdrasil, :model, :request, :*]`, 
 
 ## Examples
 
-See the [Examples Overview](examples_overview.html) for all working scripts.
+See the examples below for all working scripts.
 
 **Core:**
 - `test_lm_studio.exs` - Basic LM Studio test
