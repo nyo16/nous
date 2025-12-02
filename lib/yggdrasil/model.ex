@@ -16,7 +16,7 @@ defmodule Yggdrasil.Model do
 
   """
 
-  @type provider :: :openai | :anthropic | :gemini | :groq | :ollama | :lmstudio | :openrouter | :together | :vllm | :custom
+  @type provider :: :openai | :anthropic | :gemini | :groq | :ollama | :lmstudio | :openrouter | :together | :vllm | :mistral | :custom
 
   @type t :: %__MODULE__{
           provider: provider(),
@@ -132,6 +132,7 @@ defmodule Yggdrasil.Model do
   defp default_base_url(:lmstudio), do: "http://localhost:1234/v1"
   defp default_base_url(:openrouter), do: "https://openrouter.ai/api/v1"
   defp default_base_url(:together), do: "https://api.together.xyz/v1"
+  defp default_base_url(:mistral), do: "https://api.mistral.ai/v1"
   defp default_base_url(:vllm), do: nil  # vLLM requires explicit base_url
   defp default_base_url(:custom), do: nil
 
@@ -142,6 +143,7 @@ defmodule Yggdrasil.Model do
   defp default_api_key(:groq), do: Application.get_env(:yggdrasil, :groq_api_key)
   defp default_api_key(:openrouter), do: Application.get_env(:yggdrasil, :openrouter_api_key)
   defp default_api_key(:together), do: Application.get_env(:yggdrasil, :together_api_key)
+  defp default_api_key(:mistral), do: Application.get_env(:yggdrasil, :mistral_api_key)
   defp default_api_key(:ollama), do: "ollama"
   defp default_api_key(:lmstudio), do: "not-needed"
   defp default_api_key(:vllm), do: nil  # vLLM API key is optional

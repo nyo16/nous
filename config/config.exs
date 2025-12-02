@@ -8,6 +8,7 @@ config :yggdrasil,
   groq_api_key: System.get_env("GROQ_API_KEY"),
   openrouter_api_key: System.get_env("OPENROUTER_API_KEY"),
   together_api_key: System.get_env("TOGETHER_API_KEY"),
+  mistral_api_key: System.get_env("MISTRAL_API_KEY"),
   brave_api_key: System.get_env("BRAVE_API_KEY"),
   # Finch pool name
   finch: Yggdrasil.Finch,

@@ -10,6 +10,7 @@ defmodule Yggdrasil.ModelParser do
     * `"openai:gpt-4"` - OpenAI models
     * `"anthropic:claude-3-5-sonnet-20241022"` - Anthropic Claude (native API)
     * `"groq:llama-3.1-70b-versatile"` - Groq models
+    * `"mistral:mistral-large-latest"` - Mistral models
     * `"ollama:llama2"` - Local Ollama
     * `"lmstudio:qwen/qwen3-30b-a3b-2507"` - Local LM Studio
     * `"vllm:qwen/qwen3-30b"` - vLLM server (requires `:base_url`)
@@ -78,6 +79,10 @@ defmodule Yggdrasil.ModelParser do
     Model.new(:groq, model_name, opts)
   end
 
+  def parse("mistral:" <> model_name, opts) do
+    Model.new(:mistral, model_name, opts)
+  end
+
   def parse("ollama:" <> model_name, opts) do
     Model.new(:ollama, model_name, opts)
   end
@@ -118,6 +123,6 @@ defmodule Yggdrasil.ModelParser do
     raise ArgumentError,
           "Invalid model string format: #{inspect(invalid_string)}. " <>
             "Expected format: \"provider:model-name\". " <>
-            "Supported providers: openai, groq, ollama, lmstudio, openrouter, together, custom"
+            "Supported providers: openai, anthropic, gemini, groq, mistral, ollama, lmstudio, openrouter, together, vllm, custom"
   end
 end

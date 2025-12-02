@@ -20,6 +20,9 @@ defmodule Yggdrasil.ModelTest do
       groq = Model.new(:groq, "llama-3.1-70b-versatile")
       assert groq.base_url == "https://api.groq.com/openai/v1"
 
+      mistral = Model.new(:mistral, "mistral-large-latest")
+      assert mistral.base_url == "https://api.mistral.ai/v1"
+
       ollama = Model.new(:ollama, "llama2")
       assert ollama.base_url == "http://localhost:11434/v1"
 

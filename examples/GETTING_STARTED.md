@@ -53,6 +53,11 @@ A day that brings such glee...
 2. Get API key
 3. `export OPENAI_API_KEY="sk-..."`
 
+**Or Mistral AI:**
+1. Go to [console.mistral.ai](https://console.mistral.ai)
+2. Get API key
+3. `export MISTRAL_API_KEY="..."`
+
 ### 2. Test It Works (30 seconds)
 ```bash
 # Anthropic
@@ -62,6 +67,10 @@ mix run examples/anthropic_example.exs
 # Or OpenAI
 export OPENAI_API_KEY="sk-your-key"
 mix run examples/simple_working.exs
+
+# Or Mistral AI
+export MISTRAL_API_KEY="your-key"
+mix run examples/mistral_example.exs
 ```
 
 **🎉 You're done!** Continue to [What's Next](#whats-next).

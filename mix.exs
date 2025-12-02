@@ -55,6 +55,9 @@ defmodule Yggdrasil.MixProject do
       # HTTP client (required by openai_ex)
       {:finch, "~> 0.18"},
 
+      # HTTP client for Mistral API
+      {:req, "~> 0.4"},
+
       # Telemetry
       {:telemetry, "~> 1.2"},
 
@@ -111,7 +114,8 @@ defmodule Yggdrasil.MixProject do
           Yggdrasil.Models.Behaviour,
           Yggdrasil.Models.OpenAICompatible,
           Yggdrasil.Models.Anthropic,
-          Yggdrasil.Models.Gemini
+          Yggdrasil.Models.Gemini,
+          Yggdrasil.Models.Mistral
         ],
         "Tool System": [
           Yggdrasil.Tool,

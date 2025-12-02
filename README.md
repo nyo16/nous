@@ -51,6 +51,7 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 | OpenAI | `openai:gpt-4` | Supported |
 | Anthropic | `anthropic:claude-sonnet-4-5-20250929` | Tested & Working |
 | Google Gemini | `gemini:gemini-2.0-flash-exp` | Native API |
+| Mistral AI | `mistral:ministral-3-14b-instruct-2512` | Native API + Req |
 | Groq | `groq:llama-3.1-70b-versatile` | Supported |
 | Ollama | `ollama:llama2` | Supported |
 | vLLM | `vllm:model` + `:base_url` | Supported |
@@ -59,13 +60,14 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 | Custom | `custom:model` + `:base_url` | Supported |
 
 **Local (Zero Cost):** LM Studio, Ollama, vLLM
-**Cloud:** OpenAI, Anthropic, Groq, OpenRouter, Together AI
+**Cloud:** OpenAI, Anthropic, Mistral AI, Groq, OpenRouter, Together AI
 
 ```elixir
 # Switch providers with one line change
 agent = Yggdrasil.new("lmstudio:qwen/qwen3-30b")  # Local
 agent = Yggdrasil.new("openai:gpt-4")             # Cloud
 agent = Yggdrasil.new("anthropic:claude-sonnet-4-5-20250929")  # Claude
+agent = Yggdrasil.new("mistral:ministral-3-14b-instruct-2512")  # Mistral
 ```
 
 ## Agent Types

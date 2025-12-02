@@ -6,6 +6,7 @@ defmodule Yggdrasil.ModelDispatcher do
   - OpenAICompatible (for OpenAI-compatible APIs)
   - Anthropic (for native Anthropic API via Anthropix)
   - Gemini (for native Google Gemini API)
+  - Mistral (for native Mistral API via Req)
   """
 
   alias Yggdrasil.{Model, Models}
@@ -24,6 +25,11 @@ defmodule Yggdrasil.ModelDispatcher do
   def request(%Model{provider: :gemini} = model, messages, settings) do
     Logger.debug("Routing to Gemini adapter for model: #{model.model}")
     Models.Gemini.request(model, messages, settings)
+  end
+
+  def request(%Model{provider: :mistral} = model, messages, settings) do
+    Logger.debug("Routing to Mistral adapter for model: #{model.model}")
+    Models.Mistral.request(model, messages, settings)
   end
 
   def request(%Model{} = model, messages, settings) do
@@ -46,6 +52,11 @@ defmodule Yggdrasil.ModelDispatcher do
     Models.Gemini.request_stream(model, messages, settings)
   end
 
+  def request_stream(%Model{provider: :mistral} = model, messages, settings) do
+    Logger.debug("Routing streaming request to Mistral adapter for model: #{model.model}")
+    Models.Mistral.request_stream(model, messages, settings)
+  end
+
   def request_stream(%Model{} = model, messages, settings) do
     Logger.debug("Routing streaming request to OpenAI-compatible adapter for provider: #{model.provider}")
     Models.OpenAICompatible.request_stream(model, messages, settings)
@@ -61,6 +72,10 @@ defmodule Yggdrasil.ModelDispatcher do
 
   def count_tokens(%Model{provider: :gemini} = _model, messages) do
     Models.Gemini.count_tokens(messages)
+  end
+
+  def count_tokens(%Model{provider: :mistral} = _model, messages) do
+    Models.Mistral.count_tokens(messages)
   end
 
   def count_tokens(%Model{} = _model, messages) do

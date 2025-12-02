@@ -56,6 +56,15 @@ defmodule Yggdrasil.ModelParserTest do
       assert model.base_url == "https://api.together.xyz/v1"
     end
 
+    test "parses mistral format" do
+      model = ModelParser.parse("mistral:mistral-large-latest")
+
+      assert model.provider == :mistral
+      assert model.model == "mistral-large-latest"
+      assert model.base_url == "https://api.mistral.ai/v1"
+      assert model.api_key == nil  # Will be loaded from config
+    end
+
     test "parses custom format with base_url" do
       model =
         ModelParser.parse("custom:my-model",
