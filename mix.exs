@@ -62,6 +62,9 @@ defmodule Nous.MixProject do
       # Telemetry
       {:telemetry, "~> 1.2"},
 
+      # Graph data structures (used by deep_research example)
+      {:libgraph, "~> 0.16"},
+
       # Note: For Prometheus metrics, users can add {:prom_ex, "~> 1.11"} and {:plug, "~> 1.18"}
       # to their deps. The Nous.PromEx.Plugin will automatically be available.
 
