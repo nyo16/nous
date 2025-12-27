@@ -243,12 +243,26 @@ defmodule Nous.Messages do
   @spec from_openai_response(map()) :: Types.model_response()
   def from_openai_response(response) when is_map(response) do
     # Handle both atom keys (from OpenaiEx structs) and string keys (from raw JSON)
-    choices = Map.get(response, :choices) || Map.get(response, "choices")
+    choices = Map.get(response, :choices) || Map.get(response, "choices") || []
     choice = List.first(choices)
 
-    message = Map.get(choice, :message) || Map.get(choice, "message")
-    content = Map.get(message, :content) || Map.get(message, "content")
-    tool_calls = Map.get(message, :tool_calls) || Map.get(message, "tool_calls")
+    message = if choice do
+      Map.get(choice, :message) || Map.get(choice, "message")
+    else
+      nil
+    end
+
+    content = if message do
+      Map.get(message, :content) || Map.get(message, "content")
+    else
+      nil
+    end
+
+    tool_calls = if message do
+      Map.get(message, :tool_calls) || Map.get(message, "tool_calls")
+    else
+      nil
+    end
 
     usage_data = Map.get(response, :usage) || Map.get(response, "usage")
     model_name = Map.get(response, :model) || Map.get(response, "model")
@@ -295,11 +309,23 @@ defmodule Nous.Messages do
     name = Map.get(func, :name) || Map.get(func, "name")
     arguments = Map.get(func, :arguments) || Map.get(func, "arguments")
 
-    {:tool_call,
-     %{
-       id: id,
-       name: name,
-       arguments: Jason.decode!(arguments)
-     }}
+    case Jason.decode(arguments) do
+      {:ok, decoded_args} ->
+        {:tool_call,
+         %{
+           id: id,
+           name: name,
+           arguments: decoded_args
+         }}
+
+      {:error, _decode_error} ->
+        Logger.warning("Failed to decode tool arguments: #{inspect(arguments)}")
+        {:tool_call,
+         %{
+           id: id,
+           name: name,
+           arguments: %{"error" => "Invalid JSON arguments", "raw" => arguments}
+         }}
+    end
   end
 end

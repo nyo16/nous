@@ -90,25 +90,65 @@ defmodule Nous.HTTP.OpenAIClient do
 
     # Spawn a dedicated process to run Finch.stream
     pid = spawn_link(fn ->
+      # Enable trapping exits so we can handle cleanup signals
+      Process.flag(:trap_exit, true)
+
+      # Monitor parent to detect if it dies
+      parent_ref = Process.monitor(parent)
+
       request = Finch.build(:post, url, headers, body)
 
-      result = Finch.stream(request, finch_name, nil, fn
-        {:status, status}, acc ->
-          send(parent, {:sse, :status, status})
-          acc
+      # Run the stream in a task we can control
+      stream_task = Task.async(fn ->
+        Finch.stream(request, finch_name, nil, fn
+          {:status, status}, acc ->
+            send(parent, {:sse, :status, status})
+            acc
 
-        {:headers, resp_headers}, acc ->
-          send(parent, {:sse, :headers, resp_headers})
-          acc
+          {:headers, resp_headers}, acc ->
+            send(parent, {:sse, :headers, resp_headers})
+            acc
 
-        {:data, data}, acc ->
-          send(parent, {:sse, :data, data})
-          acc
-      end, receive_timeout: timeout)
+          {:data, data}, acc ->
+            send(parent, {:sse, :data, data})
+            acc
+        end, receive_timeout: timeout)
+      end)
 
-      case result do
-        {:ok, _} -> send(parent, {:sse, :done, :ok})
-        {:error, error} -> send(parent, {:sse, :done, {:error, error}})
+      # Wait for stream completion or exit signal
+      receive do
+        {:EXIT, ^parent, _reason} ->
+          # Parent died, clean up
+          Logger.debug("Parent died, cleaning up stream")
+          Task.shutdown(stream_task, 1_000)
+
+        {:DOWN, ^parent_ref, :process, ^parent, _reason} ->
+          # Parent monitor fired, clean up
+          Logger.debug("Parent monitor fired, cleaning up stream")
+          Task.shutdown(stream_task, 1_000)
+
+        {:EXIT, _from, :shutdown} ->
+          # Graceful shutdown requested
+          Logger.debug("Graceful shutdown requested for stream")
+          case Task.shutdown(stream_task, 1_000) do
+            :ok -> send(parent, {:sse, :done, :ok})
+            _ -> send(parent, {:sse, :done, {:error, :shutdown_timeout}})
+          end
+
+        {:EXIT, _from, reason} ->
+          # Other exit reason, force shutdown
+          Logger.debug("Force shutdown requested for stream: #{inspect(reason)}")
+          Task.shutdown(stream_task, :brutal_kill)
+          send(parent, {:sse, :done, {:error, reason}})
+      after
+        0 ->
+          # No immediate exit signal, wait for task completion
+          case Task.await(stream_task, :infinity) do
+            {:ok, _} ->
+              send(parent, {:sse, :done, :ok})
+            {:error, error} ->
+              send(parent, {:sse, :done, {:error, error}})
+          end
       end
     end)
 
@@ -171,7 +211,15 @@ defmodule Nous.HTTP.OpenAIClient do
   # Cleanup when stream is done
   defp cleanup(state) do
     if state[:pid] && Process.alive?(state.pid) do
-      Process.exit(state.pid, :kill)
+      # Try graceful shutdown first
+      Process.exit(state.pid, :shutdown)
+
+      # Wait a bit for graceful shutdown, then force kill if needed
+      :timer.sleep(100)
+      if Process.alive?(state.pid) do
+        Logger.debug("Stream process didn't respond to graceful shutdown, force killing")
+        Process.exit(state.pid, :kill)
+      end
     end
     :ok
   end

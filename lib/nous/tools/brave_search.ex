@@ -165,9 +165,15 @@ defmodule Nous.Tools.BraveSearch do
 
     case :httpc.request(:get, {String.to_charlist(full_url), headers}, [], []) do
       {:ok, {{_, 200, _}, _headers, body}} ->
-        response = Jason.decode!(to_string(body))
-        results = parse_web_results(response)
-        {:ok, results}
+        case Jason.decode(to_string(body)) do
+          {:ok, response} ->
+            results = parse_web_results(response)
+            {:ok, results}
+
+          {:error, decode_error} ->
+            Logger.error("Failed to decode Brave web search response: #{inspect(decode_error)}")
+            {:error, "Invalid JSON response from Brave API"}
+        end
 
       {:ok, {{_, status, _}, _headers, body}} ->
         {:error, "HTTP #{status}: #{to_string(body)}"}
@@ -198,9 +204,15 @@ defmodule Nous.Tools.BraveSearch do
 
     case :httpc.request(:get, {String.to_charlist(full_url), headers}, [], []) do
       {:ok, {{_, 200, _}, _headers, body}} ->
-        response = Jason.decode!(to_string(body))
-        results = parse_news_results(response)
-        {:ok, results}
+        case Jason.decode(to_string(body)) do
+          {:ok, response} ->
+            results = parse_news_results(response)
+            {:ok, results}
+
+          {:error, decode_error} ->
+            Logger.error("Failed to decode Brave news search response: #{inspect(decode_error)}")
+            {:error, "Invalid JSON response from Brave API"}
+        end
 
       {:ok, {{_, status, _}, _headers, body}} ->
         {:error, "HTTP #{status}: #{to_string(body)}"}
