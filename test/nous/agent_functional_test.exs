@@ -9,8 +9,7 @@ defmodule Nous.AgentFunctionalTest do
   @moduletag :functional
   @moduletag timeout: 120_000
 
-  # Load fixtures
-  Code.require_file("../fixtures/llm_responses.exs", __DIR__)
+  # Note: Fixtures are available from test/support/fixtures/ if needed
 
   @fixtures %{
     error_handling: %{

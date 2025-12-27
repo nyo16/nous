@@ -17,8 +17,8 @@ defmodule FixtureGenerator do
     }
 
     # Save to file
-    fixture_path = "test/fixtures/llm_responses.exs"
-    File.mkdir_p!("test/fixtures")
+    fixture_path = "test/support/fixtures/llm_responses.ex"
+    File.mkdir_p!("test/support/fixtures")
 
     content = """
     # Generated LLM response fixtures

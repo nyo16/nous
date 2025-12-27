@@ -72,7 +72,7 @@ defmodule Nous.Models.Gemini do
         Gemini request completed
           Model: #{model.model}
           Duration: #{duration_ms}ms
-          Tokens: #{parsed_response.metadata.usage.total_tokens} (in: #{parsed_response.metadata.usage.input_tokens}, out: #{parsed_response.metadata.usage.output_tokens})
+          Tokens: #{parsed_response.usage.total_tokens} (in: #{parsed_response.usage.input_tokens}, out: #{parsed_response.usage.output_tokens})
         """)
 
       {:error, _error} ->
