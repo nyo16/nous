@@ -25,7 +25,8 @@ defmodule Nous.Model do
           api_key: String.t() | nil,
           organization: String.t() | nil,
           receive_timeout: non_neg_integer(),
-          default_settings: map()
+          default_settings: map(),
+          stream_normalizer: module() | nil
         }
 
   @enforce_keys [:provider, :model]
@@ -35,6 +36,7 @@ defmodule Nous.Model do
     :base_url,
     :api_key,
     :organization,
+    :stream_normalizer,
     receive_timeout: 60_000,  # 60 seconds default (OpenaiEx default is 15s which is too short for local models)
     default_settings: %{}
   ]
@@ -56,6 +58,7 @@ defmodule Nous.Model do
     * `:receive_timeout` - HTTP receive timeout in milliseconds (default: 60000).
       Increase this for local models that may take longer to respond.
     * `:default_settings` - Default model settings (temperature, max_tokens, etc.)
+    * `:stream_normalizer` - Custom stream normalizer module implementing `Nous.StreamNormalizer` behaviour
 
   ## Example
 
@@ -79,7 +82,8 @@ defmodule Nous.Model do
       api_key: Keyword.get(opts, :api_key, default_api_key(provider)),
       organization: Keyword.get(opts, :organization),
       receive_timeout: Keyword.get(opts, :receive_timeout, default_receive_timeout(provider)),
-      default_settings: Keyword.get(opts, :default_settings, %{})
+      default_settings: Keyword.get(opts, :default_settings, %{}),
+      stream_normalizer: Keyword.get(opts, :stream_normalizer)
     }
   end
 

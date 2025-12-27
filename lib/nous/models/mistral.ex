@@ -184,8 +184,9 @@ defmodule Nous.Models.Mistral do
           }
         )
 
-        # Transform SSE stream events to our format
-        transformed_stream = Stream.map(stream, &parse_stream_chunk/1)
+        # Transform SSE stream events to our format using the normalizer
+        normalizer = model.stream_normalizer || Nous.StreamNormalizer.Mistral
+        transformed_stream = Nous.StreamNormalizer.normalize(stream, normalizer)
         {:ok, transformed_stream}
 
       {:error, error} ->
@@ -362,36 +363,6 @@ defmodule Nous.Models.Mistral do
   end
 
   defp parse_sse_event(_), do: nil
-
-  defp parse_stream_chunk(chunk) when is_map(chunk) do
-    choices = Map.get(chunk, "choices", [])
-    choice = List.first(choices)
-
-    if choice do
-      delta = Map.get(choice, "delta", %{})
-      finish_reason = Map.get(choice, "finish_reason")
-
-      cond do
-        Map.has_key?(delta, "content") and Map.get(delta, "content") ->
-          {:text_delta, Map.get(delta, "content")}
-
-        Map.has_key?(delta, "tool_calls") ->
-          {:tool_call_delta, Map.get(delta, "tool_calls")}
-
-        finish_reason ->
-          {:finish, finish_reason}
-
-        true ->
-          {:unknown, chunk}
-      end
-    else
-      {:unknown, chunk}
-    end
-  end
-
-  defp parse_stream_chunk(other) do
-    {:unknown, other}
-  end
 
   defp estimate_message_tokens(message) do
     # Rough estimation: ~4 characters per token
