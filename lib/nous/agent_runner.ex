@@ -161,7 +161,7 @@ defmodule Nous.AgentRunner do
       end
 
     # Request stream from model
-    case ModelDispatcher.request_stream(agent.model, messages, model_settings) do
+    case get_dispatcher().request_stream(agent.model, messages, model_settings) do
       {:ok, stream} -> {:ok, stream}
       error -> error
     end
@@ -222,7 +222,7 @@ defmodule Nous.AgentRunner do
       # Make model request
       Logger.debug("Agent iteration #{state.iteration + 1}/#{state.max_iterations}: requesting model response")
 
-      case ModelDispatcher.request(state.agent.model, messages, model_settings) do
+      case get_dispatcher().request(state.agent.model, messages, model_settings) do
         {:ok, response} ->
           # Update usage
           new_usage = Usage.add(state.usage, response.usage)
@@ -538,7 +538,8 @@ defmodule Nous.AgentRunner do
         #{if tool_error.original_error, do: "Original cause: #{inspect(tool_error.original_error)}", else: ""}
 
         Please try a different approach or tool if available.
-        """.strip()
+        """
+        |> String.trim()
 
         %{summary: summary, response: response}
 
@@ -558,4 +559,9 @@ defmodule Nous.AgentRunner do
   defp priority_icon("medium"), do: "🟡"
   defp priority_icon("low"), do: "🟢"
   defp priority_icon(_), do: "•"
+
+  # Get the model dispatcher, allowing dependency injection for testing
+  defp get_dispatcher do
+    Application.get_env(:nous, :model_dispatcher, ModelDispatcher)
+  end
 end
