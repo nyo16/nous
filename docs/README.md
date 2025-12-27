@@ -12,6 +12,7 @@ Complete documentation for the Nous AI framework.
 - **[API Documentation](../doc/)** - Generated API docs
 
 ## 📖 Guides
+- **[LiveView Integration](guides/liveview-integration.md)** - Complete Phoenix LiveView integration guide
 - **[Tool Development](guides/tool-development.md)** - Building custom tools
 - **[Best Practices](guides/best-practices.md)** - Production patterns
 - **[Troubleshooting](guides/troubleshooting.md)** - Common issues and solutions

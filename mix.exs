@@ -97,6 +97,7 @@ defmodule Nous.MixProject do
         {"examples/reference/patterns.md", filename: "patterns_reference", title: "Patterns & Architecture"},
 
         # Production Guides
+        {"docs/guides/liveview-integration.md", filename: "liveview_integration", title: "Phoenix LiveView Integration"},
         {"docs/guides/best_practices.md", filename: "best_practices", title: "Production Best Practices"},
         {"docs/guides/tool_development.md", filename: "tool_development", title: "Tool Development Guide"},
         {"docs/guides/troubleshooting.md", filename: "troubleshooting", title: "Troubleshooting Guide"},
