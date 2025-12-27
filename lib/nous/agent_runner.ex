@@ -335,9 +335,10 @@ defmodule Nous.AgentRunner do
             {clean_result, updates}
 
           {:error, error} ->
-            error_msg = Exception.message(error)
-            Logger.error("Tool '#{cleaned_name}' execution failed: #{error_msg}")
-            {error_msg, %{}}
+            # Preserve structured error information for better debugging and handling
+            error_details = format_tool_error(error, cleaned_name)
+            Logger.error("Tool '#{cleaned_name}' execution failed: #{error_details.summary}")
+            {error_details.response, %{}}
         end
       else
         available_tools = Enum.map_join(tools, ", ", & &1.name)
@@ -518,6 +519,38 @@ defmodule Nous.AgentRunner do
       sections
       |> Enum.reverse()
       |> Enum.join("\n")
+    end
+  end
+
+  # Format tool errors to preserve structured information while providing LLM-friendly response
+  @spec format_tool_error(term(), String.t()) :: %{summary: String.t(), response: String.t()}
+  defp format_tool_error(error, tool_name) do
+    case error do
+      %Nous.Errors.ToolError{} = tool_error ->
+        # Extract structured information from ToolError
+        summary = Exception.message(tool_error)
+
+        # Create detailed response for LLM that includes context
+        response = """
+        Tool execution failed: #{tool_name}
+        Error: #{tool_error.message}
+        Attempts: #{tool_error.attempt || 1}
+        #{if tool_error.original_error, do: "Original cause: #{inspect(tool_error.original_error)}", else: ""}
+
+        Please try a different approach or tool if available.
+        """.strip()
+
+        %{summary: summary, response: response}
+
+      error when is_exception(error) ->
+        summary = Exception.message(error)
+        response = "Tool execution failed: #{tool_name} - #{summary}"
+        %{summary: summary, response: response}
+
+      error ->
+        summary = "Tool execution failed with: #{inspect(error)}"
+        response = "Tool execution failed: #{tool_name} - #{summary}"
+        %{summary: summary, response: response}
     end
   end
 

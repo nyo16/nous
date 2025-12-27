@@ -77,8 +77,16 @@ defmodule Nous.StreamNormalizer do
   Applies normalization and filters out `{:unknown, _}` events.
   """
   def normalize(stream, normalizer_mod \\ __MODULE__.OpenAI) do
+    require Logger
+
     stream
     |> Stream.flat_map(&normalizer_mod.normalize_chunk/1)
-    |> Stream.reject(&match?({:unknown, _}, &1))
+    |> Stream.reject(fn
+      {:unknown, chunk} ->
+        Logger.debug("Stream normalizer filtered unknown chunk: #{inspect(chunk, limit: :infinity)}")
+        true
+      _ ->
+        false
+    end)
   end
 end

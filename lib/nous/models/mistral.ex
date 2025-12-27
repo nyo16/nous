@@ -315,10 +315,12 @@ defmodule Nous.Models.Mistral do
                 {:req_done} ->
                   {:halt, :done}
                 {:req_error, error} ->
-                  raise error
+                  Logger.error("Mistral stream error: #{inspect(error)}")
+                  {:halt, :error}
               after
                 30_000 -> # 30 second timeout per chunk
-                  raise "Stream timeout"
+                  Logger.error("Mistral stream timeout after 30 seconds")
+                  {:halt, :timeout}
               end
             :done ->
               {:halt, :done}
