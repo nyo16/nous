@@ -146,12 +146,12 @@ defmodule Nous.Messages do
       iex> conversation = [Message.system("Be helpful"), Message.user("Hello")]
       iex> Messages.to_openai_format(conversation)
       [
-        %OpenaiEx.ChatMessage{role: "system", content: "Be helpful"},
-        %OpenaiEx.ChatMessage{role: "user", content: "Hello"}
+        %{role: "system", content: "Be helpful"},
+        %{role: "user", content: "Hello"}
       ]
 
   """
-  @spec to_openai_format([Message.t()]) :: [OpenaiEx.ChatMessage.t()]
+  @spec to_openai_format([Message.t()]) :: [map()]
   def to_openai_format(messages) when is_list(messages) do
     Enum.map(messages, &message_to_openai/1)
   end

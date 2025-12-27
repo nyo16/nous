@@ -42,7 +42,7 @@ New to tools? Follow this progression:
 
 ### Custom Tool Development
 - **[custom_tools_guide.exs](../custom_tools_guide.exs)** - Building your own tools
-- **Tool Development Guide**: [../docs/guides/tool-development.md](../docs/guides/tool-development.md)
+- **Tool Development Guide**: [Tool Development](../../docs/guides/tool_development.md)
 
 ### Provider-Specific Tool Examples
 - **[anthropic_with_tools.exs](../anthropic_with_tools.exs)** - Claude tool calling
@@ -103,5 +103,5 @@ IO.inspect(result.usage, label: "Usage")  # Shows tool_calls count
 
 **Next Steps:**
 - Start with [03-tool-calling.exs](../tutorials/01-basics/03-tool-calling.exs)
-- Read the [Tool Development Guide](../docs/guides/tool-development.md)
+- Read the [Tool Development Guide](../../docs/guides/tool_development.md)
 - Try building your own custom tools
