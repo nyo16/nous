@@ -3,21 +3,21 @@
 Working examples demonstrating all features, from simple Q&A to production-ready multi-agent systems.
 
 ## 🚀 5-Minute Start
-→ **[quickstart/](quickstart/)** - Get running immediately
+→ **[quickstart](quickstart/README.md)** - Get running immediately
 
 Perfect if you're new to Nous or want to test your setup quickly.
 
 ## 📚 Learn Nous AI
-→ **[tutorials/](tutorials/)** - Structured learning path
+→ **[tutorials](tutorials/README.md)** - Structured learning path
 
 Follow the complete progression from beginner to expert:
-- **[01-basics/](tutorials/01-basics/)** (15 min) - Hello world, tools, providers
-- **[02-patterns/](tutorials/02-patterns/)** (1 hour) - Streaming, conversation, ReAct
-- **[03-production/](tutorials/03-production/)** (advanced) - GenServer, LiveView, distributed
-- **[04-projects/](tutorials/04-projects/)** (complete apps) - Council, Trading Desk, Code Editor
+- **[01-basics](tutorials/01-basics/README.md)** (15 min) - Hello world, tools, providers
+- **[02-patterns](tutorials/02-patterns/README.md)** (1 hour) - Streaming, conversation, ReAct
+- **[03-production](tutorials/03-production/README.md)** (advanced) - GenServer, LiveView, distributed
+- **[04-projects](tutorials/04-projects/README.md)** (complete apps) - Council, Trading Desk, Code Editor
 
 ## 🔍 Find Examples
-→ **[reference/](reference/)** - Browse by feature/topic
+→ **[reference](reference/README.md)** - Browse by feature/topic
 
 Need something specific? Find examples by capability:
 - **[Tools](reference/tools.md)** - Function calling and custom tools
@@ -26,7 +26,7 @@ Need something specific? Find examples by capability:
 - **[Patterns](reference/patterns.md)** - ReAct, GenServer, distributed systems
 
 ## 📋 Templates
-→ **[templates/](templates/)** - Copy-paste starters
+→ **[templates](templates/README.md)** - Copy-paste starters
 
 Ready-to-use templates for common patterns.
 
@@ -54,16 +54,16 @@ mix run tutorials/01-basics/05-calculator.exs
 ## Navigation Guide
 
 **New to AI agents?**
-→ Start with [quickstart/](quickstart/) then follow [tutorials/01-basics/](tutorials/01-basics/)
+→ Start with [quickstart](quickstart/README.md) then follow [tutorials/01-basics](tutorials/01-basics/README.md)
 
 **Looking for specific features?**
-→ Browse [reference/](reference/) by capability
+→ Browse [reference](reference/README.md) by capability
 
 **Want to build something?**
-→ Use [templates/](templates/) as starting points
+→ Use [templates](templates/README.md) as starting points
 
 **Need production patterns?**
-→ Study [tutorials/04-projects/](tutorials/04-projects/) for complete applications
+→ Study [tutorials/04-projects](tutorials/04-projects/README.md) for complete applications
 
 ---
 
@@ -105,8 +105,8 @@ Every example in this directory is:
 
 ---
 
-**Get started now:** [quickstart/](quickstart/)
-**Learn systematically:** [tutorials/](tutorials/)
-**Find specific features:** [reference/](reference/)
+**Get started now:** [quickstart](quickstart/README.md)
+**Learn systematically:** [tutorials](tutorials/README.md)
+**Find specific features:** [reference](reference/README.md)
 
-Need help? Check the [troubleshooting guide](../docs/guides/troubleshooting.md) or [main documentation](../docs/).
+Need help? Check the [troubleshooting guide](../docs/guides/troubleshooting.md) or [main documentation](../docs/README.md).

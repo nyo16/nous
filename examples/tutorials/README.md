@@ -4,7 +4,7 @@ Learn Nous AI systematically with hands-on tutorials progressing from beginner t
 
 ## Learning Path Overview
 
-### [01-basics/](01-basics/) (15 minutes total)
+### [01-basics](01-basics/README.md) (15 minutes total)
 **Perfect for**: First-time users, getting started
 
 **What you'll learn**:
@@ -17,7 +17,7 @@ Learn Nous AI systematically with hands-on tutorials progressing from beginner t
 
 ---
 
-### [02-patterns/](02-patterns/) (1 hour total)
+### [02-patterns](02-patterns/README.md) (1 hour total)
 **Perfect for**: Users comfortable with basics
 
 **What you'll learn**:
@@ -30,7 +30,7 @@ Learn Nous AI systematically with hands-on tutorials progressing from beginner t
 
 ---
 
-### [03-production/](03-production/) (Advanced level)
+### [03-production](03-production/README.md) (Advanced level)
 **Perfect for**: Building production systems
 
 **What you'll learn**:
@@ -43,7 +43,7 @@ Learn Nous AI systematically with hands-on tutorials progressing from beginner t
 
 ---
 
-### [04-projects/](04-projects/) (Complete applications)
+### [04-projects](04-projects/README.md) (Complete applications)
 **Perfect for**: Understanding real-world architectures
 
 **What you'll explore**:
@@ -61,13 +61,13 @@ Learn Nous AI systematically with hands-on tutorials progressing from beginner t
 → Begin with [01-basics/01-hello-world.exs](01-basics/01-hello-world.exs)
 
 **Want specific capabilities?**
-→ Browse [../reference/](../reference/) by feature
+→ Browse [reference](../reference/README.md) by feature
 
 **Need templates?**
-→ Check [../templates/](../templates/) for starter code
+→ Check [templates](../templates/README.md) for starter code
 
 **Production deployment?**
-→ See [../docs/guides/best-practices.md](../docs/guides/best-practices.md)
+→ See [Best Practices Guide](../../docs/guides/best_practices.md)
 
 ---
 

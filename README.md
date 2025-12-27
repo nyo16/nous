@@ -251,7 +251,7 @@ spawn_link(fn ->
 end)
 ```
 
-See [liveview_streaming_example.ex](examples/liveview_streaming_example.ex) for real-time streaming or [LIVEVIEW_INTEGRATION.md](examples/LIVEVIEW_INTEGRATION.md) for patterns
+See [liveview_streaming_example.ex](examples/liveview_streaming_example.ex) for real-time streaming or [LiveView Integration Guide](docs/guides/liveview-integration.md) for patterns
 
 ## Logging & Telemetry
 
@@ -269,7 +269,7 @@ Events: `[:nous, :agent, :run, :*]`, `[:nous, :model, :request, :*]`, `[:nous, :
 
 ## Examples
 
-**🚀 [Get Started in 5 Minutes](examples/GETTING_STARTED.md)** - Quick setup guide with local or cloud options.
+**🚀 [Get Started in 5 Minutes](docs/getting-started.md)** - Quick setup guide with local or cloud options.
 
 **📚 [Full Examples Collection](examples/README.md)** - Comprehensive learning path from beginner to production.
 

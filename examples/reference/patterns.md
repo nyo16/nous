@@ -6,7 +6,7 @@ Advanced reasoning patterns and production architecture examples.
 New to advanced patterns? Follow this progression:
 1. **[ReAct Agent](../tutorials/02-patterns/04-react-agent.exs)** - Reasoning and acting
 2. **[GenServer Integration](../tutorials/03-production/01-genserver.ex)** - Elixir processes
-3. **[Complete Projects](../tutorials/04-projects/)** - Production systems
+3. **[Complete Projects](../tutorials/04-projects/README.md)** - Production systems
 
 ## Reasoning Patterns
 
@@ -110,17 +110,17 @@ end
 ## Multi-Agent Systems
 
 ### Agent Council
-- **[council/](../tutorials/04-projects/council/)** - Multi-LLM deliberation
+- **[Council](../tutorials/04-projects/council/README.md)** - Multi-LLM deliberation
 - Multiple AI models vote on best responses
 - 3-stage voting system for consensus
 
 ### Trading Desk
-- **[trading_desk/](../tutorials/04-projects/trading_desk/)** - Enterprise coordination
+- **[Trading Desk](../tutorials/04-projects/trading_desk/README.md)** - Enterprise coordination
 - 4 specialized agents: Market, Risk, Trading, Research
 - Supervisor coordination with 18 tools
 
 ### AI Code Editor
-- **[coderex/](../tutorials/04-projects/coderex/)** - Code generation system
+- **[Coderex](../tutorials/04-projects/coderex/README.md)** - Code generation system
 - Complete code editing agent
 - SEARCH/REPLACE format with file operations
 
@@ -304,4 +304,4 @@ end
 **Next Steps:**
 - Start with [04-react-agent.exs](../tutorials/02-patterns/04-react-agent.exs)
 - Try [GenServer integration](../tutorials/03-production/01-genserver.ex) for stateful agents
-- Explore complete [project examples](../tutorials/04-projects/) for production patterns
+- Explore complete [project examples](../tutorials/04-projects/README.md) for production patterns

@@ -24,8 +24,8 @@ Advanced reasoning patterns and architectural examples.
 | Get real-time responses | [streaming.md](streaming.md) |
 | Use specific AI provider | [providers.md](providers.md) |
 | Build production systems | [patterns.md](patterns.md) |
-| Learn step by step | [../tutorials/](../tutorials/) |
-| Get started quickly | [../quickstart/](../quickstart/) |
+| Learn step by step | [tutorials](../tutorials/README.md) |
+| Get started quickly | [quickstart](../quickstart/README.md) |
 
 ---
 
@@ -57,4 +57,4 @@ Advanced reasoning patterns and architectural examples.
 
 ---
 
-*Looking for a guided learning experience? Check out [tutorials/](../tutorials/) for structured progression from beginner to advanced.*
+*Looking for a guided learning experience? Check out [tutorials](../tutorials/README.md) for structured progression from beginner to advanced.*

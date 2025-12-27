@@ -107,19 +107,19 @@ end)
 ## Next Steps
 
 ### Immediate Next Steps (15 minutes)
-1. **Try examples** → [quickstart examples](../examples/quickstart/)
-2. **Follow tutorials** → [structured learning](../examples/tutorials/)
-3. **Browse by feature** → [reference guides](../examples/reference/)
+1. **Try examples** → [quickstart examples](../examples/quickstart/README.md)
+2. **Follow tutorials** → [structured learning](../examples/tutorials/README.md)
+3. **Browse by feature** → [reference guides](../examples/reference/README.md)
 
 ### Learning Path
-- **Beginner** (15 min) → [01-basics](../examples/tutorials/01-basics/)
-- **Intermediate** (1 hour) → [02-patterns](../examples/tutorials/02-patterns/)
-- **Advanced** (deep dive) → [03-production](../examples/tutorials/03-production/)
-- **Complete projects** → [04-projects](../examples/tutorials/04-projects/)
+- **Beginner** (15 min) → [01-basics](../examples/tutorials/01-basics/README.md)
+- **Intermediate** (1 hour) → [02-patterns](../examples/tutorials/02-patterns/README.md)
+- **Advanced** (deep dive) → [03-production](../examples/tutorials/03-production/README.md)
+- **Complete projects** → [04-projects](../examples/tutorials/04-projects/README.md)
 
 ### Production Setup
-- **[Best Practices Guide](guides/best-practices.md)** - Production deployment
-- **[Tool Development Guide](guides/tool-development.md)** - Custom tools
+- **[Best Practices Guide](guides/best_practices.md)** - Production deployment
+- **[Tool Development Guide](guides/tool_development.md)** - Custom tools
 - **[Troubleshooting Guide](guides/troubleshooting.md)** - Common issues
 
 ## Provider Configuration
@@ -237,7 +237,7 @@ For more help, see the **[Troubleshooting Guide](guides/troubleshooting.md)**.
 
 ## What's Next?
 
-- **Hands-on learning** → [Examples](../examples/)
-- **Specific features** → [Reference guides](../examples/reference/)
-- **Production deployment** → [Best practices](guides/best-practices.md)
-- **Custom tools** → [Tool development](guides/tool-development.md)
+- **Hands-on learning** → [Examples](../examples/README.md)
+- **Specific features** → [Reference guides](../examples/reference/README.md)
+- **Production deployment** → [Best practices](guides/best_practices.md)
+- **Custom tools** → [Tool development](guides/tool_development.md)

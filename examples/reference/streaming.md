@@ -39,8 +39,8 @@ end)
 - **[liveview_chat_example.ex](../liveview_chat_example.ex)** - Complete chat interface
 
 ### LiveView Chat Patterns
-- **[LiveView Chat Guide](../LIVEVIEW_CHAT_GUIDE.md)** - Complete chat implementation
-- **[LiveView Integration Guide](../LIVEVIEW_INTEGRATION.md)** - General integration patterns
+- **[LiveView Chat Example](../liveview_chat_example.ex)** - Complete chat implementation
+- **[LiveView Integration Guide](../../docs/guides/liveview-integration.md)** - General integration patterns
 
 ## Advanced Streaming
 
@@ -173,4 +173,4 @@ end)
 **Next Steps:**
 - Start with [01-streaming.exs](../tutorials/02-patterns/01-streaming.exs)
 - Try [LiveView streaming](../tutorials/03-production/02-liveview-streaming.ex) for web apps
-- Read the [LiveView Integration Guide](../LIVEVIEW_INTEGRATION.md)
+- Read the [LiveView Integration Guide](../../docs/guides/liveview-integration.md)
