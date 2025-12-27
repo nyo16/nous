@@ -78,22 +78,32 @@ defmodule Nous.MixProject do
       main: "readme",
       extras: [
         "README.md",
-        "docs/llm_council_design.md",
+
+        # Getting Started
+        {"docs/getting-started.md", filename: "getting_started", title: "Getting Started Guide"},
 
         # Examples and Tutorials
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
-        {"examples/GETTING_STARTED.md", filename: "getting_started", title: "Getting Started (5 min)"},
+        {"examples/quickstart/README.md", filename: "quickstart", title: "5-Minute Quickstart"},
 
-        # Learning Guides
-        {"examples/DISTRIBUTED_AGENTS.md", filename: "distributed_agents", title: "Distributed Agents"},
-        {"examples/LIVEVIEW_INTEGRATION.md", filename: "liveview_integration", title: "LiveView Integration"},
-        {"examples/LIVEVIEW_CHAT_GUIDE.md", filename: "liveview_chat", title: "LiveView Chat Guide"},
+        # Learning Paths
+        {"examples/tutorials/README.md", filename: "tutorials_overview", title: "Tutorial Overview"},
+        {"examples/reference/README.md", filename: "reference_overview", title: "Reference Guide"},
+
+        # Feature Guides
+        {"examples/reference/tools.md", filename: "tools_reference", title: "Tools & Function Calling"},
+        {"examples/reference/streaming.md", filename: "streaming_reference", title: "Streaming & Real-time"},
+        {"examples/reference/providers.md", filename: "providers_reference", title: "Providers & Models"},
+        {"examples/reference/patterns.md", filename: "patterns_reference", title: "Patterns & Architecture"},
 
         # Production Guides
-        {"examples/guides/best_practices.md", filename: "best_practices", title: "Production Best Practices"},
-        {"examples/guides/tool_development.md", filename: "tool_development", title: "Tool Development Guide"},
-        {"examples/guides/troubleshooting.md", filename: "troubleshooting", title: "Troubleshooting Guide"},
-        {"examples/guides/migration_guide.md", filename: "migration_guide", title: "Migration Guide"}
+        {"docs/guides/best_practices.md", filename: "best_practices", title: "Production Best Practices"},
+        {"docs/guides/tool_development.md", filename: "tool_development", title: "Tool Development Guide"},
+        {"docs/guides/troubleshooting.md", filename: "troubleshooting", title: "Troubleshooting Guide"},
+        {"docs/guides/migration_guide.md", filename: "migration_guide", title: "Migration Guide"},
+
+        # Design Documents
+        {"docs/design/llm_council_design.md", filename: "council_design", title: "LLM Council Design"}
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,

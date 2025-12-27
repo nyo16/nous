@@ -1,1 +1,0 @@
-../test_lm_studio.exs
