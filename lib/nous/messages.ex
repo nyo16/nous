@@ -1,4 +1,6 @@
 defmodule Nous.Messages do
+  require Logger
+
   @moduledoc """
   Message construction and conversion for OpenAI.Ex.
 
@@ -163,6 +165,10 @@ defmodule Nous.Messages do
     OpenaiEx.ChatMessage.user(text)
   end
 
+  defp to_openai_message({:user_prompt, nil}) do
+    OpenaiEx.ChatMessage.user("")
+  end
+
   defp to_openai_message({:user_prompt, content}) when is_list(content) do
     converted_content = convert_content_list(content)
     OpenaiEx.ChatMessage.user(converted_content)
@@ -286,13 +292,17 @@ defmodule Nous.Messages do
         parts
       end
 
-    # Convert usage - handle both atom and string keys
-    usage = %Nous.Usage{
-      requests: 1,
-      input_tokens: Map.get(usage_data, :prompt_tokens) || Map.get(usage_data, "prompt_tokens") || 0,
-      output_tokens: Map.get(usage_data, :completion_tokens) || Map.get(usage_data, "completion_tokens") || 0,
-      total_tokens: Map.get(usage_data, :total_tokens) || Map.get(usage_data, "total_tokens") || 0
-    }
+    # Convert usage - handle both atom and string keys, and nil usage_data
+    usage = if usage_data do
+      %Nous.Usage{
+        requests: 1,
+        input_tokens: Map.get(usage_data, :prompt_tokens) || Map.get(usage_data, "prompt_tokens") || 0,
+        output_tokens: Map.get(usage_data, :completion_tokens) || Map.get(usage_data, "completion_tokens") || 0,
+        total_tokens: Map.get(usage_data, :total_tokens) || Map.get(usage_data, "total_tokens") || 0
+      }
+    else
+      %Nous.Usage{requests: 1, input_tokens: 0, output_tokens: 0, total_tokens: 0}
+    end
 
     %{
       parts: Enum.reverse(parts),
@@ -327,5 +337,516 @@ defmodule Nous.Messages do
            arguments: %{"error" => "Invalid JSON arguments", "raw" => arguments}
          }}
     end
+  end
+
+  # Generic provider-agnostic helper functions
+
+  @doc """
+  Convert messages to provider-specific format.
+
+  Dispatches to the appropriate provider-specific conversion function
+  based on the provider atom.
+
+  ## Examples
+
+      messages = [
+        {:system_prompt, "You are helpful"},
+        {:user_prompt, "Hello!"}
+      ]
+
+      # Convert to OpenAI format
+      openai_msgs = Messages.to_provider_format(messages, :openai)
+
+      # Convert to Anthropic format
+      {system, anthropic_msgs} = Messages.to_provider_format(messages, :anthropic)
+
+      # Convert to Gemini format
+      {system, gemini_msgs} = Messages.to_provider_format(messages, :gemini)
+
+  """
+  @spec to_provider_format([Types.request_part() | Types.model_response()], atom()) :: any()
+  def to_provider_format(messages, provider) when is_list(messages) do
+    case provider do
+      :openai ->
+        to_openai_messages(messages)
+
+      :groq ->
+        # Groq uses OpenAI-compatible format
+        to_openai_messages(messages)
+
+      :lmstudio ->
+        # LMStudio uses OpenAI-compatible format
+        to_openai_messages(messages)
+
+      :anthropic ->
+        to_anthropic_format(messages)
+
+      :gemini ->
+        to_gemini_format(messages)
+
+      :mistral ->
+        # Mistral uses OpenAI-compatible format
+        to_openai_messages(messages)
+
+      _ ->
+        raise ArgumentError, """
+        Unsupported provider: #{inspect(provider)}
+
+        Supported providers: :openai, :groq, :lmstudio, :anthropic, :gemini, :mistral
+        """
+    end
+  end
+
+  @doc """
+  Parse provider-specific response into internal format.
+
+  Dispatches to the appropriate provider-specific response parser
+  based on the provider atom.
+
+  ## Examples
+
+      # Parse OpenAI response
+      openai_response = %{"choices" => [...], "usage" => {...}}
+      internal = Messages.from_provider_response(openai_response, :openai)
+
+      # Parse Anthropic response
+      anthropic_response = %{"content" => [...], "usage" => {...}}
+      internal = Messages.from_provider_response(anthropic_response, :anthropic)
+
+  """
+  @spec from_provider_response(map(), atom()) :: Types.model_response()
+  def from_provider_response(response, provider) when is_map(response) do
+    case provider do
+      :openai ->
+        from_openai_response(response)
+
+      :groq ->
+        # Groq uses OpenAI-compatible format
+        from_openai_response(response)
+
+      :lmstudio ->
+        # LMStudio uses OpenAI-compatible format
+        from_openai_response(response)
+
+      :anthropic ->
+        from_anthropic_response(response)
+
+      :gemini ->
+        from_gemini_response(response)
+
+      :mistral ->
+        # Mistral uses OpenAI-compatible format
+        from_openai_response(response)
+
+      _ ->
+        raise ArgumentError, """
+        Unsupported provider: #{inspect(provider)}
+
+        Supported providers: :openai, :groq, :lmstudio, :anthropic, :gemini, :mistral
+        """
+    end
+  end
+
+  @doc """
+  Normalize any message format to internal representation.
+
+  Attempts to detect the format and convert it to our internal
+  message representation. Useful when working with mixed formats
+  or when the source format is unknown.
+
+  ## Examples
+
+      # Normalize OpenAI message
+      openai_msg = %OpenaiEx.ChatMessage{role: "user", content: "Hello"}
+      normalized = Messages.normalize_format([openai_msg])
+      # => [{:user_prompt, "Hello"}]
+
+      # Already internal format
+      internal_msgs = [{:system_prompt, "You are helpful"}]
+      normalized = Messages.normalize_format(internal_msgs)
+      # => [{:system_prompt, "You are helpful"}]
+
+  """
+  @spec normalize_format(any()) :: [Types.request_part() | Types.model_response()]
+  def normalize_format(messages) when is_list(messages) do
+    case detect_format(messages) do
+      :internal ->
+        messages
+
+      :openai ->
+        from_openai_messages(messages)
+
+      :anthropic ->
+        from_anthropic_messages(messages)
+
+      :gemini ->
+        from_gemini_messages(messages)
+
+      :unknown ->
+        Logger.warning("Unknown message format, attempting generic conversion")
+        attempt_generic_conversion(messages)
+    end
+  end
+
+  def normalize_format(single_message) do
+    normalize_format([single_message])
+  end
+
+  # Provider-specific conversion helpers
+
+  @spec to_anthropic_format([Types.request_part() | Types.model_response()]) :: {String.t() | nil, [map()]}
+  defp to_anthropic_format(messages) do
+    # Extract system prompts and convert the rest
+    {system_prompts, other_messages} =
+      Enum.split_with(messages, &match?({:system_prompt, _}, &1))
+
+    # Combine system prompts
+    system =
+      if not Enum.empty?(system_prompts) do
+        system_prompts
+        |> Enum.map(fn {:system_prompt, text} -> text end)
+        |> Enum.join("\n\n")
+      else
+        nil
+      end
+
+    # Convert other messages
+    anthropic_messages =
+      other_messages
+      |> Enum.map(&to_anthropic_message/1)
+      |> Enum.reject(&is_nil/1)
+
+    {system, anthropic_messages}
+  end
+
+  @spec to_gemini_format([Types.request_part() | Types.model_response()]) :: {String.t() | nil, [map()]}
+  defp to_gemini_format(messages) do
+    {system_prompts, other_messages} =
+      Enum.split_with(messages, &match?({:system_prompt, _}, &1))
+
+    system =
+      if not Enum.empty?(system_prompts) do
+        system_prompts
+        |> Enum.map(fn {:system_prompt, text} -> text end)
+        |> Enum.join("\n\n")
+      else
+        nil
+      end
+
+    gemini_contents = Enum.map(other_messages, &to_gemini_message/1) |> Enum.reject(&is_nil/1)
+
+    {system, gemini_contents}
+  end
+
+  # Anthropic message converters
+  defp to_anthropic_message({:user_prompt, text}) when is_binary(text) do
+    %{role: "user", content: text}
+  end
+
+  defp to_anthropic_message({:user_prompt, content}) when is_list(content) do
+    %{role: "user", content: convert_content_list_anthropic(content)}
+  end
+
+  defp to_anthropic_message({:tool_return, %{call_id: id, result: result}}) do
+    %{
+      role: "user",
+      content: [
+        %{
+          type: "tool_result",
+          tool_use_id: id,
+          content: Jason.encode!(result)
+        }
+      ]
+    }
+  end
+
+  defp to_anthropic_message(%{parts: parts}) do
+    text = extract_text(parts)
+    tool_calls = extract_tool_calls(parts)
+
+    content = []
+
+    content =
+      if text != "", do: [%{type: "text", text: text} | content], else: content
+
+    content =
+      if not Enum.empty?(tool_calls) do
+        Enum.map(tool_calls, fn call ->
+          %{
+            type: "tool_use",
+            id: call.id,
+            name: call.name,
+            input: call.arguments
+          }
+        end) ++ content
+      else
+        content
+      end
+
+    if not Enum.empty?(content) do
+      %{role: "assistant", content: Enum.reverse(content)}
+    else
+      nil
+    end
+  end
+
+  defp to_anthropic_message(_), do: nil
+
+  # Gemini message converters
+  defp to_gemini_message({:user_prompt, text}) when is_binary(text) do
+    %{
+      role: "user",
+      parts: [%{text: text}]
+    }
+  end
+
+  defp to_gemini_message({:user_prompt, content}) when is_list(content) do
+    parts = Enum.map(content, fn
+      {:text, text} -> %{text: text}
+      {:image_url, url} -> %{text: "[Image: #{url}]"}  # Convert image to text placeholder for Gemini
+      text when is_binary(text) -> %{text: text}
+      _ -> nil
+    end) |> Enum.reject(&is_nil/1)
+
+    %{role: "user", parts: parts}
+  end
+
+  defp to_gemini_message(%{parts: parts}) do
+    text = extract_text(parts)
+    tool_calls = extract_tool_calls(parts)
+
+    gemini_parts = []
+
+    gemini_parts = if text != "", do: [%{text: text} | gemini_parts], else: gemini_parts
+
+    gemini_parts =
+      if not Enum.empty?(tool_calls) do
+        Enum.map(tool_calls, fn call ->
+          %{
+            functionCall: %{
+              name: call.name,
+              args: call.arguments
+            }
+          }
+        end) ++ gemini_parts
+      else
+        gemini_parts
+      end
+
+    if not Enum.empty?(gemini_parts) do
+      %{role: "model", parts: Enum.reverse(gemini_parts)}
+    else
+      nil
+    end
+  end
+
+  defp to_gemini_message(_), do: nil
+
+  # Response parsers for other providers
+  defp from_anthropic_response(response) do
+    content = Map.get(response, "content", [])
+    model = Map.get(response, "model", "unknown")
+    usage_data = Map.get(response, "usage", %{})
+
+    parts = parse_anthropic_content(content)
+    usage = parse_anthropic_usage(usage_data)
+
+    %{
+      parts: parts,
+      usage: usage,
+      model_name: model,
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  defp from_gemini_response(response) do
+    candidates = Map.get(response, "candidates", [])
+    usage_data = Map.get(response, "usageMetadata", %{})
+
+    # Get first candidate
+    candidate = List.first(candidates) || %{}
+    content = Map.get(candidate, "content", %{})
+    parts_data = Map.get(content, "parts", [])
+
+    parts = parse_gemini_parts(parts_data)
+    usage = parse_gemini_usage(usage_data)
+
+    %{
+      parts: parts,
+      usage: usage,
+      model_name: "gemini-model",
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  # Format detection helpers
+  defp detect_format([]), do: :internal
+
+  defp detect_format([first | _rest]) do
+    cond do
+      # Internal format
+      match?({:system_prompt, _}, first) or
+      match?({:user_prompt, _}, first) or
+      match?({:tool_return, _}, first) or
+      match?(%{parts: _}, first) ->
+        :internal
+
+      # OpenAI format (struct with role field)
+      is_struct(first) and Map.has_key?(first, :role) ->
+        :openai
+
+      # Anthropic format (maps with role and content)
+      is_map(first) and Map.has_key?(first, "role") and Map.has_key?(first, "content") ->
+        :anthropic
+
+      # Gemini format (maps with role and parts)
+      is_map(first) and Map.has_key?(first, "role") and Map.has_key?(first, "parts") ->
+        :gemini
+
+      # Generic map format
+      is_map(first) and Map.has_key?(first, :role) ->
+        :openai
+
+      true ->
+        :unknown
+    end
+  end
+
+  # Format conversion helpers for normalize_format
+  defp from_openai_messages(openai_messages) do
+    Enum.map(openai_messages, &from_openai_message/1)
+  end
+
+  defp from_openai_message(msg) when is_struct(msg) do
+    case Map.get(msg, :role) do
+      "system" -> {:system_prompt, Map.get(msg, :content)}
+      "user" -> {:user_prompt, Map.get(msg, :content)}
+      "assistant" ->
+        %{
+          parts: [{:text, Map.get(msg, :content) || ""}],
+          usage: %Nous.Usage{},
+          model_name: "unknown",
+          timestamp: DateTime.utc_now()
+        }
+      _ -> {:user_prompt, Map.get(msg, :content) || inspect(msg)}
+    end
+  end
+
+  defp from_openai_message(msg) when is_map(msg) do
+    # Handle generic map format
+    role = Map.get(msg, :role) || Map.get(msg, "role")
+    content = Map.get(msg, :content) || Map.get(msg, "content")
+
+    case role do
+      "system" -> {:system_prompt, content}
+      "user" -> {:user_prompt, content}
+      _ -> {:user_prompt, inspect(msg)}
+    end
+  end
+
+  defp from_anthropic_messages(anthropic_messages) do
+    # Convert Anthropic format to internal
+    Enum.map(anthropic_messages, &from_anthropic_message/1)
+  end
+
+  defp from_anthropic_message(%{"role" => "user", "content" => content}) do
+    {:user_prompt, content}
+  end
+
+  defp from_anthropic_message(%{"role" => "assistant", "content" => content}) when is_list(content) do
+    parts = parse_anthropic_content(content)
+    %{
+      parts: parts,
+      usage: %Nous.Usage{},
+      model_name: "claude",
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  defp from_anthropic_message(msg) do
+    {:user_prompt, inspect(msg)}
+  end
+
+  defp from_gemini_messages(gemini_messages) do
+    # Convert Gemini format to internal
+    Enum.map(gemini_messages, &from_gemini_message/1)
+  end
+
+  defp from_gemini_message(%{"role" => "user", "parts" => parts}) do
+    text = parts
+    |> Enum.map(fn part -> Map.get(part, "text", "") end)
+    |> Enum.join(" ")
+
+    {:user_prompt, text}
+  end
+
+  defp from_gemini_message(%{"role" => "model", "parts" => parts}) do
+    parsed_parts = parse_gemini_parts(parts)
+    %{
+      parts: parsed_parts,
+      usage: %Nous.Usage{},
+      model_name: "gemini",
+      timestamp: DateTime.utc_now()
+    }
+  end
+
+  defp from_gemini_message(msg) do
+    {:user_prompt, inspect(msg)}
+  end
+
+  defp attempt_generic_conversion(messages) do
+    Enum.map(messages, fn
+      msg when is_binary(msg) -> {:user_prompt, msg}
+      msg when is_map(msg) -> {:user_prompt, inspect(msg)}
+      msg -> {:user_prompt, inspect(msg)}
+    end)
+  end
+
+  # Helper parsers
+  defp parse_anthropic_content(content) when is_list(content) do
+    Enum.map(content, fn
+      %{"type" => "text", "text" => text} -> {:text, text}
+      %{"type" => "tool_use", "id" => id, "name" => name, "input" => input} ->
+        {:tool_call, %{id: id, name: name, arguments: input}}
+      _ -> {:text, ""}
+    end)
+  end
+
+  defp parse_anthropic_content(content) when is_binary(content) do
+    [{:text, content}]
+  end
+
+  defp parse_anthropic_usage(usage) do
+    %Nous.Usage{
+      input_tokens: Map.get(usage, "input_tokens", 0),
+      output_tokens: Map.get(usage, "output_tokens", 0),
+      total_tokens: Map.get(usage, "input_tokens", 0) + Map.get(usage, "output_tokens", 0)
+    }
+  end
+
+  defp parse_gemini_parts(parts) when is_list(parts) do
+    Enum.map(parts, fn
+      %{"text" => text} -> {:text, text}
+      %{"functionCall" => %{"name" => name, "args" => args}} ->
+        {:tool_call, %{id: "gemini_#{:rand.uniform(10000)}", name: name, arguments: args}}
+      _ -> {:text, ""}
+    end)
+  end
+
+  defp parse_gemini_usage(usage) do
+    %Nous.Usage{
+      input_tokens: Map.get(usage, "promptTokenCount", 0),
+      output_tokens: Map.get(usage, "candidatesTokenCount", 0),
+      total_tokens: Map.get(usage, "totalTokenCount", 0)
+    }
+  end
+
+  defp convert_content_list_anthropic(content) when is_list(content) do
+    Enum.map(content, fn
+      {:text, text} -> %{type: "text", text: text}
+      {:image_url, url} -> %{type: "image", source: %{type: "base64", media_type: "image/jpeg", data: url}}
+      text when is_binary(text) -> %{type: "text", text: text}
+      _ -> %{type: "text", text: ""}
+    end)
   end
 end

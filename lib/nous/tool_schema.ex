@@ -68,6 +68,12 @@ defmodule Nous.ToolSchema do
     end)
   end
 
+  defp convert_to_atom_keys(list) when is_list(list) do
+    Enum.map(list, &convert_to_atom_keys/1)
+  end
+
+  defp convert_to_atom_keys(value), do: value
+
   # Safely convert string to atom - only converts known schema keys
   defp safe_string_to_atom(string) when is_binary(string) do
     # Whitelist of known JSON schema keys that are safe to convert to atoms
@@ -91,10 +97,4 @@ defmodule Nous.ToolSchema do
   end
 
   defp safe_string_to_atom(other), do: other
-
-  defp convert_to_atom_keys(list) when is_list(list) do
-    Enum.map(list, &convert_to_atom_keys/1)
-  end
-
-  defp convert_to_atom_keys(value), do: value
 end
