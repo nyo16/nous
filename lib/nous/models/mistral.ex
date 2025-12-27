@@ -64,7 +64,7 @@ defmodule Nous.Models.Mistral do
     )
 
     # Convert messages to OpenAI format (Mistral is compatible)
-    openai_messages = Messages.to_openai_messages(messages)
+    openai_messages = Messages.to_openai_format(messages)
 
     # Build request parameters
     params = build_request_params(model, openai_messages, settings)
@@ -161,7 +161,7 @@ defmodule Nous.Models.Mistral do
     )
 
     # Convert messages to OpenAI format
-    openai_messages = Messages.to_openai_messages(messages)
+    openai_messages = Messages.to_openai_format(messages)
 
     # Enable streaming
     settings = Map.put(settings, :stream, true)

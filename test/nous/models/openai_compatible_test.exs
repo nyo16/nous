@@ -1,15 +1,15 @@
 defmodule Nous.Models.OpenAICompatibleTest do
   use ExUnit.Case, async: true
 
-  alias Nous.{Model, Messages, Usage}
+  alias Nous.{Message, Model, Messages, Usage}
   alias Nous.Models.OpenAICompatible
   alias Nous.Errors
 
   setup do
     # Sample messages for testing
     messages = [
-      Messages.system_prompt("You are a helpful assistant."),
-      Messages.user_prompt("What is 2+2?")
+      Message.system("You are a helpful assistant."),
+      Message.user("What is 2+2?")
     ]
 
     # Sample model configurations
@@ -64,7 +64,7 @@ defmodule Nous.Models.OpenAICompatibleTest do
       assert client.base_url == "https://api.openai.com/v1"
 
       # Test message conversion works correctly
-      openai_messages = Messages.to_openai_messages(messages)
+      openai_messages = Messages.to_openai_format(messages)
       assert length(openai_messages) == 2
     end
 
@@ -97,7 +97,7 @@ defmodule Nous.Models.OpenAICompatibleTest do
 
   describe "message conversion" do
     test "converts messages to OpenAI format correctly", %{messages: messages} do
-      openai_messages = Messages.to_openai_messages(messages)
+      openai_messages = Messages.to_openai_format(messages)
 
       assert length(openai_messages) == 2
 
@@ -113,22 +113,24 @@ defmodule Nous.Models.OpenAICompatibleTest do
     end
 
     test "handles complex message types" do
+      legacy_message = %{
+        parts: [
+          {:text, "Based on the tool result"},
+          {:tool_call, %{id: "call_456", name: "calculate", arguments: %{"expr" => "2+2"}}}
+        ],
+        usage: %Usage{total_tokens: 50},
+        model_name: "gpt-4",
+        timestamp: DateTime.utc_now()
+      }
+
       complex_messages = [
-        Messages.system_prompt("You are helpful"),
-        Messages.user_prompt("Hello"),
-        Messages.tool_return("call_123", %{result: "success"}),
-        %{
-          parts: [
-            {:text, "Based on the tool result"},
-            {:tool_call, %{id: "call_456", name: "calculate", arguments: %{"expr" => "2+2"}}}
-          ],
-          usage: %Usage{total_tokens: 50},
-          model_name: "gpt-4",
-          timestamp: DateTime.utc_now()
-        }
+        Message.system("You are helpful"),
+        Message.user("Hello"),
+        Message.tool("call_123", %{result: "success"}),
+        Message.from_legacy(legacy_message)
       ]
 
-      openai_messages = Messages.to_openai_messages(complex_messages)
+      openai_messages = Messages.to_openai_format(complex_messages)
       assert length(openai_messages) == 4
 
       # Verify tool return message
@@ -159,9 +161,9 @@ defmodule Nous.Models.OpenAICompatibleTest do
 
     test "handles complex messages with tool calls" do
       messages = [
-        Messages.system_prompt("You are helpful"),
-        Messages.user_prompt("Search for information about Elixir"),
-        Messages.tool_return("call_123", %{
+        Message.system("You are helpful"),
+        Message.user("Search for information about Elixir"),
+        Message.tool("call_123", %{
           results: ["Elixir is a dynamic language", "Used for concurrency"]
         })
       ]
@@ -172,7 +174,7 @@ defmodule Nous.Models.OpenAICompatibleTest do
 
     test "estimates tool return tokens correctly" do
       messages = [
-        Messages.tool_return("call_123", %{
+        Message.tool("call_123", %{
           result: "This is a longer result that should have more tokens than a simple response"
         })
       ]
@@ -210,12 +212,14 @@ defmodule Nous.Models.OpenAICompatibleTest do
       # Use Messages.from_openai_response to parse
       parsed = Messages.from_openai_response(openai_response)
 
-      assert parsed.parts == [{:text, "The answer is 4."}]
-      assert parsed.usage.input_tokens == 20
-      assert parsed.usage.output_tokens == 6
-      assert parsed.usage.total_tokens == 26
-      assert parsed.model_name == "gpt-4"
-      assert %DateTime{} = parsed.timestamp
+      assert %Message{} = parsed
+      assert parsed.role == :assistant
+      assert parsed.content == "The answer is 4."
+      assert parsed.metadata.usage.input_tokens == 20
+      assert parsed.metadata.usage.output_tokens == 6
+      assert parsed.metadata.usage.total_tokens == 26
+      assert parsed.metadata.model_name == "gpt-4"
+      assert %DateTime{} = parsed.metadata.timestamp
     end
 
     test "parses tool calls in OpenAI response" do
@@ -243,11 +247,13 @@ defmodule Nous.Models.OpenAICompatibleTest do
 
       parsed = Messages.from_openai_response(openai_response)
 
-      assert [tool_call_part] = parsed.parts
-      assert {:tool_call, tool_call} = tool_call_part
-      assert tool_call.id == "call_abc123"
-      assert tool_call.name == "search"
-      assert tool_call.arguments == %{"query" => "Elixir language"}
+      assert %Message{} = parsed
+      assert parsed.role == :assistant
+      assert length(parsed.tool_calls) == 1
+      tool_call = List.first(parsed.tool_calls)
+      assert tool_call["id"] == "call_abc123"
+      assert tool_call["name"] == "search"
+      assert tool_call["arguments"] == %{"query" => "Elixir language"}
     end
   end
 
@@ -280,28 +286,31 @@ defmodule Nous.Models.OpenAICompatibleTest do
     @describetag :integration
     test "can handle realistic message flows", %{openai_model: model} do
       # Test a realistic conversation flow
+      # Legacy response messages
+      assistant_response = %{
+        parts: [{:text, "The derivative of x^2 is 2x. This follows from the power rule."}],
+        usage: %Usage{input_tokens: 15, output_tokens: 18, total_tokens: 33},
+        model_name: "gpt-4",
+        timestamp: DateTime.utc_now()
+      }
+
+      tool_call_response = %{
+        parts: [
+          {:text, "Let me show you step by step."},
+          {:tool_call, %{id: "call_123", name: "show_steps", arguments: %{"problem" => "derivative of x^2"}}}
+        ],
+        usage: %Usage{input_tokens: 40, output_tokens: 25, total_tokens: 65},
+        model_name: "gpt-4",
+        timestamp: DateTime.utc_now()
+      }
+
       conversation = [
-        Messages.system_prompt("You are a helpful math tutor"),
-        Messages.user_prompt("What is the derivative of x^2?"),
-        # Simulate assistant response with explanation
-        %{
-          parts: [{:text, "The derivative of x^2 is 2x. This follows from the power rule."}],
-          usage: %Usage{input_tokens: 15, output_tokens: 18, total_tokens: 33},
-          model_name: "gpt-4",
-          timestamp: DateTime.utc_now()
-        },
-        Messages.user_prompt("Can you show me the steps?"),
-        # Simulate tool call for detailed explanation
-        %{
-          parts: [
-            {:text, "Let me show you step by step."},
-            {:tool_call, %{id: "call_123", name: "show_steps", arguments: %{"problem" => "derivative of x^2"}}}
-          ],
-          usage: %Usage{input_tokens: 40, output_tokens: 25, total_tokens: 65},
-          model_name: "gpt-4",
-          timestamp: DateTime.utc_now()
-        },
-        Messages.tool_return("call_123", %{
+        Message.system("You are a helpful math tutor"),
+        Message.user("What is the derivative of x^2?"),
+        Message.from_legacy(assistant_response),
+        Message.user("Can you show me the steps?"),
+        Message.from_legacy(tool_call_response),
+        Message.tool("call_123", %{
           steps: [
             "Using the power rule: d/dx(x^n) = n*x^(n-1)",
             "For x^2: n = 2",
@@ -311,7 +320,7 @@ defmodule Nous.Models.OpenAICompatibleTest do
       ]
 
       # Test message conversion
-      openai_messages = Messages.to_openai_messages(conversation)
+      openai_messages = Messages.to_openai_format(conversation)
       assert length(openai_messages) == 6
 
       # Test token counting

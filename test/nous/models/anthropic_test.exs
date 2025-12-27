@@ -1,15 +1,15 @@
 defmodule Nous.Models.AnthropicTest do
   use ExUnit.Case, async: true
 
-  alias Nous.{Model, Messages, Usage}
+  alias Nous.{Message, Model, Usage}
   alias Nous.Models.Anthropic
   alias Nous.Errors
 
   setup do
     # Sample messages for testing
     messages = [
-      Messages.system_prompt("You are a helpful assistant."),
-      Messages.user_prompt("What is the capital of France?")
+      Message.system("You are a helpful assistant."),
+      Message.user("What is the capital of France?")
     ]
 
     # Sample model configuration
@@ -80,54 +80,60 @@ defmodule Nous.Models.AnthropicTest do
       # Test the message conversion logic (this tests our internal format)
       # Anthropic expects a different format than OpenAI
 
-      # System prompt should be separated from messages
-      system_message = Enum.find(messages, &match?({:system_prompt, _}, &1))
-      user_messages = Enum.reject(messages, &match?({:system_prompt, _}, &1))
+      # System messages and user messages are now Message structs
+      system_message = Enum.find(messages, &(&1.role == :system))
+      user_messages = Enum.reject(messages, &(&1.role == :system))
 
-      assert {:system_prompt, "You are a helpful assistant."} = system_message
+      assert %Message{role: :system, content: "You are a helpful assistant."} = system_message
       assert length(user_messages) == 1
-      assert {:user_prompt, "What is the capital of France?"} = List.first(user_messages)
+      assert %Message{role: :user, content: "What is the capital of France?"} = List.first(user_messages)
     end
 
     test "handles tool returns properly" do
       # Test tool return message formatting
-      tool_return = Messages.tool_return("toolu_123", %{result: "Paris is the capital of France"})
+      tool_return = Message.tool("toolu_123", %{result: "Paris is the capital of France"})
 
-      assert {:tool_return, %{call_id: "toolu_123", result: %{result: "Paris is the capital of France"}}} = tool_return
+      assert %Message{role: :tool, tool_call_id: "toolu_123"} = tool_return
+      result = Jason.decode!(tool_return.content)
+      assert result["result"] == "Paris is the capital of France"
     end
 
     test "handles complex conversation flow" do
       # Test a full conversation with system, user, assistant, and tool messages
+      # Legacy assistant response with tool call
+      assistant_response = %{
+        parts: [
+          {:text, "I'll search for information about Paris."},
+          {:tool_call, %{id: "toolu_123", name: "search", arguments: %{"query" => "Paris"}}}
+        ],
+        usage: %Usage{total_tokens: 50},
+        model_name: "claude-3-sonnet",
+        timestamp: DateTime.utc_now()
+      }
+
       conversation = [
-        Messages.system_prompt("You are helpful"),
-        Messages.user_prompt("Search for Paris"),
-        %{
-          parts: [
-            {:text, "I'll search for information about Paris."},
-            {:tool_call, %{id: "toolu_123", name: "search", arguments: %{"query" => "Paris"}}}
-          ],
-          usage: %Usage{total_tokens: 50},
-          model_name: "claude-3-sonnet",
-          timestamp: DateTime.utc_now()
-        },
-        Messages.tool_return("toolu_123", %{results: ["Paris is the capital of France"]})
+        Message.system("You are helpful"),
+        Message.user("Search for Paris"),
+        Message.from_legacy(assistant_response),
+        Message.tool("toolu_123", %{results: ["Paris is the capital of France"]})
       ]
 
       # Verify we have all message types
       assert length(conversation) == 4
 
       # Check system message
-      assert match?({:system_prompt, _}, Enum.at(conversation, 0))
+      assert %Message{role: :system} = Enum.at(conversation, 0)
 
       # Check user message
-      assert match?({:user_prompt, _}, Enum.at(conversation, 1))
+      assert %Message{role: :user} = Enum.at(conversation, 1)
 
       # Check assistant response with tool call
       assistant_msg = Enum.at(conversation, 2)
-      assert assistant_msg.parts |> Enum.any?(&match?({:tool_call, _}, &1))
+      assert %Message{role: :assistant} = assistant_msg
+      assert length(assistant_msg.tool_calls) > 0
 
       # Check tool return
-      assert match?({:tool_return, _}, Enum.at(conversation, 3))
+      assert %Message{role: :tool} = Enum.at(conversation, 3)
     end
   end
 
@@ -294,19 +300,21 @@ defmodule Nous.Models.AnthropicTest do
     @describetag :integration
     test "can handle realistic anthropic workflow", %{model: _model} do
       # Test a realistic conversation flow specific to Anthropic/Claude
+      # Legacy response with thinking
+      claude_response = %{
+        parts: [
+          {:thinking, "The user is asking about thinking, which is a feature specific to Claude. I should explain it clearly."},
+          {:text, "I'd be happy to explain thinking! When I use thinking, I can reason through problems step by step before giving my final answer."}
+        ],
+        usage: %Usage{input_tokens: 25, output_tokens: 40, total_tokens: 65},
+        model_name: "claude-3-sonnet-20240229",
+        timestamp: DateTime.utc_now()
+      }
+
       conversation = [
-        Messages.system_prompt("You are Claude, a helpful AI assistant created by Anthropic."),
-        Messages.user_prompt("Can you help me understand how thinking works?"),
-        # Simulate Claude response with thinking
-        %{
-          parts: [
-            {:thinking, "The user is asking about thinking, which is a feature specific to Claude. I should explain it clearly."},
-            {:text, "I'd be happy to explain thinking! When I use thinking, I can reason through problems step by step before giving my final answer."}
-          ],
-          usage: %Usage{input_tokens: 25, output_tokens: 40, total_tokens: 65},
-          model_name: "claude-3-sonnet-20240229",
-          timestamp: DateTime.utc_now()
-        }
+        Message.system("You are Claude, a helpful AI assistant created by Anthropic."),
+        Message.user("Can you help me understand how thinking works?"),
+        Message.from_legacy(claude_response)
       ]
 
       # Test our understanding of the conversation structure
@@ -314,21 +322,18 @@ defmodule Nous.Models.AnthropicTest do
 
       # Verify system message
       system_msg = Enum.at(conversation, 0)
-      assert match?({:system_prompt, _}, system_msg)
+      assert %Message{role: :system} = system_msg
 
       # Verify user message
       user_msg = Enum.at(conversation, 1)
-      assert match?({:user_prompt, _}, user_msg)
+      assert %Message{role: :user} = user_msg
 
-      # Verify assistant response with thinking
+      # Verify assistant response (converted from legacy format)
       assistant_msg = Enum.at(conversation, 2)
-      thinking_part = Enum.find(assistant_msg.parts, &match?({:thinking, _}, &1))
-      text_part = Enum.find(assistant_msg.parts, &match?({:text, _}, &1))
-
-      assert thinking_part != nil
-      assert text_part != nil
-      assert elem(thinking_part, 1) =~ "thinking"
-      assert elem(text_part, 1) =~ "thinking!"
+      assert %Message{role: :assistant} = assistant_msg
+      assert assistant_msg.content =~ "thinking"
+      assert assistant_msg.metadata.model_name == "claude-3-sonnet-20240229"
+      assert assistant_msg.metadata.usage.total_tokens == 65
     end
   end
 end

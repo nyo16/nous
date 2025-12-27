@@ -1,14 +1,14 @@
 defmodule Nous.Models.GeminiTest do
   use ExUnit.Case, async: true
 
-  alias Nous.{Model, Messages, Usage}
+  alias Nous.{Message, Model, Usage}
   alias Nous.Errors
 
   setup do
     # Sample messages for testing
     messages = [
-      Messages.system_prompt("You are a helpful AI assistant."),
-      Messages.user_prompt("What is machine learning?")
+      Message.system("You are a helpful AI assistant."),
+      Message.user("What is machine learning?")
     ]
 
     # Sample model configuration
@@ -51,43 +51,46 @@ defmodule Nous.Models.GeminiTest do
       # Gemini expects a different message structure than OpenAI
       # System messages are handled differently in Gemini
 
-      # System prompt should be separated
-      system_message = Enum.find(messages, &match?({:system_prompt, _}, &1))
-      user_messages = Enum.reject(messages, &match?({:system_prompt, _}, &1))
+      # System messages and user messages are now Message structs
+      system_message = Enum.find(messages, &(&1.role == :system))
+      user_messages = Enum.reject(messages, &(&1.role == :system))
 
-      assert {:system_prompt, "You are a helpful AI assistant."} = system_message
+      assert %Message{role: :system, content: "You are a helpful AI assistant."} = system_message
       assert length(user_messages) == 1
-      assert {:user_prompt, "What is machine learning?"} = List.first(user_messages)
+      assert %Message{role: :user, content: "What is machine learning?"} = List.first(user_messages)
     end
 
     test "handles multi-modal content" do
       # Gemini supports images, video, and audio
-      multimedia_message = Messages.user_prompt([
-        {:text, "What's in this image?"},
-        {:image_url, "data:image/jpeg;base64,/9j/4AAQSkZJRgAB..."}
+      multimedia_message = Message.user([
+        Message.ContentPart.text("What's in this image?"),
+        Message.ContentPart.image_url("data:image/jpeg;base64,/9j/4AAQSkZJRgAB...")
       ])
 
-      assert {:user_prompt, content} = multimedia_message
-      assert is_list(content)
-      assert length(content) == 2
-      assert {:text, "What's in this image?"} = Enum.at(content, 0)
-      assert {:image_url, _image_data} = Enum.at(content, 1)
+      assert %Message{role: :user} = multimedia_message
+      assert multimedia_message.metadata.content_parts
+      assert length(multimedia_message.metadata.content_parts) == 2
+      content_parts = multimedia_message.metadata.content_parts
+      assert %Message.ContentPart{type: :text, content: "What's in this image?"} = Enum.at(content_parts, 0)
+      assert %Message.ContentPart{type: :image_url} = Enum.at(content_parts, 1)
     end
 
     test "handles tool returns properly" do
       # Gemini uses different tool call IDs and format
-      tool_return = Messages.tool_return("call_abc123", %{
+      tool_return = Message.tool("call_abc123", %{
         search_results: ["Machine learning is a subset of AI", "It uses algorithms to learn patterns"]
       })
 
-      assert {:tool_return, %{call_id: "call_abc123", result: result}} = tool_return
-      assert result.search_results |> length() == 2
+      assert %Message{role: :tool, tool_call_id: "call_abc123"} = tool_return
+      # The result is JSON encoded in the content field
+      result = Jason.decode!(tool_return.content)
+      assert result["search_results"] |> length() == 2
     end
 
     test "handles assistant responses with function calls" do
       conversation = [
-        Messages.system_prompt("You are helpful"),
-        Messages.user_prompt("Search for AI information"),
+        Message.system("You are helpful"),
+        Message.user("Search for AI information"),
         %{
           parts: [
             {:text, "I'll search for AI information for you."},
@@ -330,13 +333,13 @@ defmodule Nous.Models.GeminiTest do
     test "can handle realistic Gemini workflow", %{model: _model} do
       # Test a realistic conversation flow specific to Gemini
       conversation = [
-        Messages.system_prompt("You are a helpful AI assistant powered by Google's Gemini."),
-        Messages.user_prompt([
-          {:text, "Analyze this data and tell me what you see"},
-          {:image_url, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}
+        Message.system("You are a helpful AI assistant powered by Google's Gemini."),
+        Message.user([
+          Message.ContentPart.text("Analyze this data and tell me what you see"),
+          Message.ContentPart.image_url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
         ]),
-        # Simulate Gemini response with multi-modal understanding
-        %{
+        # Simulate Gemini response with multi-modal understanding (converted from legacy)
+        Message.from_legacy(%{
           parts: [
             {:text, "I can see this is a 1x1 pixel image. Let me search for more detailed analysis tools."},
             {:tool_call, %{id: "call_123", name: "analyze_image", arguments: %{"image_data" => "base64_data", "analysis_type" => "detailed"}}}
@@ -344,8 +347,8 @@ defmodule Nous.Models.GeminiTest do
           usage: %Usage{input_tokens: 30, output_tokens: 25, total_tokens: 55},
           model_name: "gemini-1.5-pro",
           timestamp: DateTime.utc_now()
-        },
-        Messages.tool_return("call_123", %{
+        }),
+        Message.tool("call_123", %{
           analysis: "Simple test image",
           dimensions: %{width: 1, height: 1},
           color_analysis: %{dominant_color: "transparent"}
@@ -357,24 +360,27 @@ defmodule Nous.Models.GeminiTest do
 
       # Verify system message
       system_msg = Enum.at(conversation, 0)
-      assert match?({:system_prompt, _}, system_msg)
+      assert %Message{role: :system} = system_msg
 
       # Verify multi-modal user message
       user_msg = Enum.at(conversation, 1)
-      assert {:user_prompt, content} = user_msg
-      assert is_list(content)
-      assert Enum.any?(content, &match?({:text, _}, &1))
-      assert Enum.any?(content, &match?({:image_url, _}, &1))
+      assert %Message{role: :user} = user_msg
+      assert user_msg.metadata.content_parts
+      content_parts = user_msg.metadata.content_parts
+      assert Enum.any?(content_parts, &(&1.type == :text))
+      assert Enum.any?(content_parts, &(&1.type == :image_url))
 
       # Verify assistant response with tool call
       assistant_msg = Enum.at(conversation, 2)
-      assert assistant_msg.parts |> Enum.any?(&match?({:tool_call, _}, &1))
+      assert %Message{role: :assistant} = assistant_msg
+      assert length(assistant_msg.tool_calls) > 0
 
       # Verify tool return
       tool_return_msg = Enum.at(conversation, 3)
-      assert {:tool_return, %{call_id: "call_123", result: result}} = tool_return_msg
-      assert result.analysis == "Simple test image"
-      assert result.dimensions.width == 1
+      assert %Message{role: :tool, tool_call_id: "call_123"} = tool_return_msg
+      result = Jason.decode!(tool_return_msg.content)
+      assert result["analysis"] == "Simple test image"
+      assert result["dimensions"]["width"] == 1
     end
   end
 end

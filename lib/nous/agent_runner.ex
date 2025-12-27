@@ -12,6 +12,7 @@ defmodule Nous.AgentRunner do
 
   alias Nous.{
     Agent,
+    Message,
     Messages,
     ModelDispatcher,
     RunContext,
@@ -225,13 +226,13 @@ defmodule Nous.AgentRunner do
       case get_dispatcher().request(state.agent.model, messages, model_settings) do
         {:ok, response} ->
           # Update usage
-          new_usage = Usage.add(state.usage, response.usage)
+          new_usage = Usage.add(state.usage, response.metadata.usage)
           new_state = %{state | usage: new_usage, iteration: state.iteration + 1}
 
-          Logger.debug("Model response received (tokens: +#{response.usage.total_tokens}, total: #{new_usage.total_tokens})")
+          Logger.debug("Model response received (tokens: +#{response.metadata.usage.total_tokens}, total: #{new_usage.total_tokens})")
 
           # Check for tool calls
-          tool_calls = Messages.extract_tool_calls(response.parts)
+          tool_calls = Messages.extract_tool_calls([response])
 
           if Enum.empty?(tool_calls) do
             # No tool calls, extract final output
@@ -351,7 +352,7 @@ defmodule Nous.AgentRunner do
         {error_msg, %{}}
       end
 
-    {Messages.tool_return(call.id, result), context_updates}
+    {Message.tool(call.id, result), context_updates}
   end
 
   # Clean tool names - Claude sometimes uses XML-like syntax
@@ -385,7 +386,7 @@ defmodule Nous.AgentRunner do
           instructions
         end
 
-        [Messages.system_prompt(instructions_with_todos) | messages]
+        [Message.system(instructions_with_todos) | messages]
       else
         messages
       end
@@ -401,7 +402,7 @@ defmodule Nous.AgentRunner do
             state.agent.system_prompt
           end
 
-        [Messages.system_prompt(system_prompt) | messages]
+        [Message.system(system_prompt) | messages]
       else
         messages
       end
@@ -410,20 +411,20 @@ defmodule Nous.AgentRunner do
     messages = messages ++ state.message_history
 
     # Add user prompt
-    messages = messages ++ [Messages.user_prompt(prompt)]
+    messages = messages ++ [Message.user(prompt)]
 
     Enum.reverse(messages)
   end
 
   defp extract_output(response, :string) do
-    Messages.extract_text(response.parts)
+    Messages.extract_text(response)
   end
 
   defp extract_output(response, output_module) when is_atom(output_module) do
     # For structured outputs, look for tool call with schema
     # This is simplified - full implementation would use the output module
     # to validate and structure the data
-    Messages.extract_text(response.parts)
+    Messages.extract_text(response)
   end
 
   # Convert tools to provider-specific format

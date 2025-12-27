@@ -1,7 +1,7 @@
 defmodule Nous.AgentRunnerTest do
   use ExUnit.Case, async: true
 
-  alias Nous.{Agent, AgentRunner, Tool, Usage}
+  alias Nous.{Agent, AgentRunner, Message, Tool, Usage}
   alias Nous.Errors
 
   import ExUnit.CaptureLog
@@ -14,13 +14,13 @@ defmodule Nous.AgentRunnerTest do
       # Find the user prompt content to determine test behavior
       user_content = messages
         |> Enum.find_value(fn
-          {:user_prompt, content} -> content
+          %Message{role: :user, content: content} -> content
           _ -> nil
         end)
 
       # Check if there are tool results in messages (indicates subsequent iteration)
       has_tool_results = Enum.any?(messages, fn
-        {:tool_return, _} -> true
+        %Message{role: :tool} -> true
         _ -> false
       end)
 
@@ -30,7 +30,7 @@ defmodule Nous.AgentRunnerTest do
 
         {"tool_call_test", false} ->
           # First call - return tool call
-          response = %{
+          legacy_response = %{
             parts: [
               {:tool_call, %{
                 id: "call_123",
@@ -48,11 +48,12 @@ defmodule Nous.AgentRunnerTest do
             model_name: "test-model",
             timestamp: DateTime.utc_now()
           }
+          response = Message.from_legacy(legacy_response)
           {:ok, response}
 
         {"tool_call_test", true} ->
           # After tool execution - return final response mentioning tool result
-          response = %{
+          legacy_response = %{
             parts: [{:text, "Tool received: test and processed successfully"}],
             usage: %Usage{
               input_tokens: 10,
@@ -64,10 +65,11 @@ defmodule Nous.AgentRunnerTest do
             model_name: "test-model",
             timestamp: DateTime.utc_now()
           }
+          response = Message.from_legacy(legacy_response)
           {:ok, response}
 
         _ ->
-          response = %{
+          legacy_response = %{
             parts: [{:text, "This is a test response"}],
             usage: %Usage{
               input_tokens: 10,
@@ -79,6 +81,7 @@ defmodule Nous.AgentRunnerTest do
             model_name: "test-model",
             timestamp: DateTime.utc_now()
           }
+          response = Message.from_legacy(legacy_response)
           {:ok, response}
       end
     end
@@ -199,20 +202,20 @@ defmodule Nous.AgentRunnerTest do
       mock_dispatcher = fn
         (_model, messages, _settings) ->
           user_content = Enum.find_value(messages, fn
-            {:user_prompt, content} -> content
+            %Message{role: :user, content: content} -> content
             _ -> nil
           end)
 
           # Check if there are tool results in messages (indicates subsequent iteration after tool failure)
           has_tool_results = Enum.any?(messages, fn
-            {:tool_return, _} -> true
+            %Message{role: :tool} -> true
             _ -> false
           end)
 
           case {user_content, has_tool_results} do
             {"use_failing_tool", false} ->
               # First call - return tool call that will fail
-              response = %{
+              legacy_response = %{
                 parts: [
                   {:tool_call, %{
                     id: "call_fail",
@@ -224,25 +227,28 @@ defmodule Nous.AgentRunnerTest do
                 model_name: "test-model",
                 timestamp: DateTime.utc_now()
               }
+              response = Message.from_legacy(legacy_response)
               {:ok, response}
 
             {"use_failing_tool", true} ->
               # After tool failure - return final response
-              response = %{
+              legacy_response = %{
                 parts: [{:text, "Final response after tool failure"}],
                 usage: %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15, tool_calls: 0, requests: 1},
                 model_name: "test-model",
                 timestamp: DateTime.utc_now()
               }
+              response = Message.from_legacy(legacy_response)
               {:ok, response}
 
             _ ->
-              response = %{
+              legacy_response = %{
                 parts: [{:text, "This is a test response"}],
                 usage: %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15, tool_calls: 0, requests: 1},
                 model_name: "test-model",
                 timestamp: DateTime.utc_now()
               }
+              response = Message.from_legacy(legacy_response)
               {:ok, response}
           end
       end
@@ -268,7 +274,7 @@ defmodule Nous.AgentRunnerTest do
 
       # Mock that always returns tool calls to trigger max iterations
       mock_dispatcher = fn(_model, _messages, _settings) ->
-        response = %{
+        legacy_response = %{
           parts: [
             {:tool_call, %{
               id: "call_#{:rand.uniform(1000)}",
@@ -280,6 +286,7 @@ defmodule Nous.AgentRunnerTest do
           model_name: "test-model",
           timestamp: DateTime.utc_now()
         }
+        response = Message.from_legacy(legacy_response)
         {:ok, response}
       end
 
