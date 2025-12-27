@@ -83,14 +83,14 @@ defmodule Nous.Models.OpenAICompatible do
 
     case result do
       {:ok, parsed_response} ->
-        tool_calls = Messages.extract_tool_calls(parsed_response.parts)
+        tool_calls = Messages.extract_tool_calls([parsed_response])
 
         Logger.info("""
         OpenAI-compatible request completed
           Provider: #{model.provider}
           Model: #{model.model}
           Duration: #{duration_ms}ms
-          Tokens: #{parsed_response.usage.total_tokens} (in: #{parsed_response.usage.input_tokens}, out: #{parsed_response.usage.output_tokens})
+          Tokens: #{parsed_response.metadata.usage.total_tokens} (in: #{parsed_response.metadata.usage.input_tokens}, out: #{parsed_response.metadata.usage.output_tokens})
           Tool calls: #{length(tool_calls)}
         """)
 
@@ -98,9 +98,9 @@ defmodule Nous.Models.OpenAICompatible do
           [:nous, :model, :request, :stop],
           %{
             duration: duration,
-            input_tokens: parsed_response.usage.input_tokens,
-            output_tokens: parsed_response.usage.output_tokens,
-            total_tokens: parsed_response.usage.total_tokens
+            input_tokens: parsed_response.metadata.usage.input_tokens,
+            output_tokens: parsed_response.metadata.usage.output_tokens,
+            total_tokens: parsed_response.metadata.usage.total_tokens
           },
           %{
             provider: model.provider,
