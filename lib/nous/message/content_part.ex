@@ -261,6 +261,153 @@ defmodule Nous.Message.ContentPart do
     {:error, :incompatible_types}
   end
 
+  # Image conversion utilities
+
+  @doc """
+  Create an image content part from a local file path.
+
+  Reads the file, detects the MIME type, and converts to base64 data URL.
+
+  ## Examples
+
+      iex> ContentPart.from_file("/path/to/image.jpg")
+      {:ok, %ContentPart{type: :image_url, content: "data:image/jpeg;base64,..."}}
+
+      iex> ContentPart.from_file("/nonexistent.jpg")
+      {:error, :enoent}
+
+  """
+  @spec from_file(String.t()) :: {:ok, t()} | {:error, atom()}
+  def from_file(file_path) when is_binary(file_path) do
+    case File.read(file_path) do
+      {:ok, binary_data} ->
+        mime_type = detect_mime_type(file_path)
+        data_url = to_data_url(binary_data, mime_type)
+        {:ok, image_url(data_url)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Create an image content part from a local file path, raising on error.
+
+  ## Examples
+
+      iex> ContentPart.from_file!("/path/to/image.jpg")
+      %ContentPart{type: :image_url, content: "data:image/jpeg;base64,..."}
+
+  """
+  @spec from_file!(String.t()) :: t()
+  def from_file!(file_path) when is_binary(file_path) do
+    case from_file(file_path) do
+      {:ok, content_part} -> content_part
+      {:error, reason} -> raise "Failed to read image file #{file_path}: #{reason}"
+    end
+  end
+
+  @doc """
+  Convert binary image data to a data URL.
+
+  ## Examples
+
+      iex> binary_data = <<137, 80, 78, 71, 13, 10, 26, 10>>
+      iex> ContentPart.to_data_url(binary_data, "image/png")
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+
+  """
+  @spec to_data_url(binary(), String.t()) :: String.t()
+  def to_data_url(binary_data, mime_type) when is_binary(binary_data) and is_binary(mime_type) do
+    base64_data = Base.encode64(binary_data)
+    "data:#{mime_type};base64,#{base64_data}"
+  end
+
+  @doc """
+  Convert base64 string to a data URL.
+
+  ## Examples
+
+      iex> base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+      iex> ContentPart.base64_to_data_url(base64, "image/png")
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+
+  """
+  @spec base64_to_data_url(String.t(), String.t()) :: String.t()
+  def base64_to_data_url(base64_string, mime_type) when is_binary(base64_string) and is_binary(mime_type) do
+    "data:#{mime_type};base64,#{base64_string}"
+  end
+
+  @doc """
+  Detect MIME type from file extension.
+
+  ## Examples
+
+      iex> ContentPart.detect_mime_type("/path/to/image.jpg")
+      "image/jpeg"
+
+      iex> ContentPart.detect_mime_type("photo.png")
+      "image/png"
+
+      iex> ContentPart.detect_mime_type("unknown.xyz")
+      "application/octet-stream"
+
+  """
+  @spec detect_mime_type(String.t()) :: String.t()
+  def detect_mime_type(file_path) when is_binary(file_path) do
+    case Path.extname(file_path) |> String.downcase() do
+      ".jpg" -> "image/jpeg"
+      ".jpeg" -> "image/jpeg"
+      ".png" -> "image/png"
+      ".gif" -> "image/gif"
+      ".bmp" -> "image/bmp"
+      ".webp" -> "image/webp"
+      ".svg" -> "image/svg+xml"
+      ".ico" -> "image/x-icon"
+      ".tiff" -> "image/tiff"
+      ".tif" -> "image/tiff"
+      _ -> "application/octet-stream"
+    end
+  end
+
+  @doc """
+  Create a 1x1 pixel test image as base64 data URL.
+
+  Useful for testing multi-modal functionality.
+
+  ## Examples
+
+      iex> test_image = ContentPart.test_image()
+      iex> test_image.type
+      :image_url
+      iex> String.starts_with?(test_image.content, "data:image/png;base64,")
+      true
+
+  """
+  @spec test_image() :: t()
+  def test_image do
+    # 1x1 transparent PNG
+    data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    image_url(data_url)
+  end
+
+  @doc """
+  Create an image content part from binary data with automatic MIME detection.
+
+  ## Examples
+
+      iex> {:ok, image_data} = File.read("photo.jpg")
+      iex> ContentPart.from_binary(image_data, "photo.jpg")
+      %ContentPart{type: :image_url, content: "data:image/jpeg;base64,..."}
+
+  """
+  @spec from_binary(binary(), String.t()) :: t()
+  def from_binary(binary_data, filename_hint \\ "image.png") when is_binary(binary_data) do
+    mime_type = detect_mime_type(filename_hint)
+    data_url = to_data_url(binary_data, mime_type)
+    image_url(data_url)
+  end
+
   # Private functions
 
   defp changeset(content_part, attrs) do
