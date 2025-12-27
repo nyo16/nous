@@ -26,15 +26,26 @@ defmodule MyAppWeb.ChatLive do
   use Phoenix.LiveView
 
   def mount(_params, _session, socket) do
-    socket = assign(socket, :messages, [], :input, "", :streaming, false)
+    # Initialize agent once on mount and keep it in state
+    agent = Nous.new("anthropic:claude-3-5-sonnet",
+      instructions: "You are a helpful assistant."
+    )
+
+    socket = assign(socket,
+      agent: agent,
+      messages: [],
+      input: "",
+      streaming: false
+    )
+
     {:ok, socket}
   end
 
   def handle_event("send_message", %{"message" => message}, socket) do
     if not socket.assigns.streaming do
-      # Spawn streaming in background
+      # Spawn streaming in background, passing the agent from state
       parent = self()
-      spawn_link(fn -> stream_response(parent, message) end)
+      spawn_link(fn -> stream_response(parent, socket.assigns.agent, message) end)
 
       socket = assign(socket, :streaming, true, :input, "")
       {:noreply, socket}
@@ -54,9 +65,8 @@ defmodule MyAppWeb.ChatLive do
     {:noreply, socket}
   end
 
-  defp stream_response(parent, prompt) do
-    agent = Nous.new("anthropic:claude-3-5-sonnet")
-
+  defp stream_response(parent, agent, prompt) do
+    # Use the agent passed as parameter instead of creating a new one
     Nous.run_stream(agent, prompt)
     |> Stream.each(fn
       {:text_delta, text} -> send(parent, {:stream_chunk, text})
