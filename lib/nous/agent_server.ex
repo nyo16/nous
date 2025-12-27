@@ -195,10 +195,27 @@ defmodule Nous.AgentServer do
 
   @impl true
   def handle_cast({:user_message, message}, state) do
-    # Kill any existing task if running
-    if state.current_task do
+    # Gracefully shutdown any existing task if running
+    state = if state.current_task do
       Logger.warning("Cancelling existing task for new message in session: #{state.session_id}")
-      Task.shutdown(state.current_task, :brutal_kill)
+
+      # Set cancelled flag to signal the task to stop
+      state = %{state | cancelled: true}
+
+      # Attempt graceful shutdown first, then force if needed
+      case Task.shutdown(state.current_task, 2_000) do
+        :ok ->
+          Logger.debug("Previous task shutdown gracefully")
+        {:exit, _reason} ->
+          Logger.debug("Previous task exited during shutdown")
+        :timeout ->
+          Logger.warning("Previous task didn't respond to shutdown, force killing")
+          Task.shutdown(state.current_task, :kill)
+      end
+
+      %{state | current_task: nil}
+    else
+      state
     end
 
     # Broadcast that we're processing
@@ -250,12 +267,22 @@ defmodule Nous.AgentServer do
         state = %{state | cancelled: true}
 
         # Shutdown task gracefully with timeout
-        Task.shutdown(task, 5_000)
+        shutdown_result = Task.shutdown(task, 5_000)
+
+        case shutdown_result do
+          :ok ->
+            Logger.debug("Task cancelled gracefully")
+          {:exit, reason} ->
+            Logger.debug("Task exited with reason: #{inspect(reason)}")
+          :timeout ->
+            Logger.warning("Task cancellation timed out, force killing")
+            Task.shutdown(task, :kill)
+        end
 
         # Broadcast cancellation
         broadcast(state, {:agent_cancelled, "Execution cancelled by user"})
 
-        # Clear current task
+        # Clear current task and reset cancelled flag
         state = %{state | current_task: nil, cancelled: false}
 
         {:reply, {:ok, :cancelled}, state}
@@ -390,10 +417,15 @@ defmodule Nous.AgentServer do
   defp extract_message_history(conversation_history) do
     # Convert our history format to agent's message format
     # Skip the last user message as it will be passed as prompt
-    conversation_history
-    |> Enum.slice(0..-2//1)
+    history_to_process = case length(conversation_history) do
+      0 -> []
+      1 -> []
+      length -> Enum.slice(conversation_history, 0..(length - 2))
+    end
+
+    history_to_process
     |> Enum.flat_map(fn msg ->
-      case msg.role do
+      case msg && msg.role do
         :user -> [{:user_prompt, msg.content}]
         :assistant -> [{:text, msg.content}]
         _ -> []

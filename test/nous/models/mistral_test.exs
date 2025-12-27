@@ -1,14 +1,14 @@
 defmodule Nous.Models.MistralTest do
   use ExUnit.Case, async: true
 
-  alias Nous.{Model, Messages}
+  alias Nous.{Message, Model}
   alias Nous.Models.Mistral
 
   describe "count_tokens/1" do
     test "estimates token count for messages" do
       messages = [
-        Messages.system_prompt("You are helpful"),
-        Messages.user_prompt("Hello world!")
+        Message.system("You are helpful"),
+        Message.user("Hello world!")
       ]
 
       token_count = Mistral.count_tokens(messages)
@@ -21,9 +21,12 @@ defmodule Nous.Models.MistralTest do
 
     test "estimates tokens for complex messages" do
       messages = [
-        Messages.system_prompt("You are a helpful AI assistant with expertise in multiple domains."),
-        Messages.user_prompt("Please analyze the following data and provide insights: [lengthy data here]"),
-        Messages.user_prompt(["What do you see in this image?", {:image_url, "https://example.com/image.png"}])
+        Message.system("You are a helpful AI assistant with expertise in multiple domains."),
+        Message.user("Please analyze the following data and provide insights: [lengthy data here]"),
+        Message.user([
+          Message.ContentPart.text("What do you see in this image?"),
+          Message.ContentPart.image_url("https://example.com/image.png")
+        ])
       ]
 
       token_count = Mistral.count_tokens(messages)
@@ -52,7 +55,7 @@ defmodule Nous.Models.MistralTest do
       # Test the private function via the public interface by checking behavior
       # Since we can't directly test private functions, we verify the structure
       # is correct by ensuring the function doesn't crash with various inputs
-      result = Mistral.count_tokens([Messages.user_prompt("test")])
+      result = Mistral.count_tokens([Message.user("test")])
       assert is_integer(result)
     end
 
@@ -82,13 +85,13 @@ defmodule Nous.Models.MistralTest do
   describe "message format handling" do
     test "processes different message types correctly" do
       messages = [
-        Messages.system_prompt("You are helpful"),
-        Messages.user_prompt("Hello"),
-        Messages.user_prompt([
-          {:text, "What's in this image?"},
-          {:image_url, "https://example.com/image.png"}
+        Message.system("You are helpful"),
+        Message.user("Hello"),
+        Message.user([
+          Message.ContentPart.text("What's in this image?"),
+          Message.ContentPart.image_url("https://example.com/image.png")
         ]),
-        Messages.tool_return("call_123", %{result: "success"})
+        Message.tool("call_123", %{result: "success"})
       ]
 
       # Verify token counting works with various message types

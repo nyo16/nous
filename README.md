@@ -47,21 +47,22 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 
 ## Supported Providers
 
-| Provider | Model String | Status |
-|----------|-------------|--------|
-| LM Studio | `lmstudio:qwen/qwen3-30b` | Tested & Working |
-| OpenAI | `openai:gpt-4` | Supported |
-| Anthropic | `anthropic:claude-sonnet-4-5-20250929` | Tested & Working |
-| Google Gemini | `gemini:gemini-2.0-flash-exp` | Native API |
-| Mistral AI | `mistral:ministral-3-14b-instruct-2512` | Native API + Req |
-| Groq | `groq:llama-3.1-70b-versatile` | Supported |
-| Ollama | `ollama:llama2` | Supported |
-| vLLM | `vllm:model` + `:base_url` | Supported |
-| OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | Supported |
-| Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | Supported |
-| Custom | `custom:model` + `:base_url` | Supported |
+| Provider | Model String | HTTP Client | Streaming |
+|----------|-------------|-------------|-----------|
+| LM Studio | `lmstudio:qwen/qwen3-30b` | Custom SSE | Tested |
+| OpenAI | `openai:gpt-4` | OpenaiEx | Tested |
+| Anthropic | `anthropic:claude-sonnet-4-5-20250929` | Native | Tested |
+| Google Gemini | `gemini:gemini-2.0-flash-exp` | Native | Tested |
+| Mistral AI | `mistral:ministral-3-14b-instruct-2512` | Req | Tested |
+| Groq | `groq:llama-3.1-70b-versatile` | OpenaiEx | Supported |
+| Ollama | `ollama:llama2` | Custom SSE | Supported |
+| vLLM | `vllm:model` + `:base_url` | Custom SSE | Tested |
+| SGLang | `sglang:model` + `:base_url` | Custom SSE | Supported |
+| OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | OpenaiEx | Supported |
+| Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | Custom SSE | Supported |
+| Custom | `custom:model` + `:base_url` | Custom SSE | Supported |
 
-**Local (Zero Cost):** LM Studio, Ollama, vLLM
+**Local (Zero Cost):** LM Studio, Ollama, vLLM, SGLang
 **Cloud:** OpenAI, Anthropic, Mistral AI, Groq, OpenRouter, Together AI
 
 ```elixir
@@ -196,6 +197,27 @@ See [examples/tools_with_context.exs](examples/tools_with_context.exs) or [custo
 stream |> Stream.each(fn {:text_delta, t} -> IO.write(t) end) |> Stream.run()
 ```
 
+#### Stream Events
+
+| Event | Description |
+|-------|-------------|
+| `{:text_delta, text}` | Incremental text content |
+| `{:thinking_delta, text}` | Reasoning/thinking content (vLLM, DeepSeek, SGLang) |
+| `{:tool_call_delta, calls}` | Tool call information |
+| `{:finish, reason}` | Stream completion |
+
+#### Thinking/Reasoning Streams
+
+For models with reasoning capabilities (DeepSeek-R1, QwQ, etc.):
+
+```elixir
+stream |> Stream.each(fn
+  {:thinking_delta, t} -> IO.write("[thinking] #{t}")
+  {:text_delta, t} -> IO.write(t)
+  _ -> :ok
+end) |> Stream.run()
+```
+
 ### Anthropic Extended Features
 
 ```elixir
@@ -289,18 +311,67 @@ Nous.AgentRunner (execution loop)
     ↓
 ├─→ OpenAICompatible (model adapter)
 │       ↓
-│   OpenaiEx (HTTP client)
+│   ┌─────────────────────────────────────────┐
+│   │ Cloud Providers     Local Providers     │
+│   │ (OpenAI, Groq,      (vLLM, SGLang,      │
+│   │  OpenRouter)        LM Studio, Ollama)  │
+│   │      ↓                    ↓             │
+│   │   OpenaiEx          Custom SSE Client   │
+│   │   (HTTP)            (Finch + Req)       │
+│   └─────────────────────────────────────────┘
 │       ↓
-│   LM Studio / OpenAI / Groq / etc.
+│   StreamNormalizer (behaviour)
+│       ↓
+│   Normalized stream events
 │
 ├─→ ToolExecutor (run functions)
 ├─→ Messages (format conversion)
 └─→ Usage (track tokens)
 ```
 
+### Stream Normalizer
+
+Nous uses an extensible behaviour pattern for normalizing streaming responses from different providers:
+
+```elixir
+# Default normalizer handles most OpenAI-compatible providers
+Nous.StreamNormalizer.OpenAI
+
+# Mistral has its own normalizer
+Nous.StreamNormalizer.Mistral
+```
+
+#### Custom Normalizer
+
+For providers with unique formats, implement the `Nous.StreamNormalizer` behaviour:
+
+```elixir
+defmodule MyApp.CustomNormalizer do
+  @behaviour Nous.StreamNormalizer
+
+  @impl true
+  def normalize_chunk(chunk) do
+    # Transform provider-specific format to stream events
+    [{:text_delta, chunk["custom_field"]}]
+  end
+
+  @impl true
+  def complete_response?(chunk), do: false
+
+  @impl true
+  def convert_complete_response(_chunk), do: []
+end
+
+# Use it with your model
+agent = Nous.new("openai_compatible:custom-model",
+  base_url: "http://custom-server/v1",
+  stream_normalizer: MyApp.CustomNormalizer
+)
+```
+
 ## Stats
 
-- **Lines:** ~2,100 | **Modules:** 16 | **Tests:** 18 passing | **Providers:** 7+
+- **Lines:** ~2,500 | **Modules:** 20 | **Tests:** 18 passing | **Providers:** 10+
 
 ## Contributing
 
@@ -317,5 +388,7 @@ Apache 2.0 License - see [LICENSE](https://github.com/nyo16/nous/blob/master/LIC
 ## Credits
 
 - Inspired by [Pydantic AI](https://ai.pydantic.dev/)
-- Built with [openai_ex](https://github.com/cyberchitta/openai_ex)
+- Built with [openai_ex](https://github.com/cyberchitta/openai_ex) (cloud providers)
+- Custom SSE streaming with [Finch](https://github.com/sneako/finch) (local providers)
+- HTTP client [Req](https://github.com/wojtekmach/req) (Mistral, non-streaming)
 - Validation with [ecto](https://github.com/elixir-ecto/ecto)

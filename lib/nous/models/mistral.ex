@@ -64,7 +64,7 @@ defmodule Nous.Models.Mistral do
     )
 
     # Convert messages to OpenAI format (Mistral is compatible)
-    openai_messages = Messages.to_openai_messages(messages)
+    openai_messages = Messages.to_openai_format(messages)
 
     # Build request parameters
     params = build_request_params(model, openai_messages, settings)
@@ -96,13 +96,13 @@ defmodule Nous.Models.Mistral do
 
     case result do
       {:ok, parsed_response} ->
-        tool_calls = Messages.extract_tool_calls(parsed_response.parts)
+        tool_calls = Messages.extract_tool_calls([parsed_response])
 
         Logger.info("""
         Mistral request completed
           Model: #{model.model}
           Duration: #{duration_ms}ms
-          Tokens: #{parsed_response.usage.total_tokens} (in: #{parsed_response.usage.input_tokens}, out: #{parsed_response.usage.output_tokens})
+          Tokens: #{parsed_response.metadata.usage.total_tokens} (in: #{parsed_response.metadata.usage.input_tokens}, out: #{parsed_response.metadata.usage.output_tokens})
           Tool calls: #{length(tool_calls)}
         """)
 
@@ -110,9 +110,9 @@ defmodule Nous.Models.Mistral do
           [:nous, :model, :request, :stop],
           %{
             duration: duration,
-            input_tokens: parsed_response.usage.input_tokens,
-            output_tokens: parsed_response.usage.output_tokens,
-            total_tokens: parsed_response.usage.total_tokens
+            input_tokens: parsed_response.metadata.usage.input_tokens,
+            output_tokens: parsed_response.metadata.usage.output_tokens,
+            total_tokens: parsed_response.metadata.usage.total_tokens
           },
           %{
             provider: :mistral,
@@ -161,7 +161,7 @@ defmodule Nous.Models.Mistral do
     )
 
     # Convert messages to OpenAI format
-    openai_messages = Messages.to_openai_messages(messages)
+    openai_messages = Messages.to_openai_format(messages)
 
     # Enable streaming
     settings = Map.put(settings, :stream, true)
@@ -184,8 +184,9 @@ defmodule Nous.Models.Mistral do
           }
         )
 
-        # Transform SSE stream events to our format
-        transformed_stream = Stream.map(stream, &parse_stream_chunk/1)
+        # Transform SSE stream events to our format using the normalizer
+        normalizer = model.stream_normalizer || Nous.StreamNormalizer.Mistral
+        transformed_stream = Nous.StreamNormalizer.normalize(stream, normalizer)
         {:ok, transformed_stream}
 
       {:error, error} ->
@@ -314,10 +315,12 @@ defmodule Nous.Models.Mistral do
                 {:req_done} ->
                   {:halt, :done}
                 {:req_error, error} ->
-                  raise error
+                  Logger.error("Mistral stream error: #{inspect(error)}")
+                  {:halt, :error}
               after
                 30_000 -> # 30 second timeout per chunk
-                  raise "Stream timeout"
+                  Logger.error("Mistral stream timeout after 30 seconds")
+                  {:halt, :timeout}
               end
             :done ->
               {:halt, :done}
@@ -362,36 +365,6 @@ defmodule Nous.Models.Mistral do
   end
 
   defp parse_sse_event(_), do: nil
-
-  defp parse_stream_chunk(chunk) when is_map(chunk) do
-    choices = Map.get(chunk, "choices", [])
-    choice = List.first(choices)
-
-    if choice do
-      delta = Map.get(choice, "delta", %{})
-      finish_reason = Map.get(choice, "finish_reason")
-
-      cond do
-        Map.has_key?(delta, "content") and Map.get(delta, "content") ->
-          {:text_delta, Map.get(delta, "content")}
-
-        Map.has_key?(delta, "tool_calls") ->
-          {:tool_call_delta, Map.get(delta, "tool_calls")}
-
-        finish_reason ->
-          {:finish, finish_reason}
-
-        true ->
-          {:unknown, chunk}
-      end
-    else
-      {:unknown, chunk}
-    end
-  end
-
-  defp parse_stream_chunk(other) do
-    {:unknown, other}
-  end
 
   defp estimate_message_tokens(message) do
     # Rough estimation: ~4 characters per token

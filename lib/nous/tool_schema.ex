@@ -1,6 +1,24 @@
 defmodule Nous.ToolSchema do
   @moduledoc """
   Convert tools to different schema formats for various providers.
+
+  Different LLM providers expect different tool schema formats:
+
+  - **OpenAI format**: String keys, function wrapper
+  - **Anthropic format**: Atom keys, input_schema field
+  - **Custom providers**: May require format-specific adaptations
+
+  ## Examples
+
+      # Convert to OpenAI format (used by OpenAI, Groq, OpenRouter, local providers)
+      openai_schema = ToolSchema.to_openai(tool)
+      # Returns: %{"type" => "function", "function" => %{"name" => "...", ...}}
+
+      # Convert to Anthropic format (used by Claude)
+      anthropic_schema = ToolSchema.to_anthropic(tool)
+      # Returns: %{name: "...", description: "...", input_schema: %{type: :object, ...}}
+
+  The schema conversion preserves all tool metadata while adapting to provider requirements.
   """
 
   alias Nous.Tool
@@ -41,9 +59,10 @@ defmodule Nous.ToolSchema do
   end
 
   # Convert string keys to atom keys recursively for Anthropic
+  # Only converts well-known schema keys to atoms for safety
   defp convert_to_atom_keys(map) when is_map(map) do
     Map.new(map, fn {k, v} ->
-      key = if is_binary(k), do: String.to_atom(k), else: k
+      key = safe_string_to_atom(k)
       value = convert_to_atom_keys(v)
       {key, value}
     end)
@@ -54,4 +73,28 @@ defmodule Nous.ToolSchema do
   end
 
   defp convert_to_atom_keys(value), do: value
+
+  # Safely convert string to atom - only converts known schema keys
+  defp safe_string_to_atom(string) when is_binary(string) do
+    # Whitelist of known JSON schema keys that are safe to convert to atoms
+    case string do
+      "type" -> :type
+      "properties" -> :properties
+      "required" -> :required
+      "items" -> :items
+      "description" -> :description
+      "enum" -> :enum
+      "default" -> :default
+      "minimum" -> :minimum
+      "maximum" -> :maximum
+      "minLength" -> :minLength
+      "maxLength" -> :maxLength
+      "pattern" -> :pattern
+      "format" -> :format
+      "additionalProperties" -> :additionalProperties
+      _ -> string  # Keep unknown keys as strings to prevent atom exhaustion
+    end
+  end
+
+  defp safe_string_to_atom(other), do: other
 end

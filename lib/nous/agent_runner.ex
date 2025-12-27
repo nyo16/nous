@@ -12,6 +12,7 @@ defmodule Nous.AgentRunner do
 
   alias Nous.{
     Agent,
+    Message,
     Messages,
     ModelDispatcher,
     RunContext,
@@ -161,7 +162,7 @@ defmodule Nous.AgentRunner do
       end
 
     # Request stream from model
-    case ModelDispatcher.request_stream(agent.model, messages, model_settings) do
+    case get_dispatcher().request_stream(agent.model, messages, model_settings) do
       {:ok, stream} -> {:ok, stream}
       error -> error
     end
@@ -222,16 +223,16 @@ defmodule Nous.AgentRunner do
       # Make model request
       Logger.debug("Agent iteration #{state.iteration + 1}/#{state.max_iterations}: requesting model response")
 
-      case ModelDispatcher.request(state.agent.model, messages, model_settings) do
+      case get_dispatcher().request(state.agent.model, messages, model_settings) do
         {:ok, response} ->
           # Update usage
-          new_usage = Usage.add(state.usage, response.usage)
+          new_usage = Usage.add(state.usage, response.metadata.usage)
           new_state = %{state | usage: new_usage, iteration: state.iteration + 1}
 
-          Logger.debug("Model response received (tokens: +#{response.usage.total_tokens}, total: #{new_usage.total_tokens})")
+          Logger.debug("Model response received (tokens: +#{response.metadata.usage.total_tokens}, total: #{new_usage.total_tokens})")
 
           # Check for tool calls
-          tool_calls = Messages.extract_tool_calls(response.parts)
+          tool_calls = Messages.extract_tool_calls([response])
 
           if Enum.empty?(tool_calls) do
             # No tool calls, extract final output
@@ -335,9 +336,10 @@ defmodule Nous.AgentRunner do
             {clean_result, updates}
 
           {:error, error} ->
-            error_msg = Exception.message(error)
-            Logger.error("Tool '#{cleaned_name}' execution failed: #{error_msg}")
-            {error_msg, %{}}
+            # Preserve structured error information for better debugging and handling
+            error_details = format_tool_error(error, cleaned_name)
+            Logger.error("Tool '#{cleaned_name}' execution failed: #{error_details.summary}")
+            {error_details.response, %{}}
         end
       else
         available_tools = Enum.map_join(tools, ", ", & &1.name)
@@ -350,7 +352,7 @@ defmodule Nous.AgentRunner do
         {error_msg, %{}}
       end
 
-    {Messages.tool_return(call.id, result), context_updates}
+    {Message.tool(call.id, result), context_updates}
   end
 
   # Clean tool names - Claude sometimes uses XML-like syntax
@@ -384,7 +386,7 @@ defmodule Nous.AgentRunner do
           instructions
         end
 
-        [Messages.system_prompt(instructions_with_todos) | messages]
+        [Message.system(instructions_with_todos) | messages]
       else
         messages
       end
@@ -400,7 +402,7 @@ defmodule Nous.AgentRunner do
             state.agent.system_prompt
           end
 
-        [Messages.system_prompt(system_prompt) | messages]
+        [Message.system(system_prompt) | messages]
       else
         messages
       end
@@ -409,20 +411,20 @@ defmodule Nous.AgentRunner do
     messages = messages ++ state.message_history
 
     # Add user prompt
-    messages = messages ++ [Messages.user_prompt(prompt)]
+    messages = messages ++ [Message.user(prompt)]
 
     Enum.reverse(messages)
   end
 
   defp extract_output(response, :string) do
-    Messages.extract_text(response.parts)
+    Messages.extract_text(response)
   end
 
   defp extract_output(response, output_module) when is_atom(output_module) do
     # For structured outputs, look for tool call with schema
     # This is simplified - full implementation would use the output module
     # to validate and structure the data
-    Messages.extract_text(response.parts)
+    Messages.extract_text(response)
   end
 
   # Convert tools to provider-specific format
@@ -521,8 +523,46 @@ defmodule Nous.AgentRunner do
     end
   end
 
+  # Format tool errors to preserve structured information while providing LLM-friendly response
+  @spec format_tool_error(term(), String.t()) :: %{summary: String.t(), response: String.t()}
+  defp format_tool_error(error, tool_name) do
+    case error do
+      %Nous.Errors.ToolError{} = tool_error ->
+        # Extract structured information from ToolError
+        summary = Exception.message(tool_error)
+
+        # Create detailed response for LLM that includes context
+        response = """
+        Tool execution failed: #{tool_name}
+        Error: #{tool_error.message}
+        Attempts: #{tool_error.attempt || 1}
+        #{if tool_error.original_error, do: "Original cause: #{inspect(tool_error.original_error)}", else: ""}
+
+        Please try a different approach or tool if available.
+        """
+        |> String.trim()
+
+        %{summary: summary, response: response}
+
+      error when is_exception(error) ->
+        summary = Exception.message(error)
+        response = "Tool execution failed: #{tool_name} - #{summary}"
+        %{summary: summary, response: response}
+
+      error ->
+        summary = "Tool execution failed with: #{inspect(error)}"
+        response = "Tool execution failed: #{tool_name} - #{summary}"
+        %{summary: summary, response: response}
+    end
+  end
+
   defp priority_icon("high"), do: "🔴"
   defp priority_icon("medium"), do: "🟡"
   defp priority_icon("low"), do: "🟢"
   defp priority_icon(_), do: "•"
+
+  # Get the model dispatcher, allowing dependency injection for testing
+  defp get_dispatcher do
+    Application.get_env(:nous, :model_dispatcher, ModelDispatcher)
+  end
 end

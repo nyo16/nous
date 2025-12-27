@@ -129,6 +129,7 @@ defmodule Nous.Tool do
 
   # Private functions
 
+  @spec get_function_name(fun()) :: String.t()
   defp get_function_name(fun) do
     info = Function.info(fun)
 
@@ -140,6 +141,7 @@ defmodule Nous.Tool do
     end
   end
 
+  @spec extract_function_docs(fun()) :: String.t() | nil
   defp extract_function_docs(fun) do
     info = Function.info(fun)
 
@@ -156,6 +158,7 @@ defmodule Nous.Tool do
     end
   end
 
+  @spec find_function_doc(list(), atom(), non_neg_integer()) :: String.t() | nil
   defp find_function_doc(docs, function_name, arity) do
     Enum.find_value(docs, fn
       {{:function, ^function_name, ^arity}, _, _, doc, _} when is_map(doc) ->

@@ -87,7 +87,7 @@ defmodule Nous.ToolExecutor do
         duration = System.monotonic_time() - start_time
         duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
-        # Emit exception event
+        # Emit exception event with stacktrace for better debugging
         :telemetry.execute(
           [:nous, :tool, :execute, :exception],
           %{duration: duration},
@@ -96,7 +96,8 @@ defmodule Nous.ToolExecutor do
             attempt: attempt + 1,
             will_retry: attempt < tool.retries,
             kind: error.__struct__,
-            reason: error
+            reason: error,
+            stacktrace: __STACKTRACE__
           }
         )
 

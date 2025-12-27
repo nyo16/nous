@@ -1,22 +1,26 @@
 defmodule Nous.Models.OpenAICompatible do
   @moduledoc """
-  OpenAI-compatible model implementation using openai_ex library.
+  OpenAI-compatible model implementation.
+
+  Uses OpenaiEx for official OpenAI, and custom Req-based client for other providers.
 
   This implementation works with any server that implements the OpenAI API:
-  - OpenAI (https://api.openai.com/v1)
-  - Groq (https://api.groq.com/openai/v1)
-  - Ollama (http://localhost:11434/v1)
-  - LM Studio (http://localhost:1234/v1)
-  - OpenRouter (https://openrouter.ai/api/v1)
-  - Together AI, and more...
+  - OpenAI (https://api.openai.com/v1) - uses OpenaiEx
+  - Groq (https://api.groq.com/openai/v1) - uses OpenaiEx
+  - OpenRouter (https://openrouter.ai/api/v1) - uses OpenaiEx
+  - vLLM, SGLang, Ollama, LM Studio, etc. - uses custom HTTP client
   """
 
   @behaviour Nous.Models.Behaviour
 
   alias Nous.{Model, Messages, Errors}
+  alias Nous.HTTP.OpenAIClient
   alias OpenaiEx.Chat
 
   require Logger
+
+  # Providers that work well with OpenaiEx (cloud providers with proper SSE)
+  @openaiex_providers [:openai, :groq, :openrouter]
 
   @impl true
   def request(model, messages, settings) do
@@ -46,7 +50,7 @@ defmodule Nous.Models.OpenAICompatible do
     client = Model.to_client(model)
 
     # Convert messages to OpenAI format
-    openai_messages = Messages.to_openai_messages(messages)
+    openai_messages = Messages.to_openai_format(messages)
 
     # Build request parameters
     params = build_request_params(model, openai_messages, settings)
@@ -79,14 +83,14 @@ defmodule Nous.Models.OpenAICompatible do
 
     case result do
       {:ok, parsed_response} ->
-        tool_calls = Messages.extract_tool_calls(parsed_response.parts)
+        tool_calls = Messages.extract_tool_calls([parsed_response])
 
         Logger.info("""
         OpenAI-compatible request completed
           Provider: #{model.provider}
           Model: #{model.model}
           Duration: #{duration_ms}ms
-          Tokens: #{parsed_response.usage.total_tokens} (in: #{parsed_response.usage.input_tokens}, out: #{parsed_response.usage.output_tokens})
+          Tokens: #{parsed_response.metadata.usage.total_tokens} (in: #{parsed_response.metadata.usage.input_tokens}, out: #{parsed_response.metadata.usage.output_tokens})
           Tool calls: #{length(tool_calls)}
         """)
 
@@ -94,9 +98,9 @@ defmodule Nous.Models.OpenAICompatible do
           [:nous, :model, :request, :stop],
           %{
             duration: duration,
-            input_tokens: parsed_response.usage.input_tokens,
-            output_tokens: parsed_response.usage.output_tokens,
-            total_tokens: parsed_response.usage.total_tokens
+            input_tokens: parsed_response.metadata.usage.input_tokens,
+            output_tokens: parsed_response.metadata.usage.output_tokens,
+            total_tokens: parsed_response.metadata.usage.total_tokens
           },
           %{
             provider: model.provider,
@@ -145,14 +149,20 @@ defmodule Nous.Models.OpenAICompatible do
       }
     )
 
-    client = Model.to_client(model)
-    openai_messages = Messages.to_openai_messages(messages)
+    openai_messages = Messages.to_openai_format(messages)
 
     # Enable streaming
     settings = Map.put(settings, :stream, true)
     params = build_request_params(model, openai_messages, settings)
 
-    case Chat.Completions.create(client, params) do
+    # Use OpenaiEx for cloud providers, custom client for local/custom
+    result = if model.provider in @openaiex_providers do
+      request_stream_openaiex(model, params)
+    else
+      request_stream_custom(model, params)
+    end
+
+    case result do
       {:ok, stream} ->
         duration = System.monotonic_time() - start_time
         duration_ms = System.convert_time_unit(duration, :native, :millisecond)
@@ -169,8 +179,9 @@ defmodule Nous.Models.OpenAICompatible do
           }
         )
 
-        # Transform OpenAI.Ex stream events to our format
-        transformed_stream = Stream.map(stream, &parse_stream_chunk/1)
+        # Transform stream events to our format using the normalizer
+        normalizer = model.stream_normalizer || Nous.StreamNormalizer.OpenAI
+        transformed_stream = Nous.StreamNormalizer.normalize(stream, normalizer)
         {:ok, transformed_stream}
 
       {:error, error} ->
@@ -205,6 +216,23 @@ defmodule Nous.Models.OpenAICompatible do
 
         {:error, wrapped_error}
     end
+  end
+
+  # Use OpenaiEx for cloud providers with proper SSE support
+  defp request_stream_openaiex(model, params) do
+    client = Model.to_client(model)
+    Chat.Completions.create(client, params)
+  end
+
+  # Use custom HTTP client for local/custom providers
+  defp request_stream_custom(model, params) do
+    OpenAIClient.chat_completion_stream(
+      model.base_url,
+      model.api_key,
+      params,
+      timeout: model.receive_timeout,
+      finch_name: Application.get_env(:nous, :finch, Nous.Finch)
+    )
   end
 
   @impl true
@@ -242,31 +270,6 @@ defmodule Nous.Models.OpenAICompatible do
 
   defp maybe_put(params, _key, nil), do: params
   defp maybe_put(params, key, value), do: Map.put(params, key, value)
-
-  defp parse_stream_chunk(chunk) do
-    # OpenAI.Ex provides chunk with choices
-    choice = List.first(chunk.choices)
-
-    if choice do
-      delta = choice.delta
-
-      cond do
-        delta.content ->
-          {:text_delta, delta.content}
-
-        delta.tool_calls ->
-          {:tool_call_delta, delta.tool_calls}
-
-        choice.finish_reason ->
-          {:finish, choice.finish_reason}
-
-        true ->
-          {:unknown, chunk}
-      end
-    else
-      {:unknown, chunk}
-    end
-  end
 
   defp estimate_message_tokens(message) do
     # Rough estimation: ~4 characters per token

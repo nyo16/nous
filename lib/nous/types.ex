@@ -101,6 +101,7 @@ defmodule Nous.Types do
   @typedoc "Stream event types"
   @type stream_event ::
           {:text_delta, String.t()}
+          | {:thinking_delta, String.t()}
           | {:tool_call_delta, any()}
           | {:finish, String.t()}
           | {:complete, any()}
