@@ -1,6 +1,24 @@
 defmodule Nous.ToolSchema do
   @moduledoc """
   Convert tools to different schema formats for various providers.
+
+  Different LLM providers expect different tool schema formats:
+
+  - **OpenAI format**: String keys, function wrapper
+  - **Anthropic format**: Atom keys, input_schema field
+  - **Custom providers**: May require format-specific adaptations
+
+  ## Examples
+
+      # Convert to OpenAI format (used by OpenAI, Groq, OpenRouter, local providers)
+      openai_schema = ToolSchema.to_openai(tool)
+      # Returns: %{"type" => "function", "function" => %{"name" => "...", ...}}
+
+      # Convert to Anthropic format (used by Claude)
+      anthropic_schema = ToolSchema.to_anthropic(tool)
+      # Returns: %{name: "...", description: "...", input_schema: %{type: :object, ...}}
+
+  The schema conversion preserves all tool metadata while adapting to provider requirements.
   """
 
   alias Nous.Tool
