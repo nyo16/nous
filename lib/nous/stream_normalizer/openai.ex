@@ -26,10 +26,17 @@ defmodule Nous.StreamNormalizer.OpenAI do
 
   @impl true
   def normalize_chunk(chunk) do
-    if complete_response?(chunk) do
-      convert_complete_response(chunk)
-    else
-      [parse_delta_chunk(chunk)]
+    cond do
+      # Handle stream done signal from SSE [DONE] event
+      match?({:stream_done, _}, chunk) ->
+        {:stream_done, reason} = chunk
+        [{:finish, reason}]
+
+      complete_response?(chunk) ->
+        convert_complete_response(chunk)
+
+      true ->
+        [parse_delta_chunk(chunk)]
     end
   end
 

@@ -244,7 +244,9 @@ defmodule Nous.HTTP.OpenAIClient do
 
   # Parse a single SSE event
   defp parse_sse_event(""), do: nil
-  defp parse_sse_event("data: [DONE]"), do: nil
+
+  # Handle [DONE] event - emit a finish signal
+  defp parse_sse_event("data: [DONE]"), do: {:stream_done, "stop"}
 
   defp parse_sse_event(event) do
     # Handle multi-line events
@@ -252,7 +254,7 @@ defmodule Nous.HTTP.OpenAIClient do
 
     Enum.find_value(lines, fn line ->
       case line do
-        "data: [DONE]" -> nil
+        "data: [DONE]" -> {:stream_done, "stop"}
         "data: " <> json_data ->
           case Jason.decode(json_data) do
             {:ok, parsed} -> parsed

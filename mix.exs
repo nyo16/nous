@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.7.0"
+  @version "0.7.2"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -36,8 +36,9 @@ defmodule Nous.MixProject do
 
   defp deps do
     [
-      # OpenAI client library
-      {:openai_ex, "~> 0.9.17"},
+      # OpenAI client library (optional)
+      # To enable OpenAI-compatible providers, add {:openai_ex, "~> 0.9.17"} to your deps
+      {:openai_ex, "~> 0.9.17", optional: true},
 
       # Anthropic Claude client library (optional)
       # To enable Anthropic support, add {:anthropix, "~> 0.6.2"} to your deps

@@ -227,7 +227,7 @@ defmodule Nous.Messages do
 
       iex> conversation = [Message.system("Be helpful"), Message.user("Hello")]
       iex> Messages.to_provider_format(conversation, :openai)
-      [%OpenaiEx.ChatMessage{}, %OpenaiEx.ChatMessage{}]
+      [%{"role" => "system", "content" => "Be helpful"}, %{"role" => "user", "content" => "Hello"}]
 
       iex> Messages.to_provider_format(conversation, :anthropic)
       {"Be helpful", [%{role: "user", content: "Hello"}]}
@@ -417,7 +417,7 @@ defmodule Nous.Messages do
 
   ## Examples
 
-      iex> Messages.normalize_format([%OpenaiEx.ChatMessage{role: "user", content: "Hi"}])
+      iex> Messages.normalize_format([%{"role" => "user", "content" => "Hi"}])
       [%Message{role: :user, content: "Hi"}]
 
   """
@@ -442,17 +442,18 @@ defmodule Nous.Messages do
   # Private helper functions
 
   # OpenAI conversion helpers
+  # Note: Using direct map construction instead of OpenaiEx.ChatMessage to avoid compile-time dependency
   defp message_to_openai(%Message{role: :system, content: content}) when is_binary(content) do
-    OpenaiEx.ChatMessage.system(content)
+    %{"role" => "system", "content" => content}
   end
 
   defp message_to_openai(%Message{role: :user, metadata: %{content_parts: content_parts}}) when is_list(content_parts) do
     openai_content = Enum.map(content_parts, &content_part_to_openai/1)
-    OpenaiEx.ChatMessage.user(openai_content)
+    %{"role" => "user", "content" => openai_content}
   end
 
   defp message_to_openai(%Message{role: :user, content: content}) when is_binary(content) do
-    OpenaiEx.ChatMessage.user(content)
+    %{"role" => "user", "content" => content}
   end
 
   defp message_to_openai(%Message{role: :assistant, content: content, tool_calls: tool_calls}) do
@@ -467,12 +468,12 @@ defmodule Nous.Messages do
       }
     else
       # Simple assistant message
-      OpenaiEx.ChatMessage.assistant(content || "")
+      %{"role" => "assistant", "content" => content || ""}
     end
   end
 
-  defp message_to_openai(%Message{role: :tool, content: content, tool_call_id: tool_call_id, name: name}) do
-    OpenaiEx.ChatMessage.tool(tool_call_id, name || "", content)
+  defp message_to_openai(%Message{role: :tool, content: content, tool_call_id: tool_call_id, name: _name}) do
+    %{"role" => "tool", "content" => content, "tool_call_id" => tool_call_id}
   end
 
   defp content_part_to_openai(%ContentPart{type: :text, content: text}) do
