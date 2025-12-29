@@ -4,52 +4,52 @@ Examples showing AI agents calling functions, tools, and external services.
 
 ## Learning Path
 New to tools? Follow this progression:
-1. **[Simple Tool Calling](../tutorials/01-basics/03-tool-calling.exs)** - Single weather function
-2. **[Multi-Tool Chaining](../tutorials/01-basics/05-calculator.exs)** - Math operations
-3. **[Advanced Tool Usage](../with_tools_working.exs)** - Complex tool coordination
+1. **[Simple Tool Calling](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/03-tool-calling.exs)** - Single weather function
+2. **[Multi-Tool Chaining](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/05-calculator.exs)** - Math operations
+3. **[Advanced Tool Usage](https://github.com/nyo16/nous/blob/master/examples/with_tools_working.exs)** - Complex tool coordination
 
 ## Simple Tools (Start Here)
 
 ### Basic Function Calling
-- **[03-tool-calling.exs](../tutorials/01-basics/03-tool-calling.exs)** - Single weather tool
-- **[tools_simple.exs](../tools_simple.exs)** - Weather function example
-- **[with_tools_working.exs](../with_tools_working.exs)** - Multiple tools demo
+- **[03-tool-calling.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/03-tool-calling.exs)** - Single weather tool
+- **[tools_simple.exs](https://github.com/nyo16/nous/blob/master/examples/tools_simple.exs)** - Weather function example
+- **[with_tools_working.exs](https://github.com/nyo16/nous/blob/master/examples/with_tools_working.exs)** - Multiple tools demo
 
 ### Multi-Tool Coordination
-- **[05-calculator.exs](../tutorials/01-basics/05-calculator.exs)** - Math operation chaining
-- **[calculator_demo.exs](../calculator_demo.exs)** - Add + multiply operations
-- **[complete_tool_example.exs](../complete_tool_example.exs)** - Comprehensive tool usage
+- **[05-calculator.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/05-calculator.exs)** - Math operation chaining
+- **[calculator_demo.exs](https://github.com/nyo16/nous/blob/master/examples/calculator_demo.exs)** - Add + multiply operations
+- **[complete_tool_example.exs](https://github.com/nyo16/nous/blob/master/examples/complete_tool_example.exs)** - Comprehensive tool usage
 
 ## Built-in Tool Suites
 
 ### Date & Time Tools
-- **[datetime_tools_demo.exs](../datetime_tools_demo.exs)** - Date/time utilities
+- **[datetime_tools_demo.exs](https://github.com/nyo16/nous/blob/master/examples/datetime_tools_demo.exs)** - Date/time utilities
 - Built-in functions for timestamps, formatting, timezone conversion
 
 ### String Manipulation Tools
-- **[string_tools_demo.exs](../string_tools_demo.exs)** - String processing utilities
+- **[string_tools_demo.exs](https://github.com/nyo16/nous/blob/master/examples/string_tools_demo.exs)** - String processing utilities
 - Text analysis, formatting, transformation functions
 
 ### Todo & Task Management
-- **[todo_tools_demo.exs](../todo_tools_demo.exs)** - Task tracking utilities
+- **[todo_tools_demo.exs](https://github.com/nyo16/nous/blob/master/examples/todo_tools_demo.exs)** - Task tracking utilities
 - Create, update, complete todo items
 
 ### Search & Web Tools
-- **[brave_search_demo.exs](../brave_search_demo.exs)** - Web search integration
-- **[brave_search_simple.exs](../brave_search_simple.exs)** - Basic search example
+- **[brave_search_demo.exs](https://github.com/nyo16/nous/blob/master/examples/brave_search_demo.exs)** - Web search integration
+- **[brave_search_simple.exs](https://github.com/nyo16/nous/blob/master/examples/brave_search_simple.exs)** - Basic search example
 
 ## Advanced Tool Patterns
 
 ### Custom Tool Development
-- **[custom_tools_guide.exs](../custom_tools_guide.exs)** - Building your own tools
-- **Tool Development Guide**: [Tool Development](../../docs/guides/tool_development.md)
+- **[custom_tools_guide.exs](https://github.com/nyo16/nous/blob/master/examples/custom_tools_guide.exs)** - Building your own tools
+- **Tool Development Guide**: [Tool Development](tool_development.html)
 
 ### Provider-Specific Tool Examples
-- **[anthropic_with_tools.exs](../anthropic_with_tools.exs)** - Claude tool calling
-- **[tools_with_context.exs](../tools_with_context.exs)** - Context-aware tools
+- **[anthropic_with_tools.exs](https://github.com/nyo16/nous/blob/master/examples/anthropic_with_tools.exs)** - Claude tool calling
+- **[tools_with_context.exs](https://github.com/nyo16/nous/blob/master/examples/tools_with_context.exs)** - Context-aware tools
 
 ### Production Tool Patterns
-- **[05-telemetry.exs](../tutorials/03-production/05-telemetry.exs)** - Tool monitoring
+- **[05-telemetry.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/05-telemetry.exs)** - Tool monitoring
 - Error handling and tool failure patterns
 - Tool rate limiting and throttling
 
@@ -102,6 +102,6 @@ IO.inspect(result.usage, label: "Usage")  # Shows tool_calls count
 ---
 
 **Next Steps:**
-- Start with [03-tool-calling.exs](../tutorials/01-basics/03-tool-calling.exs)
-- Read the [Tool Development Guide](../../docs/guides/tool_development.md)
+- Start with [03-tool-calling.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/03-tool-calling.exs)
+- Read the [Tool Development Guide](tool_development.html)
 - Try building your own custom tools

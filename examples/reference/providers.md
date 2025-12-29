@@ -4,16 +4,16 @@ Examples for specific AI providers and model configurations.
 
 ## Learning Path
 New to providers? Follow this progression:
-1. **[Provider Switching](../tutorials/01-basics/04-provider-switch.exs)** - Compare providers
-2. **[Provider-specific features](../anthropic_with_tools.exs)** - Claude tools
-3. **[Local vs Cloud](../local_vs_cloud.exs)** - Cost optimization
+1. **[Provider Switching](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/04-provider-switch.exs)** - Compare providers
+2. **[Provider-specific features](https://github.com/nyo16/nous/blob/master/examples/anthropic_with_tools.exs)** - Claude tools
+3. **[Local vs Cloud](https://github.com/nyo16/nous/blob/master/examples/local_vs_cloud.exs)** - Cost optimization
 
 ## Local Models (Free!)
 
 ### LM Studio
-- **[02-simple-qa.exs](../tutorials/01-basics/02-simple-qa.exs)** - Basic LM Studio usage
-- **[local_lm_studio.exs](../local_lm_studio.exs)** - Complete LM Studio guide
-- **[test_lm_studio.exs](../test_lm_studio.exs)** - Quick test script
+- **[02-simple-qa.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/02-simple-qa.exs)** - Basic LM Studio usage
+- **[local_lm_studio.exs](https://github.com/nyo16/nous/blob/master/examples/local_lm_studio.exs)** - Complete LM Studio guide
+- **[test_lm_studio.exs](https://github.com/nyo16/nous/blob/master/examples/test_lm_studio.exs)** - Quick test script
 
 ### Setup Instructions
 ```bash
@@ -41,10 +41,10 @@ agent = Nous.new("openai:qwen2-7b",
 ## Cloud Providers
 
 ### Anthropic (Claude)
-- **[anthropic_example.exs](../anthropic_example.exs)** - Basic Claude usage
-- **[anthropic_with_tools.exs](../anthropic_with_tools.exs)** - Claude tool calling
-- **[anthropic_thinking_mode.exs](../anthropic_thinking_mode.exs)** - Claude thinking
-- **[anthropic_long_context.exs](../anthropic_long_context.exs)** - 1M token context
+- **[anthropic_example.exs](https://github.com/nyo16/nous/blob/master/examples/anthropic_example.exs)** - Basic Claude usage
+- **[anthropic_with_tools.exs](https://github.com/nyo16/nous/blob/master/examples/anthropic_with_tools.exs)** - Claude tool calling
+- **[anthropic_thinking_mode.exs](https://github.com/nyo16/nous/blob/master/examples/anthropic_thinking_mode.exs)** - Claude thinking
+- **[anthropic_long_context.exs](https://github.com/nyo16/nous/blob/master/examples/anthropic_long_context.exs)** - 1M token context
 
 ```elixir
 # Claude models
@@ -53,8 +53,8 @@ agent = Nous.new("anthropic:claude-3-5-haiku-20241022")
 ```
 
 ### OpenAI (GPT)
-- **[openai_example.exs](../openai_example.exs)** - Basic GPT usage
-- **[openai_with_vision.exs](../openai_with_vision.exs)** - GPT-4V image analysis
+- **[openai_example.exs](https://github.com/nyo16/nous/blob/master/examples/openai_example.exs)** - Basic GPT usage
+- **[openai_with_vision.exs](https://github.com/nyo16/nous/blob/master/examples/openai_with_vision.exs)** - GPT-4V image analysis
 
 ```elixir
 # OpenAI models
@@ -64,8 +64,8 @@ agent = Nous.new("openai:o1-preview")
 ```
 
 ### Google Gemini
-- **[gemini_example.exs](../gemini_example.exs)** - Gemini usage
-- **[gemini_with_tools.exs](../gemini_with_tools.exs)** - Gemini function calling
+- **[gemini_example.exs](https://github.com/nyo16/nous/blob/master/examples/gemini_example.exs)** - Gemini usage
+- **[gemini_with_tools.exs](https://github.com/nyo16/nous/blob/master/examples/gemini_with_tools.exs)** - Gemini function calling
 
 ```elixir
 # Gemini models
@@ -74,7 +74,7 @@ agent = Nous.new("gemini:gemini-1.5-flash")
 ```
 
 ### Mistral AI
-- **[mistral_example.exs](../mistral_example.exs)** - Mistral usage
+- **[mistral_example.exs](https://github.com/nyo16/nous/blob/master/examples/mistral_example.exs)** - Mistral usage
 
 ```elixir
 # Mistral models
@@ -106,14 +106,14 @@ agent = Nous.new("openrouter:anthropic/claude-3.5-sonnet")
 | **Local** | ✅ | ✅ | Some | Varies | Free |
 
 ### Performance Comparison
-- **[04-provider-switch.exs](../tutorials/01-basics/04-provider-switch.exs)** - Compare same prompt
-- **[comparing_providers.exs](../comparing_providers.exs)** - Detailed comparison
-- **[cost_tracking_example.exs](../cost_tracking_example.exs)** - Track usage costs
+- **[04-provider-switch.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/04-provider-switch.exs)** - Compare same prompt
+- **[comparing_providers.exs](https://github.com/nyo16/nous/blob/master/examples/comparing_providers.exs)** - Detailed comparison
+- **[cost_tracking_example.exs](https://github.com/nyo16/nous/blob/master/examples/cost_tracking_example.exs)** - Track usage costs
 
 ## Cost Optimization
 
 ### Local vs Cloud Strategy
-- **[local_vs_cloud.exs](../local_vs_cloud.exs)** - Smart routing example
+- **[local_vs_cloud.exs](https://github.com/nyo16/nous/blob/master/examples/local_vs_cloud.exs)** - Smart routing example
 
 ```elixir
 # Use local for development, cloud for production
@@ -210,6 +210,6 @@ end
 ---
 
 **Next Steps:**
-- Start with [04-provider-switch.exs](../tutorials/01-basics/04-provider-switch.exs)
+- Start with [04-provider-switch.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/01-basics/04-provider-switch.exs)
 - Set up your preferred provider with API keys
-- Try [local LM Studio](../local_lm_studio.exs) for free development
+- Try [local LM Studio](https://github.com/nyo16/nous/blob/master/examples/local_lm_studio.exs) for free development

@@ -4,16 +4,16 @@ Advanced reasoning patterns and production architecture examples.
 
 ## Learning Path
 New to advanced patterns? Follow this progression:
-1. **[ReAct Agent](../tutorials/02-patterns/04-react-agent.exs)** - Reasoning and acting
-2. **[GenServer Integration](../tutorials/03-production/01-genserver.ex)** - Elixir processes
-3. **[Complete Projects](../tutorials/04-projects/README.md)** - Production systems
+1. **[ReAct Agent](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/04-react-agent.exs)** - Reasoning and acting
+2. **[GenServer Integration](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/01-genserver.ex)** - Elixir processes
+3. **[Complete Projects](https://github.com/nyo16/nous/tree/master/examples/tutorials/04-projects)** - Production systems
 
 ## Reasoning Patterns
 
 ### ReAct (Reasoning + Acting)
-- **[04-react-agent.exs](../tutorials/02-patterns/04-react-agent.exs)** - Basic ReAct pattern
-- **[05-react-enhanced.exs](../tutorials/02-patterns/05-react-enhanced.exs)** - Enhanced ReAct agent
-- **[react_agent_demo.exs](../react_agent_demo.exs)** - Complete ReAct example
+- **[04-react-agent.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/04-react-agent.exs)** - Basic ReAct pattern
+- **[05-react-enhanced.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/05-react-enhanced.exs)** - Enhanced ReAct agent
+- **[react_agent_demo.exs](https://github.com/nyo16/nous/blob/master/examples/react_agent_demo.exs)** - Complete ReAct example
 
 ReAct agents think through problems step-by-step:
 ```elixir
@@ -30,18 +30,18 @@ agent = Nous.new("anthropic:claude-3-5-sonnet",
 ```
 
 ### Conversation Management
-- **[02-conversation.exs](../tutorials/02-patterns/02-conversation.exs)** - Multi-turn conversations
-- **[conversation_history_example.exs](../conversation_history_example.exs)** - State management
+- **[02-conversation.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/02-conversation.exs)** - Multi-turn conversations
+- **[conversation_history_example.exs](https://github.com/nyo16/nous/blob/master/examples/conversation_history_example.exs)** - State management
 
 ### Error Handling
-- **[03-error-handling.exs](../tutorials/02-patterns/03-error-handling.exs)** - Graceful failures
-- **[error_handling_example.exs](../error_handling_example.exs)** - Robust error patterns
+- **[03-error-handling.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/03-error-handling.exs)** - Graceful failures
+- **[error_handling_example.exs](https://github.com/nyo16/nous/blob/master/examples/error_handling_example.exs)** - Robust error patterns
 
 ## Elixir Integration Patterns
 
 ### GenServer Agents
-- **[01-genserver.ex](../tutorials/03-production/01-genserver.ex)** - Agent as GenServer
-- **[genserver_agent_example.ex](../genserver_agent_example.ex)** - Production GenServer
+- **[01-genserver.ex](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/01-genserver.ex)** - Agent as GenServer
+- **[genserver_agent_example.ex](https://github.com/nyo16/nous/blob/master/examples/genserver_agent_example.ex)** - Production GenServer
 
 ```elixir
 defmodule MyAgent do
@@ -69,13 +69,13 @@ end
 ```
 
 ### LiveView Integration
-- **[03-liveview.ex](../tutorials/03-production/03-liveview.ex)** - Phoenix LiveView
-- **[02-liveview-streaming.ex](../tutorials/03-production/02-liveview-streaming.ex)** - Real-time UI
-- **[liveview_chat_example.ex](../liveview_chat_example.ex)** - Complete chat app
+- **[03-liveview.ex](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/03-liveview.ex)** - Phoenix LiveView
+- **[02-liveview-streaming.ex](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/02-liveview-streaming.ex)** - Real-time UI
+- **[liveview_chat_example.ex](https://github.com/nyo16/nous/blob/master/examples/liveview_chat_example.ex)** - Complete chat app
 
 ### Distributed Agents
-- **[04-distributed.ex](../tutorials/03-production/04-distributed.ex)** - Multi-node agents
-- **[distributed_agent_example.ex](../distributed_agent_example.ex)** - Registry patterns
+- **[04-distributed.ex](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/04-distributed.ex)** - Multi-node agents
+- **[distributed_agent_example.ex](https://github.com/nyo16/nous/blob/master/examples/distributed_agent_example.ex)** - Registry patterns
 
 ## Production Architecture
 
@@ -100,27 +100,27 @@ end
 ```
 
 ### Monitoring & Telemetry
-- **[05-telemetry.exs](../tutorials/03-production/05-telemetry.exs)** - Agent monitoring
-- **[telemetry_demo.exs](../telemetry_demo.exs)** - Telemetry events
+- **[05-telemetry.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/05-telemetry.exs)** - Agent monitoring
+- **[telemetry_demo.exs](https://github.com/nyo16/nous/blob/master/examples/telemetry_demo.exs)** - Telemetry events
 
 ### Agent Cancellation
-- **[cancellation_demo.exs](../cancellation_demo.exs)** - Cancelling long operations
+- **[cancellation_demo.exs](https://github.com/nyo16/nous/blob/master/examples/cancellation_demo.exs)** - Cancelling long operations
 - Useful for user-initiated stops and timeouts
 
 ## Multi-Agent Systems
 
 ### Agent Council
-- **[Council](../tutorials/04-projects/council/README.md)** - Multi-LLM deliberation
+- **[Council](https://github.com/nyo16/nous/tree/master/examples/tutorials/04-projects/council)** - Multi-LLM deliberation
 - Multiple AI models vote on best responses
 - 3-stage voting system for consensus
 
 ### Trading Desk
-- **[Trading Desk](../tutorials/04-projects/trading_desk/README.md)** - Enterprise coordination
+- **[Trading Desk](https://github.com/nyo16/nous/tree/master/examples/tutorials/04-projects/trading_desk)** - Enterprise coordination
 - 4 specialized agents: Market, Risk, Trading, Research
 - Supervisor coordination with 18 tools
 
 ### AI Code Editor
-- **[Coderex](../tutorials/04-projects/coderex/README.md)** - Code generation system
+- **[Coderex](https://github.com/nyo16/nous/tree/master/examples/tutorials/04-projects/coderex)** - Code generation system
 - Complete code editing agent
 - SEARCH/REPLACE format with file operations
 
@@ -302,6 +302,6 @@ end
 ---
 
 **Next Steps:**
-- Start with [04-react-agent.exs](../tutorials/02-patterns/04-react-agent.exs)
-- Try [GenServer integration](../tutorials/03-production/01-genserver.ex) for stateful agents
-- Explore complete [project examples](../tutorials/04-projects/README.md) for production patterns
+- Start with [04-react-agent.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/04-react-agent.exs)
+- Try [GenServer integration](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/01-genserver.ex) for stateful agents
+- Explore complete [project examples](https://github.com/nyo16/nous/tree/master/examples/tutorials/04-projects) for production patterns

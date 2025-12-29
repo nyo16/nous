@@ -4,15 +4,15 @@ Examples showing real-time responses, streaming patterns, and live updates.
 
 ## Learning Path
 New to streaming? Follow this progression:
-1. **[Basic Streaming](../tutorials/02-patterns/01-streaming.exs)** - Simple real-time responses
-2. **[LiveView Streaming](../tutorials/03-production/02-liveview-streaming.ex)** - Web UI integration
-3. **[Advanced Patterns](../liveview_chat_example.ex)** - Production chat systems
+1. **[Basic Streaming](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/01-streaming.exs)** - Simple real-time responses
+2. **[LiveView Streaming](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/02-liveview-streaming.ex)** - Web UI integration
+3. **[Advanced Patterns](https://github.com/nyo16/nous/blob/master/examples/liveview_chat_example.ex)** - Production chat systems
 
 ## Basic Streaming
 
 ### Simple Real-time Responses
-- **[01-streaming.exs](../tutorials/02-patterns/01-streaming.exs)** - Basic streaming example
-- **[streaming_example.exs](../streaming_example.exs)** - Real-time text generation
+- **[01-streaming.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/01-streaming.exs)** - Basic streaming example
+- **[streaming_example.exs](https://github.com/nyo16/nous/blob/master/examples/streaming_example.exs)** - Real-time text generation
 - Text appears as it's generated, not all at once
 
 ### Stream Event Handling
@@ -34,13 +34,13 @@ end)
 ## Web Integration
 
 ### Phoenix LiveView
-- **[02-liveview-streaming.ex](../tutorials/03-production/02-liveview-streaming.ex)** - LiveView streaming
-- **[liveview_agent_example.ex](../liveview_agent_example.ex)** - Basic LiveView integration
-- **[liveview_chat_example.ex](../liveview_chat_example.ex)** - Complete chat interface
+- **[02-liveview-streaming.ex](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/02-liveview-streaming.ex)** - LiveView streaming
+- **[liveview_agent_example.ex](https://github.com/nyo16/nous/blob/master/examples/liveview_agent_example.ex)** - Basic LiveView integration
+- **[liveview_chat_example.ex](https://github.com/nyo16/nous/blob/master/examples/liveview_chat_example.ex)** - Complete chat interface
 
 ### LiveView Chat Patterns
-- **[LiveView Chat Example](../liveview_chat_example.ex)** - Complete chat implementation
-- **[LiveView Integration Guide](../../docs/guides/liveview-integration.md)** - General integration patterns
+- **[LiveView Chat Example](https://github.com/nyo16/nous/blob/master/examples/liveview_chat_example.ex)** - Complete chat implementation
+- **[LiveView Integration Guide](liveview_integration.html)** - General integration patterns
 
 ## Advanced Streaming
 
@@ -104,7 +104,7 @@ end
 ```
 
 ### Stream Cancellation
-- **[cancellation_demo.exs](../cancellation_demo.exs)** - Cancelling long-running streams
+- **[cancellation_demo.exs](https://github.com/nyo16/nous/blob/master/examples/cancellation_demo.exs)** - Cancelling long-running streams
 - Useful for user-initiated stops or timeouts
 
 ### WebSocket Integration
@@ -171,6 +171,6 @@ end)
 ---
 
 **Next Steps:**
-- Start with [01-streaming.exs](../tutorials/02-patterns/01-streaming.exs)
-- Try [LiveView streaming](../tutorials/03-production/02-liveview-streaming.ex) for web apps
-- Read the [LiveView Integration Guide](../../docs/guides/liveview-integration.md)
+- Start with [01-streaming.exs](https://github.com/nyo16/nous/blob/master/examples/tutorials/02-patterns/01-streaming.exs)
+- Try [LiveView streaming](https://github.com/nyo16/nous/blob/master/examples/tutorials/03-production/02-liveview-streaming.ex) for web apps
+- Read the [LiveView Integration Guide](liveview_integration.html)
