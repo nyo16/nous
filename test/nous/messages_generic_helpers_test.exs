@@ -35,17 +35,17 @@ defmodule Nous.MessagesGenericHelpersTest do
 
       # Check system message
       system_msg = Enum.at(result, 0)
-      assert system_msg.role == "system"
-      assert system_msg.content == "You are a helpful assistant"
+      assert system_msg["role"] == "system"
+      assert system_msg["content"] == "You are a helpful assistant"
 
       # Check user message
       user_msg = Enum.at(result, 1)
-      assert user_msg.role == "user"
-      assert user_msg.content == "Hello, world!"
+      assert user_msg["role"] == "user"
+      assert user_msg["content"] == "Hello, world!"
 
       # Check tool return message
       tool_return_msg = Enum.at(result, 4)
-      assert tool_return_msg.role == "tool"
+      assert tool_return_msg["role"] == "tool"
     end
 
     test "converts to Anthropic format", %{messages: messages} do
@@ -95,8 +95,8 @@ defmodule Nous.MessagesGenericHelpersTest do
 
         # Should be same as OpenAI format
         openai_result = Messages.to_provider_format(messages, :openai)
-        assert Enum.at(result, 0).role == Enum.at(openai_result, 0).role
-        assert Enum.at(result, 0).content == Enum.at(openai_result, 0).content
+        assert Enum.at(result, 0)["role"] == Enum.at(openai_result, 0)["role"]
+        assert Enum.at(result, 0)["content"] == Enum.at(openai_result, 0)["content"]
       end
     end
 
@@ -613,8 +613,8 @@ defmodule Nous.MessagesGenericHelpersTest do
       result = Messages.to_provider_format(messages, :openai)
       assert length(result) == 3
 
-      # Should handle content properly - OpenAI format uses %{} maps with atom role keys
-      user_msgs = Enum.filter(result, &(Map.get(&1, :role) == "user"))
+      # Should handle content properly - OpenAI format uses %{} maps with string keys
+      user_msgs = Enum.filter(result, &(Map.get(&1, "role") == "user"))
       assert length(user_msgs) == 2
     end
   end

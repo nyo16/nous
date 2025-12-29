@@ -103,13 +103,13 @@ defmodule Nous.Models.OpenAICompatibleTest do
 
       # Check system message
       system_msg = Enum.at(openai_messages, 0)
-      assert system_msg.role == "system"
-      assert system_msg.content == "You are a helpful assistant."
+      assert system_msg["role"] == "system"
+      assert system_msg["content"] == "You are a helpful assistant."
 
       # Check user message
       user_msg = Enum.at(openai_messages, 1)
-      assert user_msg.role == "user"
-      assert user_msg.content == "What is 2+2?"
+      assert user_msg["role"] == "user"
+      assert user_msg["content"] == "What is 2+2?"
     end
 
     test "handles complex message types" do
@@ -135,7 +135,7 @@ defmodule Nous.Models.OpenAICompatibleTest do
 
       # Verify tool return message
       tool_return_msg = Enum.at(openai_messages, 2)
-      assert tool_return_msg.role == "tool"
+      assert tool_return_msg["role"] == "tool"
 
       # Verify assistant message with tool calls
       assistant_msg = Enum.at(openai_messages, 3)

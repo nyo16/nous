@@ -15,14 +15,21 @@ defmodule Nous.Models.Anthropic do
 
   require Logger
 
-  @anthropix_available Code.ensure_loaded?(Anthropix)
+  # Check if Anthropix is available at runtime (not compile-time)
+  defp anthropix_available? do
+    Code.ensure_loaded?(Anthropix)
+  end
 
-  @impl true
-  def request(model, messages, settings) do
-    unless @anthropix_available do
+  defp ensure_anthropix! do
+    unless anthropix_available?() do
       raise Errors.ConfigurationError,
         message: "anthropix dependency not available. Add {:anthropix, \"~> 0.6.2\"} to your deps."
     end
+  end
+
+  @impl true
+  def request(model, messages, settings) do
+    ensure_anthropix!()
 
     start_time = System.monotonic_time()
 
@@ -40,13 +47,15 @@ defmodule Nous.Models.Anthropic do
       Tools: #{if settings[:tools], do: length(settings[:tools]), else: 0}
     """)
 
-    client = Anthropix.init(model.api_key, client_opts)
+    # Use dynamic call to avoid compile-time dependency
+    client = apply(Anthropix, :init, [model.api_key, client_opts])
 
     # Build request parameters (this will convert messages)
     params = build_params(model, messages, settings)
 
     # Make request
-    result = case Anthropix.chat(client, params) do
+    # Use dynamic call to avoid compile-time dependency
+    result = case apply(Anthropix, :chat, [client, params]) do
       {:ok, response} ->
         {:ok, parse_response(response, model)}
 
@@ -90,10 +99,7 @@ defmodule Nous.Models.Anthropic do
 
   @impl true
   def request_stream(model, messages, settings) do
-    unless @anthropix_available do
-      raise Errors.ConfigurationError,
-        message: "anthropix dependency not available. Add {:anthropix, \"~> 0.6.2\"} to your deps."
-    end
+    ensure_anthropix!()
 
     Logger.debug("""
     Anthropic streaming request starting
@@ -103,13 +109,15 @@ defmodule Nous.Models.Anthropic do
 
     # Create Anthropix client with optional extended context
     client_opts = build_client_opts(model, settings)
-    client = Anthropix.init(model.api_key, client_opts)
+    # Use dynamic call to avoid compile-time dependency
+    client = apply(Anthropix, :init, [model.api_key, client_opts])
 
     # Enable streaming
     settings = Map.put(settings, :stream, true)
     params = build_params(model, messages, settings)
 
-    case Anthropix.chat(client, params) do
+    # Use dynamic call to avoid compile-time dependency
+    case apply(Anthropix, :chat, [client, params]) do
       {:ok, stream} ->
         Logger.info("Streaming started for Anthropic #{model.model}")
         # Transform Anthropix stream to our format

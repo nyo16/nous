@@ -9,18 +9,28 @@ defmodule Nous.Models.OpenAICompatible do
   - Groq (https://api.groq.com/openai/v1) - uses OpenaiEx
   - OpenRouter (https://openrouter.ai/api/v1) - uses OpenaiEx
   - vLLM, SGLang, Ollama, LM Studio, etc. - uses custom HTTP client
+
+  **Note:** This provider requires the optional `openai_ex` dependency for cloud providers.
+  Add it to your deps: `{:openai_ex, "~> 0.9.17"}`
+
+  For local providers (Ollama, LM Studio, vLLM), you can use the custom HTTP client
+  without OpenaiEx by setting the provider appropriately.
   """
 
   @behaviour Nous.Models.Behaviour
 
-  alias Nous.{Model, Messages, Errors}
+  alias Nous.{Messages, Errors}
   alias Nous.HTTP.OpenAIClient
-  alias OpenaiEx.Chat
 
   require Logger
 
   # Providers that work well with OpenaiEx (cloud providers with proper SSE)
   @openaiex_providers [:openai, :groq, :openrouter]
+
+  # Check if OpenaiEx is available at runtime
+  defp openaiex_available? do
+    Code.ensure_loaded?(OpenaiEx)
+  end
 
   @impl true
   def request(model, messages, settings) do
@@ -46,35 +56,17 @@ defmodule Nous.Models.OpenAICompatible do
       }
     )
 
-    # Create OpenaiEx client
-    client = Model.to_client(model)
-
     # Convert messages to OpenAI format
     openai_messages = Messages.to_openai_format(messages)
 
     # Build request parameters
     params = build_request_params(model, openai_messages, settings)
 
-    # Make request using openai_ex
-    result = case Chat.Completions.create(client, params) do
-      {:ok, response} ->
-        {:ok, Messages.from_openai_response(response)}
-
-      {:error, error} ->
-        Logger.error("""
-        OpenAI-compatible request failed
-          Provider: #{model.provider}
-          Model: #{model.model}
-          Error: #{inspect(error)}
-        """)
-
-        wrapped_error = Errors.ModelError.exception(
-          provider: model.provider,
-          message: "Request failed: #{inspect(error)}",
-          details: error
-        )
-
-        {:error, wrapped_error}
+    # Use OpenaiEx for cloud providers that support it, custom client otherwise
+    result = if model.provider in @openaiex_providers and openaiex_available?() do
+      request_with_openaiex(model, params)
+    else
+      request_with_custom_client(model, params)
     end
 
     # Emit stop or exception event
@@ -220,8 +212,9 @@ defmodule Nous.Models.OpenAICompatible do
 
   # Use OpenaiEx for cloud providers with proper SSE support
   defp request_stream_openaiex(model, params) do
-    client = Model.to_client(model)
-    Chat.Completions.create(client, params)
+    client = create_openaiex_client(model)
+    # Use dynamic call to avoid compile-time dependency
+    apply(OpenaiEx.Chat.Completions, :create, [client, params])
   end
 
   # Use custom HTTP client for local/custom providers
@@ -233,6 +226,82 @@ defmodule Nous.Models.OpenAICompatible do
       timeout: model.receive_timeout,
       finch_name: Application.get_env(:nous, :finch, Nous.Finch)
     )
+  end
+
+  # Non-streaming request using OpenaiEx
+  defp request_with_openaiex(model, params) do
+    client = create_openaiex_client(model)
+    # Use dynamic call to avoid compile-time dependency
+    case apply(OpenaiEx.Chat.Completions, :create, [client, params]) do
+      {:ok, response} ->
+        {:ok, Messages.from_openai_response(response)}
+
+      {:error, error} ->
+        Logger.error("""
+        OpenAI-compatible request failed
+          Provider: #{model.provider}
+          Model: #{model.model}
+          Error: #{inspect(error)}
+        """)
+
+        wrapped_error = Errors.ModelError.exception(
+          provider: model.provider,
+          message: "Request failed: #{inspect(error)}",
+          details: error
+        )
+
+        {:error, wrapped_error}
+    end
+  end
+
+  # Non-streaming request using custom HTTP client
+  defp request_with_custom_client(model, params) do
+    case OpenAIClient.chat_completion(
+      model.base_url,
+      model.api_key,
+      params,
+      timeout: model.receive_timeout,
+      finch_name: Application.get_env(:nous, :finch, Nous.Finch)
+    ) do
+      {:ok, response} ->
+        {:ok, Messages.from_openai_response(response)}
+
+      {:error, error} ->
+        Logger.error("""
+        OpenAI-compatible request failed
+          Provider: #{model.provider}
+          Model: #{model.model}
+          Error: #{inspect(error)}
+        """)
+
+        wrapped_error = Errors.ModelError.exception(
+          provider: model.provider,
+          message: "Request failed: #{inspect(error)}",
+          details: error
+        )
+
+        {:error, wrapped_error}
+    end
+  end
+
+  # Create OpenaiEx client dynamically
+  defp create_openaiex_client(model) do
+    client = apply(OpenaiEx, :new, [
+      model.api_key || "not-needed",
+      model.organization
+    ])
+
+    # Override base_url if different from default
+    client = if model.base_url do
+      Map.put(client, :base_url, model.base_url)
+    else
+      client
+    end
+
+    # Set finch pool name and receive timeout
+    client
+    |> Map.put(:finch_name, Application.get_env(:nous, :finch, Nous.Finch))
+    |> Map.put(:receive_timeout, model.receive_timeout)
   end
 
   @impl true

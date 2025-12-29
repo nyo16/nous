@@ -127,8 +127,8 @@ defmodule Nous.MessagesTest do
 
       [result] = Messages.to_openai_format(messages)
 
-      assert result.role == "system"
-      assert result.content == "Be helpful"
+      assert result["role"] == "system"
+      assert result["content"] == "Be helpful"
     end
 
     test "converts user message with text" do
@@ -136,8 +136,8 @@ defmodule Nous.MessagesTest do
 
       [result] = Messages.to_openai_format(messages)
 
-      assert result.role == "user"
-      assert result.content == "Hello!"
+      assert result["role"] == "user"
+      assert result["content"] == "Hello!"
     end
 
     test "converts user message with multi-modal content" do
@@ -152,9 +152,9 @@ defmodule Nous.MessagesTest do
 
       [result] = Messages.to_openai_format(messages)
 
-      assert result.role == "user"
-      assert is_list(result.content)
-      assert length(result.content) == 2
+      assert result["role"] == "user"
+      assert is_list(result["content"])
+      assert length(result["content"]) == 2
     end
 
     test "converts tool message" do
@@ -162,9 +162,9 @@ defmodule Nous.MessagesTest do
 
       [result] = Messages.to_openai_format(messages)
 
-      assert result.role == "tool"
-      assert result.tool_call_id == "call_123"
-      assert is_binary(result.content)
+      assert result["role"] == "tool"
+      assert result["tool_call_id"] == "call_123"
+      assert is_binary(result["content"])
     end
 
     test "converts legacy assistant response with text only" do
@@ -178,8 +178,8 @@ defmodule Nous.MessagesTest do
       message = Message.from_legacy(legacy_message)
       [result] = Messages.to_openai_format([message])
 
-      assert result.role == "assistant"
-      assert result.content == "Hello!"
+      assert result["role"] == "assistant"
+      assert result["content"] == "Hello!"
     end
 
     test "converts legacy assistant response with tool calls" do
@@ -219,9 +219,9 @@ defmodule Nous.MessagesTest do
       results = Messages.to_openai_format(messages)
 
       assert length(results) == 3
-      assert Enum.at(results, 0).role == "system"
-      assert Enum.at(results, 1).role == "user"
-      assert Enum.at(results, 2).role == "assistant"
+      assert Enum.at(results, 0)["role"] == "system"
+      assert Enum.at(results, 1)["role"] == "user"
+      assert Enum.at(results, 2)["role"] == "assistant"
     end
   end
 

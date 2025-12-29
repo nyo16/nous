@@ -93,6 +93,9 @@ defmodule Nous.Model do
   Creates an OpenaiEx.Client configured with the model's
   base URL, API key, and HTTP options.
 
+  **Note:** This function requires the optional `openai_ex` dependency.
+  Add it to your deps: `{:openai_ex, "~> 0.9.17"}`
+
   ## Example
 
       model = Model.new(:openai, "gpt-4")
@@ -102,27 +105,29 @@ defmodule Nous.Model do
   """
   @spec to_client(t()) :: struct()
   def to_client(%__MODULE__{} = model) do
-    # OpenaiEx.new(token, organization \\ nil, project \\ nil)
-    # It uses simple positional arguments, not keyword opts
-    # We'll need to set base_url, finch, and receive_timeout separately
+    unless Code.ensure_loaded?(OpenaiEx) do
+      raise Nous.Errors.ConfigurationError,
+        message: "openai_ex dependency not available. Add {:openai_ex, \"~> 0.9.17\"} to your deps."
+    end
 
-    client = OpenaiEx.new(
+    # OpenaiEx.new(token, organization \\ nil, project \\ nil)
+    # Use dynamic call to avoid compile-time dependency
+    client = apply(OpenaiEx, :new, [
       model.api_key || "not-needed",
       model.organization
-    )
+    ])
 
     # Override base_url if different from default
     client = if model.base_url do
-      %{client | base_url: model.base_url}
+      Map.put(client, :base_url, model.base_url)
     else
       client
     end
 
     # Set finch pool name and receive timeout
-    %{client |
-      finch_name: Application.get_env(:nous, :finch, Nous.Finch),
-      receive_timeout: model.receive_timeout
-    }
+    client
+    |> Map.put(:finch_name, Application.get_env(:nous, :finch, Nous.Finch))
+    |> Map.put(:receive_timeout, model.receive_timeout)
   end
 
   # Private functions
