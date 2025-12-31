@@ -154,9 +154,27 @@ defmodule Nous.ProviderTest do
   # Real Provider Tests
   # ============================================================================
 
+  describe "Nous.Providers.OpenAICompatible" do
+    test "has correct provider configuration" do
+      Code.ensure_loaded!(Nous.Providers.OpenAICompatible)
+
+      assert Nous.Providers.OpenAICompatible.provider_id() == :openai_compatible
+      assert Nous.Providers.OpenAICompatible.default_base_url() == "https://api.openai.com/v1"
+      assert Nous.Providers.OpenAICompatible.default_env_key() == "OPENAI_API_KEY"
+    end
+
+    test "implements required callbacks" do
+      Code.ensure_loaded!(Nous.Providers.OpenAICompatible)
+
+      functions = Nous.Providers.OpenAICompatible.__info__(:functions)
+      assert {:chat, 1} in functions or {:chat, 2} in functions
+      assert {:chat_stream, 1} in functions or {:chat_stream, 2} in functions
+      assert {:count_tokens, 1} in functions
+    end
+  end
+
   describe "Nous.Providers.OpenAI" do
     test "has correct provider configuration" do
-      # Ensure module is loaded
       Code.ensure_loaded!(Nous.Providers.OpenAI)
 
       assert Nous.Providers.OpenAI.provider_id() == :openai
@@ -167,11 +185,27 @@ defmodule Nous.ProviderTest do
     test "implements required callbacks" do
       Code.ensure_loaded!(Nous.Providers.OpenAI)
 
-      # Both arities should be exported due to default args
       functions = Nous.Providers.OpenAI.__info__(:functions)
       assert {:chat, 1} in functions or {:chat, 2} in functions
       assert {:chat_stream, 1} in functions or {:chat_stream, 2} in functions
       assert {:count_tokens, 1} in functions
+    end
+
+    test "identifies reasoning models" do
+      Code.ensure_loaded!(Nous.Providers.OpenAI)
+
+      # Reasoning models
+      assert Nous.Providers.OpenAI.reasoning_model?("o1")
+      assert Nous.Providers.OpenAI.reasoning_model?("o1-mini")
+      assert Nous.Providers.OpenAI.reasoning_model?("o1-preview")
+      assert Nous.Providers.OpenAI.reasoning_model?("o3")
+      assert Nous.Providers.OpenAI.reasoning_model?("o3-mini")
+
+      # Non-reasoning models
+      refute Nous.Providers.OpenAI.reasoning_model?("gpt-4")
+      refute Nous.Providers.OpenAI.reasoning_model?("gpt-4o")
+      refute Nous.Providers.OpenAI.reasoning_model?("gpt-3.5-turbo")
+      refute Nous.Providers.OpenAI.reasoning_model?(nil)
     end
   end
 

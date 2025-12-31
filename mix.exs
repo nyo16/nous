@@ -120,6 +120,7 @@ defmodule Nous.MixProject do
           Nous.Provider,
           Nous.Providers.HTTP,
           Nous.Providers.OpenAI,
+          Nous.Providers.OpenAICompatible,
           Nous.Providers.Anthropic,
           Nous.Providers.Gemini
         ],

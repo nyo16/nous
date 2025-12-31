@@ -15,7 +15,7 @@ defmodule Nous.Models.OpenAICompatible do
   @behaviour Nous.Models.Behaviour
 
   alias Nous.{Messages, Errors}
-  alias Nous.Providers.OpenAI, as: OpenAIProvider
+  alias Nous.Providers.OpenAICompatible, as: OpenAIProvider
 
   require Logger
 

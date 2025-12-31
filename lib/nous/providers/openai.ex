@@ -1,36 +1,47 @@
 defmodule Nous.Providers.OpenAI do
   @moduledoc """
-  OpenAI-compatible provider implementation.
+  OpenAI-specific provider implementation.
 
-  Supports OpenAI and all OpenAI-compatible APIs:
-  - OpenAI (api.openai.com)
-  - Groq (api.groq.com)
-  - Together (api.together.xyz)
-  - OpenRouter (openrouter.ai)
-  - LM Studio (localhost)
-  - Ollama (localhost)
-  - vLLM (localhost)
-  - SGLang (localhost)
-  - Any other OpenAI-compatible endpoint
+  Extends the generic OpenAI-compatible provider with OpenAI-specific features:
+  - Structured outputs (response_format with json_schema)
+  - Predicted outputs
+  - Reasoning models (o1, o3)
+  - Future: Responses API, Assistants API, etc.
+
+  For generic OpenAI-compatible endpoints (Groq, Together, LM Studio, etc.),
+  use `Nous.Providers.OpenAICompatible` instead.
 
   ## Usage
 
-      # Using defaults (OpenAI)
+      # Basic chat
       {:ok, response} = Nous.Providers.OpenAI.chat(%{
-        model: "gpt-4",
+        model: "gpt-4o",
         messages: [%{"role" => "user", "content" => "Hello"}]
       })
 
-      # Using a different provider
-      {:ok, response} = Nous.Providers.OpenAI.chat(
-        %{model: "llama-3.1-70b", messages: messages},
-        base_url: "https://api.groq.com/openai/v1",
-        api_key: System.get_env("GROQ_API_KEY")
-      )
+      # With structured output
+      {:ok, response} = Nous.Providers.OpenAI.chat(%{
+        model: "gpt-4o",
+        messages: messages,
+        response_format: %{
+          type: "json_schema",
+          json_schema: %{
+            name: "response",
+            schema: %{type: "object", properties: %{answer: %{type: "string"}}}
+          }
+        }
+      })
 
       # Streaming
       {:ok, stream} = Nous.Providers.OpenAI.chat_stream(params)
       Enum.each(stream, fn event -> IO.inspect(event) end)
+
+  ## Configuration
+
+      # In config.exs
+      config :nous, :openai,
+        api_key: "sk-...",
+        organization: "org-..."  # optional
   """
 
   use Nous.Provider,
@@ -43,26 +54,68 @@ defmodule Nous.Providers.OpenAI do
   @default_timeout 60_000
   @streaming_timeout 120_000
 
+  # Reasoning models have different requirements
+  @reasoning_models ~w(o1 o1-mini o1-preview o3 o3-mini)
+
   @impl Nous.Provider
   def chat(params, opts \\ []) do
     url = "#{base_url(opts)}/chat/completions"
     headers = build_headers(api_key(opts), opts)
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
+    # Handle reasoning model specifics
+    params = maybe_adjust_for_reasoning(params)
+
     HTTP.post(url, params, headers, timeout: timeout)
   end
 
   @impl Nous.Provider
   def chat_stream(params, opts \\ []) do
-    url = "#{base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts), opts)
-    timeout = Keyword.get(opts, :timeout, @streaming_timeout)
-    finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
+    model = Map.get(params, "model") || Map.get(params, :model) || ""
 
-    # Ensure stream is enabled
-    params = Map.put(params, "stream", true)
+    # Reasoning models don't support streaming (as of early 2025)
+    if reasoning_model?(model) do
+      {:error, %{reason: :streaming_not_supported, message: "Reasoning models (#{model}) don't support streaming"}}
+    else
+      url = "#{base_url(opts)}/chat/completions"
+      headers = build_headers(api_key(opts), opts)
+      timeout = Keyword.get(opts, :timeout, @streaming_timeout)
+      finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
 
-    HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
+      params = Map.put(params, "stream", true)
+
+      HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
+    end
+  end
+
+  @doc """
+  Check if a model is a reasoning model (o1, o3 series).
+
+  Reasoning models have different API requirements:
+  - No streaming support
+  - No system messages (use developer messages instead)
+  - No temperature parameter
+  """
+  @spec reasoning_model?(String.t()) :: boolean()
+  def reasoning_model?(model) when is_binary(model) do
+    Enum.any?(@reasoning_models, &String.starts_with?(model, &1))
+  end
+  def reasoning_model?(_), do: false
+
+  # Adjust parameters for reasoning models
+  defp maybe_adjust_for_reasoning(params) do
+    model = Map.get(params, "model") || Map.get(params, :model) || ""
+
+    if reasoning_model?(model) do
+      params
+      |> Map.delete("temperature")
+      |> Map.delete(:temperature)
+      |> Map.delete("top_p")
+      |> Map.delete(:top_p)
+      # Note: System messages should be converted to developer messages by the caller
+    else
+      params
+    end
   end
 
   # Build headers for the request
@@ -71,8 +124,8 @@ defmodule Nous.Providers.OpenAI do
       {"content-type", "application/json"}
     ]
 
-    # Add authorization if API key provided
-    headers = if api_key && api_key != "" && api_key != "not-needed" do
+    # Add authorization
+    headers = if api_key && api_key != "" do
       [{"authorization", "Bearer #{api_key}"} | headers]
     else
       headers
@@ -84,6 +137,10 @@ defmodule Nous.Providers.OpenAI do
       org -> [{"openai-organization", org} | headers]
     end
 
-    headers
+    # Add project header if provided (for project-scoped API keys)
+    case Keyword.get(opts, :project) do
+      nil -> headers
+      project -> [{"openai-project", project} | headers]
+    end
   end
 end
