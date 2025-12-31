@@ -18,31 +18,31 @@ defmodule Nous.Telemetry do
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{agent_name: string, model_provider: atom, kind: atom, reason: term, stacktrace: list}`
 
-  ## Model Events
+  ## Provider Events
 
-    * `[:nous, :model, :request, :start]` - Dispatched before calling model API
+    * `[:nous, :provider, :request, :start]` - Dispatched before calling provider API
       * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
       * Metadata: `%{provider: atom, model_name: string, message_count: integer}`
 
-    * `[:nous, :model, :request, :stop]` - Dispatched after model responds
+    * `[:nous, :provider, :request, :stop]` - Dispatched after provider responds
       * Measurement: `%{duration: native_time, input_tokens: integer, output_tokens: integer, total_tokens: integer}`
       * Metadata: `%{provider: atom, model_name: string, has_tool_calls: boolean}`
 
-    * `[:nous, :model, :request, :exception]` - Dispatched when model request fails
+    * `[:nous, :provider, :request, :exception]` - Dispatched when provider request fails
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string, kind: atom, reason: term}`
 
-  ## Model Streaming Events
+  ## Provider Streaming Events
 
-    * `[:nous, :model, :stream, :start]` - Dispatched before starting a streaming request
+    * `[:nous, :provider, :stream, :start]` - Dispatched before starting a streaming request
       * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
       * Metadata: `%{provider: atom, model_name: string, message_count: integer}`
 
-    * `[:nous, :model, :stream, :connected]` - Dispatched when stream connection is established
+    * `[:nous, :provider, :stream, :connected]` - Dispatched when stream connection is established
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string}`
 
-    * `[:nous, :model, :stream, :exception]` - Dispatched when streaming request fails
+    * `[:nous, :provider, :stream, :exception]` - Dispatched when streaming request fails
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string, kind: atom, reason: term}`
 
@@ -95,7 +95,7 @@ defmodule Nous.Telemetry do
 
   This handler logs:
   - Agent runs (info level)
-  - Model requests (debug level)
+  - Provider requests (debug level)
   - Tool executions (debug level)
   - Exceptions (error level)
 
@@ -109,12 +109,12 @@ defmodule Nous.Telemetry do
       [:nous, :agent, :run, :start],
       [:nous, :agent, :run, :stop],
       [:nous, :agent, :run, :exception],
-      [:nous, :model, :request, :start],
-      [:nous, :model, :request, :stop],
-      [:nous, :model, :request, :exception],
-      [:nous, :model, :stream, :start],
-      [:nous, :model, :stream, :connected],
-      [:nous, :model, :stream, :exception],
+      [:nous, :provider, :request, :start],
+      [:nous, :provider, :request, :stop],
+      [:nous, :provider, :request, :exception],
+      [:nous, :provider, :stream, :start],
+      [:nous, :provider, :stream, :connected],
+      [:nous, :provider, :stream, :exception],
       [:nous, :tool, :execute, :start],
       [:nous, :tool, :execute, :stop],
       [:nous, :tool, :execute, :exception]
@@ -159,33 +159,33 @@ defmodule Nous.Telemetry do
     )
   end
 
-  defp handle_event([:nous, :model, :request, :start], _measurements, metadata, _config) do
-    Logger.debug("[Nous] Model request to #{metadata.provider}:#{metadata.model_name}")
+  defp handle_event([:nous, :provider, :request, :start], _measurements, metadata, _config) do
+    Logger.debug("[Nous] Provider request to #{metadata.provider}:#{metadata.model_name}")
   end
 
-  defp handle_event([:nous, :model, :request, :stop], measurements, metadata, _config) do
+  defp handle_event([:nous, :provider, :request, :stop], measurements, metadata, _config) do
     duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
 
     Logger.debug(
-      "[Nous] Model #{metadata.provider}:#{metadata.model_name} responded in #{duration_ms}ms " <>
+      "[Nous] Provider #{metadata.provider}:#{metadata.model_name} responded in #{duration_ms}ms " <>
         "(#{measurements.total_tokens} tokens)"
     )
   end
 
-  defp handle_event([:nous, :model, :request, :exception], measurements, metadata, _config) do
+  defp handle_event([:nous, :provider, :request, :exception], measurements, metadata, _config) do
     duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
 
     Logger.error(
-      "[Nous] Model #{metadata.provider}:#{metadata.model_name} failed after #{duration_ms}ms: " <>
+      "[Nous] Provider #{metadata.provider}:#{metadata.model_name} failed after #{duration_ms}ms: " <>
         "#{inspect(metadata.reason)}"
     )
   end
 
-  defp handle_event([:nous, :model, :stream, :start], _measurements, metadata, _config) do
+  defp handle_event([:nous, :provider, :stream, :start], _measurements, metadata, _config) do
     Logger.debug("[Nous] Stream request to #{metadata.provider}:#{metadata.model_name}")
   end
 
-  defp handle_event([:nous, :model, :stream, :connected], measurements, metadata, _config) do
+  defp handle_event([:nous, :provider, :stream, :connected], measurements, metadata, _config) do
     duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
 
     Logger.debug(
@@ -193,7 +193,7 @@ defmodule Nous.Telemetry do
     )
   end
 
-  defp handle_event([:nous, :model, :stream, :exception], measurements, metadata, _config) do
+  defp handle_event([:nous, :provider, :stream, :exception], measurements, metadata, _config) do
     duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
 
     Logger.error(

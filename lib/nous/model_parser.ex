@@ -13,7 +13,8 @@ defmodule Nous.ModelParser do
     * `"mistral:mistral-large-latest"` - Mistral models
     * `"ollama:llama2"` - Local Ollama
     * `"lmstudio:qwen/qwen3-30b-a3b-2507"` - Local LM Studio
-    * `"vllm:qwen/qwen3-30b"` - vLLM server (requires `:base_url`)
+    * `"vllm:qwen/qwen3-30b"` - vLLM server
+    * `"sglang:meta-llama/Llama-3-8B"` - SGLang server
     * `"openrouter:anthropic/claude-3.5-sonnet"` - OpenRouter
     * `"together:meta-llama/Llama-3-70b-chat-hf"` - Together AI
     * `"custom:my-model"` - Custom endpoint (requires `:base_url` option)
@@ -110,6 +111,10 @@ defmodule Nous.ModelParser do
     Model.new(:vllm, model_name, opts)
   end
 
+  def parse("sglang:" <> model_name, opts) do
+    Model.new(:sglang, model_name, opts)
+  end
+
   def parse("custom:" <> model_name, opts) do
     unless Keyword.has_key?(opts, :base_url) do
       raise ArgumentError,
@@ -124,6 +129,6 @@ defmodule Nous.ModelParser do
     raise ArgumentError,
           "Invalid model string format: #{inspect(invalid_string)}. " <>
             "Expected format: \"provider:model-name\". " <>
-            "Supported providers: openai, anthropic, gemini, groq, mistral, ollama, lmstudio, openrouter, together, vllm, custom"
+            "Supported providers: openai, anthropic, gemini, groq, mistral, ollama, lmstudio, openrouter, together, vllm, sglang, custom"
   end
 end
