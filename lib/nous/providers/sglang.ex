@@ -19,8 +19,8 @@ defmodule Nous.Providers.SGLang do
 
   ## Usage
 
-      # Via ModelParser
-      model = Nous.ModelParser.parse("sglang:meta-llama/Llama-3-8B-Instruct")
+      # Via Model.parse
+      model = Nous.Model.parse("sglang:meta-llama/Llama-3-8B-Instruct")
 
       # Direct provider usage
       {:ok, response} = Nous.Providers.SGLang.chat(%{

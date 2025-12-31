@@ -108,7 +108,6 @@ defmodule Nous.MixProject do
         ],
         "Model Configuration": [
           Nous.Model,
-          Nous.ModelParser,
           Nous.ModelDispatcher
         ],
         Providers: [

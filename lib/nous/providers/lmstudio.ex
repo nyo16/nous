@@ -18,8 +18,8 @@ defmodule Nous.Providers.LMStudio do
 
   ## Usage
 
-      # Via ModelParser
-      model = Nous.ModelParser.parse("lmstudio:my-local-model")
+      # Via Model.parse
+      model = Nous.Model.parse("lmstudio:my-local-model")
 
       # Direct provider usage
       {:ok, response} = Nous.Providers.LMStudio.chat(%{

@@ -20,8 +20,8 @@ defmodule Nous.Providers.Mistral do
 
   ## Usage
 
-      # Via ModelParser
-      model = Nous.ModelParser.parse("mistral:mistral-large-latest")
+      # Via Model.parse
+      model = Nous.Model.parse("mistral:mistral-large-latest")
 
       # Direct provider usage
       {:ok, response} = Nous.Providers.Mistral.chat(%{

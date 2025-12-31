@@ -18,8 +18,8 @@ defmodule Nous.Providers.VLLM do
 
   ## Usage
 
-      # Via ModelParser
-      model = Nous.ModelParser.parse("vllm:meta-llama/Llama-3-8B-Instruct")
+      # Via Model.parse
+      model = Nous.Model.parse("vllm:meta-llama/Llama-3-8B-Instruct")
 
       # Direct provider usage
       {:ok, response} = Nous.Providers.VLLM.chat(%{
