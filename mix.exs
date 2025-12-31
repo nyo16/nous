@@ -106,23 +106,22 @@ defmodule Nous.MixProject do
           Nous.AgentServer,
           Nous.RunContext
         ],
-        "Model Providers": [
+        "Model Configuration": [
           Nous.Model,
           Nous.ModelParser,
-          Nous.ModelDispatcher,
-          Nous.Models.Behaviour,
-          Nous.Models.OpenAICompatible,
-          Nous.Models.Anthropic,
-          Nous.Models.Gemini,
-          Nous.Models.Mistral
+          Nous.ModelDispatcher
         ],
-        "HTTP Providers": [
+        Providers: [
           Nous.Provider,
           Nous.Providers.HTTP,
           Nous.Providers.OpenAI,
           Nous.Providers.OpenAICompatible,
           Nous.Providers.Anthropic,
-          Nous.Providers.Gemini
+          Nous.Providers.Gemini,
+          Nous.Providers.Mistral,
+          Nous.Providers.LMStudio,
+          Nous.Providers.VLLM,
+          Nous.Providers.SGLang
         ],
         "Tool System": [
           Nous.Tool,

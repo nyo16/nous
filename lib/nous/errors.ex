@@ -42,6 +42,8 @@ defmodule Nous.Errors do
     Error from the model provider API.
 
     Raised when the underlying model API returns an error.
+
+    Note: Consider using `ProviderError` for new code.
     """
 
     defexception [:message, :provider, :status_code, :details]
@@ -62,6 +64,47 @@ defmodule Nous.Errors do
       message =
         opts[:message] ||
           "Model request failed" <>
+            if(provider, do: " (#{provider})", else: "") <>
+            if(status_code, do: " [#{status_code}]", else: "")
+
+      %__MODULE__{
+        message: message,
+        provider: provider,
+        status_code: status_code,
+        details: details
+      }
+    end
+
+    def exception(message) when is_binary(message) do
+      %__MODULE__{message: message}
+    end
+  end
+
+  defmodule ProviderError do
+    @moduledoc """
+    Error from an LLM provider.
+
+    Raised when a provider API call fails.
+    """
+
+    defexception [:message, :provider, :status_code, :details]
+
+    @type t :: %__MODULE__{
+            message: String.t(),
+            provider: atom() | nil,
+            status_code: integer() | nil,
+            details: any()
+          }
+
+    @impl true
+    def exception(opts) when is_list(opts) do
+      provider = Keyword.get(opts, :provider)
+      status_code = Keyword.get(opts, :status_code)
+      details = Keyword.get(opts, :details)
+
+      message =
+        opts[:message] ||
+          "Provider request failed" <>
             if(provider, do: " (#{provider})", else: "") <>
             if(status_code, do: " [#{status_code}]", else: "")
 

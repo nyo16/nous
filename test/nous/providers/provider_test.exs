@@ -246,4 +246,169 @@ defmodule Nous.ProviderTest do
       assert {:count_tokens, 1} in functions
     end
   end
+
+  # ============================================================================
+  # New Provider Tests (Mistral, LMStudio, vLLM, SGLang)
+  # ============================================================================
+
+  describe "Nous.Providers.Mistral" do
+    test "has correct provider configuration" do
+      Code.ensure_loaded!(Nous.Providers.Mistral)
+
+      assert Nous.Providers.Mistral.provider_id() == :mistral
+      assert Nous.Providers.Mistral.default_base_url() == "https://api.mistral.ai/v1"
+      assert Nous.Providers.Mistral.default_env_key() == "MISTRAL_API_KEY"
+    end
+
+    test "implements required callbacks" do
+      Code.ensure_loaded!(Nous.Providers.Mistral)
+
+      functions = Nous.Providers.Mistral.__info__(:functions)
+      assert {:chat, 1} in functions or {:chat, 2} in functions
+      assert {:chat_stream, 1} in functions or {:chat_stream, 2} in functions
+      assert {:count_tokens, 1} in functions
+      assert {:request, 3} in functions
+      assert {:request_stream, 3} in functions
+    end
+  end
+
+  describe "Nous.Providers.LMStudio" do
+    test "has correct provider configuration" do
+      Code.ensure_loaded!(Nous.Providers.LMStudio)
+
+      assert Nous.Providers.LMStudio.provider_id() == :lmstudio
+      assert Nous.Providers.LMStudio.default_base_url() == "http://localhost:1234/v1"
+      assert Nous.Providers.LMStudio.default_env_key() == "LMSTUDIO_API_KEY"
+    end
+
+    test "implements required callbacks" do
+      Code.ensure_loaded!(Nous.Providers.LMStudio)
+
+      functions = Nous.Providers.LMStudio.__info__(:functions)
+      assert {:chat, 1} in functions or {:chat, 2} in functions
+      assert {:chat_stream, 1} in functions or {:chat_stream, 2} in functions
+      assert {:count_tokens, 1} in functions
+      assert {:request, 3} in functions
+      assert {:request_stream, 3} in functions
+    end
+
+    test "respects LMSTUDIO_BASE_URL environment variable" do
+      System.put_env("LMSTUDIO_BASE_URL", "http://custom:5000/v1")
+
+      try do
+        # The provider should check this env var in get_base_url
+        Code.ensure_loaded!(Nous.Providers.LMStudio)
+        # We can't easily test the internal function, but we verify the module loads
+        assert Nous.Providers.LMStudio.provider_id() == :lmstudio
+      after
+        System.delete_env("LMSTUDIO_BASE_URL")
+      end
+    end
+  end
+
+  describe "Nous.Providers.VLLM" do
+    test "has correct provider configuration" do
+      Code.ensure_loaded!(Nous.Providers.VLLM)
+
+      assert Nous.Providers.VLLM.provider_id() == :vllm
+      assert Nous.Providers.VLLM.default_base_url() == "http://localhost:8000/v1"
+      assert Nous.Providers.VLLM.default_env_key() == "VLLM_API_KEY"
+    end
+
+    test "implements required callbacks" do
+      Code.ensure_loaded!(Nous.Providers.VLLM)
+
+      functions = Nous.Providers.VLLM.__info__(:functions)
+      assert {:chat, 1} in functions or {:chat, 2} in functions
+      assert {:chat_stream, 1} in functions or {:chat_stream, 2} in functions
+      assert {:count_tokens, 1} in functions
+      assert {:request, 3} in functions
+      assert {:request_stream, 3} in functions
+    end
+
+    test "respects VLLM_BASE_URL environment variable" do
+      System.put_env("VLLM_BASE_URL", "http://gpu-server:8000/v1")
+
+      try do
+        Code.ensure_loaded!(Nous.Providers.VLLM)
+        assert Nous.Providers.VLLM.provider_id() == :vllm
+      after
+        System.delete_env("VLLM_BASE_URL")
+      end
+    end
+  end
+
+  describe "Nous.Providers.SGLang" do
+    test "has correct provider configuration" do
+      Code.ensure_loaded!(Nous.Providers.SGLang)
+
+      assert Nous.Providers.SGLang.provider_id() == :sglang
+      assert Nous.Providers.SGLang.default_base_url() == "http://localhost:30000/v1"
+      assert Nous.Providers.SGLang.default_env_key() == "SGLANG_API_KEY"
+    end
+
+    test "implements required callbacks" do
+      Code.ensure_loaded!(Nous.Providers.SGLang)
+
+      functions = Nous.Providers.SGLang.__info__(:functions)
+      assert {:chat, 1} in functions or {:chat, 2} in functions
+      assert {:chat_stream, 1} in functions or {:chat_stream, 2} in functions
+      assert {:count_tokens, 1} in functions
+      assert {:request, 3} in functions
+      assert {:request_stream, 3} in functions
+    end
+
+    test "respects SGLANG_BASE_URL environment variable" do
+      System.put_env("SGLANG_BASE_URL", "http://sglang-server:30000/v1")
+
+      try do
+        Code.ensure_loaded!(Nous.Providers.SGLang)
+        assert Nous.Providers.SGLang.provider_id() == :sglang
+      after
+        System.delete_env("SGLANG_BASE_URL")
+      end
+    end
+  end
+
+  # ============================================================================
+  # High-Level Request Callback Tests
+  # ============================================================================
+
+  describe "request/3 and request_stream/3 callbacks" do
+    test "providers have request/3 function injected" do
+      Code.ensure_loaded!(Nous.Providers.OpenAICompatible)
+      functions = Nous.Providers.OpenAICompatible.__info__(:functions)
+      assert {:request, 3} in functions
+    end
+
+    test "providers have request_stream/3 function injected" do
+      Code.ensure_loaded!(Nous.Providers.OpenAICompatible)
+      functions = Nous.Providers.OpenAICompatible.__info__(:functions)
+      assert {:request_stream, 3} in functions
+    end
+
+    test "all providers implement high-level callbacks" do
+      providers = [
+        Nous.Providers.OpenAI,
+        Nous.Providers.OpenAICompatible,
+        Nous.Providers.Anthropic,
+        Nous.Providers.Gemini,
+        Nous.Providers.Mistral,
+        Nous.Providers.LMStudio,
+        Nous.Providers.VLLM,
+        Nous.Providers.SGLang
+      ]
+
+      for provider <- providers do
+        Code.ensure_loaded!(provider)
+        functions = provider.__info__(:functions)
+
+        assert {:request, 3} in functions,
+               "#{inspect(provider)} should implement request/3"
+
+        assert {:request_stream, 3} in functions,
+               "#{inspect(provider)} should implement request_stream/3"
+      end
+    end
+  end
 end

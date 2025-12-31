@@ -205,12 +205,14 @@ defmodule Nous.Messages do
   def to_provider_format(messages, provider) when is_list(messages) do
     case provider do
       :openai -> to_openai_format(messages)
+      :openai_compatible -> to_openai_format(messages)
       :groq -> to_openai_format(messages)
       :lmstudio -> to_openai_format(messages)
       :ollama -> to_openai_format(messages)
       :openrouter -> to_openai_format(messages)
       :together -> to_openai_format(messages)
       :vllm -> to_openai_format(messages)
+      :sglang -> to_openai_format(messages)
       :anthropic -> to_anthropic_format(messages)
       :gemini -> to_gemini_format(messages)
       :mistral -> to_openai_format(messages)
@@ -219,7 +221,7 @@ defmodule Nous.Messages do
         raise ArgumentError, """
         Unsupported provider: #{inspect(provider)}
 
-        Supported providers: :openai, :groq, :lmstudio, :anthropic, :gemini, :mistral
+        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :vllm, :sglang, :anthropic, :gemini, :mistral
         """
     end
   end
@@ -288,12 +290,14 @@ defmodule Nous.Messages do
   def from_provider_response(response, provider) when is_map(response) do
     case provider do
       :openai -> from_openai_response(response)
+      :openai_compatible -> from_openai_response(response)
       :groq -> from_openai_response(response)
       :lmstudio -> from_openai_response(response)
       :ollama -> from_openai_response(response)
       :openrouter -> from_openai_response(response)
       :together -> from_openai_response(response)
       :vllm -> from_openai_response(response)
+      :sglang -> from_openai_response(response)
       :anthropic -> from_anthropic_response(response)
       :gemini -> from_gemini_response(response)
       :mistral -> from_openai_response(response)
@@ -302,7 +306,7 @@ defmodule Nous.Messages do
         raise ArgumentError, """
         Unsupported provider: #{inspect(provider)}
 
-        Supported providers: :openai, :groq, :lmstudio, :anthropic, :gemini, :mistral
+        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :vllm, :sglang, :anthropic, :gemini, :mistral
         """
     end
   end
