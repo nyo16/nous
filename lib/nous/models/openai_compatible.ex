@@ -2,35 +2,22 @@ defmodule Nous.Models.OpenAICompatible do
   @moduledoc """
   OpenAI-compatible model implementation.
 
-  Uses OpenaiEx for official OpenAI, and custom Req-based client for other providers.
+  Works with any server that implements the OpenAI API:
+  - OpenAI (https://api.openai.com/v1)
+  - Groq (https://api.groq.com/openai/v1)
+  - OpenRouter (https://openrouter.ai/api/v1)
+  - Together (https://api.together.xyz/v1)
+  - vLLM, SGLang, Ollama, LM Studio, etc.
 
-  This implementation works with any server that implements the OpenAI API:
-  - OpenAI (https://api.openai.com/v1) - uses OpenaiEx
-  - Groq (https://api.groq.com/openai/v1) - uses OpenaiEx
-  - OpenRouter (https://openrouter.ai/api/v1) - uses OpenaiEx
-  - vLLM, SGLang, Ollama, LM Studio, etc. - uses custom HTTP client
-
-  **Note:** This provider requires the optional `openai_ex` dependency for cloud providers.
-  Add it to your deps: `{:openai_ex, "~> 0.9.17"}`
-
-  For local providers (Ollama, LM Studio, vLLM), you can use the custom HTTP client
-  without OpenaiEx by setting the provider appropriately.
+  Uses pure Req/Finch HTTP clients via `Nous.Providers.OpenAI`.
   """
 
   @behaviour Nous.Models.Behaviour
 
   alias Nous.{Messages, Errors}
-  alias Nous.HTTP.OpenAIClient
+  alias Nous.Providers.OpenAI, as: OpenAIProvider
 
   require Logger
-
-  # Providers that work well with OpenaiEx (cloud providers with proper SSE)
-  @openaiex_providers [:openai, :groq, :openrouter]
-
-  # Check if OpenaiEx is available at runtime
-  defp openaiex_available? do
-    Code.ensure_loaded?(OpenaiEx)
-  end
 
   @impl true
   def request(model, messages, settings) do
@@ -62,14 +49,30 @@ defmodule Nous.Models.OpenAICompatible do
     # Build request parameters
     params = build_request_params(model, openai_messages, settings)
 
-    # Use OpenaiEx for cloud providers that support it, custom client otherwise
-    result = if model.provider in @openaiex_providers and openaiex_available?() do
-      request_with_openaiex(model, params)
-    else
-      request_with_custom_client(model, params)
+    # Make request via provider
+    opts = build_provider_opts(model)
+    result = case OpenAIProvider.chat(params, opts) do
+      {:ok, response} ->
+        {:ok, Messages.from_openai_response(response)}
+
+      {:error, error} ->
+        Logger.error("""
+        OpenAI-compatible request failed
+          Provider: #{model.provider}
+          Model: #{model.model}
+          Error: #{inspect(error)}
+        """)
+
+        wrapped_error = Errors.ModelError.exception(
+          provider: model.provider,
+          message: "Request failed: #{inspect(error)}",
+          details: error
+        )
+
+        {:error, wrapped_error}
     end
 
-    # Emit stop or exception event
+    # Emit telemetry
     duration = System.monotonic_time() - start_time
     duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
@@ -142,17 +145,10 @@ defmodule Nous.Models.OpenAICompatible do
     )
 
     openai_messages = Messages.to_openai_format(messages)
-
-    # Enable streaming
-    settings = Map.put(settings, :stream, true)
     params = build_request_params(model, openai_messages, settings)
+    opts = build_provider_opts(model)
 
-    # Use OpenaiEx for cloud providers, custom client for local/custom
-    result = if model.provider in @openaiex_providers do
-      request_stream_openaiex(model, params)
-    else
-      request_stream_custom(model, params)
-    end
+    result = OpenAIProvider.chat_stream(params, opts)
 
     case result do
       {:ok, stream} ->
@@ -161,7 +157,7 @@ defmodule Nous.Models.OpenAICompatible do
 
         Logger.info("Streaming started for #{model.provider}:#{model.model} (connected in #{duration_ms}ms)")
 
-        # Emit connected event (stream is ready to consume)
+        # Emit connected event
         :telemetry.execute(
           [:nous, :model, :stream, :connected],
           %{duration: duration},
@@ -171,7 +167,7 @@ defmodule Nous.Models.OpenAICompatible do
           }
         )
 
-        # Transform stream events to our format using the normalizer
+        # Transform stream events using normalizer
         normalizer = model.stream_normalizer || Nous.StreamNormalizer.OpenAI
         transformed_stream = Nous.StreamNormalizer.normalize(stream, normalizer)
         {:ok, transformed_stream}
@@ -188,7 +184,6 @@ defmodule Nous.Models.OpenAICompatible do
           Error: #{inspect(error)}
         """)
 
-        # Emit exception event
         :telemetry.execute(
           [:nous, :model, :stream, :exception],
           %{duration: duration},
@@ -210,109 +205,29 @@ defmodule Nous.Models.OpenAICompatible do
     end
   end
 
-  # Use OpenaiEx for cloud providers with proper SSE support
-  defp request_stream_openaiex(model, params) do
-    client = create_openaiex_client(model)
-    # Use dynamic call to avoid compile-time dependency
-    apply(OpenaiEx.Chat.Completions, :create, [client, params])
-  end
-
-  # Use custom HTTP client for local/custom providers
-  defp request_stream_custom(model, params) do
-    OpenAIClient.chat_completion_stream(
-      model.base_url,
-      model.api_key,
-      params,
-      timeout: model.receive_timeout,
-      finch_name: Application.get_env(:nous, :finch, Nous.Finch)
-    )
-  end
-
-  # Non-streaming request using OpenaiEx
-  defp request_with_openaiex(model, params) do
-    client = create_openaiex_client(model)
-    # Use dynamic call to avoid compile-time dependency
-    case apply(OpenaiEx.Chat.Completions, :create, [client, params]) do
-      {:ok, response} ->
-        {:ok, Messages.from_openai_response(response)}
-
-      {:error, error} ->
-        Logger.error("""
-        OpenAI-compatible request failed
-          Provider: #{model.provider}
-          Model: #{model.model}
-          Error: #{inspect(error)}
-        """)
-
-        wrapped_error = Errors.ModelError.exception(
-          provider: model.provider,
-          message: "Request failed: #{inspect(error)}",
-          details: error
-        )
-
-        {:error, wrapped_error}
-    end
-  end
-
-  # Non-streaming request using custom HTTP client
-  defp request_with_custom_client(model, params) do
-    case OpenAIClient.chat_completion(
-      model.base_url,
-      model.api_key,
-      params,
-      timeout: model.receive_timeout,
-      finch_name: Application.get_env(:nous, :finch, Nous.Finch)
-    ) do
-      {:ok, response} ->
-        {:ok, Messages.from_openai_response(response)}
-
-      {:error, error} ->
-        Logger.error("""
-        OpenAI-compatible request failed
-          Provider: #{model.provider}
-          Model: #{model.model}
-          Error: #{inspect(error)}
-        """)
-
-        wrapped_error = Errors.ModelError.exception(
-          provider: model.provider,
-          message: "Request failed: #{inspect(error)}",
-          details: error
-        )
-
-        {:error, wrapped_error}
-    end
-  end
-
-  # Create OpenaiEx client dynamically
-  defp create_openaiex_client(model) do
-    client = apply(OpenaiEx, :new, [
-      model.api_key || "not-needed",
-      model.organization
-    ])
-
-    # Override base_url if different from default
-    client = if model.base_url do
-      Map.put(client, :base_url, model.base_url)
-    else
-      client
-    end
-
-    # Set finch pool name and receive timeout
-    client
-    |> Map.put(:finch_name, Application.get_env(:nous, :finch, Nous.Finch))
-    |> Map.put(:receive_timeout, model.receive_timeout)
-  end
-
   @impl true
   def count_tokens(messages) do
-    # Rough estimation: ~4 characters per token
     messages
     |> Enum.map(&estimate_message_tokens/1)
     |> Enum.sum()
   end
 
-  # Private functions
+  # Build provider options from model config
+  defp build_provider_opts(model) do
+    opts = [
+      base_url: model.base_url,
+      api_key: model.api_key,
+      timeout: model.receive_timeout,
+      finch_name: Application.get_env(:nous, :finch, Nous.Finch)
+    ]
+
+    # Add organization if present
+    if model.organization do
+      Keyword.put(opts, :organization, model.organization)
+    else
+      opts
+    end
+  end
 
   defp build_request_params(model, messages, settings) do
     # Merge model defaults with request settings
@@ -320,31 +235,26 @@ defmodule Nous.Models.OpenAICompatible do
 
     # Build base parameters
     base_params = %{
-      model: model.model,
-      messages: messages
+      "model" => model.model,
+      "messages" => messages
     }
 
     # Add optional parameters
     base_params
-    |> maybe_put(:temperature, merged_settings[:temperature])
-    |> maybe_put(:max_tokens, merged_settings[:max_tokens])
-    |> maybe_put(:top_p, merged_settings[:top_p])
-    |> maybe_put(:frequency_penalty, merged_settings[:frequency_penalty])
-    |> maybe_put(:presence_penalty, merged_settings[:presence_penalty])
-    |> maybe_put(:stop, merged_settings[:stop_sequences])
-    |> maybe_put(:stream, merged_settings[:stream])
-    |> maybe_put(:tools, merged_settings[:tools])
-    |> maybe_put(:tool_choice, merged_settings[:tool_choice])
+    |> maybe_put("temperature", merged_settings[:temperature])
+    |> maybe_put("max_tokens", merged_settings[:max_tokens])
+    |> maybe_put("top_p", merged_settings[:top_p])
+    |> maybe_put("frequency_penalty", merged_settings[:frequency_penalty])
+    |> maybe_put("presence_penalty", merged_settings[:presence_penalty])
+    |> maybe_put("stop", merged_settings[:stop_sequences])
+    |> maybe_put("tools", merged_settings[:tools])
+    |> maybe_put("tool_choice", merged_settings[:tool_choice])
   end
 
   defp maybe_put(params, _key, nil), do: params
   defp maybe_put(params, key, value), do: Map.put(params, key, value)
 
   defp estimate_message_tokens(message) do
-    # Rough estimation: ~4 characters per token
-    message
-    |> inspect()
-    |> String.length()
-    |> div(4)
+    message |> inspect() |> String.length() |> div(4)
   end
 end

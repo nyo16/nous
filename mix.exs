@@ -36,29 +36,15 @@ defmodule Nous.MixProject do
 
   defp deps do
     [
-      # OpenAI client library (optional)
-      # To enable OpenAI-compatible providers, add {:openai_ex, "~> 0.9.17"} to your deps
-      {:openai_ex, "~> 0.9.17", optional: true},
-
-      # Anthropic Claude client library (optional)
-      # To enable Anthropic support, add {:anthropix, "~> 0.6.2"} to your deps
-      {:anthropix, "~> 0.6.2", optional: true},
-
-      # Google Gemini client library (optional)
-      # To enable Gemini support, add {:gemini_ex, "~> 0.8.1"} to your deps
-      {:gemini_ex, "~> 0.8.1", optional: true},
-
       # JSON
       {:jason, "~> 1.4"},
 
       # Validation
       {:ecto, "~> 3.11"},
 
-      # HTTP client (required by openai_ex)
-      {:finch, "~> 0.18"},
-
-      # HTTP client for Mistral API
-      {:req, "~> 0.4"},
+      # HTTP clients for all LLM providers
+      {:finch, "~> 0.19"},
+      {:req, "~> 0.5"},
 
       # Telemetry
       {:telemetry, "~> 1.2"},
@@ -129,6 +115,13 @@ defmodule Nous.MixProject do
           Nous.Models.Anthropic,
           Nous.Models.Gemini,
           Nous.Models.Mistral
+        ],
+        "HTTP Providers": [
+          Nous.Provider,
+          Nous.Providers.HTTP,
+          Nous.Providers.OpenAI,
+          Nous.Providers.Anthropic,
+          Nous.Providers.Gemini
         ],
         "Tool System": [
           Nous.Tool,

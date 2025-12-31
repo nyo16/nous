@@ -50,22 +50,20 @@ defmodule Nous.Models.OpenAICompatibleTest do
     }
   end
 
-  describe "build_request_params/3" do
-    test "builds basic request parameters correctly", %{
-      openai_model: model,
-      messages: messages,
-      basic_settings: _settings
+  describe "model configuration" do
+    test "creates model with correct provider settings", %{
+      openai_model: openai_model,
+      groq_model: groq_model,
+      local_model: local_model
     } do
-      # Test the private function through a public interface
-      # We can test this by checking if the Model can be used to create a client
-      client = Model.to_client(model)
-      assert %OpenaiEx{} = client
-      assert client.token == "sk-test"
-      assert client.base_url == "https://api.openai.com/v1"
+      assert openai_model.base_url == "https://api.openai.com/v1"
+      assert openai_model.api_key == "sk-test"
 
-      # Test message conversion works correctly
-      openai_messages = Messages.to_openai_format(messages)
-      assert length(openai_messages) == 2
+      assert groq_model.base_url == "https://api.groq.com/openai/v1"
+      assert groq_model.api_key == "gsk-test"
+
+      assert local_model.base_url == "http://localhost:1234/v1"
+      assert local_model.api_key == "not-needed"
     end
 
     test "includes tools when provided in settings", %{tool_settings: settings} do
@@ -76,22 +74,6 @@ defmodule Nous.Models.OpenAICompatibleTest do
       tool = List.first(settings[:tools])
       assert tool["type"] == "function"
       assert tool["function"]["name"] == "search_web"
-    end
-
-    test "handles different providers correctly", %{
-      openai_model: openai_model,
-      groq_model: groq_model,
-      local_model: local_model
-    } do
-      # Test different provider configurations
-      openai_client = Model.to_client(openai_model)
-      assert openai_client.base_url == "https://api.openai.com/v1"
-
-      groq_client = Model.to_client(groq_model)
-      assert groq_client.base_url == "https://api.groq.com/openai/v1"
-
-      local_client = Model.to_client(local_model)
-      assert local_client.base_url == "http://localhost:1234/v1"
     end
   end
 
@@ -261,9 +243,9 @@ defmodule Nous.Models.OpenAICompatibleTest do
     test "creates proper ModelError for various error types" do
       # Test error wrapping functionality
       sample_errors = [
-        %OpenaiEx.Error{status_code: 401, message: "Invalid API key"},
-        %OpenaiEx.Error{status_code: 429, message: "Rate limited"},
-        %OpenaiEx.Error{status_code: 500, message: "Server error"},
+        %{status: 401, body: %{"error" => "Invalid API key"}},
+        %{status: 429, body: %{"error" => "Rate limited"}},
+        %{status: 500, body: %{"error" => "Server error"}},
         %Mint.TransportError{reason: :timeout}
       ]
 
@@ -327,9 +309,9 @@ defmodule Nous.Models.OpenAICompatibleTest do
       token_count = OpenAICompatible.count_tokens(conversation)
       assert token_count > 100 # Should account for all the content
 
-      # Test client creation
-      client = Model.to_client(model)
-      assert %OpenaiEx{} = client
+      # Test model configuration
+      assert model.provider == :openai
+      assert model.api_key == "sk-test"
     end
   end
 end

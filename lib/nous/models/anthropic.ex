@@ -1,41 +1,24 @@
 defmodule Nous.Models.Anthropic do
   @moduledoc """
-  Anthropic Claude implementation using the native Anthropix library.
+  Anthropic Claude model implementation.
 
-  This adapter uses Anthropic's native API (not OpenAI-compatible) via Anthropix,
-  providing access to Claude-specific features like extended thinking.
-
-  **Note:** This provider requires the optional `anthropix` dependency.
-  Add it to your deps: `{:anthropix, "~> 0.6.2"}`
+  Uses pure Req/Finch HTTP clients via `Nous.Providers.Anthropic`.
+  Supports Claude-specific features like extended thinking.
   """
 
   @behaviour Nous.Models.Behaviour
 
   alias Nous.{Messages, Errors}
+  alias Nous.Providers.Anthropic, as: AnthropicProvider
 
   require Logger
 
-  # Check if Anthropix is available at runtime (not compile-time)
-  defp anthropix_available? do
-    Code.ensure_loaded?(Anthropix)
-  end
-
-  defp ensure_anthropix! do
-    unless anthropix_available?() do
-      raise Errors.ConfigurationError,
-        message: "anthropix dependency not available. Add {:anthropix, \"~> 0.6.2\"} to your deps."
-    end
-  end
-
   @impl true
   def request(model, messages, settings) do
-    ensure_anthropix!()
-
     start_time = System.monotonic_time()
 
-    # Create Anthropix client with optional extended context
-    client_opts = build_client_opts(model, settings)
-    enable_long_context = Keyword.get(client_opts, :beta) != nil
+    # Check for extended context and thinking config
+    enable_long_context = get_long_context_setting(model, settings)
     thinking_config = settings[:thinking]
 
     Logger.debug("""
@@ -47,15 +30,11 @@ defmodule Nous.Models.Anthropic do
       Tools: #{if settings[:tools], do: length(settings[:tools]), else: 0}
     """)
 
-    # Use dynamic call to avoid compile-time dependency
-    client = apply(Anthropix, :init, [model.api_key, client_opts])
-
-    # Build request parameters (this will convert messages)
+    # Build request parameters
     params = build_params(model, messages, settings)
+    opts = build_provider_opts(model, settings)
 
-    # Make request
-    # Use dynamic call to avoid compile-time dependency
-    result = case apply(Anthropix, :chat, [client, params]) do
+    result = case AnthropicProvider.chat(params, opts) do
       {:ok, response} ->
         {:ok, parse_response(response, model)}
 
@@ -99,28 +78,19 @@ defmodule Nous.Models.Anthropic do
 
   @impl true
   def request_stream(model, messages, settings) do
-    ensure_anthropix!()
-
     Logger.debug("""
     Anthropic streaming request starting
       Model: #{model.model}
       Messages: #{length(messages)}
     """)
 
-    # Create Anthropix client with optional extended context
-    client_opts = build_client_opts(model, settings)
-    # Use dynamic call to avoid compile-time dependency
-    client = apply(Anthropix, :init, [model.api_key, client_opts])
-
-    # Enable streaming
-    settings = Map.put(settings, :stream, true)
     params = build_params(model, messages, settings)
+    opts = build_provider_opts(model, settings)
 
-    # Use dynamic call to avoid compile-time dependency
-    case apply(Anthropix, :chat, [client, params]) do
+    case AnthropicProvider.chat_stream(params, opts) do
       {:ok, stream} ->
         Logger.info("Streaming started for Anthropic #{model.model}")
-        # Transform Anthropix stream to our format
+        # Transform stream events to our format
         transformed_stream = Stream.map(stream, &parse_stream_event/1)
         {:ok, transformed_stream}
 
@@ -143,26 +113,33 @@ defmodule Nous.Models.Anthropic do
 
   @impl true
   def count_tokens(messages) do
-    # Rough estimation for Claude
     messages
     |> Enum.map(&estimate_message_tokens/1)
     |> Enum.sum()
   end
 
-  # Private functions
+  # Build provider options from model config
+  defp build_provider_opts(model, settings) do
+    enable_long_context = get_long_context_setting(model, settings)
 
-  defp build_client_opts(model, settings) do
-    # Check if extended context is enabled
-    enable_long_context =
-      Map.get(settings, :enable_long_context) ||
-        Map.get(model.default_settings, :enable_long_context, false)
+    opts = [
+      api_key: model.api_key,
+      timeout: model.receive_timeout,
+      finch_name: Application.get_env(:nous, :finch, Nous.Finch),
+      enable_long_context: enable_long_context
+    ]
 
-    if enable_long_context do
-      Logger.debug("Enabling extended context (1M tokens) for Anthropic")
-      [beta: ["context-1m-2025-08-07"]]
+    # Add custom base_url if present
+    if model.base_url && model.base_url != "" do
+      Keyword.put(opts, :base_url, model.base_url)
     else
-      []
+      opts
     end
+  end
+
+  defp get_long_context_setting(model, settings) do
+    Map.get(settings, :enable_long_context) ||
+      Map.get(model.default_settings, :enable_long_context, false)
   end
 
   defp build_params(model, messages_list, settings) do
@@ -172,61 +149,57 @@ defmodule Nous.Models.Anthropic do
     # Convert messages and extract system prompts
     {system, anthropic_messages} = convert_messages_to_anthropic(messages_list)
 
-    # Build base parameters for Anthropix
-    params = [
-      model: model.model,
-      messages: anthropic_messages
-    ]
+    # Build base parameters
+    params = %{
+      "model" => model.model,
+      "messages" => anthropic_messages,
+      "max_tokens" => merged_settings[:max_tokens] || 1024
+    }
 
     # Add system prompt if present
-    params = if system, do: Keyword.put(params, :system, system), else: params
+    params = if system, do: Map.put(params, "system", system), else: params
 
     # Add optional parameters
     params
-    |> maybe_add_kw(:max_tokens, merged_settings[:max_tokens] || 1024)
-    |> maybe_add_kw(:temperature, merged_settings[:temperature])
-    |> maybe_add_kw(:top_p, merged_settings[:top_p])
-    |> maybe_add_kw(:stream, merged_settings[:stream])
-    |> maybe_add_kw(:tools, merged_settings[:tools])
+    |> maybe_put("temperature", merged_settings[:temperature])
+    |> maybe_put("top_p", merged_settings[:top_p])
+    |> maybe_put("tools", merged_settings[:tools])
     |> maybe_add_thinking(merged_settings[:thinking])
   end
 
   defp maybe_add_thinking(params, nil), do: params
 
   defp maybe_add_thinking(params, thinking) when is_map(thinking) do
-    # Build thinking configuration
     thinking_config = %{}
 
-    # Add type if present (must be "enabled")
     thinking_config =
       if Map.has_key?(thinking, :type) or Map.has_key?(thinking, "type") do
         type = Map.get(thinking, :type) || Map.get(thinking, "type")
-        Map.put(thinking_config, :type, type)
+        Map.put(thinking_config, "type", type)
       else
         thinking_config
       end
 
-    # Add budget_tokens if present
     thinking_config =
       if Map.has_key?(thinking, :budget_tokens) or Map.has_key?(thinking, "budget_tokens") do
         budget = Map.get(thinking, :budget_tokens) || Map.get(thinking, "budget_tokens")
-        Map.put(thinking_config, :budget_tokens, budget)
+        Map.put(thinking_config, "budget_tokens", budget)
       else
         thinking_config
       end
 
     if map_size(thinking_config) > 0 do
-      type = Map.get(thinking_config, :type, "enabled")
-      budget = Map.get(thinking_config, :budget_tokens, "unlimited")
+      type = Map.get(thinking_config, "type", "enabled")
+      budget = Map.get(thinking_config, "budget_tokens", "unlimited")
       Logger.debug("Configuring thinking mode: type=#{type}, budget=#{budget}")
-      Keyword.put(params, :thinking, thinking_config)
+      Map.put(params, "thinking", thinking_config)
     else
       params
     end
   end
 
-  defp maybe_add_kw(params, _key, nil), do: params
-  defp maybe_add_kw(params, key, value), do: Keyword.put(params, key, value)
+  defp maybe_put(params, _key, nil), do: params
+  defp maybe_put(params, key, value), do: Map.put(params, key, value)
 
   defp convert_messages_to_anthropic(messages_list) do
     # Extract system prompts and convert the rest
@@ -253,21 +226,21 @@ defmodule Nous.Models.Anthropic do
   end
 
   defp convert_message({:user_prompt, text}) when is_binary(text) do
-    %{role: "user", content: text}
+    %{"role" => "user", "content" => text}
   end
 
   defp convert_message({:user_prompt, content}) when is_list(content) do
-    %{role: "user", content: convert_content_list(content)}
+    %{"role" => "user", "content" => convert_content_list(content)}
   end
 
   defp convert_message({:tool_return, %{call_id: id, result: result}}) do
     %{
-      role: "user",
-      content: [
+      "role" => "user",
+      "content" => [
         %{
-          type: "tool_result",
-          tool_use_id: id,
-          content: Jason.encode!(result)
+          "type" => "tool_result",
+          "tool_use_id" => id,
+          "content" => Jason.encode!(result)
         }
       ]
     }
@@ -280,24 +253,22 @@ defmodule Nous.Models.Anthropic do
 
     content = []
 
-    # Add text if present
     content =
       if text != "" do
-        [%{type: "text", text: text} | content]
+        [%{"type" => "text", "text" => text} | content]
       else
         content
       end
 
-    # Add tool uses
     content =
       if not Enum.empty?(tool_calls) do
         tool_content =
           Enum.map(tool_calls, fn call ->
             %{
-              type: "tool_use",
-              id: call.id,
-              name: call.name,
-              input: call.arguments
+              "type" => "tool_use",
+              "id" => call.id,
+              "name" => call.name,
+              "input" => call.arguments
             }
           end)
 
@@ -309,7 +280,7 @@ defmodule Nous.Models.Anthropic do
     if Enum.empty?(content) do
       nil
     else
-      %{role: "assistant", content: Enum.reverse(content)}
+      %{"role" => "assistant", "content" => Enum.reverse(content)}
     end
   end
 
@@ -317,29 +288,26 @@ defmodule Nous.Models.Anthropic do
 
   defp convert_content_list(content) do
     Enum.map(content, fn
-      {:text, text} -> %{type: "text", text: text}
-      {:image_url, url} -> %{type: "image", source: %{type: "url", url: url}}
-      text when is_binary(text) -> %{type: "text", text: text}
+      {:text, text} -> %{"type" => "text", "text" => text}
+      {:image_url, url} -> %{"type" => "image", "source" => %{"type" => "url", "url" => url}}
+      text when is_binary(text) -> %{"type" => "text", "text" => text}
     end)
   end
 
   defp parse_response(response, _model) do
-    # Handle both atom and string keys (Anthropix returns string keys)
-    content = Map.get(response, :content) || Map.get(response, "content")
-    usage_data = Map.get(response, :usage) || Map.get(response, "usage")
-    model_name = Map.get(response, :model) || Map.get(response, "model")
+    content = Map.get(response, "content") || Map.get(response, :content) || []
+    usage_data = Map.get(response, "usage") || Map.get(response, :usage) || %{}
+    model_name = Map.get(response, "model") || Map.get(response, :model)
 
     parts = parse_content_blocks(content)
 
-    # Build usage - handle string keys
     usage = %Nous.Usage{
       requests: 1,
-      input_tokens: Map.get(usage_data, :input_tokens) || Map.get(usage_data, "input_tokens") || 0,
-      output_tokens:
-        Map.get(usage_data, :output_tokens) || Map.get(usage_data, "output_tokens") || 0,
+      input_tokens: Map.get(usage_data, "input_tokens") || Map.get(usage_data, :input_tokens) || 0,
+      output_tokens: Map.get(usage_data, "output_tokens") || Map.get(usage_data, :output_tokens) || 0,
       total_tokens:
-        (Map.get(usage_data, :input_tokens) || Map.get(usage_data, "input_tokens") || 0) +
-          (Map.get(usage_data, :output_tokens) || Map.get(usage_data, "output_tokens") || 0)
+        (Map.get(usage_data, "input_tokens") || Map.get(usage_data, :input_tokens) || 0) +
+          (Map.get(usage_data, "output_tokens") || Map.get(usage_data, :output_tokens) || 0)
     }
 
     %{
@@ -352,18 +320,17 @@ defmodule Nous.Models.Anthropic do
 
   defp parse_content_blocks(content) when is_list(content) do
     Enum.map(content, fn block ->
-      # Handle both atom and string keys
-      type = Map.get(block, :type) || Map.get(block, "type")
+      type = Map.get(block, "type") || Map.get(block, :type)
 
       case type do
         "text" ->
-          text = Map.get(block, :text) || Map.get(block, "text")
+          text = Map.get(block, "text") || Map.get(block, :text)
           {:text, text}
 
         "tool_use" ->
-          id = Map.get(block, :id) || Map.get(block, "id")
-          name = Map.get(block, :name) || Map.get(block, "name")
-          input = Map.get(block, :input) || Map.get(block, "input")
+          id = Map.get(block, "id") || Map.get(block, :id)
+          name = Map.get(block, "name") || Map.get(block, :name)
+          input = Map.get(block, "input") || Map.get(block, :input)
           {:tool_call, %{id: id, name: name, arguments: input}}
 
         _ ->
@@ -378,14 +345,21 @@ defmodule Nous.Models.Anthropic do
   end
 
   defp parse_stream_event(event) do
-    # Parse Anthropix streaming events
-    # This is simplified - full implementation would handle all event types
     case event do
+      %{"type" => "content_block_delta", "delta" => %{"text" => text}} ->
+        {:text_delta, text}
+
       %{type: "content_block_delta", delta: %{text: text}} ->
         {:text_delta, text}
 
+      %{"type" => "message_stop"} ->
+        {:finish, "stop"}
+
       %{type: "message_stop"} ->
         {:finish, "stop"}
+
+      {:stream_done, reason} ->
+        {:finish, reason}
 
       _ ->
         {:unknown, event}
@@ -393,9 +367,6 @@ defmodule Nous.Models.Anthropic do
   end
 
   defp estimate_message_tokens(message) do
-    message
-    |> inspect()
-    |> String.length()
-    |> div(4)
+    message |> inspect() |> String.length() |> div(4)
   end
 end

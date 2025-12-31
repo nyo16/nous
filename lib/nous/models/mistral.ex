@@ -1,15 +1,9 @@
 defmodule Nous.Models.Mistral do
   @moduledoc """
-  Mistral AI model implementation using Req library.
+  Mistral AI model implementation.
 
-  This implementation provides native support for Mistral AI models through their API,
-  including both streaming and non-streaming requests.
-
-  Supported features:
-  - Chat completions with OpenAI-compatible format
-  - Tool calling (function calling)
-  - Streaming responses
-  - Mistral-specific features (reasoning mode, prediction mode)
+  Uses pure Req/Finch HTTP clients via `Nous.Providers.OpenAI` since Mistral's API
+  is OpenAI-compatible. Supports Mistral-specific features like reasoning mode.
 
   ## Configuration
 
@@ -35,10 +29,9 @@ defmodule Nous.Models.Mistral do
   @behaviour Nous.Models.Behaviour
 
   alias Nous.{Messages, Errors}
+  alias Nous.Providers.OpenAI, as: OpenAIProvider
 
   require Logger
-
-  @base_url "https://api.mistral.ai/v1"
 
   @impl true
   def request(model, messages, settings) do
@@ -68,9 +61,10 @@ defmodule Nous.Models.Mistral do
 
     # Build request parameters
     params = build_request_params(model, openai_messages, settings)
+    opts = build_provider_opts(model)
 
-    # Make request using Req
-    result = case make_req_request(model, params, stream: false) do
+    # Make request via OpenAI-compatible provider
+    result = case OpenAIProvider.chat(params, opts) do
       {:ok, response} ->
         {:ok, Messages.from_openai_response(response)}
 
@@ -162,12 +156,10 @@ defmodule Nous.Models.Mistral do
 
     # Convert messages to OpenAI format
     openai_messages = Messages.to_openai_format(messages)
-
-    # Enable streaming
-    settings = Map.put(settings, :stream, true)
     params = build_request_params(model, openai_messages, settings)
+    opts = build_provider_opts(model)
 
-    case make_req_request(model, params, stream: true) do
+    case OpenAIProvider.chat_stream(params, opts) do
       {:ok, stream} ->
         duration = System.monotonic_time() - start_time
         duration_ms = System.convert_time_unit(duration, :native, :millisecond)
@@ -224,7 +216,6 @@ defmodule Nous.Models.Mistral do
 
   @impl true
   def count_tokens(messages) when is_list(messages) do
-    # Rough estimation: ~4 characters per token (same as OpenAI)
     messages
     |> Enum.map(&estimate_message_tokens/1)
     |> Enum.sum()
@@ -233,7 +224,22 @@ defmodule Nous.Models.Mistral do
   def count_tokens(nil), do: 0
   def count_tokens(_), do: 0
 
-  # Private functions
+  # Build provider options from model config
+  defp build_provider_opts(model) do
+    opts = [
+      base_url: model.base_url,
+      api_key: model.api_key,
+      timeout: model.receive_timeout,
+      finch_name: Application.get_env(:nous, :finch, Nous.Finch)
+    ]
+
+    # Add organization if present
+    if model.organization do
+      Keyword.put(opts, :organization, model.organization)
+    else
+      opts
+    end
+  end
 
   defp build_request_params(model, messages, settings) do
     # Merge model defaults with request settings
@@ -241,136 +247,30 @@ defmodule Nous.Models.Mistral do
 
     # Build base parameters
     base_params = %{
-      model: model.model,
-      messages: messages
+      "model" => model.model,
+      "messages" => messages
     }
 
     # Add optional parameters
     base_params
-    |> maybe_put(:temperature, merged_settings[:temperature])
-    |> maybe_put(:max_tokens, merged_settings[:max_tokens])
-    |> maybe_put(:top_p, merged_settings[:top_p])
-    |> maybe_put(:frequency_penalty, merged_settings[:frequency_penalty])
-    |> maybe_put(:presence_penalty, merged_settings[:presence_penalty])
-    |> maybe_put(:stop, merged_settings[:stop_sequences])
-    |> maybe_put(:stream, merged_settings[:stream])
-    |> maybe_put(:tools, merged_settings[:tools])
-    |> maybe_put(:tool_choice, merged_settings[:tool_choice])
+    |> maybe_put("temperature", merged_settings[:temperature])
+    |> maybe_put("max_tokens", merged_settings[:max_tokens])
+    |> maybe_put("top_p", merged_settings[:top_p])
+    |> maybe_put("frequency_penalty", merged_settings[:frequency_penalty])
+    |> maybe_put("presence_penalty", merged_settings[:presence_penalty])
+    |> maybe_put("stop", merged_settings[:stop_sequences])
+    |> maybe_put("tools", merged_settings[:tools])
+    |> maybe_put("tool_choice", merged_settings[:tool_choice])
     # Mistral-specific parameters
-    |> maybe_put(:reasoning_mode, merged_settings[:reasoning_mode])
-    |> maybe_put(:prediction_mode, merged_settings[:prediction_mode])
-    |> maybe_put(:safe_prompt, merged_settings[:safe_prompt])
+    |> maybe_put("reasoning_mode", merged_settings[:reasoning_mode])
+    |> maybe_put("prediction_mode", merged_settings[:prediction_mode])
+    |> maybe_put("safe_prompt", merged_settings[:safe_prompt])
   end
 
   defp maybe_put(params, _key, nil), do: params
   defp maybe_put(params, key, value), do: Map.put(params, key, value)
 
-  defp make_req_request(model, params, stream: streaming?) do
-    base_url = model.base_url || @base_url
-    url = "#{base_url}/chat/completions"
-    headers = build_headers(model.api_key)
-
-    options = [
-      headers: headers,
-      json: params,
-      receive_timeout: model.receive_timeout
-    ]
-
-    if streaming? do
-      # For streaming, we need to handle SSE
-      make_streaming_request(url, options)
-    else
-      # Regular JSON request
-      case Req.post(url, options) do
-        {:ok, %Req.Response{status: 200, body: body}} ->
-          {:ok, body}
-
-        {:ok, %Req.Response{status: status, body: body}} ->
-          {:error, %{status: status, body: body}}
-
-        {:error, error} ->
-          {:error, error}
-      end
-    end
-  end
-
-  defp make_streaming_request(url, options) do
-    # Add streaming options
-    streaming_options = options ++ [
-      into: :self,
-      raw: true
-    ]
-
-    case Req.post(url, streaming_options) do
-      {:ok, %Req.Response{status: 200}} ->
-        # Create stream from received messages
-        stream = Stream.resource(
-          fn -> :continue end,
-          fn
-            :continue ->
-              receive do
-                {:req_data, data} when is_binary(data) ->
-                  chunks = parse_sse_data(data)
-                  {chunks, :continue}
-                {:req_done} ->
-                  {:halt, :done}
-                {:req_error, error} ->
-                  Logger.error("Mistral stream error: #{inspect(error)}")
-                  {:halt, :error}
-              after
-                30_000 -> # 30 second timeout per chunk
-                  Logger.error("Mistral stream timeout after 30 seconds")
-                  {:halt, :timeout}
-              end
-            :done ->
-              {:halt, :done}
-          end,
-          fn _ -> :ok end
-        )
-
-        {:ok, stream}
-
-      {:ok, %Req.Response{status: status, body: body}} ->
-        {:error, %{status: status, body: body}}
-
-      {:error, error} ->
-        {:error, error}
-    end
-  end
-
-  defp build_headers(api_key) do
-    [
-      {"Authorization", "Bearer #{api_key}"},
-      {"Content-Type", "application/json"},
-      {"Accept", "text/event-stream"}
-    ]
-  end
-
-  defp parse_sse_data(data) do
-    # Parse Server-Sent Events format
-    data
-    |> String.split("\n\n")
-    |> Enum.map(&parse_sse_event/1)
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp parse_sse_event(""), do: nil
-  defp parse_sse_event("data: [DONE]"), do: {:finish, "stop"}
-
-  defp parse_sse_event("data: " <> json_data) do
-    case Jason.decode(json_data) do
-      {:ok, chunk} -> chunk
-      {:error, _} -> nil
-    end
-  end
-
-  defp parse_sse_event(_), do: nil
-
   defp estimate_message_tokens(message) do
-    # Rough estimation: ~4 characters per token
-    message
-    |> inspect()
-    |> String.length()
-    |> div(4)
+    message |> inspect() |> String.length() |> div(4)
   end
 end

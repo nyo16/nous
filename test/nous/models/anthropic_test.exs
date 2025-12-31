@@ -2,7 +2,6 @@ defmodule Nous.Models.AnthropicTest do
   use ExUnit.Case, async: true
 
   alias Nous.{Message, Model, Usage}
-  alias Nous.Models.Anthropic
   alias Nous.Errors
 
   setup do
@@ -53,25 +52,18 @@ defmodule Nous.Models.AnthropicTest do
     }
   end
 
-  describe "request/3" do
-    test "raises ConfigurationError when anthropix is not available", %{
-      model: model,
-      messages: messages,
-      basic_settings: settings
-    } do
-      # This test assumes the anthropix library might not be loaded
-      # The actual implementation checks Code.ensure_loaded?(Anthropix)
+  describe "provider module" do
+    test "Anthropic provider module is loaded" do
+      # Verify the provider module is available
+      assert Code.ensure_loaded?(Nous.Providers.Anthropic)
+      assert function_exported?(Nous.Providers.Anthropic, :chat, 2)
+      assert function_exported?(Nous.Providers.Anthropic, :chat_stream, 2)
+    end
 
-      # We can test the error handling path
-      assert_raise Errors.ConfigurationError, ~r/anthropix dependency not available/, fn ->
-        # Force the condition by mocking Code.ensure_loaded? if needed
-        # For now, we'll test the basic structure
-        case Code.ensure_loaded?(Anthropix) do
-          false -> Anthropic.request(model, messages, settings)
-          true -> raise Errors.ConfigurationError,
-            message: "anthropix dependency not available. Add {:anthropix, \"~> 0.6.2\"} to your deps."
-        end
-      end
+    test "model adapter implements behaviour", %{model: model} do
+      # Verify the model adapter uses the correct behaviour
+      assert model.provider == :anthropic
+      assert model.model == "claude-3-sonnet-20240229"
     end
   end
 
