@@ -84,34 +84,23 @@ defmodule Nous.ModelTest do
       assert model.organization == "org-123"
       assert model.default_settings == %{temperature: 0.5}
     end
-  end
 
-  describe "to_client/1" do
-    test "creates OpenaiEx client with model config" do
-      model = Model.new(:openai, "gpt-4", api_key: "sk-test")
+    test "sets default receive_timeout based on provider" do
+      # Cloud providers get 60 seconds
+      openai = Model.new(:openai, "gpt-4")
+      assert openai.receive_timeout == 60_000
 
-      client = Model.to_client(model)
+      # Local providers get 120 seconds
+      lmstudio = Model.new(:lmstudio, "qwen3")
+      assert lmstudio.receive_timeout == 120_000
 
-      assert %OpenaiEx{} = client
-      assert client.token == "sk-test"
-      assert client.base_url == "https://api.openai.com/v1"
+      ollama = Model.new(:ollama, "llama2")
+      assert ollama.receive_timeout == 120_000
     end
 
-    test "includes organization when set" do
-      model = Model.new(:openai, "gpt-4", api_key: "sk-test", organization: "org-123")
-
-      client = Model.to_client(model)
-
-      assert client.organization == "org-123"
-    end
-
-    test "configures http options from application config" do
-      model = Model.new(:groq, "llama-3.1-70b-versatile", api_key: "gsk-test")
-
-      client = Model.to_client(model)
-
-      assert client.finch_name == Nous.Finch
-      assert is_integer(client.receive_timeout)
+    test "allows overriding receive_timeout" do
+      model = Model.new(:openai, "gpt-4", receive_timeout: 180_000)
+      assert model.receive_timeout == 180_000
     end
   end
 end

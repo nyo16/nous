@@ -27,7 +27,7 @@ defmodule Nous.Agent do
 
   """
 
-  alias Nous.{Model, ModelParser, Tool, Types}
+  alias Nous.{Model, Tool, Types}
 
   @type t :: %__MODULE__{
           model: Model.t(),
@@ -101,7 +101,7 @@ defmodule Nous.Agent do
   """
   @spec new(String.t(), keyword()) :: t()
   def new(model_string, opts \\ []) do
-    model = ModelParser.parse(model_string, opts)
+    model = Model.parse(model_string, opts)
 
     %__MODULE__{
       model: model,

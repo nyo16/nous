@@ -30,7 +30,7 @@ defmodule Nous.LLM do
 
   """
 
-  alias Nous.{Model, ModelParser, ModelDispatcher, Message, Tool, ToolExecutor, RunContext, Messages}
+  alias Nous.{Model, ModelDispatcher, Message, Tool, ToolExecutor, RunContext, Messages}
 
   require Logger
 
@@ -93,7 +93,7 @@ defmodule Nous.LLM do
   def generate_text(model, prompt, opts \\ [])
 
   def generate_text(model_string, prompt, opts) when is_binary(model_string) do
-    model = ModelParser.parse(model_string, Keyword.take(opts, [:base_url, :api_key]))
+    model = Model.parse(model_string, Keyword.take(opts, [:base_url, :api_key]))
     generate_text(model, prompt, opts)
   end
 
@@ -148,7 +148,7 @@ defmodule Nous.LLM do
   def stream_text(model, prompt, opts \\ [])
 
   def stream_text(model_string, prompt, opts) when is_binary(model_string) do
-    model = ModelParser.parse(model_string, Keyword.take(opts, [:base_url, :api_key]))
+    model = Model.parse(model_string, Keyword.take(opts, [:base_url, :api_key]))
     stream_text(model, prompt, opts)
   end
 
