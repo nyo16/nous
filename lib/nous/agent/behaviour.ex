@@ -61,7 +61,7 @@ defmodule Nous.Agent.Behaviour do
   @doc """
   Initialize context before execution begins.
 
-  Called once at the start of `Agent.run/3`. Use this to:
+  Called once at the start of `Nous.run/3`. Use this to:
   - Add agent-specific tools (e.g., ReAct tools)
   - Set up initial state in deps
   - Configure callbacks

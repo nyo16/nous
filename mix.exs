@@ -65,23 +65,13 @@ defmodule Nous.MixProject do
       main: "readme",
       extras: [
         "README.md",
+        "CHANGELOG.md",
 
         # Getting Started
         {"docs/getting-started.md", filename: "getting_started", title: "Getting Started Guide"},
 
-        # Examples and Tutorials
+        # Examples
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
-        {"examples/quickstart/README.md", filename: "quickstart", title: "5-Minute Quickstart"},
-
-        # Learning Paths
-        {"examples/tutorials/README.md", filename: "tutorials_overview", title: "Tutorial Overview"},
-        {"examples/reference/README.md", filename: "reference_overview", title: "Reference Guide"},
-
-        # Feature Guides
-        {"examples/reference/tools.md", filename: "tools_reference", title: "Tools & Function Calling"},
-        {"examples/reference/streaming.md", filename: "streaming_reference", title: "Streaming & Real-time"},
-        {"examples/reference/providers.md", filename: "providers_reference", title: "Providers & Models"},
-        {"examples/reference/patterns.md", filename: "patterns_reference", title: "Patterns & Architecture"},
 
         # Production Guides
         {"docs/guides/liveview-integration.md", filename: "liveview_integration", title: "Phoenix LiveView Integration"},
@@ -99,12 +89,18 @@ defmodule Nous.MixProject do
         "Core API": [
           Nous,
           Nous.Agent,
+          Nous.Agent.Context,
+          Nous.Agent.Behaviour,
+          Nous.Agent.Callbacks,
           Nous.ReActAgent
+        ],
+        "Agent Implementations": [
+          Nous.Agents.BasicAgent,
+          Nous.Agents.ReActAgent
         ],
         "Agent Execution": [
           Nous.AgentRunner,
-          Nous.AgentServer,
-          Nous.RunContext
+          Nous.AgentServer
         ],
         "Model Configuration": [
           Nous.Model,
@@ -116,23 +112,21 @@ defmodule Nous.MixProject do
           Nous.Providers.OpenAI,
           Nous.Providers.OpenAICompatible,
           Nous.Providers.Anthropic,
-          Nous.Providers.Gemini,
-          Nous.Providers.Mistral,
-          Nous.Providers.LMStudio,
-          Nous.Providers.VLLM,
-          Nous.Providers.SGLang
+          Nous.Providers.LMStudio
         ],
         "Tool System": [
           Nous.Tool,
+          Nous.Tool.Behaviour,
+          Nous.Tool.ContextUpdate,
+          Nous.Tool.Validator,
           Nous.ToolSchema,
           Nous.ToolExecutor
         ],
-        "Built-in Tools": [
-          Nous.Tools.BraveSearch,
-          Nous.Tools.DateTimeTools,
-          Nous.Tools.StringTools,
-          Nous.Tools.TodoTools,
-          Nous.Tools.ReActTools
+        "Testing": [
+          Nous.Tool.Testing
+        ],
+        "Templates": [
+          Nous.PromptTemplate
         ],
         "Data Types": [
           Nous.Types,
@@ -142,9 +136,6 @@ defmodule Nous.MixProject do
         "Infrastructure": [
           Nous.Telemetry,
           Nous.Errors
-        ],
-        "Integrations": [
-          Nous.PromEx.Plugin
         ]
       ]
     ]
