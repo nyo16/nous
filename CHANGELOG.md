@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.1] - 2025-12-31
+
+### Fixed
+
+- Fixed `Usage` struct not implementing Access behaviour for telemetry metrics
+- Fixed `Task.shutdown/2` nil return case in `AgentServer` cancellation
+- Fixed tool call field access for OpenAI-compatible APIs (string vs atom keys)
+
+### Added
+
+- Vision/multimodal test suite with image fixtures (`test/nous/vision_test.exs`)
+- ContentPart test suite for image conversion utilities (`test/nous/content_part_test.exs`)
+- Multimodal message examples in conversation demo (`examples/04_conversation.exs`)
+
+### Changed
+
+- Updated docs to link examples to GitHub source files
+- Improved sidebar grouping in hexdocs
+
 ## [0.8.0] - 2025-12-31
 
 ### Added

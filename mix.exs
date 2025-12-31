@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.8.0"
+  @version "0.8.1"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -70,7 +70,7 @@ defmodule Nous.MixProject do
         # Getting Started
         {"docs/getting-started.md", filename: "getting_started", title: "Getting Started Guide"},
 
-        # Examples
+        # Examples Overview
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
 
         # Production Guides
@@ -85,6 +85,23 @@ defmodule Nous.MixProject do
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,
+      groups_for_extras: [
+        "Getting Started": [
+          "readme.html",
+          "getting_started.html",
+          "examples_overview.html"
+        ],
+        "Production Guides": [
+          "liveview_integration.html",
+          "best_practices.html",
+          "tool_development.html",
+          "troubleshooting.html",
+          "migration_guide.html"
+        ],
+        "Design": [
+          "council_design.html"
+        ]
+      ],
       groups_for_modules: [
         "Core API": [
           Nous,
