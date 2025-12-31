@@ -4,10 +4,26 @@ defmodule Nous.AgentRunner do
 
   The AgentRunner is responsible for:
   - Building messages with system prompts and instructions
-  - Calling the model via the OpenAICompatible adapter
+  - Calling the model via the provider
   - Detecting and executing tool calls
-  - Looping until the model provides a final response
+  - Looping until `needs_response` is false
   - Extracting and validating output
+  - Executing callbacks and sending process notifications
+
+  ## Context-Based Execution
+
+  The runner uses a `Context` struct to manage all state during execution:
+
+      ctx = Context.new(
+        deps: %{database: MyDB},
+        callbacks: %{on_llm_new_delta: fn _, d -> IO.write(d) end},
+        notify_pid: self()
+      )
+
+  ## Behaviour Integration
+
+  Different agent types can customize behavior by implementing
+  `Nous.Agent.Behaviour` and setting `behaviour_module` on the agent.
   """
 
   alias Nous.{
@@ -18,9 +34,10 @@ defmodule Nous.AgentRunner do
     RunContext,
     Tool,
     ToolExecutor,
-    Usage,
     Errors
   }
+
+  alias Nous.Agent.{Behaviour, Callbacks, Context}
 
   require Logger
 
@@ -36,6 +53,9 @@ defmodule Nous.AgentRunner do
     * `:model_settings` - Override model settings
     * `:max_iterations` - Maximum iterations (default: 10)
     * `:cancellation_check` - Function to check if execution should be cancelled
+    * `:callbacks` - Map of callback functions
+    * `:notify_pid` - PID to receive event messages
+    * `:context` - Existing context to continue from
 
   """
   @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -58,133 +78,232 @@ defmodule Nous.AgentRunner do
       }
     )
 
-    # Initialize state
-    state = %{
-      agent: agent,
-      deps: Keyword.get(opts, :deps),
-      message_history: Keyword.get(opts, :message_history, []),
-      usage: Usage.new(),
-      iteration: 0,
-      start_time: start_time,
-      max_iterations: Keyword.get(opts, :max_iterations, @max_iterations),
-      cancellation_check: Keyword.get(opts, :cancellation_check)
-    }
+    # Build context from options
+    ctx = build_context(agent, prompt, opts)
 
-    # Build initial messages
-    messages = build_initial_messages(state, prompt)
+    # Execute callbacks
+    Callbacks.execute(ctx, :on_agent_start, %{agent: agent})
+
+    # Get behaviour module
+    behaviour = Behaviour.get_module(agent)
+
+    # Initialize context via behaviour (optional callback)
+    ctx = Behaviour.call(behaviour, :init_context, [agent, ctx], ctx)
 
     # Execute loop and emit stop/exception
-    result = execute_loop(state, messages)
+    result = execute_loop(agent, behaviour, ctx)
     duration = System.monotonic_time() - start_time
 
     case result do
-      {:ok, agent_result} ->
-        duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+      {:ok, final_ctx} ->
+        # Extract output via behaviour
+        case behaviour.extract_output(agent, final_ctx) do
+          {:ok, output} ->
+            agent_result = build_result(agent, final_ctx, output)
+            duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
-        Logger.info("""
-        Agent run completed: #{agent.name}
-          Duration: #{duration_ms}ms
-          Iterations: #{agent_result.iterations}
-          Tokens: #{agent_result.usage.total_tokens} (in: #{agent_result.usage.input_tokens}, out: #{agent_result.usage.output_tokens})
-          Tool calls: #{agent_result.usage.tool_calls}
-          Requests: #{agent_result.usage.requests}
-        """)
+            Logger.info("""
+            Agent run completed: #{agent.name}
+              Duration: #{duration_ms}ms
+              Iterations: #{final_ctx.iteration}
+              Tokens: #{final_ctx.usage.total_tokens} (in: #{final_ctx.usage.input_tokens}, out: #{final_ctx.usage.output_tokens})
+              Tool calls: #{final_ctx.usage.tool_calls}
+              Requests: #{final_ctx.usage.requests}
+            """)
 
-        :telemetry.execute(
-          [:nous, :agent, :run, :stop],
-          %{
-            duration: duration,
-            total_tokens: agent_result.usage.total_tokens,
-            input_tokens: agent_result.usage.input_tokens,
-            output_tokens: agent_result.usage.output_tokens,
-            tool_calls: agent_result.usage.tool_calls,
-            requests: agent_result.usage.requests,
-            iterations: agent_result.iterations
-          },
-          %{
-            agent_name: agent.name,
-            model_provider: agent.model.provider,
-            model_name: agent.model.model
-          }
-        )
+            :telemetry.execute(
+              [:nous, :agent, :run, :stop],
+              %{
+                duration: duration,
+                total_tokens: final_ctx.usage.total_tokens,
+                input_tokens: final_ctx.usage.input_tokens,
+                output_tokens: final_ctx.usage.output_tokens,
+                tool_calls: final_ctx.usage.tool_calls,
+                requests: final_ctx.usage.requests,
+                iterations: final_ctx.iteration
+              },
+              %{
+                agent_name: agent.name,
+                model_provider: agent.model.provider,
+                model_name: agent.model.model
+              }
+            )
 
-        result
+            # Execute completion callback
+            Callbacks.execute(final_ctx, :on_agent_complete, agent_result)
+
+            {:ok, agent_result}
+
+          {:error, reason} ->
+            emit_error_telemetry(agent, duration, reason)
+            Callbacks.execute(final_ctx, :on_error, reason)
+            {:error, reason}
+        end
 
       {:error, error} ->
-        duration_ms = System.convert_time_unit(duration, :native, :millisecond)
-
-        Logger.error("""
-        Agent run failed: #{agent.name}
-          Duration: #{duration_ms}ms
-          Error: #{inspect(error)}
-        """)
-
-        :telemetry.execute(
-          [:nous, :agent, :run, :exception],
-          %{duration: duration},
-          %{
-            agent_name: agent.name,
-            model_provider: agent.model.provider,
-            kind: :error,
-            reason: error,
-            stacktrace: []
-          }
-        )
-
-        result
+        emit_error_telemetry(agent, duration, error)
+        Callbacks.execute(ctx, :on_error, error)
+        {:error, error}
     end
   end
 
   @doc """
-  Run agent with streaming (simplified version).
+  Run agent with an existing context.
 
-  Full streaming implementation would handle tool calls in stream.
-  For now, this just passes through to the model's streaming.
+  Useful for continuing from a previous run or with pre-built context.
+  """
+  @spec run_with_context(Agent.t(), Context.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def run_with_context(%Agent{} = agent, %Context{} = ctx, opts \\ []) do
+    # Merge any additional options into context
+    ctx = ctx
+    |> maybe_update_callbacks(opts)
+    |> maybe_update_notify_pid(opts)
+    |> Context.set_needs_response(true)
+
+    # Get behaviour module
+    behaviour = Behaviour.get_module(agent)
+
+    case execute_loop(agent, behaviour, ctx) do
+      {:ok, final_ctx} ->
+        case behaviour.extract_output(agent, final_ctx) do
+          {:ok, output} ->
+            {:ok, build_result(agent, final_ctx, output)}
+          {:error, _} = err ->
+            err
+        end
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc """
+  Run agent with streaming.
+
+  Returns a stream that yields events as they occur.
+
+  ## Events
+    * `{:text_delta, text}` - Incremental text update
+    * `{:thinking_delta, text}` - Thinking content (reasoning models)
+    * `{:tool_call, call}` - Tool is being called
+    * `{:tool_result, result}` - Tool execution completed
+    * `{:finish, reason}` - Stream finished
+    * `{:complete, result}` - Final result
   """
   @spec run_stream(Agent.t(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
   def run_stream(%Agent{} = agent, prompt, opts \\ []) do
-    # Build messages
-    state = %{
-      agent: agent,
-      deps: Keyword.get(opts, :deps),
-      message_history: Keyword.get(opts, :message_history, [])
-    }
+    # Build context
+    ctx = build_context(agent, prompt, opts)
 
-    messages = build_initial_messages(state, prompt)
+    # Get behaviour and tools
+    behaviour = Behaviour.get_module(agent)
+    tools = behaviour.get_tools(agent)
+
+    # Build messages
+    messages = behaviour.build_messages(agent, ctx)
 
     # Add tools to settings if any
     model_settings =
-      if Enum.empty?(agent.tools) do
+      if Enum.empty?(tools) do
         agent.model_settings
       else
-        tool_schemas = convert_tools_for_provider(agent.model.provider, agent.tools)
+        tool_schemas = convert_tools_for_provider(agent.model.provider, tools)
         Map.put(agent.model_settings, :tools, tool_schemas)
       end
 
     # Request stream from model
     case get_dispatcher().request_stream(agent.model, messages, model_settings) do
-      {:ok, stream} -> {:ok, stream}
-      error -> error
+      {:ok, stream} ->
+        # Wrap stream to execute callbacks
+        wrapped_stream = wrap_stream_with_callbacks(stream, ctx)
+        {:ok, wrapped_stream}
+      error ->
+        error
     end
   end
 
   # Private functions
 
-  defp execute_loop(state, messages) do
-    # Check for cancellation before each iteration
-    case check_cancellation(state) do
+  defp build_context(agent, prompt, opts) do
+    # Check if continuing from existing context
+    case Keyword.get(opts, :context) do
+      %Context{} = existing_ctx ->
+        # Continue from existing context, add new user message
+        existing_ctx
+        |> Context.add_message(Message.user(prompt))
+        |> Context.set_needs_response(true)
+        |> maybe_update_callbacks(opts)
+        |> maybe_update_notify_pid(opts)
+
+      nil ->
+        # Build fresh context
+        message_history = Keyword.get(opts, :message_history, [])
+
+        # Build system prompt
+        system_prompt = resolve_prompt(agent.instructions, opts) ||
+                        resolve_prompt(agent.system_prompt, opts)
+
+        # Handle todo injection if enabled
+        system_prompt = if agent.enable_todos do
+          inject_todos_into_prompt(system_prompt || "", Keyword.get(opts, :deps, %{}))
+        else
+          system_prompt
+        end
+
+        # Build initial messages
+        messages = build_initial_messages(message_history, prompt, system_prompt)
+
+        Context.new(
+          messages: messages,
+          system_prompt: system_prompt,
+          deps: Keyword.get(opts, :deps, %{}),
+          max_iterations: Keyword.get(opts, :max_iterations, @max_iterations),
+          callbacks: Keyword.get(opts, :callbacks, %{}),
+          notify_pid: Keyword.get(opts, :notify_pid),
+          agent_name: agent.name,
+          cancellation_check: Keyword.get(opts, :cancellation_check)
+        )
+    end
+  end
+
+  defp build_initial_messages(history, prompt, system_prompt) do
+    messages = []
+
+    # Add system prompt if present
+    messages = if system_prompt && system_prompt != "" do
+      [Message.system(system_prompt) | messages]
+    else
+      messages
+    end
+
+    # Add history
+    messages = messages ++ history
+
+    # Add user prompt
+    messages ++ [Message.user(prompt)]
+  end
+
+  defp resolve_prompt(nil, _opts), do: nil
+  defp resolve_prompt(prompt, _opts) when is_binary(prompt), do: prompt
+  defp resolve_prompt(prompt_fn, opts) when is_function(prompt_fn, 1) do
+    ctx = RunContext.new(Keyword.get(opts, :deps, %{}))
+    prompt_fn.(ctx)
+  end
+
+  defp execute_loop(agent, behaviour, ctx) do
+    # Check for cancellation
+    case check_cancellation(ctx) do
       {:error, _} = err ->
         err
 
       :ok ->
-        do_iteration(state, messages)
+        do_iteration(agent, behaviour, ctx)
     end
   end
 
-  defp check_cancellation(state) do
-    if state.cancellation_check do
+  defp check_cancellation(ctx) do
+    if ctx.cancellation_check do
       try do
-        state.cancellation_check.()
+        ctx.cancellation_check.()
         :ok
       catch
         {:cancelled, reason} ->
@@ -197,114 +316,168 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  defp do_iteration(state, messages) do
-    if state.iteration >= state.max_iterations do
+  defp do_iteration(agent, behaviour, ctx) do
+    # Check needs_response - if false, we're done
+    if not ctx.needs_response do
+      {:ok, ctx}
+    # Check max iterations
+    else if Context.max_iterations_reached?(ctx) do
       Logger.error("""
       Max iterations exceeded
-        Agent: #{state.agent.name}
-        Max iterations: #{state.max_iterations}
-        Total tokens used: #{state.usage.total_tokens}
+        Agent: #{agent.name}
+        Max iterations: #{ctx.max_iterations}
+        Total tokens used: #{ctx.usage.total_tokens}
       """)
 
-      error = Errors.MaxIterationsExceeded.exception(max_iterations: state.max_iterations)
+      error = Errors.MaxIterationsExceeded.exception(max_iterations: ctx.max_iterations)
       {:error, error}
     else
+      # Get tools from behaviour
+      tools = behaviour.get_tools(agent)
+
+      # Build messages via behaviour
+      messages = behaviour.build_messages(agent, ctx)
+
       # Add tools to model settings if any
       model_settings =
-        if Enum.empty?(state.agent.tools) do
-          state.agent.model_settings
+        if Enum.empty?(tools) do
+          agent.model_settings
         else
-          # Convert tools to appropriate format based on provider
-          Logger.debug("Converting #{length(state.agent.tools)} tools for provider: #{state.agent.model.provider}")
-          tool_schemas = convert_tools_for_provider(state.agent.model.provider, state.agent.tools)
-          Map.put(state.agent.model_settings, :tools, tool_schemas)
+          Logger.debug("Converting #{length(tools)} tools for provider: #{agent.model.provider}")
+          tool_schemas = convert_tools_for_provider(agent.model.provider, tools)
+          Map.put(agent.model_settings, :tools, tool_schemas)
         end
 
-      # Make model request
-      Logger.debug("Agent iteration #{state.iteration + 1}/#{state.max_iterations}: requesting model response")
+      # Apply before_request callback if implemented
+      model_settings = Behaviour.call(
+        behaviour,
+        :before_request,
+        [agent, ctx, Keyword.new(model_settings)],
+        Keyword.new(model_settings)
+      ) |> Map.new()
 
-      case get_dispatcher().request(state.agent.model, messages, model_settings) do
+      # Make model request
+      Logger.debug("Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response")
+
+      case get_dispatcher().request(agent.model, messages, model_settings) do
         {:ok, response} ->
           # Update usage
-          new_usage = Usage.add(state.usage, response.metadata.usage)
-          new_state = %{state | usage: new_usage, iteration: state.iteration + 1}
+          usage_update = response.metadata.usage || %{}
+          ctx = Context.add_usage(ctx, usage_update)
+          ctx = Context.increment_iteration(ctx)
 
-          Logger.debug("Model response received (tokens: +#{response.metadata.usage.total_tokens}, total: #{new_usage.total_tokens})")
-
-          # Check for tool calls
-          tool_calls = Messages.extract_tool_calls([response])
-
-          if Enum.empty?(tool_calls) do
-            # No tool calls, extract final output
-            Logger.debug("No tool calls detected, extracting final output")
-            output = extract_output(response, state.agent.output_type)
-
-            {:ok,
-             %{
-               output: output,
-               usage: new_usage,
-               iterations: new_state.iteration,
-               all_messages: messages ++ [response],
-               new_messages: [response],
-               deps: state.deps  # Return updated deps so todos are accessible
-             }}
-          else
-            # Execute tools and continue
-            tool_names = Enum.map_join(tool_calls, ", ", & &1.name)
-            Logger.debug("Detected #{length(tool_calls)} tool call(s): #{tool_names}")
-            handle_tool_calls(new_state, messages, response, tool_calls)
+          # Get total tokens safely from struct or map
+          tokens_added = case usage_update do
+            %{total_tokens: t} when is_integer(t) -> t
+            _ -> 0
           end
+          Logger.debug("Model response received (tokens: +#{tokens_added}, total: #{ctx.usage.total_tokens})")
+
+          # Execute callback
+          Callbacks.execute(ctx, :on_llm_new_message, response)
+
+          # Process response via behaviour - this handles tool calls and updates needs_response
+          ctx = behaviour.process_response(agent, response, ctx)
+
+          # Check if we need to handle tool calls (behaviour may have set this up)
+          ctx = if Message.has_tool_calls?(response) do
+            handle_tool_calls(agent, behaviour, ctx, response, tools)
+          else
+            ctx
+          end
+
+          # Continue loop
+          execute_loop(agent, behaviour, ctx)
 
         {:error, reason} ->
           Logger.error("""
-          Model request failed in iteration #{state.iteration + 1}
-            Agent: #{state.agent.name}
-            Model: #{state.agent.model.provider}:#{state.agent.model.model}
+          Model request failed in iteration #{ctx.iteration + 1}
+            Agent: #{agent.name}
+            Model: #{agent.model.provider}:#{agent.model.model}
             Reason: #{inspect(reason)}
           """)
-          {:error, reason}
+
+          # Try error handler if implemented
+          case Behaviour.call(behaviour, :handle_error, [agent, reason, ctx], {:error, reason}) do
+            {:retry, new_ctx} ->
+              execute_loop(agent, behaviour, new_ctx)
+            {:continue, new_ctx} ->
+              execute_loop(agent, behaviour, new_ctx)
+            {:error, _} = err ->
+              err
+          end
       end
     end
+    end
   end
 
-  defp handle_tool_calls(state, messages, response, tool_calls) do
-    # Update usage to track tool calls
-    new_usage = Usage.inc_tool_calls(state.usage, length(tool_calls))
-    state = %{state | usage: new_usage}
+  defp handle_tool_calls(agent, behaviour, ctx, response, tools) do
+    # Extract tool calls
+    tool_calls = Messages.extract_tool_calls([response])
 
-    # Build run context
-    ctx = RunContext.new(state.deps, usage: state.usage)
+    if Enum.empty?(tool_calls) do
+      ctx
+    else
+      # Update usage to track tool calls
+      ctx = Context.add_usage(ctx, %{tool_calls: length(tool_calls)})
 
-    # Execute all tool calls and collect context updates
-    {tool_results, context_updates} =
-      Enum.reduce(tool_calls, {[], %{}}, fn call, {results, updates} ->
-        {result, new_updates} = execute_single_tool(state.agent.tools, call, ctx)
-        {[result | results], Map.merge(updates, new_updates)}
+      tool_names = Enum.map_join(tool_calls, ", ", & &1.name)
+      Logger.debug("Detected #{length(tool_calls)} tool call(s): #{tool_names}")
+
+      # Build run context for tool execution
+      run_ctx = Context.to_run_context(ctx)
+
+      # Execute all tool calls and collect results
+      {tool_results, ctx} = Enum.reduce(tool_calls, {[], ctx}, fn call, {results, acc_ctx} ->
+        # Execute callback before tool
+        Callbacks.execute(acc_ctx, :on_tool_call, %{
+          id: call.id,
+          name: call.name,
+          arguments: call.arguments
+        })
+
+        {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
+
+        # Execute callback after tool
+        Callbacks.execute(acc_ctx, :on_tool_response, %{
+          id: call.id,
+          name: call.name,
+          result: result_msg.content
+        })
+
+        # Apply after_tool callback if implemented
+        acc_ctx = Behaviour.call(
+          behaviour,
+          :after_tool,
+          [agent, call, result_msg.content, acc_ctx],
+          acc_ctx
+        )
+
+        # Merge context updates
+        acc_ctx = if map_size(context_updates) > 0 do
+          Logger.debug("Merging context updates: #{inspect(Map.keys(context_updates))}")
+          Context.merge_deps(acc_ctx, context_updates)
+        else
+          acc_ctx
+        end
+
+        {[result_msg | results], acc_ctx}
       end)
 
-    tool_results = Enum.reverse(tool_results)
+      # Add tool result messages
+      tool_results = Enum.reverse(tool_results)
+      ctx = Context.add_messages(ctx, tool_results)
 
-    # Merge context updates into state.deps
-    updated_deps = if map_size(context_updates) > 0 do
-      Logger.debug("Merging context updates: #{inspect(Map.keys(context_updates))}")
-      Map.merge(state.deps || %{}, context_updates)
-    else
-      state.deps
+      # Record tool calls
+      Enum.reduce(tool_calls, ctx, fn call, acc ->
+        Context.add_tool_call(acc, call)
+      end)
     end
-
-    # Update state with new deps for next iteration
-    state = %{state | deps: updated_deps}
-
-    # Add response and tool results to messages
-    new_messages = messages ++ [response] ++ tool_results
-
-    Logger.info("Completed #{length(tool_calls)} tool call(s), continuing to next iteration")
-
-    # Continue loop with updated state
-    execute_loop(state, new_messages)
   end
 
-  defp execute_single_tool(tools, call, ctx) do
+  defp execute_single_tool(tools, call, run_ctx) do
+    alias Nous.Tool.ContextUpdate
+
     # Clean up tool name - Claude sometimes adds XML-like syntax
     cleaned_name = clean_tool_name(call.name)
 
@@ -312,11 +485,23 @@ defmodule Nous.AgentRunner do
 
     {result, context_updates} =
       if tool do
-        case ToolExecutor.execute(tool, call.arguments, ctx) do
+        case ToolExecutor.execute(tool, call.arguments, run_ctx) do
+          # New: Handle ContextUpdate return
+          {:ok, result, %ContextUpdate{} = update} ->
+            Logger.debug("Tool '#{cleaned_name}' executed successfully with context updates")
+            updates = context_update_to_map(update)
+
+            if map_size(updates) > 0 do
+              Logger.debug("Tool '#{cleaned_name}' returned context updates via ContextUpdate: #{inspect(Map.keys(updates))}")
+            end
+
+            {result, updates}
+
           {:ok, result} ->
             Logger.debug("Tool '#{cleaned_name}' executed successfully")
 
             # Extract context updates if present (only for map results)
+            # This handles the legacy __update_context__ pattern
             {clean_result, updates} = if is_map(result) do
               updates = Map.get(result, :__update_context__, %{})
 
@@ -355,6 +540,20 @@ defmodule Nous.AgentRunner do
     {Message.tool(call.id, result), context_updates}
   end
 
+  # Convert ContextUpdate operations to a deps map for merging
+  defp context_update_to_map(%Nous.Tool.ContextUpdate{operations: ops}) do
+    Enum.reduce(ops, %{}, fn
+      {:set, key, value}, acc -> Map.put(acc, key, value)
+      {:merge, key, map}, acc ->
+        existing = Map.get(acc, key, %{})
+        Map.put(acc, key, Map.merge(existing, map))
+      {:append, key, item}, acc ->
+        existing = Map.get(acc, key, [])
+        Map.put(acc, key, existing ++ [item])
+      {:delete, key}, acc -> Map.delete(acc, key)
+    end)
+  end
+
   # Clean tool names - Claude sometimes uses XML-like syntax
   defp clean_tool_name(name) when is_binary(name) do
     name
@@ -363,68 +562,85 @@ defmodule Nous.AgentRunner do
     |> String.trim()
   end
 
-  defp build_initial_messages(state, prompt) do
-    messages = []
-
-    # Add instructions if present (with todo injection if enabled)
-    messages =
-      if state.agent.instructions do
-        instructions =
-          if is_function(state.agent.instructions) do
-            # Dynamic instructions
-            ctx = RunContext.new(state.deps)
-            state.agent.instructions.(ctx)
-          else
-            # Static instructions
-            state.agent.instructions
-          end
-
-        # Inject todos into instructions if enabled
-        instructions_with_todos = if state.agent.enable_todos do
-          inject_todos_into_prompt(instructions, state.deps)
-        else
-          instructions
-        end
-
-        [Message.system(instructions_with_todos) | messages]
-      else
-        messages
-      end
-
-    # Add system prompt if present (in addition to instructions)
-    messages =
-      if state.agent.system_prompt do
-        system_prompt =
-          if is_function(state.agent.system_prompt) do
-            ctx = RunContext.new(state.deps)
-            state.agent.system_prompt.(ctx)
-          else
-            state.agent.system_prompt
-          end
-
-        [Message.system(system_prompt) | messages]
-      else
-        messages
-      end
-
-    # Add message history
-    messages = messages ++ state.message_history
-
-    # Add user prompt
-    messages = messages ++ [Message.user(prompt)]
-
-    Enum.reverse(messages)
+  defp build_result(_agent, ctx, output) do
+    %{
+      output: output,
+      usage: ctx.usage,
+      iterations: ctx.iteration,
+      all_messages: ctx.messages,
+      new_messages: get_new_messages(ctx),
+      deps: ctx.deps,
+      context: ctx  # Include context for continuation
+    }
   end
 
-  defp extract_output(response, :string) do
-    Messages.extract_text(response)
+  defp get_new_messages(ctx) do
+    # Get messages added during this run (after initial user message)
+    # This is a simplification - could be more sophisticated
+    ctx.messages
+    |> Enum.drop_while(fn msg -> msg.role != :assistant end)
   end
 
-  defp extract_output(response, output_module) when is_atom(output_module) do
-    # For structured outputs, look for tool call with schema
-    # This is simplified - full implementation would use the output module
-    # to validate and structure the data
-    Messages.extract_text(response)
+  defp emit_error_telemetry(agent, duration, error) do
+    duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
+    Logger.error("""
+    Agent run failed: #{agent.name}
+      Duration: #{duration_ms}ms
+      Error: #{inspect(error)}
+    """)
+
+    :telemetry.execute(
+      [:nous, :agent, :run, :exception],
+      %{duration: duration},
+      %{
+        agent_name: agent.name,
+        model_provider: agent.model.provider,
+        kind: :error,
+        reason: error,
+        stacktrace: []
+      }
+    )
+  end
+
+  defp maybe_update_callbacks(ctx, opts) do
+    case Keyword.get(opts, :callbacks) do
+      nil -> ctx
+      callbacks -> %{ctx | callbacks: Map.merge(ctx.callbacks, callbacks)}
+    end
+  end
+
+  defp maybe_update_notify_pid(ctx, opts) do
+    case Keyword.get(opts, :notify_pid) do
+      nil -> ctx
+      pid -> %{ctx | notify_pid: pid}
+    end
+  end
+
+  defp wrap_stream_with_callbacks(stream, ctx) do
+    Stream.transform(stream, nil, fn event, acc ->
+      case event do
+        {:text_delta, text} ->
+          Callbacks.execute(ctx, :on_llm_new_delta, text)
+          {[event], acc}
+
+        {:thinking_delta, text} ->
+          Callbacks.execute(ctx, :on_llm_new_delta, "[thinking] #{text}")
+          {[event], acc}
+
+        {:tool_call_delta, calls} ->
+          Enum.each(calls, fn call ->
+            Callbacks.execute(ctx, :on_tool_call, call)
+          end)
+          {[event], acc}
+
+        {:finish, _reason} = finish ->
+          {[finish], acc}
+
+        other ->
+          {[other], acc}
+      end
+    end)
   end
 
   # Convert tools to provider-specific format
@@ -457,7 +673,7 @@ defmodule Nous.AgentRunner do
       """
       #{instructions}
 
-      ## 📋 Current Task Progress
+      ## Current Task Progress
 
       #{todo_section}
 
@@ -486,7 +702,7 @@ defmodule Nous.AgentRunner do
         "  #{priority_icon} [#{todo.id}] #{todo.text}"
       end)
 
-      ["\n⏳ **In Progress** (#{length(in_progress)}):\n#{in_progress_list}" | sections]
+      ["\nIn Progress (#{length(in_progress)}):\n#{in_progress_list}" | sections]
     else
       sections
     end
@@ -498,7 +714,7 @@ defmodule Nous.AgentRunner do
         "  #{priority_icon} [#{todo.id}] #{todo.text}"
       end)
 
-      ["\n📝 **Pending** (#{length(pending)}):\n#{pending_list}" | sections]
+      ["\nPending (#{length(pending)}):\n#{pending_list}" | sections]
     else
       sections
     end
@@ -506,10 +722,10 @@ defmodule Nous.AgentRunner do
     # Completed section
     sections = if length(completed) > 0 do
       completed_list = Enum.map_join(completed, "\n", fn todo ->
-        "  ✓ [#{todo.id}] #{todo.text}"
+        "  * [#{todo.id}] #{todo.text}"
       end)
 
-      ["\n✅ **Completed** (#{length(completed)}):\n#{completed_list}" | sections]
+      ["\nCompleted (#{length(completed)}):\n#{completed_list}" | sections]
     else
       sections
     end
@@ -556,10 +772,10 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  defp priority_icon("high"), do: "🔴"
-  defp priority_icon("medium"), do: "🟡"
-  defp priority_icon("low"), do: "🟢"
-  defp priority_icon(_), do: "•"
+  defp priority_icon("high"), do: "[HIGH]"
+  defp priority_icon("medium"), do: "[MED]"
+  defp priority_icon("low"), do: "[LOW]"
+  defp priority_icon(_), do: "-"
 
   # Get the model dispatcher, allowing dependency injection for testing
   defp get_dispatcher do

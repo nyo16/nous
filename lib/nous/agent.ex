@@ -40,13 +40,15 @@ defmodule Nous.Agent do
           retries: non_neg_integer(),
           tools: [Tool.t()],
           end_strategy: :early | :exhaustive,
-          enable_todos: boolean()
+          enable_todos: boolean(),
+          behaviour_module: module() | nil
         }
 
   @enforce_keys [:model]
   defstruct [
     :model,
     :deps_type,
+    :behaviour_module,
     output_type: :string,
     instructions: nil,
     system_prompt: nil,
@@ -76,6 +78,7 @@ defmodule Nous.Agent do
     * `:enable_todos` - Enable automatic todo tracking (default: false)
     * `:tools` - List of tool functions or Tool structs
     * `:end_strategy` - How to handle tool calls (`:early` or `:exhaustive`)
+    * `:behaviour_module` - Custom agent behaviour module (default: BasicAgent)
 
   ## Examples
 
@@ -113,21 +116,33 @@ defmodule Nous.Agent do
       model_settings: Keyword.get(opts, :model_settings, %{}),
       retries: Keyword.get(opts, :retries, 1),
       tools: parse_tools(Keyword.get(opts, :tools, [])),
-      end_strategy: Keyword.get(opts, :end_strategy, :early)
+      end_strategy: Keyword.get(opts, :end_strategy, :early),
+      behaviour_module: Keyword.get(opts, :behaviour_module)
     }
   end
 
   @doc """
   Run agent synchronously.
 
+  ## Input Formats
+
+  The second argument accepts multiple formats:
+
+  - **String prompt**: Simple string message from user
+  - **Keyword list**: Use `:messages` for custom message list, `:context` to continue from previous run
+
   ## Options
     * `:deps` - Dependencies to pass to tools and prompts
     * `:message_history` - Previous messages to continue conversation
     * `:usage_limits` - Usage limits for this run
     * `:model_settings` - Override model settings for this run
+    * `:callbacks` - Map of callback functions for events
+    * `:notify_pid` - PID to receive event messages
+    * `:context` - Existing context to continue from
 
   ## Examples
 
+      # String prompt
       {:ok, result} = Agent.run(agent, "What is the capital of France?")
       IO.puts(result.output) # "Paris"
 
@@ -136,9 +151,30 @@ defmodule Nous.Agent do
         deps: %{database: MyApp.DB}
       )
 
-      # Continue conversation
+      # Message list directly
+      {:ok, result} = Agent.run(agent,
+        messages: [
+          Message.system("Be concise"),
+          Message.user("What is 2+2?")
+        ]
+      )
+
+      # Continue from previous context
+      {:ok, result1} = Agent.run(agent, "First question")
+      {:ok, result2} = Agent.run(agent, "Follow up",
+        context: result1.context
+      )
+
+      # Continue conversation with message history
       {:ok, result2} = Agent.run(agent, "Tell me more",
         message_history: result1.new_messages
+      )
+
+      # With callbacks
+      {:ok, result} = Agent.run(agent, "Hello",
+        callbacks: %{
+          on_llm_new_delta: fn _, text -> IO.write(text) end
+        }
       )
 
   ## Returns
@@ -147,15 +183,57 @@ defmodule Nous.Agent do
         output: "Result text or structured output",
         usage: %Usage{...},
         all_messages: [...],
-        new_messages: [...]
+        new_messages: [...],
+        context: %Context{...}  # Can be used for continuation
       }}
 
       {:error, reason}
 
   """
-  @spec run(t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def run(%__MODULE__{} = agent, prompt, opts \\ []) do
+  @spec run(t(), String.t() | keyword(), keyword()) :: {:ok, map()} | {:error, term()}
+  def run(agent, input, opts \\ [])
+
+  # String prompt
+  def run(%__MODULE__{} = agent, prompt, opts) when is_binary(prompt) do
     Nous.AgentRunner.run(agent, prompt, opts)
+  end
+
+  # Keyword input with messages or context
+  def run(%__MODULE__{} = agent, input, opts) when is_list(input) do
+    merged_opts = Keyword.merge(input, opts)
+
+    cond do
+      Keyword.has_key?(merged_opts, :messages) ->
+        # Build context from messages
+        messages = Keyword.fetch!(merged_opts, :messages)
+        run_with_messages(agent, messages, Keyword.delete(merged_opts, :messages))
+
+      Keyword.has_key?(merged_opts, :context) ->
+        # Continue from existing context - need a prompt
+        {:error, :prompt_required_with_context}
+
+      true ->
+        {:error, :invalid_input}
+    end
+  end
+
+  defp run_with_messages(agent, messages, opts) do
+    alias Nous.Agent.Context
+
+    # Build initial context from messages
+    ctx = Context.new(
+      messages: messages,
+      deps: Keyword.get(opts, :deps, %{}),
+      max_iterations: Keyword.get(opts, :max_iterations, 10),
+      callbacks: Keyword.get(opts, :callbacks, %{}),
+      notify_pid: Keyword.get(opts, :notify_pid),
+      agent_name: agent.name,
+      cancellation_check: Keyword.get(opts, :cancellation_check),
+      needs_response: true
+    )
+
+    # Run with pre-built context
+    Nous.AgentRunner.run_with_context(agent, ctx, opts)
   end
 
   @doc """

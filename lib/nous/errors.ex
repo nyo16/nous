@@ -162,6 +162,42 @@ defmodule Nous.Errors do
     end
   end
 
+  defmodule ToolTimeout do
+    @moduledoc """
+    Error when a tool execution times out.
+
+    Raised when a tool takes longer than its configured timeout.
+    """
+
+    defexception [:message, :tool_name, :timeout]
+
+    @type t :: %__MODULE__{
+            message: String.t(),
+            tool_name: String.t() | nil,
+            timeout: non_neg_integer() | nil
+          }
+
+    @impl true
+    def exception(opts) when is_list(opts) do
+      tool_name = Keyword.get(opts, :tool_name)
+      timeout = Keyword.get(opts, :timeout)
+
+      message =
+        opts[:message] ||
+          "Tool '#{tool_name || "unknown"}' timed out after #{timeout || 0}ms"
+
+      %__MODULE__{
+        message: message,
+        tool_name: tool_name,
+        timeout: timeout
+      }
+    end
+
+    def exception(message) when is_binary(message) do
+      %__MODULE__{message: message}
+    end
+  end
+
   defmodule ValidationError do
     @moduledoc """
     Error during output validation.

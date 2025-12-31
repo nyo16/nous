@@ -6,11 +6,9 @@
 
 AI agent framework for Elixir with multi-provider LLM support.
 
-[![Elixir](https://img.shields.io/badge/elixir-~%3E%201.17-purple.svg)](https://elixir-lang.org)
+[![Elixir](https://img.shields.io/badge/elixir-~%3E%201.15-purple.svg)](https://elixir-lang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/nyo16/nous/blob/master/LICENSE)
 [![Status](https://img.shields.io/badge/status-working%20mvp-brightgreen.svg)](#features)
-
-Nous AI is an AI agent framework for Elixir with support for any OpenAI-compatible API. Features include tool calling, multi-provider support, local LLM execution, and built-in utilities for dates, strings, web search, and task tracking.
 
 ## Installation
 
@@ -19,8 +17,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.5.0"},
-    {:openai_ex, "~> 0.9.17"}
+    {:nous, "~> 0.8.0"}
   ]
 end
 ```
@@ -34,139 +31,56 @@ mix deps.get
 
 ```elixir
 # Create an agent
-agent = Nous.new("lmstudio:qwen/qwen3-30b",
-  instructions: "Be helpful and concise"
+agent = Nous.new("lmstudio:qwen3",
+  instructions: "Be helpful and concise."
 )
 
 # Run it
-{:ok, result} = Nous.run(agent, "What is 2+2?")
+{:ok, result} = Nous.run(agent, "What is Elixir?")
 
-IO.puts(result.output) # "4"
+IO.puts(result.output)
 IO.puts("Tokens: #{result.usage.total_tokens}")
 ```
 
 ## Supported Providers
 
-| Provider | Model String | HTTP Client | Streaming |
-|----------|-------------|-------------|-----------|
-| LM Studio | `lmstudio:qwen/qwen3-30b` | Custom SSE | Tested |
-| OpenAI | `openai:gpt-4` | OpenaiEx | Tested |
-| Anthropic | `anthropic:claude-sonnet-4-5-20250929` | Native | Tested |
-| Google Gemini | `gemini:gemini-2.0-flash-exp` | Native | Tested |
-| Mistral AI | `mistral:ministral-3-14b-instruct-2512` | Req | Tested |
-| Groq | `groq:llama-3.1-70b-versatile` | OpenaiEx | Supported |
-| Ollama | `ollama:llama2` | Custom SSE | Supported |
-| vLLM | `vllm:model` + `:base_url` | Custom SSE | Tested |
-| SGLang | `sglang:model` + `:base_url` | Custom SSE | Supported |
-| OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | OpenaiEx | Supported |
-| Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | Custom SSE | Supported |
-| Custom | `custom:model` + `:base_url` | Custom SSE | Supported |
+| Provider | Model String | Streaming |
+|----------|-------------|-----------|
+| LM Studio | `lmstudio:qwen3` | ✅ |
+| OpenAI | `openai:gpt-4` | ✅ |
+| Anthropic | `anthropic:claude-sonnet-4-5-20250929` | ✅ |
+| Groq | `groq:llama-3.1-70b-versatile` | ✅ |
+| Ollama | `ollama:llama2` | ✅ |
+| OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | ✅ |
+| Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | ✅ |
+| Custom | `openai_compatible:model` + `:base_url` | ✅ |
 
-**Local (Zero Cost):** LM Studio, Ollama, vLLM, SGLang
-**Cloud:** OpenAI, Anthropic, Mistral AI, Groq, OpenRouter, Together AI
+All providers use pure Elixir HTTP clients (Req + Finch).
 
 ```elixir
 # Switch providers with one line change
-agent = Nous.new("lmstudio:qwen/qwen3-30b")  # Local
-agent = Nous.new("openai:gpt-4")             # Cloud
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")  # Claude
-agent = Nous.new("mistral:ministral-3-14b-instruct-2512")  # Mistral
+agent = Nous.new("lmstudio:qwen3")                  # Local (free)
+agent = Nous.new("openai:gpt-4")                    # OpenAI
+agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")   # Anthropic
 ```
-
-## Agent Types
-
-| Feature | `ReActAgent` | Standard `Agent` |
-|---------|--------------|------------------|
-| **Planning** | Built-in structured planning | No planning (you control flow) |
-| **Todo tracking** | Automatic task breakdown | Manual (via custom tools) |
-| **Completion** | Explicit `final_answer` required | Stops naturally |
-| **Best for** | Complex multi-step problems | Simple tasks, custom workflows |
-| **Token usage** | Higher (planning + tracking) | Lower (direct execution) |
-
-### ReActAgent (Enhanced Planning)
-
-Use for complex, multi-step problems with structured planning. Agent creates plans, tracks todos, and documents findings.
-
-```elixir
-agent = Nous.ReActAgent.new("lmstudio:qwen/qwen3-30b",
-  tools: [&search/2, &calculate/2]
-)
-
-{:ok, result} = Nous.ReActAgent.run(agent,
-  "Who is the oldest F1 driver and when did they win their first championship?"
-)
-```
-
-See [examples/react_agent_enhanced_demo.exs](examples/react_agent_enhanced_demo.exs) or [by_feature/patterns/](examples/by_feature/README.md#-patterns-agent-reasoning--architecture)
-
-### Standard Agent (Flexible & Simple)
-
-Use for simple Q&A, single-step tasks, or custom workflows where you control behavior.
-
-```elixir
-agent = Nous.new("openai:gpt-4",
-  tools: [&calculate/2]
-)
-{:ok, result} = Nous.run(agent, "Calculate 15 * 23")
-```
-
-## Built-in Tools
-
-### DateTime Tools
-Date/time operations with timezone support, date arithmetic, and formatting.
-
-```elixir
-alias Nous.Tools.DateTimeTools
-tools: [&DateTimeTools.current_date/2, &DateTimeTools.date_difference/2, &DateTimeTools.add_days/2]
-```
-
-See [examples/datetime_tools_demo.exs](examples/datetime_tools_demo.exs) or [by_feature/tools/](examples/by_feature/README.md#-tools-function-calling--actions)
-
-### String Tools
-Text manipulation: uppercase, replace, split, palindrome detection, number extraction.
-
-```elixir
-alias Nous.Tools.StringTools
-tools: [&StringTools.to_uppercase/2, &StringTools.replace_text/2, &StringTools.extract_numbers/2]
-```
-
-See [examples/string_tools_demo.exs](examples/string_tools_demo.exs) or [by_feature/tools/](examples/by_feature/README.md#-tools-function-calling--actions)
-
-### Todo Tools
-Automatic task breakdown and progress tracking for multi-step workflows.
-
-```elixir
-alias Nous.Tools.TodoTools
-agent = Nous.new("lmstudio:qwen/qwen3-30b",
-  enable_todos: true,
-  tools: [&TodoTools.add_todo/2, &TodoTools.complete_todo/2]
-)
-```
-
-See [examples/todo_tools_demo.exs](examples/todo_tools_demo.exs) or [by_feature/tools/](examples/by_feature/README.md#-tools-function-calling--actions)
-
-### Brave Search (Web Search)
-Search the web for current information. Requires `BRAVE_API_KEY` ([get free key](https://brave.com/search/api/)).
-
-```elixir
-alias Nous.Tools.BraveSearch
-tools: [&BraveSearch.web_search/2, &BraveSearch.news_search/2]
-```
-
-See [examples/brave_search_demo.exs](examples/brave_search_demo.exs) or [by_feature/tools/](examples/by_feature/README.md#-tools-function-calling--actions)
 
 ## Features
 
 ### Tool Calling
 
-Define Elixir functions as tools. AI calls them automatically when needed.
+Define Elixir functions as tools. The AI calls them automatically when needed.
 
 ```elixir
-def search_database(_ctx, %{"query" => q}), do: DB.search(q)
+get_weather = fn _ctx, %{"city" => city} ->
+  %{city: city, temperature: 72, conditions: "sunny"}
+end
 
 agent = Nous.new("openai:gpt-4",
-  tools: [&search_database/2]
+  instructions: "You can check the weather.",
+  tools: [get_weather]
 )
+
+{:ok, result} = Nous.run(agent, "What's the weather in Tokyo?")
 ```
 
 ### Tools with Context
@@ -174,221 +88,241 @@ agent = Nous.new("openai:gpt-4",
 Pass dependencies (user, database, API keys) via context:
 
 ```elixir
-def get_balance(ctx, _args), do: DB.get_balance(ctx.deps.database, ctx.deps.user.id)
+get_balance = fn ctx, _args ->
+  user = ctx.deps[:user]
+  %{balance: user.balance}
+end
+
+agent = Nous.new("openai:gpt-4", tools: [get_balance])
 
 {:ok, result} = Nous.run(agent, "What's my balance?",
-  deps: %{user: %{id: 123}, database: MyApp.DB}
+  deps: %{user: %{id: 123, balance: 1000}}
 )
 ```
 
-See [examples/tools_with_context.exs](examples/tools_with_context.exs) or [custom_tools_guide.exs](examples/custom_tools_guide.exs)
+### Context Continuation
 
-### Conversations
+Continue conversations with full context preservation:
 
 ```elixir
-{:ok, r1} = Nous.run(agent, "Tell me a joke")
-{:ok, r2} = Nous.run(agent, "Explain it", message_history: r1.new_messages)
+{:ok, result1} = Nous.run(agent, "My name is Alice")
+{:ok, result2} = Nous.run(agent, "What's my name?", context: result1.context)
+# => "Your name is Alice"
 ```
 
 ### Streaming
 
 ```elixir
-{:ok, stream} = Nous.run_stream(agent, "Write a poem")
-stream |> Stream.each(fn {:text_delta, t} -> IO.write(t) end) |> Stream.run()
-```
+{:ok, stream} = Nous.run_stream(agent, "Write a haiku")
 
-#### Stream Events
-
-| Event | Description |
-|-------|-------------|
-| `{:text_delta, text}` | Incremental text content |
-| `{:thinking_delta, text}` | Reasoning/thinking content (vLLM, DeepSeek, SGLang) |
-| `{:tool_call_delta, calls}` | Tool call information |
-| `{:finish, reason}` | Stream completion |
-
-#### Thinking/Reasoning Streams
-
-For models with reasoning capabilities (DeepSeek-R1, QwQ, etc.):
-
-```elixir
-stream |> Stream.each(fn
-  {:thinking_delta, t} -> IO.write("[thinking] #{t}")
-  {:text_delta, t} -> IO.write(t)
+stream
+|> Enum.each(fn
+  {:text_delta, text} -> IO.write(text)
+  {:finish, _} -> IO.puts("")
   _ -> :ok
-end) |> Stream.run()
+end)
 ```
 
-### Anthropic Extended Features
+### Callbacks
+
+Monitor execution with callbacks or process messages:
 
 ```elixir
-# 1M token context window
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
-  model_settings: %{enable_long_context: true}
+# Map-based callbacks
+{:ok, result} = Nous.run(agent, "Hello",
+  callbacks: %{
+    on_llm_new_delta: fn _event, delta -> IO.write(delta) end,
+    on_tool_call: fn _event, call -> IO.puts("Tool: #{call.name}") end
+  }
 )
 
-# Extended thinking mode
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
-  model_settings: %{thinking: %{type: "enabled", budget_tokens: 5000}}
+# Process messages (for LiveView)
+{:ok, result} = Nous.run(agent, "Hello", notify_pid: self())
+# Receives: {:agent_delta, text}, {:tool_call, call}, {:agent_complete, result}
+```
+
+### Module-Based Tools
+
+Define tools as modules for better organization and testability:
+
+```elixir
+defmodule MyTools.Search do
+  @behaviour Nous.Tool.Behaviour
+
+  @impl true
+  def metadata do
+    %{
+      name: "search",
+      description: "Search the web",
+      parameters: %{
+        "type" => "object",
+        "properties" => %{
+          "query" => %{"type" => "string"}
+        },
+        "required" => ["query"]
+      }
+    }
+  end
+
+  @impl true
+  def execute(ctx, %{"query" => query}) do
+    http = ctx.deps[:http_client] || MyApp.HTTP
+    {:ok, http.search(query)}
+  end
+end
+
+agent = Nous.new("openai:gpt-4",
+  tools: [Nous.Tool.from_module(MyTools.Search)]
+)
+```
+
+### Tool Context Updates
+
+Tools can modify context state for subsequent calls:
+
+```elixir
+alias Nous.Tool.ContextUpdate
+
+add_item = fn ctx, %{"item" => item} ->
+  items = ctx.deps[:cart] || []
+  {:ok, %{added: item}, ContextUpdate.set(ContextUpdate.new(), :cart, items ++ [item])}
+end
+```
+
+### Prompt Templates
+
+Build prompts with EEx variable substitution:
+
+```elixir
+alias Nous.PromptTemplate
+
+template = PromptTemplate.from_template(
+  "You are a <%= @role %> who speaks <%= @language %>.",
+  role: :system
+)
+
+message = PromptTemplate.to_message(template, %{role: "teacher", language: "Spanish"})
+{:ok, result} = Nous.run(agent, messages: [message, Message.user("Hello")])
+```
+
+### ReActAgent
+
+For complex multi-step reasoning with planning:
+
+```elixir
+agent = Nous.ReActAgent.new("openai:gpt-4",
+  tools: [&search/2, &calculate/2]
+)
+
+{:ok, result} = Nous.run(agent,
+  "Research the population of Tokyo and calculate its density"
 )
 ```
 
 ### LiveView Integration
 
 ```elixir
-# Spawn linked streaming process from LiveView
-spawn_link(fn ->
-  agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")
+defmodule MyAppWeb.ChatLive do
+  use MyAppWeb, :live_view
 
-  {:ok, stream} = Nous.run_stream(agent, message)
+  def mount(_params, _session, socket) do
+    agent = Nous.new("lmstudio:qwen3", instructions: "Be helpful.")
+    {:ok, assign(socket, agent: agent, messages: [], streaming: false)}
+  end
 
-  stream
-  |> Stream.each(fn
-    {:text_delta, text} -> send(parent, {:stream_chunk, text})
-    {:finish, result} -> send(parent, {:stream_complete, result})
-    _ -> :ok
-  end)
-  |> Stream.run()
-end)
+  def handle_event("send", %{"message" => msg}, socket) do
+    Task.start(fn ->
+      Nous.run(socket.assigns.agent, msg, notify_pid: socket.root_pid)
+    end)
+    {:noreply, assign(socket, streaming: true)}
+  end
+
+  def handle_info({:agent_delta, text}, socket) do
+    {:noreply, update(socket, :current, &(&1 <> text))}
+  end
+
+  def handle_info({:agent_complete, result}, socket) do
+    messages = socket.assigns.messages ++ [%{role: :assistant, content: result.output}]
+    {:noreply, assign(socket, messages: messages, streaming: false)}
+  end
+end
 ```
 
-See [liveview_streaming_example.ex](examples/liveview_streaming_example.ex) for real-time streaming or [LiveView Integration Guide](docs/guides/liveview-integration.md) for patterns
+See [examples/advanced/liveview_integration.exs](examples/advanced/liveview_integration.exs) for complete patterns.
 
-## Logging & Telemetry
+## Examples
 
-Configure log level in `config/config.exs`:
-```elixir
-config :logger, level: :info  # or :debug, :warning, :error
-```
+**[Full Examples Collection](examples/README.md)** - 21 focused examples from basics to production.
 
-Attach telemetry handlers:
+### Core Examples (01-10)
+
+| Example | Description |
+|---------|-------------|
+| [01_hello_world.exs](examples/01_hello_world.exs) | Minimal example |
+| [02_with_tools.exs](examples/02_with_tools.exs) | Tool calling |
+| [03_streaming.exs](examples/03_streaming.exs) | Streaming responses |
+| [04_conversation.exs](examples/04_conversation.exs) | Multi-turn with context |
+| [05_callbacks.exs](examples/05_callbacks.exs) | Callbacks + LiveView |
+| [06_prompt_templates.exs](examples/06_prompt_templates.exs) | EEx templates |
+| [07_module_tools.exs](examples/07_module_tools.exs) | Module-based tools |
+| [08_tool_testing.exs](examples/08_tool_testing.exs) | Test helpers |
+| [09_agent_server.exs](examples/09_agent_server.exs) | GenServer agent |
+| [10_react_agent.exs](examples/10_react_agent.exs) | ReAct pattern |
+
+### Provider Examples
+
+- [providers/anthropic.exs](examples/providers/anthropic.exs) - Claude, extended thinking
+- [providers/openai.exs](examples/providers/openai.exs) - GPT models
+- [providers/lmstudio.exs](examples/providers/lmstudio.exs) - Local AI
+- [providers/switching_providers.exs](examples/providers/switching_providers.exs) - Provider comparison
+
+### Advanced Examples
+
+- [advanced/context_updates.exs](examples/advanced/context_updates.exs) - Tool state management
+- [advanced/error_handling.exs](examples/advanced/error_handling.exs) - Retries, fallbacks
+- [advanced/telemetry.exs](examples/advanced/telemetry.exs) - Metrics, cost tracking
+- [advanced/cancellation.exs](examples/advanced/cancellation.exs) - Task cancellation
+- [advanced/liveview_integration.exs](examples/advanced/liveview_integration.exs) - LiveView patterns
+
+## Telemetry
+
+Attach handlers for monitoring:
+
 ```elixir
 Nous.Telemetry.attach_default_handler()
 ```
 
-Events: `[:nous, :agent, :run, :*]`, `[:nous, :model, :request, :*]`, `[:nous, :tool, :execute, :*]`
-
-## Examples
-
-**🚀 [Get Started in 5 Minutes](docs/getting-started.md)** - Quick setup guide with local or cloud options.
-
-**📚 [Full Examples Collection](examples/README.md)** - Comprehensive learning path from beginner to production.
-
-### Learning Path Overview
-
-**🟢 Beginner** (5-15 minutes each)
-- [basic_hello_world.exs](examples/basic_hello_world.exs) - 30-second minimal example
-- [test_lm_studio.exs](examples/test_lm_studio.exs) - Local LM Studio setup
-- [tools_simple.exs](examples/tools_simple.exs) - Basic tool calling
-- [calculator_demo.exs](examples/calculator_demo.exs) - Multi-tool chaining
-
-**🟡 Intermediate** (15-45 minutes each)
-- [streaming_example.exs](examples/streaming_example.exs) - Real-time responses
-- [conversation_history_example.exs](examples/conversation_history_example.exs) - Multi-turn chat
-- [error_handling_example.exs](examples/error_handling_example.exs) - Graceful failure handling
-- [cost_tracking_example.exs](examples/cost_tracking_example.exs) - Monitor token usage
-
-**🔴 Advanced** (45+ minutes each)
-- [Trading Desk](examples/trading_desk/README.md) - Production multi-agent system
-- [Council](examples/council/README.md) - Multi-LLM deliberation
-- [Coderex](examples/coderex/README.md) - AI code editor with SEARCH/REPLACE
-
-**Browse by:**
-- [Skill Level](examples/by_level/README.md) - Beginner → Intermediate → Advanced
-- [Provider](examples/by_provider/README.md) - Anthropic, OpenAI, Local, etc.
-- [Feature](examples/by_feature/README.md) - Tools, Streaming, Patterns, etc.
-
-**Quick Templates:**
-- [templates/](examples/templates/README.md) - Copy-paste starter files
+**Events:**
+- `[:nous, :agent, :run, :start/stop/exception]`
+- `[:nous, :agent, :iteration, :start/stop]`
+- `[:nous, :provider, :request, :start/stop/exception]`
+- `[:nous, :tool, :execute, :start/stop/exception]`
+- `[:nous, :tool, :timeout]`
+- `[:nous, :context, :update]`
 
 ## Architecture
 
 ```
-User Code
+Nous.new/2 → Agent struct
     ↓
-Nous.Agent (config)
+Nous.run/3 → AgentRunner
     ↓
-Nous.AgentRunner (execution loop)
-    ↓
-├─→ OpenAICompatible (model adapter)
-│       ↓
-│   ┌─────────────────────────────────────────┐
-│   │ Cloud Providers     Local Providers     │
-│   │ (OpenAI, Groq,      (vLLM, SGLang,      │
-│   │  OpenRouter)        LM Studio, Ollama)  │
-│   │      ↓                    ↓             │
-│   │   OpenaiEx          Custom SSE Client   │
-│   │   (HTTP)            (Finch + Req)       │
-│   └─────────────────────────────────────────┘
-│       ↓
-│   StreamNormalizer (behaviour)
-│       ↓
-│   Normalized stream events
-│
-├─→ ToolExecutor (run functions)
-├─→ Messages (format conversion)
-└─→ Usage (track tokens)
+├─→ Context (messages, deps, callbacks)
+├─→ Behaviour (BasicAgent | ReActAgent | custom)
+├─→ ModelDispatcher → Provider → HTTP
+├─→ ToolExecutor (timeout, validation)
+└─→ Callbacks (map | notify_pid)
 ```
-
-### Stream Normalizer
-
-Nous uses an extensible behaviour pattern for normalizing streaming responses from different providers:
-
-```elixir
-# Default normalizer handles most OpenAI-compatible providers
-Nous.StreamNormalizer.OpenAI
-
-# Mistral has its own normalizer
-Nous.StreamNormalizer.Mistral
-```
-
-#### Custom Normalizer
-
-For providers with unique formats, implement the `Nous.StreamNormalizer` behaviour:
-
-```elixir
-defmodule MyApp.CustomNormalizer do
-  @behaviour Nous.StreamNormalizer
-
-  @impl true
-  def normalize_chunk(chunk) do
-    # Transform provider-specific format to stream events
-    [{:text_delta, chunk["custom_field"]}]
-  end
-
-  @impl true
-  def complete_response?(chunk), do: false
-
-  @impl true
-  def convert_complete_response(_chunk), do: []
-end
-
-# Use it with your model
-agent = Nous.new("openai_compatible:custom-model",
-  base_url: "http://custom-server/v1",
-  stream_normalizer: MyApp.CustomNormalizer
-)
-```
-
-## Stats
-
-- **Lines:** ~2,500 | **Modules:** 20 | **Tests:** 18 passing | **Providers:** 10+
 
 ## Contributing
 
-Contributions welcome! Areas for improvement:
-- More comprehensive tests
-- Structured output validation (Ecto integration)
-- Performance benchmarks
-- More examples
+Contributions welcome! See [CHANGELOG.md](CHANGELOG.md) for recent changes.
 
 ## License
 
-Apache 2.0 License - see [LICENSE](https://github.com/nyo16/nous/blob/master/LICENSE)
+Apache 2.0 - see [LICENSE](https://github.com/nyo16/nous/blob/master/LICENSE)
 
 ## Credits
 
 - Inspired by [Pydantic AI](https://ai.pydantic.dev/)
-- Built with [openai_ex](https://github.com/cyberchitta/openai_ex) (cloud providers)
-- Custom SSE streaming with [Finch](https://github.com/sneako/finch) (local providers)
-- HTTP client [Req](https://github.com/wojtekmach/req) (Mistral, non-streaming)
-- Validation with [ecto](https://github.com/elixir-ecto/ecto)
+- HTTP: [Req](https://github.com/wojtekmach/req) + [Finch](https://github.com/sneako/finch)
