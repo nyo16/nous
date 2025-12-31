@@ -23,7 +23,7 @@ defmodule FixtureGenerator do
     content = """
     # Generated LLM response fixtures
     # Generated at: #{DateTime.utc_now() |> DateTime.to_string()}
-    # Model: lmstudio:qwen/qwen3-30b-a3b-2507
+    # Model: lmstudio:qwen3-vl-4b-thinking-mlx
 
     defmodule NousTest.Fixtures.LLMResponses do
       @moduledoc \"\"\"
@@ -43,7 +43,7 @@ defmodule FixtureGenerator do
   def generate_simple_response do
     IO.puts("📝 Generating simple response...")
 
-    agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+    agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
       instructions: "You are a helpful assistant. Be concise.",
       model_settings: %{temperature: 0.7, max_tokens: 100}
     )
@@ -70,7 +70,7 @@ defmodule FixtureGenerator do
       description: "Search for information"
     )
 
-    agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+    agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
       instructions: "You have access to a search tool. Use it to answer questions.",
       tools: [search_tool],
       model_settings: %{temperature: 0.5, max_tokens: 200}
@@ -112,7 +112,7 @@ defmodule FixtureGenerator do
       description: "Get current time"
     )
 
-    agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+    agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
       instructions: "You have calculator and time tools. Use them when needed.",
       tools: [calculator, get_time],
       model_settings: %{temperature: 0.5, max_tokens: 200}
@@ -133,7 +133,7 @@ defmodule FixtureGenerator do
   def generate_conversation do
     IO.puts("💬 Generating conversation...")
 
-    agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+    agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
       instructions: "You are a helpful assistant. Remember context from previous messages.",
       model_settings: %{temperature: 0.7, max_tokens: 100}
     )
@@ -172,7 +172,7 @@ defmodule FixtureGenerator do
       description: "A tool that might fail"
     )
 
-    agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+    agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
       instructions: "You have a tool. Try using it.",
       tools: [flaky_tool],
       model_settings: %{temperature: 0.5, max_tokens: 100}

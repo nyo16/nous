@@ -16,7 +16,7 @@ defmodule Nous.Tools.ReActTools do
 
   ## Usage
 
-      agent = ReActAgent.new("lmstudio:qwen/qwen3-30b",
+      agent = ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Solve complex problems step by step"
       )
 

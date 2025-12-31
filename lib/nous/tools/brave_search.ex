@@ -26,7 +26,7 @@ defmodule Nous.Tools.BraveSearch do
 
   ## Usage
 
-      agent = Nous.new("lmstudio:qwen/qwen3-30b",
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         tools: [&BraveSearch.web_search/2]
       )
 

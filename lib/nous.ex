@@ -40,7 +40,7 @@ defmodule Nous do
   ## Local Models
 
       # Use LM Studio (free, local, private)
-      agent = Nous.new("lmstudio:qwen/qwen3-30b")
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx")
       {:ok, result} = Nous.run(agent, "Hello!")
 
       # Use Ollama
@@ -63,7 +63,7 @@ defmodule Nous do
       agent = Nous.new("groq:llama-3.1-8b-instant")
 
       # Local LM Studio
-      agent = Nous.new("lmstudio:qwen/qwen3-30b")
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx")
 
       # With options
       agent = Nous.new("openai:gpt-4",

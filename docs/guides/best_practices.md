@@ -341,7 +341,7 @@ defmodule MyApp.FallbackAgent do
   @providers [
     %{name: :primary, model: "anthropic:claude-sonnet-4-5-20250929", priority: 1},
     %{name: :secondary, model: "openai:gpt-4", priority: 2},
-    %{name: :local, model: "lmstudio:qwen/qwen3-30b", priority: 3}
+    %{name: :local, model: "lmstudio:qwen3-vl-4b-thinking-mlx", priority: 3}
   ]
 
   def run_with_fallback(prompt, context) do

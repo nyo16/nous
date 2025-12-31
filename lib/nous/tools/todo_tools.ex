@@ -10,7 +10,7 @@ defmodule Nous.Tools.TodoTools do
 
   Enable todos when creating an agent:
 
-      agent = Nous.new("lmstudio:qwen/qwen3-30b",
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You are a helpful assistant",
         enable_todos: true,  # Enable todo tracking
         tools: [

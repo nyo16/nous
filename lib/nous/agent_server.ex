@@ -27,7 +27,7 @@ defmodule Nous.AgentServer do
           {:ok, agent_pid} = AgentServer.start_link(
             session_id: socket.assigns.session_id,
             agent_config: %{
-              model: "lmstudio:qwen/qwen3-30b",
+              model: "lmstudio:qwen3-vl-4b-thinking-mlx",
               instructions: "You are a helpful assistant",
               tools: []
             }

@@ -380,7 +380,7 @@ defmodule ToolIntegrationTest do
   use ExUnit.Case
 
   test "tool works with AI agent" do
-    agent = Nous.new("lmstudio:qwen/qwen3-30b",
+    agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
       tools: [&MyTools.weather_tool/2]
     )
 

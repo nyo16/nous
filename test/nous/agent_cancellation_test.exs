@@ -16,7 +16,7 @@ defmodule Nous.AgentCancellationTest do
         description: "Echo input"
       )
 
-      agent = Agent.new("lmstudio:ministral-3-14b-instruct-2512",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Use the echo tool",
         tools: [tool]
       )
@@ -45,8 +45,8 @@ defmodule Nous.AgentCancellationTest do
       Process.sleep(10)
       :atomics.put(cancellation_ref, 1, 1)
 
-      # Wait for result
-      result = Task.await(task, 1000)
+      # Wait for result (longer timeout for slower models)
+      result = Task.await(task, 30_000)
 
       # Should get cancellation error
       assert {:error, %Errors.ExecutionCancelled{reason: "Test cancellation"}} = result
@@ -61,7 +61,7 @@ defmodule Nous.AgentCancellationTest do
         description: "Echo input"
       )
 
-      agent = Agent.new("lmstudio:ministral-3-14b-instruct-2512",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Use the echo tool",
         tools: [tool]
       )
@@ -80,7 +80,7 @@ defmodule Nous.AgentCancellationTest do
       {:ok, pid} = Nous.AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }
@@ -110,7 +110,7 @@ defmodule Nous.AgentCancellationTest do
       {:ok, pid} = Nous.AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }
@@ -124,7 +124,7 @@ defmodule Nous.AgentCancellationTest do
       {:ok, pid} = Nous.AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }

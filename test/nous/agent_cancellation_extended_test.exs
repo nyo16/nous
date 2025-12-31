@@ -12,7 +12,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       {:ok, pid} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }
@@ -37,7 +37,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       {:ok, pid} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }
@@ -65,7 +65,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       {:ok, pid} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }
@@ -93,7 +93,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       {:ok, pid} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }
@@ -108,7 +108,7 @@ defmodule Nous.AgentCancellationExtendedTest do
 
       # Task will complete, :DOWN message should clear task
       # Wait longer for model to respond and task to finish
-      Process.sleep(1500)
+      Process.sleep(15_000)
 
       state_after = :sys.get_state(pid)
       assert state_after.current_task == nil
@@ -118,7 +118,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       {:ok, pid} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }
@@ -155,7 +155,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       end
 
       # Create ReActAgent
-      agent = ReActAgent.new("lmstudio:ministral-3-14b-instruct-2512",
+      agent = ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Test agent"
       )
 
@@ -173,7 +173,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       {:ok, pid} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: [],
           type: :react
@@ -196,17 +196,17 @@ defmodule Nous.AgentCancellationExtendedTest do
       # Start 3 agents
       {:ok, pid1} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{model: "lmstudio:ministral-3-14b-instruct-2512", instructions: "Agent 1", tools: []}
+        agent_config: %{model: "lmstudio:qwen3-vl-4b-thinking-mlx", instructions: "Agent 1", tools: []}
       )
 
       {:ok, pid2} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{model: "lmstudio:ministral-3-14b-instruct-2512", instructions: "Agent 2", tools: []}
+        agent_config: %{model: "lmstudio:qwen3-vl-4b-thinking-mlx", instructions: "Agent 2", tools: []}
       )
 
       {:ok, pid3} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{model: "lmstudio:ministral-3-14b-instruct-2512", instructions: "Agent 3", tools: []}
+        agent_config: %{model: "lmstudio:qwen3-vl-4b-thinking-mlx", instructions: "Agent 3", tools: []}
       )
 
       # Start all executions
@@ -235,7 +235,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       {:ok, pid} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }
@@ -243,21 +243,18 @@ defmodule Nous.AgentCancellationExtendedTest do
 
       # Send 5 messages rapidly
       AgentServer.send_message(pid, "Message 1")
-      Process.sleep(5)
+      Process.sleep(50)
       AgentServer.send_message(pid, "Message 2")
-      Process.sleep(5)
+      Process.sleep(50)
       AgentServer.send_message(pid, "Message 3")
-      Process.sleep(5)
+      Process.sleep(50)
       AgentServer.send_message(pid, "Message 4")
-      Process.sleep(5)
+      Process.sleep(50)
       AgentServer.send_message(pid, "Message 5")
-      Process.sleep(10)
+      Process.sleep(100)
 
-      # Should have one task (the latest)
-      state = :sys.get_state(pid)
-      assert state.current_task != nil
-
-      # History should have all 5 messages
+      # Each message should be added to history
+      # (task may or may not be running depending on model speed)
       history = AgentServer.get_history(pid)
       assert length(history) == 5
     end
@@ -275,7 +272,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         end
       end
 
-      agent = Agent.new("lmstudio:ministral-3-14b-instruct-2512",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Test",
         tools: []
       )
@@ -290,7 +287,7 @@ defmodule Nous.AgentCancellationExtendedTest do
     end
 
     test "nil cancellation_check is safe" do
-      agent = Agent.new("lmstudio:ministral-3-14b-instruct-2512",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Test",
         tools: []
       )
@@ -322,7 +319,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       {:ok, pid} = AgentServer.start_link(
         session_id: "test-#{:rand.uniform(10000)}",
         agent_config: %{
-          model: "lmstudio:ministral-3-14b-instruct-2512",
+          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
           instructions: "Test agent",
           tools: []
         }

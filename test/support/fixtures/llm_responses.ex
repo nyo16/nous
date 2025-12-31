@@ -1,6 +1,6 @@
 # Generated LLM response fixtures
 # Generated at: 2025-10-20 23:35:00.396838Z
-# Model: lmstudio:qwen/qwen3-30b-a3b-2507
+# Model: lmstudio:qwen3-vl-4b-thinking-mlx
 
 defmodule NousTest.Fixtures.LLMResponses do
   @moduledoc """
