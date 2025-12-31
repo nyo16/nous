@@ -1,112 +1,121 @@
-# Nous AI Examples
+# Nous Examples
 
-Working examples demonstrating all features, from simple Q&A to production-ready multi-agent systems.
+Learn Nous through practical examples, from basic usage to advanced patterns.
 
-## 🚀 5-Minute Start
-→ **[quickstart](quickstart/README.md)** - Get running immediately
+## Quick Start
 
-Perfect if you're new to Nous or want to test your setup quickly.
-
-## 📚 Learn Nous AI
-→ **[tutorials](tutorials/README.md)** - Structured learning path
-
-Follow the complete progression from beginner to expert:
-- **[01-basics](tutorials/01-basics/README.md)** (15 min) - Hello world, tools, providers
-- **[02-patterns](tutorials/02-patterns/README.md)** (1 hour) - Streaming, conversation, ReAct
-- **[03-production](tutorials/03-production/README.md)** (advanced) - GenServer, LiveView, distributed
-- **[04-projects](tutorials/04-projects/README.md)** (complete apps) - Council, Trading Desk, Code Editor
-
-## 🔍 Find Examples
-→ **[reference](reference/README.md)** - Browse by feature/topic
-
-Need something specific? Find examples by capability:
-- **[Tools](reference/tools.md)** - Function calling and custom tools
-- **[Streaming](reference/streaming.md)** - Real-time responses and LiveView
-- **[Providers](reference/providers.md)** - Anthropic, OpenAI, local models
-- **[Patterns](reference/patterns.md)** - ReAct, GenServer, distributed systems
-
-## 📋 Templates
-→ **[templates](templates/README.md)** - Copy-paste starters
-
-Ready-to-use templates for common patterns.
-
----
-
-## Quick Examples (Verified Working ✅)
-
-### 30 Second Test
 ```bash
-mix run quickstart/hello-world.exs
+# Run any example
+mix run examples/01_hello_world.exs
+
+# Requires LM Studio running locally (default)
+# Or set API keys for cloud providers:
+export ANTHROPIC_API_KEY="sk-..."
+export OPENAI_API_KEY="sk-..."
 ```
 
-### 2 Minute Tool Demo
-```bash
-mix run tutorials/01-basics/03-tool-calling.exs
+## Core Examples (01-10)
+
+Progressive learning path from basics to advanced features:
+
+| File | Description |
+|------|-------------|
+| [01_hello_world.exs](01_hello_world.exs) | Minimal example - create agent, run, get output |
+| [02_with_tools.exs](02_with_tools.exs) | Function-based tools and context access |
+| [03_streaming.exs](03_streaming.exs) | Real-time streaming responses |
+| [04_conversation.exs](04_conversation.exs) | Multi-turn conversations with context continuation |
+| [05_callbacks.exs](05_callbacks.exs) | Map callbacks and process messages (LiveView) |
+| [06_prompt_templates.exs](06_prompt_templates.exs) | EEx templates with variable substitution |
+| [07_module_tools.exs](07_module_tools.exs) | Tool.Behaviour pattern for module-based tools |
+| [08_tool_testing.exs](08_tool_testing.exs) | Mock tools, spy tools, and test helpers |
+| [09_agent_server.exs](09_agent_server.exs) | GenServer-based agent with PubSub |
+| [10_react_agent.exs](10_react_agent.exs) | ReAct pattern for complex reasoning |
+
+## Provider Examples
+
+Provider-specific configuration and features:
+
+| File | Description |
+|------|-------------|
+| [providers/anthropic.exs](providers/anthropic.exs) | Claude models, extended thinking, tools |
+| [providers/openai.exs](providers/openai.exs) | GPT models, function calling, settings |
+| [providers/lmstudio.exs](providers/lmstudio.exs) | Local AI with LM Studio |
+| [providers/switching_providers.exs](providers/switching_providers.exs) | Provider comparison and selection |
+
+## Advanced Examples
+
+Production patterns and advanced features:
+
+| File | Description |
+|------|-------------|
+| [advanced/context_updates.exs](advanced/context_updates.exs) | Tool context updates and state management |
+| [advanced/error_handling.exs](advanced/error_handling.exs) | Retries, fallbacks, circuit breakers |
+| [advanced/telemetry.exs](advanced/telemetry.exs) | Custom metrics and cost tracking |
+| [advanced/cancellation.exs](advanced/cancellation.exs) | Task and streaming cancellation |
+| [advanced/liveview_integration.exs](advanced/liveview_integration.exs) | Phoenix LiveView integration patterns |
+
+## v0.8.0 Features
+
+These examples showcase new v0.8.0 features:
+
+### Context Continuation
+```elixir
+# Pass context between runs for multi-turn conversations
+{:ok, result1} = Nous.run(agent, "My name is Alice")
+{:ok, result2} = Nous.run(agent, "What's my name?", context: result1.context)
 ```
 
-### 5 Minute Advanced Demo
-```bash
-mix run tutorials/01-basics/05-calculator.exs
+### Callbacks
+```elixir
+# Map-based callbacks
+Nous.run(agent, "Hello", callbacks: %{
+  on_llm_new_delta: fn _event, delta -> IO.write(delta) end
+})
+
+# Process messages (for LiveView)
+Nous.run(agent, "Hello", notify_pid: self())
 ```
 
----
+### Module-Based Tools
+```elixir
+defmodule MyTool do
+  @behaviour Nous.Tool.Behaviour
 
-## Navigation Guide
+  @impl true
+  def metadata, do: %{name: "my_tool", description: "..."}
 
-**New to AI agents?**
-→ Start with [quickstart](quickstart/README.md) then follow [tutorials/01-basics](tutorials/01-basics/README.md)
+  @impl true
+  def execute(ctx, args), do: {:ok, result}
+end
 
-**Looking for specific features?**
-→ Browse [reference](reference/README.md) by capability
+tool = Nous.Tool.from_module(MyTool)
+```
 
-**Want to build something?**
-→ Use [templates](templates/README.md) as starting points
+### Prompt Templates
+```elixir
+template = Nous.PromptTemplate.from_template(
+  "You are a <%= @role %> assistant",
+  role: :system
+)
+message = Nous.PromptTemplate.to_message(template, %{role: "helpful"})
+```
 
-**Need production patterns?**
-→ Study [tutorials/04-projects](tutorials/04-projects/README.md) for complete applications
+## Running Examples
 
----
+Most examples use LM Studio by default (free, local):
 
-## What You'll Find Here
+1. Download [LM Studio](https://lmstudio.ai/)
+2. Load a model (e.g., Qwen)
+3. Start the local server
+4. Run: `mix run examples/01_hello_world.exs`
 
-### 📂 Structured Learning (tutorials/)
-- **Progressive difficulty** - beginner → intermediate → advanced → complete projects
-- **Estimated time** - 15 minutes to several hours per section
-- **Clear prerequisites** - each builds on previous knowledge
-- **Production patterns** - real-world architecture examples
+For cloud providers, set the appropriate API key:
+```bash
+ANTHROPIC_API_KEY="..." mix run examples/providers/anthropic.exs
+OPENAI_API_KEY="..." mix run examples/providers/openai.exs
+```
 
-### 🔍 Feature Reference (reference/)
-- **Topic-focused** - find examples by capability
-- **Cross-referenced** - links between related examples
-- **Quick lookup** - "I need X" → direct to relevant examples
-- **All providers** - examples for every supported AI provider
+## Project Examples
 
-### ⚡ Quick Start (quickstart/)
-- **5-minute setup** - get running immediately
-- **Working examples** - verified to work out of the box
-- **Setup guide** - both local (free) and cloud options
-- **Troubleshooting** - common issues and solutions
-
-### 📋 Templates (templates/)
-- **Copy-paste ready** - working code for common patterns
-- **Documented** - clear explanations of each template
-- **Customizable** - easy to modify for your needs
-- **Best practices** - production-ready patterns
-
----
-
-## All Examples Work! ✅
-
-Every example in this directory is:
-- **Tested** - verified to work with current Nous version
-- **Documented** - clear comments and explanations
-- **Runnable** - `mix run examples/filename.exs` just works
-- **Self-contained** - minimal dependencies and setup
-
----
-
-**Get started now:** [quickstart](quickstart/README.md)
-**Learn systematically:** [tutorials](tutorials/README.md)
-**Find specific features:** [reference](reference/README.md)
-
-Need help? Check the [troubleshooting guide](../docs/guides/troubleshooting.md) or [main documentation](../docs/README.md).
+For larger project examples (multi-agent systems, trading bots, etc.), see:
+- [projects/README.md](projects/README.md)
