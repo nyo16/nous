@@ -3,11 +3,19 @@ defmodule Nous.AgentServer do
   GenServer wrapper for Nous agents with PubSub integration.
 
   This server:
-  - Wraps an Nous agent (standard or ReAct)
+  - Wraps a Nous agent (standard or ReAct)
   - Links to parent process (dies when parent dies)
   - Subscribes to PubSub for incoming messages
   - Publishes responses back via PubSub
-  - Maintains conversation history
+  - Maintains conversation context for multi-turn conversations
+
+  ## Context-Based State
+
+  Uses `Nous.Agent.Context` to maintain conversation state:
+  - Messages accumulate across turns
+  - Tool calls are tracked
+  - Usage is aggregated
+  - Callbacks forward to PubSub
 
   ## Usage with LiveView
 
@@ -32,20 +40,26 @@ defmodule Nous.AgentServer do
         end
 
         def handle_event("send_message", %{"message" => msg}, socket) do
-          # Send message to agent via PubSub
-          Phoenix.PubSub.broadcast(
-            MyApp.PubSub,
-            "agent:\#{socket.assigns.session_id}",
-            {:user_message, msg}
-          )
-
+          AgentServer.send_message(socket.assigns.agent_pid, msg)
           {:noreply, socket}
         end
 
-        def handle_info({:agent_response, response}, socket) do
-          # Receive agent response
-          messages = socket.assigns.messages ++ [%{role: :assistant, content: response}]
-          {:noreply, assign(socket, messages: messages)}
+        # Receive streaming deltas
+        def handle_info({:agent_delta, text}, socket) do
+          # Append text to current response
+          {:noreply, update(socket, :current_response, &(&1 <> text))}
+        end
+
+        # Receive complete response
+        def handle_info({:agent_complete, result}, socket) do
+          messages = socket.assigns.messages ++ [%{role: :assistant, content: result.output}]
+          {:noreply, assign(socket, messages: messages, current_response: "")}
+        end
+
+        # Receive tool calls
+        def handle_info({:tool_call, call}, socket) do
+          # Show tool call in UI
+          {:noreply, socket}
         end
       end
 
@@ -53,6 +67,9 @@ defmodule Nous.AgentServer do
 
   use GenServer
   require Logger
+
+  alias Nous.Agent.Context
+  alias Nous.Message
 
   @type agent_config :: %{
           model: String.t(),
@@ -64,8 +81,8 @@ defmodule Nous.AgentServer do
 
   @type state :: %{
           session_id: String.t(),
-          agent: Nous.Agent.t() | Nous.ReActAgent.t(),
-          conversation_history: list(),
+          agent: Nous.Agent.t(),
+          context: Context.t(),
           pubsub: module(),
           topic: String.t(),
           agent_type: :standard | :react,
@@ -93,6 +110,7 @@ defmodule Nous.AgentServer do
   - `:tools` - List of tool functions
   - `:type` - `:standard` or `:react` (default: :standard)
   - `:model_settings` - Model settings map
+  - `:deps` - Initial dependencies for tools
 
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -109,7 +127,15 @@ defmodule Nous.AgentServer do
   end
 
   @doc """
-  Get conversation history.
+  Get conversation context.
+  """
+  @spec get_context(pid()) :: Context.t()
+  def get_context(pid) do
+    GenServer.call(pid, :get_context)
+  end
+
+  @doc """
+  Get conversation history (messages only).
   """
   @spec get_history(pid()) :: list()
   def get_history(pid) do
@@ -117,7 +143,7 @@ defmodule Nous.AgentServer do
   end
 
   @doc """
-  Clear conversation history.
+  Clear conversation context and start fresh.
   """
   @spec clear_history(pid()) :: :ok
   def clear_history(pid) do
@@ -175,12 +201,20 @@ defmodule Nous.AgentServer do
         )
     end
 
+    # Initialize context
+    initial_deps = Map.get(agent_config, :deps, %{})
+    context = Context.new(
+      deps: initial_deps,
+      system_prompt: Map.get(agent_config, :instructions, ""),
+      agent_name: "agent_server_#{session_id}"
+    )
+
     Logger.info("AgentServer started for session: #{session_id}")
 
     state = %{
       session_id: session_id,
       agent: agent,
-      conversation_history: [],
+      context: context,
       pubsub: pubsub,
       topic: topic,
       agent_type: agent_type,
@@ -221,36 +255,49 @@ defmodule Nous.AgentServer do
     # Broadcast that we're processing
     broadcast(state, {:agent_status, :thinking})
 
-    # Add user message to history
-    user_msg = %{role: :user, content: message, timestamp: DateTime.utc_now()}
-    conversation_history = state.conversation_history ++ [user_msg]
+    # Add user message to context
+    context = Context.add_message(state.context, Message.user(message))
 
     # Reset cancelled flag for new execution
-    state = %{state | cancelled: false}
+    state = %{state | cancelled: false, context: context}
 
     # Run agent asynchronously and track the task
     server_pid = self()
     task = Task.async(fn ->
       try do
-        run_agent_and_respond(server_pid, state, message, conversation_history)
+        run_agent_and_respond(server_pid, state, message)
       after
         # Always ensure cleanup message is sent
         send(server_pid, {:agent_task_finished})
       end
     end)
 
-    {:noreply, %{state | conversation_history: conversation_history, current_task: task}}
+    {:noreply, %{state | current_task: task}}
   end
 
   @impl true
   def handle_cast(:clear_history, state) do
-    Logger.info("Clearing conversation history for session: #{state.session_id}")
-    {:noreply, %{state | conversation_history: []}}
+    Logger.info("Clearing conversation context for session: #{state.session_id}")
+
+    # Create fresh context preserving deps and system prompt
+    new_context = Context.new(
+      deps: state.context.deps,
+      system_prompt: state.context.system_prompt,
+      agent_name: state.context.agent_name
+    )
+
+    {:noreply, %{state | context: new_context}}
+  end
+
+  @impl true
+  def handle_call(:get_context, _from, state) do
+    {:reply, state.context, state}
   end
 
   @impl true
   def handle_call(:get_history, _from, state) do
-    {:reply, state.conversation_history, state}
+    # Return messages from context
+    {:reply, state.context.messages, state}
   end
 
   @impl true
@@ -300,10 +347,59 @@ defmodule Nous.AgentServer do
     handle_cast({:user_message, message}, state)
   end
 
+  # Handle events from agent runner via notify_pid
   @impl true
-  def handle_info({:agent_response_ready, _assistant_msg, history}, state) do
-    # Update state with new history and clear current task
-    {:noreply, %{state | conversation_history: history, current_task: nil}}
+  def handle_info({:agent_delta, text}, state) do
+    # Forward streaming delta to PubSub subscribers
+    broadcast(state, {:agent_delta, text})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:tool_call, call}, state) do
+    # Forward tool call to PubSub subscribers
+    broadcast(state, {:tool_call, call})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:tool_result, result}, state) do
+    # Forward tool result to PubSub subscribers
+    broadcast(state, {:tool_result, result})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:agent_complete, result}, state) do
+    # Forward completion to PubSub subscribers
+    broadcast(state, {:agent_complete, result})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:agent_error, error}, state) do
+    # Forward error to PubSub subscribers
+    broadcast(state, {:agent_error, error})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:agent_start, _payload}, state) do
+    # Forward start event
+    broadcast(state, {:agent_status, :started})
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:agent_message, _message}, state) do
+    # LLM message received - could broadcast if needed
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:agent_response_ready, context, _result}, state) do
+    # Update state with new context and clear current task
+    {:noreply, %{state | context: context, current_task: nil}}
   end
 
   @impl true
@@ -337,67 +433,46 @@ defmodule Nous.AgentServer do
 
   # Private Functions
 
-  defp run_agent_and_respond(server_pid, state, message, current_history) do
+  defp run_agent_and_respond(server_pid, state, message) do
     # Check if cancelled before starting
     if state.cancelled do
       Logger.info("Execution cancelled before agent run for session: #{state.session_id}")
       broadcast(state, {:agent_cancelled, "Execution cancelled"})
       :cancelled
     else
-      do_agent_run(server_pid, state, message, current_history)
+      do_agent_run(server_pid, state, message)
     end
   end
 
-  defp do_agent_run(server_pid, state, message, current_history) do
-    # Extract message history for agent
-    message_history = extract_message_history(current_history)
-
-    # Run agent with cancellation check
-    result = case state.agent_type do
-      :react ->
-        Nous.ReActAgent.run(state.agent, message,
-          message_history: message_history,
-          max_iterations: 15,
-          cancellation_check: fn -> check_cancelled(server_pid) end
-        )
-
-      :standard ->
-        Nous.Agent.run(state.agent, message,
-          message_history: message_history,
-          cancellation_check: fn -> check_cancelled(server_pid) end
-        )
-    end
+  defp do_agent_run(server_pid, state, message) do
+    # Run agent with context continuation and notify_pid for events
+    result = Nous.AgentRunner.run(state.agent, message,
+      context: state.context,
+      notify_pid: server_pid,
+      max_iterations: 15,
+      cancellation_check: fn -> check_cancelled(server_pid) end
+    )
 
     case result do
       {:ok, response} ->
-        # Create assistant message
-        assistant_msg = %{
-          role: :assistant,
-          content: response.output,
-          timestamp: DateTime.utc_now(),
-          usage: response.usage
-        }
-
-        # Update history
-        new_history = current_history ++ [assistant_msg]
-
         # Broadcast response
-        broadcast(state, {:agent_response, response.output, assistant_msg})
-        send(server_pid, {:agent_response_ready, assistant_msg, new_history})
+        broadcast(state, {:agent_response, response.output})
+        broadcast(state, {:agent_complete, response})
+
+        # Send context update to server
+        send(server_pid, {:agent_response_ready, response.context, response})
 
       {:error, %Nous.Errors.ExecutionCancelled{}} ->
         Logger.info("Agent execution was cancelled for session: #{state.session_id}")
         broadcast(state, {:agent_cancelled, "Execution cancelled"})
-        # Send completion message to clear task
         send(server_pid, {:agent_task_completed, :cancelled})
 
       {:error, error} ->
-        error_msg = Exception.message(error)
+        error_msg = if is_exception(error), do: Exception.message(error), else: inspect(error)
         Logger.error("Agent error in session #{state.session_id}: #{error_msg}")
 
         # Broadcast error
         broadcast(state, {:agent_error, error_msg})
-        # Send completion message to clear task
         send(server_pid, {:agent_task_completed, :error})
     end
   end
@@ -412,25 +487,6 @@ defmodule Nous.AgentServer do
     catch
       :exit, _ -> :ok  # Server might be shutting down, continue
     end
-  end
-
-  defp extract_message_history(conversation_history) do
-    # Convert our history format to agent's message format
-    # Skip the last user message as it will be passed as prompt
-    history_to_process = case length(conversation_history) do
-      0 -> []
-      1 -> []
-      length -> Enum.slice(conversation_history, 0..(length - 2))
-    end
-
-    history_to_process
-    |> Enum.flat_map(fn msg ->
-      case msg && msg.role do
-        :user -> [{:user_prompt, msg.content}]
-        :assistant -> [{:text, msg.content}]
-        _ -> []
-      end
-    end)
   end
 
   defp broadcast(state, message) do

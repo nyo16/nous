@@ -70,55 +70,14 @@ defmodule Nous.ReActAgent do
   - HuggingFace smolagents toolcalling_agent patterns
   """
 
-  alias Nous.{Agent, Tool}
-  alias Nous.Tools.ReActTools
+  alias Nous.Agent
 
   @type t :: Agent.t()
-
-  # System prompt that teaches the ReAct pattern
-  @react_system_prompt """
-  You are a ReAct (Reasoning + Acting) agent that solves problems through structured thinking and tool use.
-
-  MANDATORY WORKFLOW:
-  1. 📋 PLAN FIRST: Call 'plan' to create a structured approach
-     - Identify known facts, facts to look up, facts to derive
-     - Create step-by-step action plan
-
-  2. 📝 TRACK TASKS: Use 'add_todo' for each major step
-     - Break complex problems into subtasks
-     - Track progress as you work
-
-  3. 🔄 ACT & OBSERVE: Use tools to gather information
-     - Each tool call creates an observation
-     - Call 'note' to record important findings
-     - Mark 'complete_todo' as you finish each step
-
-  4. 🎯 COMPLETE: Call 'final_answer' when done
-     - REQUIRED to finish the task
-     - Provide complete, well-reasoned answer
-
-  IMPORTANT RULES:
-  - ❌ Never repeat the exact same tool call with identical parameters
-  - ✅ Always explain your reasoning before acting
-  - ✅ Use 'list_todos' to check progress
-  - ✅ Complete all pending todos before calling final_answer
-  - ✅ Call 'note' to document important observations
-
-  EXAMPLE FLOW:
-  1. User asks question
-  2. You call 'plan' with the question
-  3. You call 'add_todo' for each step
-  4. You use tools (search, calculate, etc.) to gather info
-  5. You call 'complete_todo' as you finish each step
-  6. You call 'final_answer' with the complete solution
-
-  Remember: Think step-by-step, document your process, and always provide a final_answer!
-  """
 
   @doc """
   Create a new ReAct agent.
 
-  Wraps `Nous.Agent.new/2` with additional ReAct-specific tools and instructions.
+  Wraps `Nous.Agent.new/2` with ReAct behaviour module.
 
   ## Parameters
 
@@ -151,67 +110,19 @@ defmodule Nous.ReActAgent do
 
   ## Returns
 
-  A configured Agent struct with ReAct tools included.
+  A configured Agent struct with ReAct behaviour.
   """
   @spec new(String.t(), keyword()) :: t()
   def new(model_string, opts \\ []) do
-    # Extract ReAct-specific options
-    react_prompt = Keyword.get(opts, :react_system_prompt, @react_system_prompt)
-    user_instructions = Keyword.get(opts, :instructions)
-    user_tools = Keyword.get(opts, :tools, [])
-
-    # Combine user instructions with ReAct prompt
-    combined_instructions = if user_instructions do
-      """
-      #{react_prompt}
-
-      ADDITIONAL CONTEXT:
-      #{user_instructions}
-      """
-    else
-      react_prompt
-    end
-
-    # Get all ReAct tools
-    react_tools = [
-      Tool.from_function(&ReActTools.plan/2,
-        name: "plan",
-        description: "Create a structured plan for solving the task. Analyzes known facts, facts to look up, and facts to derive. Use this FIRST before taking any actions."
-      ),
-      Tool.from_function(&ReActTools.note/2,
-        name: "note",
-        description: "Record an observation, insight, or intermediate finding. Use this to document important information discovered during your work."
-      ),
-      Tool.from_function(&ReActTools.add_todo/2,
-        name: "add_todo",
-        description: "Add a task to your todo list. Use this to break down complex problems into manageable subtasks. Parameters: item (required), priority (optional: high/medium/low)."
-      ),
-      Tool.from_function(&ReActTools.complete_todo/2,
-        name: "complete_todo",
-        description: "Mark a todo item as complete. Parameters: id (todo number) OR item (description matching the todo)."
-      ),
-      Tool.from_function(&ReActTools.list_todos/2,
-        name: "list_todos",
-        description: "View all current todos with their status. Shows pending and completed tasks to help track progress."
-      ),
-      Tool.from_function(&ReActTools.final_answer/2,
-        name: "final_answer",
-        description: "Provide the final answer to complete the task. REQUIRED to finish. Only call this after you have gathered all necessary information and solved the problem. Parameter: answer (your complete solution)."
-      )
-    ]
-
-    # Combine ReAct tools with user tools
-    all_tools = react_tools ++ user_tools
-
-    # Update opts with combined values
+    # Use the new behaviour-based implementation
+    # Remove ReAct-specific options that are handled by the behaviour
     agent_opts = opts
-    |> Keyword.put(:instructions, combined_instructions)
-    |> Keyword.put(:tools, all_tools)
+    |> Keyword.put(:behaviour_module, Nous.Agents.ReActAgent)
     |> Keyword.delete(:react_system_prompt)
     |> Keyword.delete(:require_planning)
     |> Keyword.delete(:track_history)
 
-    # Create the underlying agent
+    # Create the underlying agent with ReAct behaviour
     Agent.new(model_string, agent_opts)
   end
 

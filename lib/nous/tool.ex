@@ -34,7 +34,10 @@ defmodule Nous.Tool do
           parameters: map(),
           function: function(),
           takes_ctx: boolean(),
-          retries: non_neg_integer()
+          retries: non_neg_integer(),
+          timeout: non_neg_integer() | nil,
+          validate_args: boolean(),
+          module: module() | nil
         }
 
   @enforce_keys [:name, :function]
@@ -43,8 +46,11 @@ defmodule Nous.Tool do
     :description,
     :parameters,
     :function,
+    :module,
     takes_ctx: true,
-    retries: 1
+    retries: 1,
+    timeout: 30_000,
+    validate_args: true
   ]
 
   @doc """
@@ -59,6 +65,8 @@ defmodule Nous.Tool do
     * `:description` - Custom description (default: from @doc)
     * `:parameters` - Custom parameter schema (default: auto-generated)
     * `:retries` - Number of retries on failure (default: 1)
+    * `:timeout` - Timeout in milliseconds (default: 30000)
+    * `:validate_args` - Whether to validate arguments against schema (default: true)
 
   ## Examples
 
@@ -69,7 +77,8 @@ defmodule Nous.Tool do
       tool = Tool.from_function(&MyTools.search/2,
         name: "search_database",
         description: "Search for records",
-        retries: 3
+        retries: 3,
+        timeout: 60_000
       )
 
   """
@@ -95,7 +104,92 @@ defmodule Nous.Tool do
       parameters: Keyword.get(opts, :parameters, param_schema),
       function: fun,
       takes_ctx: takes_ctx,
-      retries: Keyword.get(opts, :retries, 1)
+      retries: Keyword.get(opts, :retries, 1),
+      timeout: Keyword.get(opts, :timeout, 30_000),
+      validate_args: Keyword.get(opts, :validate_args, true),
+      module: nil
+    }
+  end
+
+  @doc """
+  Create a tool from a module implementing `Nous.Tool.Behaviour`.
+
+  Module-based tools are easier to test because dependencies can be
+  injected through the context.
+
+  ## Options
+
+    * `:name` - Override tool name from metadata
+    * `:description` - Override description from metadata
+    * `:parameters` - Override parameters from metadata
+    * `:retries` - Number of retries on failure (default: 1)
+    * `:timeout` - Timeout in milliseconds (default: 30000)
+    * `:validate_args` - Whether to validate arguments (default: true)
+
+  ## Example
+
+      defmodule MyApp.Tools.Search do
+        @behaviour Nous.Tool.Behaviour
+
+        @impl true
+        def metadata do
+          %{
+            name: "search",
+            description: "Search the web",
+            parameters: %{
+              "type" => "object",
+              "properties" => %{
+                "query" => %{"type" => "string"}
+              },
+              "required" => ["query"]
+            }
+          }
+        end
+
+        @impl true
+        def execute(ctx, %{"query" => query}) do
+          http = ctx.deps[:http_client] || MyApp.HTTP
+          {:ok, http.search(query)}
+        end
+      end
+
+      # Create tool from module
+      tool = Tool.from_module(MyApp.Tools.Search)
+
+      # Override options
+      tool = Tool.from_module(MyApp.Tools.Search, timeout: 60_000, retries: 3)
+
+  """
+  @spec from_module(module(), keyword()) :: t()
+  def from_module(module, opts \\ []) when is_atom(module) do
+    alias Nous.Tool.Behaviour
+
+    unless Behaviour.implements?(module) do
+      raise ArgumentError, """
+      Module #{inspect(module)} does not implement Nous.Tool.Behaviour.
+
+      Ensure the module has:
+        @behaviour Nous.Tool.Behaviour
+
+        @impl true
+        def execute(ctx, args) do
+          # ...
+        end
+      """
+    end
+
+    metadata = Behaviour.get_metadata(module)
+
+    %__MODULE__{
+      name: Keyword.get(opts, :name, metadata.name),
+      description: Keyword.get(opts, :description, metadata.description),
+      parameters: Keyword.get(opts, :parameters, metadata.parameters),
+      function: &module.execute/2,
+      takes_ctx: true,
+      retries: Keyword.get(opts, :retries, 1),
+      timeout: Keyword.get(opts, :timeout, 30_000),
+      validate_args: Keyword.get(opts, :validate_args, true),
+      module: module
     }
   end
 

@@ -8,7 +8,7 @@ defmodule Nous.Telemetry do
 
     * `[:nous, :agent, :run, :start]` - Dispatched before agent execution starts
       * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
-      * Metadata: `%{agent_name: string, model_provider: atom, model_name: string, tool_count: integer}`
+      * Metadata: `%{agent_name: string, model_provider: atom, model_name: string, tool_count: integer, has_tools: boolean}`
 
     * `[:nous, :agent, :run, :stop]` - Dispatched after agent execution completes
       * Measurement: `%{duration: native_time, total_tokens: integer, input_tokens: integer, output_tokens: integer, tool_calls: integer, requests: integer, iterations: integer}`
@@ -17,6 +17,14 @@ defmodule Nous.Telemetry do
     * `[:nous, :agent, :run, :exception]` - Dispatched when agent execution fails
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{agent_name: string, model_provider: atom, kind: atom, reason: term, stacktrace: list}`
+
+    * `[:nous, :agent, :iteration, :start]` - Dispatched before each agent iteration
+      * Measurement: `%{system_time: native_time}`
+      * Metadata: `%{agent_name: string, iteration: integer, max_iterations: integer}`
+
+    * `[:nous, :agent, :iteration, :stop]` - Dispatched after each agent iteration
+      * Measurement: `%{duration: native_time}`
+      * Metadata: `%{agent_name: string, iteration: integer, tool_calls: integer, needs_response: boolean}`
 
   ## Provider Events
 
@@ -42,6 +50,10 @@ defmodule Nous.Telemetry do
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string}`
 
+    * `[:nous, :provider, :stream, :chunk]` - Dispatched when a stream chunk is received
+      * Measurement: `%{chunk_size: integer}`
+      * Metadata: `%{provider: atom, model_name: string, chunk_type: atom}`
+
     * `[:nous, :provider, :stream, :exception]` - Dispatched when streaming request fails
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string, kind: atom, reason: term}`
@@ -50,7 +62,7 @@ defmodule Nous.Telemetry do
 
     * `[:nous, :tool, :execute, :start]` - Dispatched before tool execution
       * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
-      * Metadata: `%{tool_name: string, attempt: integer, max_retries: integer}`
+      * Metadata: `%{tool_name: string, tool_module: module | nil, attempt: integer, max_retries: integer, has_timeout: boolean}`
 
     * `[:nous, :tool, :execute, :stop]` - Dispatched after tool completes
       * Measurement: `%{duration: native_time}`
@@ -58,7 +70,23 @@ defmodule Nous.Telemetry do
 
     * `[:nous, :tool, :execute, :exception]` - Dispatched when tool fails
       * Measurement: `%{duration: native_time}`
-      * Metadata: `%{tool_name: string, attempt: integer, will_retry: boolean, kind: atom, reason: term}`
+      * Metadata: `%{tool_name: string, attempt: integer, will_retry: boolean, kind: atom, reason: term, stacktrace: list}`
+
+    * `[:nous, :tool, :timeout]` - Dispatched when tool times out
+      * Measurement: `%{timeout: integer}`
+      * Metadata: `%{tool_name: string}`
+
+  ## Context Events
+
+    * `[:nous, :context, :update]` - Dispatched when context deps are updated by a tool
+      * Measurement: `%{keys_updated: integer}`
+      * Metadata: `%{agent_name: string, keys: list(atom)}`
+
+  ## Callback Events
+
+    * `[:nous, :callback, :execute]` - Dispatched when a callback is executed
+      * Measurement: `%{duration: native_time}`
+      * Metadata: `%{callback_type: atom, agent_name: string}`
 
   All times are in `:native` time unit. Use `System.convert_time_unit/3` to
   convert to desired unit.
@@ -86,6 +114,34 @@ defmodule Nous.Telemetry do
         nil
       )
 
+  ## Metrics Integration
+
+  For production metrics, consider integrating with:
+  - `telemetry_metrics` for Prometheus/StatsD
+  - `telemetry_poller` for periodic metrics
+  - Phoenix LiveDashboard for visualization
+
+      defmodule MyApp.Telemetry do
+        use Supervisor
+        import Telemetry.Metrics
+
+        def metrics do
+          [
+            counter("nous.agent.run.start.count"),
+            distribution("nous.agent.run.stop.duration",
+              unit: {:native, :millisecond}
+            ),
+            sum("nous.agent.run.stop.total_tokens"),
+            counter("nous.tool.execute.stop.count",
+              tags: [:tool_name]
+            ),
+            counter("nous.tool.timeout.count",
+              tags: [:tool_name]
+            )
+          ]
+        end
+      end
+
   """
 
   require Logger
@@ -106,18 +162,29 @@ defmodule Nous.Telemetry do
   """
   def attach_default_handler do
     events = [
+      # Agent events
       [:nous, :agent, :run, :start],
       [:nous, :agent, :run, :stop],
       [:nous, :agent, :run, :exception],
+      [:nous, :agent, :iteration, :start],
+      [:nous, :agent, :iteration, :stop],
+      # Provider events
       [:nous, :provider, :request, :start],
       [:nous, :provider, :request, :stop],
       [:nous, :provider, :request, :exception],
       [:nous, :provider, :stream, :start],
       [:nous, :provider, :stream, :connected],
+      [:nous, :provider, :stream, :chunk],
       [:nous, :provider, :stream, :exception],
+      # Tool events
       [:nous, :tool, :execute, :start],
       [:nous, :tool, :execute, :stop],
-      [:nous, :tool, :execute, :exception]
+      [:nous, :tool, :execute, :exception],
+      [:nous, :tool, :timeout],
+      # Context events
+      [:nous, :context, :update],
+      # Callback events
+      [:nous, :callback, :execute]
     ]
 
     :telemetry.attach_many(
@@ -222,6 +289,54 @@ defmodule Nous.Telemetry do
     Logger.warning(
       "[Nous] Tool #{metadata.tool_name} failed after #{duration_ms}ms#{retry_msg}: " <>
         "#{inspect(metadata.reason)}"
+    )
+  end
+
+  # Tool timeout
+  defp handle_event([:nous, :tool, :timeout], measurements, metadata, _config) do
+    Logger.warning(
+      "[Nous] Tool #{metadata.tool_name} timed out after #{measurements.timeout}ms"
+    )
+  end
+
+  # Agent iteration events
+  defp handle_event([:nous, :agent, :iteration, :start], _measurements, metadata, _config) do
+    Logger.debug(
+      "[Nous] Agent #{metadata.agent_name} iteration #{metadata.iteration}/#{metadata.max_iterations}"
+    )
+  end
+
+  defp handle_event([:nous, :agent, :iteration, :stop], measurements, metadata, _config) do
+    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
+    continue_msg = if metadata.needs_response, do: " (continuing)", else: " (done)"
+
+    Logger.debug(
+      "[Nous] Agent #{metadata.agent_name} iteration #{metadata.iteration} completed in #{duration_ms}ms" <>
+        " (#{metadata.tool_calls} tool calls)#{continue_msg}"
+    )
+  end
+
+  # Stream chunk event
+  defp handle_event([:nous, :provider, :stream, :chunk], measurements, metadata, _config) do
+    Logger.debug(
+      "[Nous] Stream chunk from #{metadata.provider}:#{metadata.model_name} " <>
+        "(#{measurements.chunk_size} bytes, type: #{metadata.chunk_type})"
+    )
+  end
+
+  # Context update events
+  defp handle_event([:nous, :context, :update], measurements, metadata, _config) do
+    Logger.debug(
+      "[Nous] Context updated for #{metadata.agent_name}: #{measurements.keys_updated} keys (#{inspect(metadata.keys)})"
+    )
+  end
+
+  # Callback events
+  defp handle_event([:nous, :callback, :execute], measurements, metadata, _config) do
+    duration_ms = System.convert_time_unit(measurements.duration, :native, :millisecond)
+
+    Logger.debug(
+      "[Nous] Callback #{metadata.callback_type} executed for #{metadata.agent_name} in #{duration_ms}ms"
     )
   end
 

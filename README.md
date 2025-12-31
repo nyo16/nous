@@ -6,7 +6,7 @@
 
 AI agent framework for Elixir with multi-provider LLM support.
 
-[![Elixir](https://img.shields.io/badge/elixir-~%3E%201.17-purple.svg)](https://elixir-lang.org)
+[![Elixir](https://img.shields.io/badge/elixir-~%3E%201.15-purple.svg)](https://elixir-lang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/nyo16/nous/blob/master/LICENSE)
 [![Status](https://img.shields.io/badge/status-working%20mvp-brightgreen.svg)](#features)
 
@@ -19,8 +19,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.5.0"},
-    {:openai_ex, "~> 0.9.17"}
+    {:nous, "~> 0.8.0"}
   ]
 end
 ```
@@ -47,20 +46,22 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 
 ## Supported Providers
 
-| Provider | Model String | HTTP Client | Streaming |
-|----------|-------------|-------------|-----------|
-| LM Studio | `lmstudio:qwen/qwen3-30b` | Custom SSE | Tested |
-| OpenAI | `openai:gpt-4` | OpenaiEx | Tested |
-| Anthropic | `anthropic:claude-sonnet-4-5-20250929` | Native | Tested |
-| Google Gemini | `gemini:gemini-2.0-flash-exp` | Native | Tested |
-| Mistral AI | `mistral:ministral-3-14b-instruct-2512` | Req | Tested |
-| Groq | `groq:llama-3.1-70b-versatile` | OpenaiEx | Supported |
-| Ollama | `ollama:llama2` | Custom SSE | Supported |
-| vLLM | `vllm:model` + `:base_url` | Custom SSE | Tested |
-| SGLang | `sglang:model` + `:base_url` | Custom SSE | Supported |
-| OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | OpenaiEx | Supported |
-| Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | Custom SSE | Supported |
-| Custom | `custom:model` + `:base_url` | Custom SSE | Supported |
+| Provider | Model String | Streaming |
+|----------|-------------|-----------|
+| LM Studio | `lmstudio:qwen/qwen3-30b` | ✅ Tested |
+| OpenAI | `openai:gpt-4` | ✅ Tested |
+| Anthropic | `anthropic:claude-sonnet-4-5-20250929` | ✅ Tested |
+| Google Gemini | `gemini:gemini-2.0-flash-exp` | ✅ Tested |
+| Mistral AI | `mistral:ministral-3-14b-instruct-2512` | ✅ Tested |
+| Groq | `groq:llama-3.1-70b-versatile` | ✅ Supported |
+| Ollama | `ollama:llama2` | ✅ Supported |
+| vLLM | `vllm:model` + `:base_url` | ✅ Tested |
+| SGLang | `sglang:model` + `:base_url` | ✅ Supported |
+| OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | ✅ Supported |
+| Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | ✅ Supported |
+| Custom | `custom:model` + `:base_url` | ✅ Supported |
+
+All providers use pure Elixir HTTP clients (Req + Finch) with no external LLM library dependencies.
 
 **Local (Zero Cost):** LM Studio, Ollama, vLLM, SGLang
 **Cloud:** OpenAI, Anthropic, Mistral AI, Groq, OpenRouter, Together AI
@@ -190,6 +191,133 @@ See [examples/tools_with_context.exs](examples/tools_with_context.exs) or [custo
 {:ok, r2} = Nous.run(agent, "Explain it", message_history: r1.new_messages)
 ```
 
+### Context Continuation
+
+Continue from previous runs with full context preservation:
+
+```elixir
+{:ok, result1} = Nous.run(agent, "Search for Elixir tutorials")
+# result1.context contains full execution state
+
+{:ok, result2} = Nous.run(agent, "Tell me more about the first one",
+  context: result1.context
+)
+```
+
+### Flexible Input
+
+Pass messages directly instead of a string prompt:
+
+```elixir
+alias Nous.Message
+
+{:ok, result} = Nous.run(agent,
+  messages: [
+    Message.system("You are a helpful assistant who speaks like a pirate"),
+    Message.user("What's the weather like?")
+  ]
+)
+```
+
+### Callbacks
+
+Monitor agent execution with callbacks or process messages:
+
+```elixir
+# Map-based callbacks
+{:ok, result} = Nous.run(agent, "Hello",
+  callbacks: %{
+    on_llm_new_delta: fn _event, delta -> IO.write(delta) end,
+    on_tool_call: fn _event, call -> IO.puts("Calling #{call.name}") end,
+    on_agent_complete: fn _event, result -> IO.puts("Done!") end
+  }
+)
+
+# Process messages (for LiveView)
+{:ok, result} = Nous.run(agent, "Hello", notify_pid: self())
+# Receives: {:agent_delta, text}, {:tool_call, call}, {:agent_complete, result}
+```
+
+### Module-Based Tools
+
+Define tools as modules for better testability:
+
+```elixir
+defmodule MyApp.Tools.Search do
+  @behaviour Nous.Tool.Behaviour
+
+  @impl true
+  def metadata do
+    %{
+      name: "search",
+      description: "Search the web",
+      parameters: %{
+        "type" => "object",
+        "properties" => %{
+          "query" => %{"type" => "string", "description" => "Search query"}
+        },
+        "required" => ["query"]
+      }
+    }
+  end
+
+  @impl true
+  def execute(ctx, %{"query" => query}) do
+    # Inject http_client via ctx.deps for testing
+    http = ctx.deps[:http_client] || MyApp.HTTP
+    {:ok, http.search(query)}
+  end
+end
+
+# Use with agent
+agent = Nous.new("openai:gpt-4",
+  tools: [Nous.Tool.from_module(MyApp.Tools.Search)]
+)
+```
+
+### Tool Testing Helpers
+
+```elixir
+alias Nous.Tool.Testing
+
+# Mock tools
+mock = Testing.mock_tool("search", %{results: ["a", "b"]})
+
+# Spy tools (record calls)
+{spy, calls} = Testing.spy_tool("search", result: %{found: true})
+# ... use spy in agent ...
+recorded = Testing.get_calls(calls)
+
+# Test contexts
+ctx = Testing.test_context(%{database: mock_db, api_key: "test"})
+```
+
+### Prompt Templates
+
+Build prompts with EEx variable substitution:
+
+```elixir
+alias Nous.PromptTemplate
+
+# Create templates
+template = PromptTemplate.from_template(
+  "You are a <%= @role %> assistant that speaks <%= @language %>.",
+  role: :system
+)
+
+# Format with variables
+message = PromptTemplate.to_message(template, %{role: "helpful", language: "Spanish"})
+
+# Build message lists
+messages = PromptTemplate.to_messages([
+  PromptTemplate.system("You are <%= @persona %>"),
+  PromptTemplate.user("Tell me about <%= @topic %>")
+], %{persona: "a historian", topic: "ancient Rome"})
+
+# Use with agent
+{:ok, result} = Nous.run(agent, messages: messages)
+```
+
 ### Streaming
 
 ```elixir
@@ -234,6 +362,8 @@ agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
 
 ### LiveView Integration
 
+**Option 1: Streaming with spawn_link**
+
 ```elixir
 # Spawn linked streaming process from LiveView
 spawn_link(fn ->
@@ -251,6 +381,55 @@ spawn_link(fn ->
 end)
 ```
 
+**Option 2: AgentServer with PubSub**
+
+For stateful conversations with automatic event broadcasting:
+
+```elixir
+defmodule MyAppWeb.ChatLive do
+  use MyAppWeb, :live_view
+
+  def mount(_params, _session, socket) do
+    # Start agent linked to this LiveView
+    {:ok, agent_pid} = Nous.AgentServer.start_link(
+      session_id: socket.assigns.session_id,
+      agent_config: %{
+        model: "lmstudio:qwen/qwen3-30b",
+        instructions: "You are a helpful assistant",
+        tools: []
+      }
+    )
+
+    # Subscribe to responses
+    Phoenix.PubSub.subscribe(MyApp.PubSub, "agent:#{socket.assigns.session_id}")
+
+    {:ok, assign(socket, agent_pid: agent_pid, messages: [])}
+  end
+
+  def handle_event("send_message", %{"message" => msg}, socket) do
+    Nous.AgentServer.send_message(socket.assigns.agent_pid, msg)
+    {:noreply, socket}
+  end
+
+  # Receive streaming deltas
+  def handle_info({:agent_delta, text}, socket) do
+    {:noreply, update(socket, :current_response, &(&1 <> text))}
+  end
+
+  # Receive complete response
+  def handle_info({:agent_complete, result}, socket) do
+    messages = socket.assigns.messages ++ [%{role: :assistant, content: result.output}]
+    {:noreply, assign(socket, messages: messages, current_response: "")}
+  end
+
+  # Handle tool calls
+  def handle_info({:tool_call, call}, socket) do
+    # Show tool call in UI
+    {:noreply, socket}
+  end
+end
+```
+
 See [liveview_streaming_example.ex](examples/liveview_streaming_example.ex) for real-time streaming or [LiveView Integration Guide](docs/guides/liveview-integration.md) for patterns
 
 ## Logging & Telemetry
@@ -265,7 +444,12 @@ Attach telemetry handlers:
 Nous.Telemetry.attach_default_handler()
 ```
 
-Events: `[:nous, :agent, :run, :*]`, `[:nous, :model, :request, :*]`, `[:nous, :tool, :execute, :*]`
+**Events:**
+- Agent: `[:nous, :agent, :run, :start/stop/exception]`, `[:nous, :agent, :iteration, :start/stop]`
+- Provider: `[:nous, :provider, :request, :start/stop/exception]`, `[:nous, :provider, :stream, :start/connected/chunk/exception]`
+- Tool: `[:nous, :tool, :execute, :start/stop/exception]`, `[:nous, :tool, :timeout]`
+- Context: `[:nous, :context, :update]`
+- Callback: `[:nous, :callback, :execute]`
 
 ## Examples
 
@@ -305,28 +489,48 @@ Events: `[:nous, :agent, :run, :*]`, `[:nous, :model, :request, :*]`, `[:nous, :
 ```
 User Code
     ↓
-Nous.Agent (config)
+Nous.Agent (config + behaviour_module)
     ↓
 Nous.AgentRunner (execution loop)
     ↓
-├─→ OpenAICompatible (model adapter)
+├─→ Nous.Agent.Context (unified state)
+│   ├─ messages, tool_calls, deps
+│   ├─ usage, needs_response
+│   └─ callbacks, notify_pid
+│
+├─→ Nous.Agent.Behaviour (extensible)
+│   ├─ Nous.Agents.BasicAgent (default)
+│   └─ Nous.Agents.ReActAgent (planning)
+│
+├─→ Nous.Agent.Callbacks (event system)
+│   ├─ Map-based callbacks
+│   └─ Process messages (LiveView)
+│
+├─→ Nous.ModelDispatcher (routes to provider)
 │       ↓
-│   ┌─────────────────────────────────────────┐
-│   │ Cloud Providers     Local Providers     │
-│   │ (OpenAI, Groq,      (vLLM, SGLang,      │
-│   │  OpenRouter)        LM Studio, Ollama)  │
-│   │      ↓                    ↓             │
-│   │   OpenaiEx          Custom SSE Client   │
-│   │   (HTTP)            (Finch + Req)       │
-│   └─────────────────────────────────────────┘
+│   Nous.Provider (behaviour)
+│       ↓
+│   ┌───────────────────────────────────────────────┐
+│   │ Providers.OpenAI    Providers.Anthropic       │
+│   │ Providers.Gemini    Providers.Mistral         │
+│   │ Providers.LMStudio  Providers.VLLM            │
+│   │ Providers.SGLang    Providers.OpenAICompatible│
+│   └───────────────────────────────────────────────┘
+│       ↓
+│   Nous.Providers.HTTP (Req + Finch)
 │       ↓
 │   StreamNormalizer (behaviour)
 │       ↓
 │   Normalized stream events
 │
-├─→ ToolExecutor (run functions)
+├─→ ToolExecutor (run functions with timeout)
+│   ├─ Tool.Behaviour (module-based tools)
+│   ├─ Tool.ContextUpdate (structured updates)
+│   └─ Tool.Validator (argument validation)
+│
 ├─→ Messages (format conversion)
-└─→ Usage (track tokens)
+├─→ Usage (track tokens)
+└─→ PromptTemplate (EEx templates)
 ```
 
 ### Stream Normalizer
@@ -371,7 +575,7 @@ agent = Nous.new("openai_compatible:custom-model",
 
 ## Stats
 
-- **Lines:** ~2,500 | **Modules:** 20 | **Tests:** 18 passing | **Providers:** 10+
+- **Lines:** ~10,000 | **Modules:** 41 | **Tests:** 219 passing | **Providers:** 12
 
 ## Contributing
 
@@ -388,7 +592,6 @@ Apache 2.0 License - see [LICENSE](https://github.com/nyo16/nous/blob/master/LIC
 ## Credits
 
 - Inspired by [Pydantic AI](https://ai.pydantic.dev/)
-- Built with [openai_ex](https://github.com/cyberchitta/openai_ex) (cloud providers)
-- Custom SSE streaming with [Finch](https://github.com/sneako/finch) (local providers)
-- HTTP client [Req](https://github.com/wojtekmach/req) (Mistral, non-streaming)
-- Validation with [ecto](https://github.com/elixir-ecto/ecto)
+- HTTP client [Req](https://github.com/wojtekmach/req)
+- Connection pooling [Finch](https://github.com/sneako/finch)
+- Validation with [Ecto](https://github.com/elixir-ecto/ecto)
