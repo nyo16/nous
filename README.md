@@ -17,7 +17,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.8.0"}
+    {:nous, "~> 0.8.1"}
   ]
 end
 ```
@@ -28,6 +28,49 @@ mix deps.get
 ```
 
 ## Quick Start
+
+### Simple Text Generation
+
+For quick LLM calls without agents:
+
+```elixir
+# One-liner
+{:ok, text} = Nous.generate_text("lmstudio:qwen3", "What is Elixir?")
+IO.puts(text)
+
+# With options
+{:ok, text} = Nous.generate_text("openai:gpt-4", "Explain monads",
+  system: "You are a functional programming expert",
+  temperature: 0.7,
+  max_tokens: 500
+)
+
+# Streaming
+{:ok, stream} = Nous.stream_text("lmstudio:qwen3", "Write a haiku")
+stream |> Stream.each(&IO.write/1) |> Stream.run()
+
+# With prompt templates
+alias Nous.PromptTemplate
+
+template = PromptTemplate.from_template("""
+Summarize the following text in <%= @style %> style:
+
+<text>
+<%= @content %>
+</text>
+""")
+
+prompt = PromptTemplate.format(template, %{
+  style: "bullet points",
+  content: "Elixir is a dynamic, functional language for building scalable applications..."
+})
+
+{:ok, summary} = Nous.generate_text("openai:gpt-4", prompt)
+```
+
+### With Agents
+
+For multi-turn conversations, tools, and complex workflows:
 
 ```elixir
 # Create an agent
