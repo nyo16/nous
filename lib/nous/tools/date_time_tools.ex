@@ -11,7 +11,7 @@ defmodule Nous.Tools.DateTimeTools do
 
   ## Usage
 
-      agent = Nous.new("lmstudio:qwen/qwen3-30b",
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         tools: [
           &DateTimeTools.current_date/2,
           &DateTimeTools.current_time/2,

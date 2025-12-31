@@ -25,12 +25,12 @@ mix deps.get
 Perfect for development and testing.
 
 1. **Download LM Studio** from [lmstudio.ai](https://lmstudio.ai/)
-2. **Download a model** (recommended: qwen/qwen3-30b-a3b-2507)
+2. **Download a model** (recommended: qwen3-vl-4b-thinking-mlx)
 3. **Start server** in LM Studio (runs on http://localhost:1234)
 4. **Test it works**:
    ```bash
    mix run -e "
-   agent = Nous.new(\"lmstudio:qwen/qwen3-30b\")
+   agent = Nous.new(\"lmstudio:qwen3-vl-4b-thinking-mlx")
    {:ok, result} = Nous.run(agent, \"Hello!\")
    IO.puts(result.output)
    "
@@ -127,7 +127,7 @@ end)
 ### All Supported Providers
 ```elixir
 # Local (Free)
-agent = Nous.new("lmstudio:qwen/qwen3-30b")
+agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx")
 agent = Nous.new("ollama:llama3")
 
 # Cloud

@@ -241,13 +241,20 @@ defmodule Nous.Provider do
 
         case result do
           {:ok, parsed_response} ->
+            # Extract usage - handle both Usage struct and map
+            usage = case parsed_response.metadata do
+              %{usage: %Nous.Usage{} = u} -> u
+              %{usage: u} when is_map(u) -> u
+              _ -> %{}
+            end
+
             :telemetry.execute(
               [:nous, :provider, :request, :stop],
               %{
                 duration: duration,
-                input_tokens: get_in(parsed_response.metadata || %{}, [:usage, :input_tokens]) || 0,
-                output_tokens: get_in(parsed_response.metadata || %{}, [:usage, :output_tokens]) || 0,
-                total_tokens: get_in(parsed_response.metadata || %{}, [:usage, :total_tokens]) || 0
+                input_tokens: Map.get(usage, :input_tokens) || 0,
+                output_tokens: Map.get(usage, :output_tokens) || 0,
+                total_tokens: Map.get(usage, :total_tokens) || 0
               },
               %{
                 provider: @provider_id,

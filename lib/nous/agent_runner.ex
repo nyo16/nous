@@ -421,7 +421,7 @@ defmodule Nous.AgentRunner do
       # Update usage to track tool calls
       ctx = Context.add_usage(ctx, %{tool_calls: length(tool_calls)})
 
-      tool_names = Enum.map_join(tool_calls, ", ", & &1.name)
+      tool_names = Enum.map_join(tool_calls, ", ", &get_tool_field(&1, :name))
       Logger.debug("Detected #{length(tool_calls)} tool call(s): #{tool_names}")
 
       # Build run context for tool execution
@@ -431,17 +431,17 @@ defmodule Nous.AgentRunner do
       {tool_results, ctx} = Enum.reduce(tool_calls, {[], ctx}, fn call, {results, acc_ctx} ->
         # Execute callback before tool
         Callbacks.execute(acc_ctx, :on_tool_call, %{
-          id: call.id,
-          name: call.name,
-          arguments: call.arguments
+          id: get_tool_field(call, :id),
+          name: get_tool_field(call, :name),
+          arguments: get_tool_field(call, :arguments)
         })
 
         {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
 
         # Execute callback after tool
         Callbacks.execute(acc_ctx, :on_tool_response, %{
-          id: call.id,
-          name: call.name,
+          id: get_tool_field(call, :id),
+          name: get_tool_field(call, :name),
           result: result_msg.content
         })
 
@@ -479,13 +479,16 @@ defmodule Nous.AgentRunner do
     alias Nous.Tool.ContextUpdate
 
     # Clean up tool name - Claude sometimes adds XML-like syntax
-    cleaned_name = clean_tool_name(call.name)
+    call_name = get_tool_field(call, :name)
+    call_id = get_tool_field(call, :id)
+    call_arguments = get_tool_field(call, :arguments)
+    cleaned_name = clean_tool_name(call_name)
 
     tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
 
     {result, context_updates} =
       if tool do
-        case ToolExecutor.execute(tool, call.arguments, run_ctx) do
+        case ToolExecutor.execute(tool, call_arguments, run_ctx) do
           # New: Handle ContextUpdate return
           {:ok, result, %ContextUpdate{} = update} ->
             Logger.debug("Tool '#{cleaned_name}' executed successfully with context updates")
@@ -529,15 +532,15 @@ defmodule Nous.AgentRunner do
       else
         available_tools = Enum.map_join(tools, ", ", & &1.name)
         Logger.error("""
-        Tool not found: #{call.name}
+        Tool not found: #{call_name}
           Cleaned name: #{cleaned_name}
           Available tools: #{available_tools}
         """)
-        error_msg = "Tool not found: #{call.name}"
+        error_msg = "Tool not found: #{call_name}"
         {error_msg, %{}}
       end
 
-    {Message.tool(call.id, result), context_updates}
+    {Message.tool(call_id, result), context_updates}
   end
 
   # Convert ContextUpdate operations to a deps map for merging
@@ -552,6 +555,12 @@ defmodule Nous.AgentRunner do
         Map.put(acc, key, existing ++ [item])
       {:delete, key}, acc -> Map.delete(acc, key)
     end)
+  end
+
+  # Get tool call field - handles both atom and string keys
+  # OpenAI-compatible APIs return string keys, our internal format uses atoms
+  defp get_tool_field(call, field) when is_atom(field) do
+    Map.get(call, field) || Map.get(call, to_string(field))
   end
 
   # Clean tool names - Claude sometimes uses XML-like syntax

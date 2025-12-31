@@ -75,6 +75,56 @@ IO.puts("Continuing from custom history...")
 IO.puts("Assistant: #{result.output}\n")
 
 # ============================================================================
+# Method 4: Multimodal Messages (Images)
+# ============================================================================
+
+IO.puts("--- Method 4: Multimodal Messages (Images) ---\n")
+
+alias Nous.Message.ContentPart
+
+# For models that support vision (Claude, GPT-4V, etc.)
+# Note: LMStudio/local models may not support images
+
+# Image from URL
+image_message = Message.user([
+  ContentPart.text("What do you see in this image?"),
+  ContentPart.image_url("https://upload.wikimedia.org/wikipedia/commons/thumb/4/04/Elixir_logo.png/180px-Elixir_logo.png")
+])
+
+IO.puts("Created message with image URL:")
+IO.puts("  Text: #{Message.extract_text(image_message)}")
+IO.puts("  Has image: yes\n")
+
+# Image from local file (converts to base64 data URL)
+# {:ok, local_image} = ContentPart.from_file("/path/to/image.jpg")
+# Message.user([ContentPart.text("Describe this:"), local_image])
+
+# Image from base64 data
+base64_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+data_url = ContentPart.base64_to_data_url(base64_png, "image/png")
+base64_message = Message.user([
+  ContentPart.text("What color is this pixel?"),
+  ContentPart.image_url(data_url)
+])
+
+IO.puts("Created message with base64 image:")
+IO.puts("  Text: #{Message.extract_text(base64_message)}\n")
+
+# Combine with conversation history
+multimodal_conversation = [
+  Message.system("You are an image analyst."),
+  Message.user("I'll show you some images."),
+  Message.assistant("Great! I'm ready to analyze any images you share."),
+  Message.user([
+    ContentPart.text("What's in this logo?"),
+    ContentPart.image_url("https://upload.wikimedia.org/wikipedia/commons/thumb/4/04/Elixir_logo.png/180px-Elixir_logo.png")
+  ])
+]
+
+IO.puts("Built multimodal conversation with #{length(multimodal_conversation)} messages")
+IO.puts("(Run with vision-capable model like Claude or GPT-4V)\n")
+
+# ============================================================================
 # Conversation with Tools
 # ============================================================================
 
@@ -121,6 +171,17 @@ Legacy Message History:
 
 Custom Messages:
   Nous.run(agent, messages: [Message.system(...), Message.user(...)])
+
+Multimodal Messages (images):
+  alias Nous.Message.ContentPart
+  Message.user([
+    ContentPart.text("What's in this image?"),
+    ContentPart.image_url("https://example.com/image.jpg")
+  ])
+
+  # From local file:
+  {:ok, img} = ContentPart.from_file("/path/to/image.jpg")
+  Message.user([ContentPart.text("Describe:"), img])
 
 The context: option preserves:
   - All messages

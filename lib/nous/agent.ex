@@ -92,7 +92,7 @@ defmodule Nous.Agent do
       )
 
       # Local LM Studio
-      agent = Agent.new("lmstudio:qwen/qwen3-30b",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Always answer in rhymes"
       )
 

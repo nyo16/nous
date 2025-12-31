@@ -107,7 +107,7 @@ This is the simplest migration with full backward compatibility.
 
 ```elixir
 # ✅ This code works in both 0.3.x and 0.4.x
-agent = Nous.new("lmstudio:qwen/qwen3-30b",
+agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
   instructions: "You are a helpful assistant"
 )
 
@@ -140,7 +140,7 @@ end
 providers = [
   "anthropic:claude-sonnet-4-5-20250929",
   "openai:gpt-4",
-  "lmstudio:qwen/qwen3-30b"
+  "lmstudio:qwen3-vl-4b-thinking-mlx"
 ]
 
 MyApp.FallbackAgent.run_with_providers(prompt, providers)
@@ -171,12 +171,12 @@ end
 
 # Update agent creation
 # Before:
-agent = Nous.new("lmstudio:qwen/qwen3-30b", [
+agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx", [
   tools: [&old_weather_tool/1]  # Single parameter
 ])
 
 # After:
-agent = Nous.new("lmstudio:qwen/qwen3-30b",
+agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
   tools: [&new_weather_tool/2]  # Two parameters: context, args
 )
 ```
@@ -280,7 +280,7 @@ defmodule MigrationTest do
 
   describe "migration compatibility" do
     test "basic agent functionality works" do
-      agent = Nous.new("lmstudio:qwen/qwen3-30b")
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx")
 
       {:ok, result} = Nous.run(agent, "Test message")
 
@@ -295,7 +295,7 @@ defmodule MigrationTest do
         end
       end
 
-      agent = Nous.new("lmstudio:qwen/qwen3-30b",
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         tools: [&TestTools.test_tool/2]
       )
 
@@ -305,7 +305,7 @@ defmodule MigrationTest do
     end
 
     test "conversation history is preserved" do
-      agent = Nous.new("lmstudio:qwen/qwen3-30b")
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx")
 
       {:ok, result1} = Nous.run(agent, "My name is Alice")
       {:ok, result2} = Nous.run(agent, "What's my name?",
@@ -353,7 +353,7 @@ defmodule MigrationValidator do
   end
 
   defp test_basic_agent do
-    agent = Nous.new("lmstudio:qwen/qwen3-30b")
+    agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx")
     {:ok, _result} = Nous.run(agent, "Hello")
   end
 
@@ -362,7 +362,7 @@ defmodule MigrationValidator do
       def test(_ctx, args), do: "Tool result: #{inspect(args)}"
     end
 
-    agent = Nous.new("lmstudio:qwen/qwen3-30b",
+    agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
       tools: [&MigrationTestTool.test/2]
     )
 

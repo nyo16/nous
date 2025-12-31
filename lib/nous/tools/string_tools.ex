@@ -11,7 +11,7 @@ defmodule Nous.Tools.StringTools do
 
   ## Usage
 
-      agent = Nous.new("lmstudio:qwen/qwen3-30b",
+      agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         tools: [
           &StringTools.string_length/2,
           &StringTools.replace_text/2,

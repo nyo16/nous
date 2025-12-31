@@ -41,13 +41,13 @@ curl http://localhost:1234/v1/models
 # 2. If not running:
 # - Open LM Studio
 # - Go to "Local Server" tab
-# - Load a model (e.g., qwen3-30b)
+# - Load a model (e.g., qwen3-vl-4b-thinking-mlx)
 # - Click "Start Server"
 
 # 3. Verify server is responding
 curl http://localhost:1234/v1/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen/qwen3-30b","prompt":"test","max_tokens":5}'
+  -d '{"model":"qwen3-vl-4b-thinking-mlx","prompt":"test","max_tokens":5}'
 ```
 
 #### For Cloud Providers
@@ -71,7 +71,7 @@ end
 
 ```elixir
 # 1. Set explicit timeouts
-agent = Nous.new("lmstudio:qwen/qwen3-30b",
+agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
   http_options: [
     timeout: 30_000,      # 30 seconds
     recv_timeout: 30_000
@@ -243,7 +243,7 @@ defmodule MyTools do
 end
 
 # 2. Check tool is added to agent
-agent = Nous.new("lmstudio:qwen/qwen3-30b",
+agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
   tools: [&MyTools.get_weather/2]  # Must be function reference
 )
 
@@ -535,7 +535,7 @@ end
 
 # 3. Runtime configuration
 config :nous,
-  default_model: System.get_env("DEFAULT_MODEL", "lmstudio:qwen/qwen3-30b"),
+  default_model: System.get_env("DEFAULT_MODEL", "lmstudio:qwen3-vl-4b-thinking-mlx"),
   providers: %{
     anthropic: [
       api_key: System.get_env("ANTHROPIC_API_KEY"),
@@ -900,7 +900,7 @@ When reporting issues, provide a minimal test case:
 # 1. Simple agent test
 IO.puts("Testing basic agent creation...")
 
-agent = Nous.new("lmstudio:qwen/qwen3-30b",
+agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
   instructions: "You are a helpful assistant"
 )
 
@@ -920,7 +920,7 @@ end
 
 IO.puts("\nTesting tool functionality...")
 
-tool_agent = Nous.new("lmstudio:qwen/qwen3-30b",
+tool_agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
   tools: [&TestTool.simple_tool/2]
 )
 

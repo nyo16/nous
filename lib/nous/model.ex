@@ -52,8 +52,8 @@ defmodule Nous.Model do
     * `"groq:llama-3.1-70b-versatile"` - Groq models
     * `"mistral:mistral-large-latest"` - Mistral models
     * `"ollama:llama2"` - Local Ollama
-    * `"lmstudio:qwen/qwen3-30b-a3b-2507"` - Local LM Studio
-    * `"vllm:qwen/qwen3-30b"` - vLLM server
+    * `"lmstudio:qwen3-vl-4b-thinking-mlx"` - Local LM Studio
+    * `"vllm:qwen3-vl-4b-thinking-mlx"` - vLLM server
     * `"sglang:meta-llama/Llama-3-8B"` - SGLang server
     * `"openrouter:anthropic/claude-3.5-sonnet"` - OpenRouter
     * `"together:meta-llama/Llama-3-70b-chat-hf"` - Together AI
@@ -91,7 +91,7 @@ defmodule Nous.Model do
     unless Keyword.has_key?(opts, :base_url) do
       raise ArgumentError,
             "vllm provider requires :base_url option. " <>
-              "Example: parse(\"vllm:qwen/qwen3-30b\", base_url: \"http://localhost:8000/v1\")"
+              "Example: parse(\"vllm:my-model\", base_url: \"http://localhost:8000/v1\")"
     end
 
     new(:vllm, model_name, opts)

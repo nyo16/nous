@@ -77,7 +77,7 @@ defmodule Nous.AgentFunctionalTest do
   describe "simple agent responses" do
     @tag :requires_lmstudio
     test "agent provides informative response" do
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You are a helpful assistant. Be concise.",
         model_settings: %{temperature: 0.7, max_tokens: 100}
       )
@@ -105,7 +105,7 @@ defmodule Nous.AgentFunctionalTest do
 
     @tag :requires_lmstudio
     test "agent response contains expected content" do
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You are a helpful assistant.",
         model_settings: %{temperature: 0.5}
       )
@@ -130,7 +130,7 @@ defmodule Nous.AgentFunctionalTest do
         description: "Search for information"
       )
 
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You have access to a search tool. Use it to answer questions.",
         tools: [search_tool],
         model_settings: %{temperature: 0.5, max_tokens: 200}
@@ -170,7 +170,7 @@ defmodule Nous.AgentFunctionalTest do
         description: "Get current time"
       )
 
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You have calculator and time tools. Use them when needed.",
         tools: [calculator, get_time],
         model_settings: %{temperature: 0.5, max_tokens: 200}
@@ -194,7 +194,7 @@ defmodule Nous.AgentFunctionalTest do
   describe "conversation history" do
     @tag :requires_lmstudio
     test "agent maintains context across messages" do
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You are a helpful assistant. Always respond with complete sentences. Never return empty responses.",
         model_settings: %{temperature: 0.7, max_tokens: 100}
       )
@@ -243,7 +243,7 @@ defmodule Nous.AgentFunctionalTest do
         description: "A tool that always succeeds"
       )
 
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You have a reliable tool. Use it.",
         tools: [reliable_tool],
         model_settings: %{temperature: 0.5, max_tokens: 100}
@@ -276,7 +276,7 @@ defmodule Nous.AgentFunctionalTest do
         retries: 2  # Allow retries
       )
 
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You have a flaky tool. Try using it and handle any errors gracefully.",
         tools: [flaky_tool],
         model_settings: %{temperature: 0.5, max_tokens: 150}
@@ -301,7 +301,7 @@ defmodule Nous.AgentFunctionalTest do
   describe "usage tracking" do
     @tag :requires_lmstudio
     test "accurately tracks token usage" do
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Be brief.",
         model_settings: %{temperature: 0.5, max_tokens: 50}
       )
@@ -324,7 +324,7 @@ defmodule Nous.AgentFunctionalTest do
         description: "A test tool"
       )
 
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Use the tool.",
         tools: [tool],
         model_settings: %{temperature: 0.5}
@@ -345,7 +345,7 @@ defmodule Nous.AgentFunctionalTest do
     @tag :requires_lmstudio
     test "respects temperature settings" do
       # Low temperature should be more deterministic
-      agent_deterministic = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent_deterministic = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Answer briefly.",
         model_settings: %{temperature: 0.1, max_tokens: 50}
       )
@@ -361,7 +361,7 @@ defmodule Nous.AgentFunctionalTest do
 
     @tag :requires_lmstudio
     test "respects max_tokens limit" do
-      agent = Agent.new("lmstudio:qwen/qwen3-30b-a3b-2507",
+      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Be very verbose and detailed.",
         model_settings: %{temperature: 0.7, max_tokens: 30}  # Very short
       )

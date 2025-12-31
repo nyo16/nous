@@ -26,7 +26,7 @@ defmodule Nous.ReActAgent do
   ## Example
 
       # Create ReAct agent with custom tools
-      agent = ReActAgent.new("lmstudio:qwen/qwen3-30b",
+      agent = ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You are a research assistant",
         tools: [&MyTools.search/2, &MyTools.calculate/2]
       )
@@ -104,7 +104,7 @@ defmodule Nous.ReActAgent do
       )
 
       # With custom model settings
-      agent = ReActAgent.new("lmstudio:qwen/qwen3-30b",
+      agent = ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         model_settings: %{temperature: 0.3, max_tokens: 2000}
       )
 
