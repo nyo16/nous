@@ -236,15 +236,14 @@ defmodule Nous.AgentServer do
       # Set cancelled flag to signal the task to stop
       state = %{state | cancelled: true}
 
-      # Attempt graceful shutdown first, then force if needed
+      # Attempt graceful shutdown first
       case Task.shutdown(state.current_task, 2_000) do
-        :ok ->
-          Logger.debug("Previous task shutdown gracefully")
+        {:ok, _result} ->
+          Logger.debug("Previous task completed during shutdown")
+        nil ->
+          Logger.debug("Previous task already exited")
         {:exit, _reason} ->
           Logger.debug("Previous task exited during shutdown")
-        :timeout ->
-          Logger.warning("Previous task didn't respond to shutdown, force killing")
-          Task.shutdown(state.current_task, :kill)
       end
 
       %{state | current_task: nil}
@@ -317,13 +316,12 @@ defmodule Nous.AgentServer do
         shutdown_result = Task.shutdown(task, 5_000)
 
         case shutdown_result do
-          :ok ->
-            Logger.debug("Task cancelled gracefully")
+          {:ok, _result} ->
+            Logger.debug("Task completed before shutdown")
+          nil ->
+            Logger.debug("Task already exited")
           {:exit, reason} ->
             Logger.debug("Task exited with reason: #{inspect(reason)}")
-          :timeout ->
-            Logger.warning("Task cancellation timed out, force killing")
-            Task.shutdown(task, :kill)
         end
 
         # Broadcast cancellation
