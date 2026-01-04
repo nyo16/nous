@@ -16,7 +16,17 @@ config :nous,
   default_timeout: 60_000,
   stream_timeout: 120_000,
   # Telemetry
-  enable_telemetry: true
+  enable_telemetry: true,
+  # Observability (for nous_ui integration) - disabled by default
+  observability: [
+    enabled: false,
+    endpoint: "http://localhost:4000/api/telemetry",
+    batch_size: 100,
+    batch_timeout: 5_000,
+    concurrency: 2,
+    max_demand: 50,
+    headers: []
+  ]
 
 # Note: gemini_ex configuration commented out as it's not actively used yet
 # Uncomment when you need to use Google Gemini models:

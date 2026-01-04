@@ -52,6 +52,10 @@ defmodule Nous.MixProject do
       # Telemetry
       {:telemetry, "~> 1.2"},
 
+      # Broadway for observability batching (optional, for nous_ui integration)
+      {:broadway, "~> 1.0", optional: true},
+      {:off_broadway_memory, "~> 1.2", optional: true},
+
       # Note: For Prometheus metrics, users can add {:prom_ex, "~> 1.11"} and {:plug, "~> 1.18"}
       # to their deps. The Nous.PromEx.Plugin will automatically be available.
 
