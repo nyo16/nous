@@ -17,7 +17,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.8.1"}
+    {:nous, "~> 0.9.0"}
   ]
 end
 ```
@@ -342,6 +342,45 @@ Nous.Telemetry.attach_default_handler()
 - `[:nous, :tool, :execute, :start/stop/exception]`
 - `[:nous, :tool, :timeout]`
 - `[:nous, :context, :update]`
+
+## Evaluation Framework
+
+Test, benchmark, and optimize your agents:
+
+```elixir
+# Define tests
+suite = Nous.Eval.Suite.new(
+  name: "my_tests",
+  default_model: "lmstudio:qwen3",
+  test_cases: [
+    Nous.Eval.TestCase.new(
+      id: "greeting",
+      input: "Say hello",
+      expected: %{contains: ["hello"]},
+      eval_type: :contains
+    )
+  ]
+)
+
+# Run evaluation
+{:ok, result} = Nous.Eval.run(suite)
+Nous.Eval.Reporter.print(result)
+```
+
+**Features:**
+- Six built-in evaluators (exact_match, fuzzy_match, contains, tool_usage, schema, llm_judge)
+- Metrics collection (latency, tokens, cost)
+- A/B testing with `Nous.Eval.run_ab/2`
+- Parameter optimization with Bayesian, grid, or random search
+- YAML test suite definitions
+
+**CLI:**
+```bash
+mix nous.eval --suite test/eval/suites/basic.yaml
+mix nous.optimize --suite suite.yaml --strategy bayesian --trials 20
+```
+
+See [Evaluation Guide](docs/guides/evaluation.md) for complete documentation.
 
 ## Architecture
 

@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] - 2026-01-04
+
+### Added
+
+- **Evaluation Framework**: Production-grade testing and benchmarking for AI agents
+  - `Nous.Eval` module for defining and running test suites
+  - `Nous.Eval.Suite` for test suite management with YAML support
+  - `Nous.Eval.TestCase` for individual test case definitions
+  - `Nous.Eval.Runner` for sequential and parallel test execution
+  - `Nous.Eval.Metrics` for collecting latency, token usage, and cost metrics
+  - `Nous.Eval.Reporter` for console and JSON result reporting
+  - A/B testing support with `Nous.Eval.run_ab/2`
+
+- **Six Built-in Evaluators**:
+  - `:exact_match` - Strict string equality matching
+  - `:fuzzy_match` - Jaro-Winkler similarity with configurable thresholds
+  - `:contains` - Substring and regex pattern matching
+  - `:tool_usage` - Tool call verification with argument validation
+  - `:schema` - Ecto schema validation for structured outputs
+  - `:llm_judge` - LLM-based quality assessment with custom rubrics
+
+- **Optimization Engine**: Automated parameter tuning for agents
+  - `Nous.Eval.Optimizer` with three strategies: grid search, random search, Bayesian optimization
+  - Support for float, integer, choice, and boolean parameter types
+  - Early stopping on threshold achievement
+  - Detailed trial history and best configuration reporting
+
+- **New Mix Tasks**:
+  - `mix nous.eval` - Run evaluation suites with filtering, parallelism, and multiple output formats
+  - `mix nous.optimize` - Parameter optimization with configurable strategies and metrics
+
+- **New Dependency**: `yaml_elixir ~> 2.9` for YAML test suite parsing
+
+### Documentation
+
+- New comprehensive evaluation framework guide (`docs/guides/evaluation.md`)
+- Five new example scripts in `examples/eval/`:
+  - `01_basic_evaluation.exs` - Simple test execution
+  - `02_yaml_suite.exs` - Loading and running YAML suites
+  - `03_optimization.exs` - Parameter optimization workflows
+  - `04_custom_evaluator.exs` - Implementing custom evaluators
+  - `05_ab_testing.exs` - A/B testing configurations
+
 ## [0.8.1] - 2025-12-31
 
 ### Fixed

@@ -9,7 +9,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.7.0"}
+    {:nous, "~> 0.9.0"}
   ]
 end
 ```
@@ -52,7 +52,7 @@ export OPENAI_API_KEY="sk-your-key"
 **Test cloud setup:**
 ```bash
 mix run -e "
-agent = Nous.new(\"anthropic:claude-3-5-sonnet\")
+agent = Nous.new(\"anthropic:claude-sonnet-4-5-20250929\")
 {:ok, result} = Nous.run(agent, \"Hello!\")
 IO.puts(result.output)
 "
@@ -63,7 +63,7 @@ IO.puts(result.output)
 ### Simple Chat Agent
 ```elixir
 # Create an agent
-agent = Nous.new("anthropic:claude-3-5-sonnet",
+agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
   instructions: "You are a helpful assistant"
 )
 
@@ -84,7 +84,7 @@ defmodule MyTools do
   end
 end
 
-agent = Nous.new("anthropic:claude-3-5-sonnet",
+agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
   instructions: "Use the get_weather tool when asked about weather",
   tools: [&MyTools.get_weather/2]
 )
@@ -95,7 +95,7 @@ IO.puts(result.output)  # AI automatically calls the weather tool
 
 ### Streaming Responses
 ```elixir
-agent = Nous.new("anthropic:claude-3-5-sonnet")
+agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")
 
 Nous.run_stream(agent, "Tell me a story")
 |> Enum.each(fn
@@ -131,7 +131,7 @@ agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx")
 agent = Nous.new("ollama:llama3")
 
 # Cloud
-agent = Nous.new("anthropic:claude-3-5-sonnet")
+agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")
 agent = Nous.new("openai:gpt-4o")
 agent = Nous.new("gemini:gemini-1.5-pro")
 agent = Nous.new("mistral:mistral-large-latest")
@@ -140,7 +140,7 @@ agent = Nous.new("groq:llama-3.1-70b-versatile")
 
 ### Model Settings
 ```elixir
-agent = Nous.new("anthropic:claude-3-5-sonnet",
+agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
   model_settings: %{
     temperature: 0.7,      # Creativity (0.0 - 1.0)
     max_tokens: 2000,      # Response length
