@@ -1,0 +1,96 @@
+# Context and Conversation Test Suite
+# Tests multi-turn conversations and context management
+
+name: context_conversation
+description: Tests for multi-turn conversations and context preservation
+default_model: lmstudio:ministral-3-14b-reasoning
+default_timeout: 30000
+parallelism: 1
+
+test_cases:
+  # 4.1 Single Turn Context
+  - id: single_turn_context
+    name: Single Turn Context Structure
+    input: "My name is Bob"
+    expected:
+      contains_any: ["Bob", "bob", "name"]
+    eval_type: contains
+    tags: [context, basic]
+    metadata:
+      note: "Verifies context is properly built after single turn"
+
+  # 4.2 System Prompt Adherence
+  - id: system_prompt_adherence
+    name: System Prompt Adherence
+    input: "What kind of assistant are you?"
+    expected:
+      contains_any: ["chef", "cook", "food", "cuisine", "kitchen", "culinary"]
+    eval_type: contains
+    eval_config:
+      case_insensitive: true
+    tags: [context, system_prompt]
+    agent_config:
+      instructions: "You are a professional chef assistant. Always talk about cooking and food."
+
+  # 4.3 Persona Maintenance
+  - id: persona_maintenance
+    name: Persona Maintenance
+    input: "What are your hobbies?"
+    expected:
+      contains_any: ["programming", "code", "software", "developer", "computer"]
+    eval_type: contains
+    eval_config:
+      case_insensitive: true
+    tags: [context, persona]
+    agent_config:
+      instructions: "You are a software developer persona. All your interests revolve around programming and technology."
+
+  # 4.4 Language Consistency
+  - id: language_consistency
+    name: Language Consistency
+    input: "How are you today?"
+    expected:
+      contains_any: ["bonjour", "bien", "merci", "français", "oui"]
+    eval_type: contains
+    eval_config:
+      case_insensitive: true
+    tags: [context, language]
+    agent_config:
+      instructions: "You only speak French. Never respond in English."
+
+  # 4.5 Role Playing
+  - id: role_playing
+    name: Role Playing Character
+    input: "Tell me about your adventures"
+    expected:
+      contains_any: ["dragon", "quest", "sword", "magic", "kingdom", "brave", "dungeon"]
+    eval_type: contains
+    eval_config:
+      case_insensitive: true
+    tags: [context, roleplay]
+    agent_config:
+      instructions: "You are a medieval knight on a quest. Speak in character about your adventures."
+
+  # 4.6 Format Instructions
+  - id: format_instructions
+    name: Format Instructions
+    input: "What are three benefits of exercise?"
+    expected:
+      contains: ["1.", "2.", "3."]
+    eval_type: contains
+    tags: [context, format]
+    agent_config:
+      instructions: "Always format your responses as numbered lists."
+
+  # 4.7 Conciseness Instructions
+  - id: conciseness
+    name: Conciseness Instructions
+    input: "Explain quantum computing"
+    expected:
+      contains_any: ["quantum", "computer", "bit", "qubit"]
+    eval_type: contains
+    tags: [context, concise]
+    agent_config:
+      instructions: "Be extremely concise. Maximum 2 sentences per response."
+      model_settings:
+        max_tokens: 100

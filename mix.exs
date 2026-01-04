@@ -39,6 +39,9 @@ defmodule Nous.MixProject do
       # JSON
       {:jason, "~> 1.4"},
 
+      # YAML (for evaluation framework)
+      {:yaml_elixir, "~> 2.9"},
+
       # Validation
       {:ecto, "~> 3.11"},
 
@@ -153,6 +156,16 @@ defmodule Nous.MixProject do
         "Infrastructure": [
           Nous.Telemetry,
           Nous.Errors
+        ],
+        "Evaluation": [
+          Nous.Eval,
+          Nous.Eval.Suite,
+          Nous.Eval.TestCase,
+          Nous.Eval.Runner,
+          Nous.Eval.Evaluator,
+          Nous.Eval.Metrics,
+          Nous.Eval.Reporter,
+          Nous.Eval.Config
         ]
       ]
     ]

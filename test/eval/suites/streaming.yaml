@@ -1,0 +1,52 @@
+# Streaming Test Suite
+# Note: Streaming tests are primarily tested in ExUnit, this YAML is for reference
+
+name: streaming
+description: Tests for streaming functionality (run via ExUnit for actual streaming tests)
+default_model: lmstudio:ministral-3-14b-reasoning
+default_timeout: 45000
+parallelism: 1
+
+test_cases:
+  # 3.1 Basic Streaming
+  - id: basic_streaming
+    name: Basic Streaming Response
+    input: "Count from 1 to 10, one number per line"
+    expected:
+      contains: ["1", "5", "10"]
+    eval_type: contains
+    tags: [streaming, basic]
+    metadata:
+      note: "Actual streaming verification done in ExUnit tests"
+
+  # 3.2 Long Streaming
+  - id: long_streaming
+    name: Long Streaming Response
+    input: "Write a 200-word story about a robot learning to paint"
+    expected:
+      contains: ["robot", "paint"]
+    eval_type: contains
+    tags: [streaming, long]
+    agent_config:
+      model_settings:
+        max_tokens: 400
+    metadata:
+      note: "Tests streaming of longer content"
+
+  # 3.3 Streaming with Code
+  - id: streaming_code
+    name: Streaming Code Response
+    input: "Write a Python function to calculate fibonacci numbers with comments"
+    expected:
+      contains: ["def", "fibonacci", "return"]
+    eval_type: contains
+    tags: [streaming, code]
+
+  # 3.4 Streaming Bullet Points
+  - id: streaming_bullets
+    name: Streaming Bullet Points
+    input: "List 5 benefits of meditation, one per line with bullet points"
+    expected:
+      regex: ["[•\\-\\*].*[•\\-\\*].*[•\\-\\*]"]
+    eval_type: contains
+    tags: [streaming, format]
