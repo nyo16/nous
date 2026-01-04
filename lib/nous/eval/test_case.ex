@@ -33,7 +33,7 @@ defmodule Nous.Eval.TestCase do
   - `:exact_match` - `"expected string"`
   - `:fuzzy_match` - `"expected string"` (with threshold in eval_config)
   - `:contains` - `%{contains: ["word1", "word2"]}` or `["word1", "word2"]`
-  - `:tool_usage` - `%{tools_called: ["tool_name"], output_contains: ["..."]}
+  - `:tool_usage` - `%{tools_called: ["tool_name"], output_contains: ["..."]}`
   - `:schema` - `MyApp.Schema` (module name)
   - `:llm_judge` - `%{criteria: "...", rubric: "..."}`
   - `:custom` - Any format understood by your evaluator

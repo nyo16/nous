@@ -128,14 +128,8 @@ defmodule Mix.Tasks.Nous.Optimize do
     end
 
     # Run optimization
-    case Optimizer.optimize(suite, parameters, opt_opts) do
-      {:ok, result} ->
-        output_results(result, opts)
-
-      {:error, reason} ->
-        Mix.shell().error("Optimization failed: #{inspect(reason)}")
-        exit({:shutdown, 1})
-    end
+    {:ok, result} = Optimizer.optimize(suite, parameters, opt_opts)
+    output_results(result, opts)
   end
 
   defp load_suite(path) do

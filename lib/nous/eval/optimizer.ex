@@ -175,9 +175,6 @@ defmodule Nous.Eval.Optimizer do
            avg_score: avg_score,
            std_score: std_score
          }}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 

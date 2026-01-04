@@ -75,7 +75,7 @@ defmodule Nous.Eval.Evaluator do
   @doc """
   Get the evaluator module for an eval_type.
   """
-  @spec get_evaluator(atom()) :: module()
+  @spec get_evaluator(atom()) :: module() | nil
   def get_evaluator(:exact_match), do: Nous.Eval.Evaluators.ExactMatch
   def get_evaluator(:fuzzy_match), do: Nous.Eval.Evaluators.FuzzyMatch
   def get_evaluator(:contains), do: Nous.Eval.Evaluators.Contains
@@ -83,6 +83,7 @@ defmodule Nous.Eval.Evaluator do
   def get_evaluator(:schema), do: Nous.Eval.Evaluators.Schema
   def get_evaluator(:llm_judge), do: Nous.Eval.Evaluators.LLMJudge
   def get_evaluator(:custom), do: nil
+  def get_evaluator(_), do: nil
 
   @doc """
   Run evaluation using the appropriate evaluator.
@@ -104,17 +105,17 @@ defmodule Nous.Eval.Evaluator do
   end
 
   def run(eval_type, actual, expected, config) do
-    evaluator = get_evaluator(eval_type)
+    case get_evaluator(eval_type) do
+      nil ->
+        %{
+          score: 0.0,
+          passed: false,
+          reason: "Unknown eval_type: #{inspect(eval_type)}",
+          details: %{}
+        }
 
-    if evaluator do
-      evaluator.evaluate(actual, expected, config)
-    else
-      %{
-        score: 0.0,
-        passed: false,
-        reason: "Unknown eval_type: #{inspect(eval_type)}",
-        details: %{}
-      }
+      evaluator when is_atom(evaluator) and not is_nil(evaluator) ->
+        apply(evaluator, :evaluate, [actual, expected, config])
     end
   end
 
