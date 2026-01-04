@@ -1,0 +1,167 @@
+# Tool Calling Test Suite
+# Tests agent tool calling capabilities
+# Note: Tools must be provided programmatically when running
+
+name: tool_calling
+description: Tests for tool calling functionality
+default_model: lmstudio:ministral-3-14b-reasoning
+default_timeout: 45000
+parallelism: 1
+
+test_cases:
+  # 2.1 Single Tool Basic
+  - id: single_tool_basic
+    name: Single Tool Basic
+    input: "What's the weather in Tokyo?"
+    expected:
+      tools_called: ["get_weather"]
+      output_contains: ["Tokyo"]
+    eval_type: tool_usage
+    tags: [tool, basic]
+    metadata:
+      required_tools: ["get_weather"]
+
+  # 2.2 Tool With Validation
+  - id: tool_with_validation
+    name: Tool With Argument Validation
+    input: "Calculate the square of 7"
+    expected:
+      tools_called: ["calculate"]
+      output_contains: ["49"]
+    eval_type: tool_usage
+    tags: [tool, validation]
+    metadata:
+      required_tools: ["calculate"]
+
+  # 2.3 Multi Tool Sequential
+  - id: multi_tool_sequential
+    name: Multi Tool Sequential
+    input: "Get the weather in Paris and then convert the temperature from Fahrenheit to Celsius"
+    expected:
+      min_tool_calls: 2
+      tools_called: ["get_weather", "convert_temperature"]
+    eval_type: tool_usage
+    tags: [tool, multi]
+    metadata:
+      required_tools: ["get_weather", "convert_temperature"]
+
+  # 2.4 Multi Tool Parallel
+  - id: multi_tool_parallel
+    name: Multi Tool Parallel
+    input: "What's the weather in both Tokyo and New York?"
+    expected:
+      min_tool_calls: 2
+      tools_called: ["get_weather"]
+    eval_type: tool_usage
+    tags: [tool, parallel]
+    metadata:
+      required_tools: ["get_weather"]
+
+  # 2.5 Tool Context Access
+  - id: tool_context_access
+    name: Tool Context Access
+    input: "What's my current balance?"
+    expected:
+      tools_called: ["get_balance"]
+      output_contains: ["1500"]
+    eval_type: tool_usage
+    tags: [tool, context]
+    deps:
+      user:
+        id: 1
+        balance: 1500
+    metadata:
+      required_tools: ["get_balance"]
+
+  # 2.6 Tool Context Update
+  - id: tool_context_update
+    name: Tool Context Update
+    input: "Add 'milk' to my shopping cart, then show me what's in the cart"
+    expected:
+      min_tool_calls: 2
+      tools_called: ["add_to_cart", "list_cart"]
+      output_contains: ["milk"]
+    eval_type: tool_usage
+    tags: [tool, context_update]
+    metadata:
+      required_tools: ["add_to_cart", "list_cart"]
+
+  # 2.7 Tool With Complex Args
+  - id: tool_complex_args
+    name: Tool With Complex Arguments
+    input: "Create a new user with name 'Alice', email 'alice@example.com', and age 30"
+    expected:
+      tools_called: ["create_user"]
+      tool_args:
+        create_user:
+          name: "Alice"
+          email: "alice@example.com"
+    eval_type: tool_usage
+    tags: [tool, complex]
+    metadata:
+      required_tools: ["create_user"]
+
+  # 2.8 Tool Not Available Recovery
+  - id: tool_not_available
+    name: Tool Not Available Recovery
+    input: "Search the web for Elixir programming"
+    expected:
+      tools_not_called: ["web_search"]
+      contains_any: ["cannot", "don't have", "no access", "unable"]
+    eval_type: contains
+    eval_config:
+      case_insensitive: true
+    tags: [tool, error]
+    metadata:
+      note: "No web_search tool provided, agent should explain limitation"
+
+  # 2.9 Mathematical Calculation Chain
+  - id: math_chain
+    name: Mathematical Calculation Chain
+    input: "Calculate 10 + 5, then multiply that result by 3, and finally subtract 15"
+    expected:
+      min_tool_calls: 3
+      tools_called: ["calculate"]
+      output_contains: ["30"]
+    eval_type: tool_usage
+    tags: [tool, chain]
+    metadata:
+      required_tools: ["calculate"]
+      explanation: "(10+5=15) * 3 = 45 - 15 = 30"
+
+  # 2.10 String Manipulation Tool
+  - id: string_tool
+    name: String Manipulation Tool
+    input: "Reverse the string 'hello world' and make it uppercase"
+    expected:
+      tools_called: ["string_reverse", "string_uppercase"]
+      output_contains: ["DLROW OLLEH"]
+    eval_type: tool_usage
+    tags: [tool, string]
+    metadata:
+      required_tools: ["string_reverse", "string_uppercase"]
+
+  # 2.11 Date Time Tool
+  - id: datetime_tool
+    name: Date Time Tool
+    input: "What is the current date and time?"
+    expected:
+      tools_called: ["get_current_time"]
+    eval_type: tool_usage
+    tags: [tool, datetime]
+    metadata:
+      required_tools: ["get_current_time"]
+
+  # 2.12 Tool Argument Inference
+  - id: tool_arg_inference
+    name: Tool Argument Inference
+    input: "Search for restaurants near Times Square"
+    expected:
+      tools_called: ["search_nearby"]
+      tool_args:
+        search_nearby:
+          query: "restaurants"
+    eval_type: tool_usage
+    tags: [tool, inference]
+    metadata:
+      required_tools: ["search_nearby"]
