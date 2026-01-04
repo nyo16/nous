@@ -213,7 +213,8 @@ defmodule Nous.Provider do
           %{
             provider: @provider_id,
             model_name: model.model,
-            message_count: length(messages)
+            message_count: length(messages),
+            messages: messages  # Include messages for observability
           }
         )
 
@@ -259,7 +260,8 @@ defmodule Nous.Provider do
               %{
                 provider: @provider_id,
                 model_name: model.model,
-                has_tool_calls: length(parsed_response.tool_calls || []) > 0
+                has_tool_calls: length(parsed_response.tool_calls || []) > 0,
+                response: parsed_response  # Include response for observability
               }
             )
 
@@ -293,7 +295,8 @@ defmodule Nous.Provider do
           %{
             provider: @provider_id,
             model_name: model.model,
-            message_count: length(messages)
+            message_count: length(messages),
+            messages: messages  # Include messages for observability
           }
         )
 
