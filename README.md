@@ -232,6 +232,38 @@ add_item = fn ctx, %{"item" => item} ->
 end
 ```
 
+### Memory Tools
+
+Enable agents to remember information across conversations:
+
+```elixir
+alias Nous.Tools.MemoryTools
+
+# Short-term memory (context-based, session only)
+agent = Nous.new("openai:gpt-4",
+  instructions: "Remember important information the user shares.",
+  tools: MemoryTools.all()
+)
+
+{:ok, r1} = Nous.run(agent, "My name is Alice and I prefer dark mode")
+{:ok, r2} = Nous.run(agent, "What's my name?", context: r1.context)
+# => "Your name is Alice"
+
+# Long-term memory (persistent across sessions)
+{:ok, manager} = Nous.Memory.Manager.start_link(agent_id: "my_assistant")
+{:ok, result} = Nous.run(agent, "Remember my birthday is March 15",
+  deps: %{memory_manager: manager}
+)
+```
+
+**Features:**
+- Store memories with tags and importance levels
+- Search and recall by query, tags, or importance
+- Context-based (session) or Manager-based (persistent) storage
+- Access tracking and decay scores
+
+See [examples/11_memory_tools.exs](examples/11_memory_tools.exs) for complete patterns.
+
 ### Prompt Templates
 
 Build prompts with EEx variable substitution:
@@ -311,6 +343,7 @@ See [examples/advanced/liveview_integration.exs](examples/advanced/liveview_inte
 | [08_tool_testing.exs](examples/08_tool_testing.exs) | Test helpers |
 | [09_agent_server.exs](examples/09_agent_server.exs) | GenServer agent |
 | [10_react_agent.exs](examples/10_react_agent.exs) | ReAct pattern |
+| [11_memory_tools.exs](examples/11_memory_tools.exs) | Agent memory system |
 
 ### Provider Examples
 
