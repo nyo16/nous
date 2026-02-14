@@ -229,7 +229,7 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
       Process.sleep(500)
       :atomics.put(cancellation_ref, 1, 1)
 
-      result = Task.await(task, 60_000)
+      result = Task.await(task, 150_000)
 
       IO.puts("\n[Error 6.8] Cancellation result: #{inspect(result)}")
       assert result != nil

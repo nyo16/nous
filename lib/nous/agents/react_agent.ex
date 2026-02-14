@@ -205,8 +205,8 @@ defmodule Nous.Agents.ReActAgent do
   def after_tool(_agent, call, _result, ctx) do
     # Record tool call in history
     history_entry = %{
-      name: call.name || call[:name],
-      arguments: call.arguments || call[:arguments],
+      name: call["name"] || call[:name],
+      arguments: call["arguments"] || call[:arguments],
       timestamp: DateTime.utc_now()
     }
 
@@ -215,7 +215,7 @@ defmodule Nous.Agents.ReActAgent do
     # Check for duplicate calls (loop detection)
     if is_duplicate_call?(call, ctx.deps[:tool_history] || []) do
       require Logger
-      Logger.warning("ReAct loop detection: duplicate tool call #{call.name || call[:name]}")
+      Logger.warning("ReAct loop detection: duplicate tool call #{call["name"] || call[:name]}")
     end
 
     Context.merge_deps(ctx, %{tool_history: tool_history})
@@ -287,8 +287,8 @@ defmodule Nous.Agents.ReActAgent do
   end
 
   defp is_duplicate_call?(call, history) do
-    call_name = call.name || call[:name]
-    call_args = call.arguments || call[:arguments]
+    call_name = call["name"] || call[:name]
+    call_args = call["arguments"] || call[:arguments]
 
     Enum.any?(history, fn entry ->
       entry.name == call_name and entry.arguments == call_args
