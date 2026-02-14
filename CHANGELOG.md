@@ -36,7 +36,7 @@ All notable changes to this project will be documented in this file.
   - `Nous.AgentRegistry` for session-based process lookup via Registry
   - `Nous.AgentDynamicSupervisor` for on-demand agent creation/destruction
   - Configurable inactivity timeout on `AgentServer` (default: 5 minutes)
-  - Added to `Nous.Application` supervision tree
+  - Added to application supervision tree
 
 - **Dangling Tool Call Recovery**: Resilient session resumption
   - `Nous.Agent.Context.patch_dangling_tool_calls/1` injects synthetic results for interrupted tool calls
@@ -66,7 +66,7 @@ All notable changes to this project will be documented in this file.
 - `Nous.Tool` struct now accepts `requires_approval: boolean()` option
 - `Nous.Agent.Context` now includes `approval_handler` field
 - `Nous.AgentServer` supports optional `:name` registration and `:persistence` backend
-- `Nous.Application` supervision tree includes AgentRegistry and AgentDynamicSupervisor
+- Application supervision tree includes AgentRegistry and AgentDynamicSupervisor
 
 ## [0.9.0] - 2026-01-04
 

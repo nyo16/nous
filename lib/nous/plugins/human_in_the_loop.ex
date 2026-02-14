@@ -44,8 +44,10 @@ defmodule Nous.Plugins.HumanInTheLoop do
 
   @impl true
   def init(_agent, ctx) do
-    case get_in(ctx.deps, [:hitl_config]) do
-      %{handler: handler} = config when is_function(handler) ->
+    config = get_in(ctx.deps, [:hitl_config])
+
+    case config do
+      %{handler: handler} when is_function(handler) ->
         tool_names = Map.get(config, :tools, [])
         wrapped = build_handler(handler, tool_names)
         %{ctx | approval_handler: wrapped}

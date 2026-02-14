@@ -1,5 +1,5 @@
 defmodule Nous.AgentRunnerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Nous.{Agent, AgentRunner, Message, Tool, Usage}
   alias Nous.Errors

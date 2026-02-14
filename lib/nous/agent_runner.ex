@@ -685,7 +685,9 @@ defmodule Nous.AgentRunner do
   # Check if a tool call requires approval and invoke the handler
   defp check_tool_approval(nil, _call, _ctx), do: :approve
 
-  defp check_tool_approval(%Tool{requires_approval: true}, call, %{approval_handler: handler})
+  defp check_tool_approval(%Tool{requires_approval: true}, call, %Context{
+         approval_handler: handler
+       })
        when is_function(handler) do
     tool_call_info = %{
       name: get_tool_field(call, :name),

@@ -54,7 +54,7 @@ defmodule Nous.Plugin do
 
   Use this to set up initial state in `ctx.deps`, register callbacks, etc.
 
-  Called once at the start of each `Agent.run/3`.
+  Called once at the start of each `Nous.Agent.run/3`.
   """
   @callback init(agent :: Nous.Agent.t(), ctx :: Context.t()) :: Context.t()
 
@@ -106,7 +106,7 @@ defmodule Nous.Plugin do
   @spec run_init([module()], Nous.Agent.t(), Context.t()) :: Context.t()
   def run_init(plugins, agent, ctx) do
     Enum.reduce(plugins, ctx, fn plugin, acc_ctx ->
-      if function_exported?(plugin, :init, 2) do
+      if exports?(plugin, :init, 2) do
         plugin.init(agent, acc_ctx)
       else
         acc_ctx
@@ -120,7 +120,7 @@ defmodule Nous.Plugin do
   @spec collect_tools([module()], Nous.Agent.t(), Context.t()) :: [Nous.Tool.t()]
   def collect_tools(plugins, agent, ctx) do
     Enum.flat_map(plugins, fn plugin ->
-      if function_exported?(plugin, :tools, 2) do
+      if exports?(plugin, :tools, 2) do
         plugin.tools(agent, ctx)
       else
         []
@@ -136,7 +136,7 @@ defmodule Nous.Plugin do
     fragments =
       plugins
       |> Enum.map(fn plugin ->
-        if function_exported?(plugin, :system_prompt, 2) do
+        if exports?(plugin, :system_prompt, 2) do
           plugin.system_prompt(agent, ctx)
         else
           nil
@@ -159,7 +159,7 @@ defmodule Nous.Plugin do
           {Context.t(), [Nous.Tool.t()]}
   def run_before_request(plugins, agent, ctx, tools) do
     Enum.reduce(plugins, {ctx, tools}, fn plugin, {acc_ctx, acc_tools} ->
-      if function_exported?(plugin, :before_request, 3) do
+      if exports?(plugin, :before_request, 3) do
         plugin.before_request(agent, acc_ctx, acc_tools)
       else
         {acc_ctx, acc_tools}
@@ -174,11 +174,17 @@ defmodule Nous.Plugin do
           Context.t()
   def run_after_response(plugins, agent, response, ctx) do
     Enum.reduce(plugins, ctx, fn plugin, acc_ctx ->
-      if function_exported?(plugin, :after_response, 3) do
+      if exports?(plugin, :after_response, 3) do
         plugin.after_response(agent, response, acc_ctx)
       else
         acc_ctx
       end
     end)
+  end
+
+  # Ensure module is loaded before checking exports
+  defp exports?(module, function, arity) do
+    Code.ensure_loaded(module)
+    function_exported?(module, function, arity)
   end
 end

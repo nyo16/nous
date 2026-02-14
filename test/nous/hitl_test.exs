@@ -144,10 +144,15 @@ defmodule Nous.HITLTest do
 
   describe "approval handler responses via full agent run" do
     setup do
+      original = Application.get_env(:nous, :model_dispatcher)
       Application.put_env(:nous, :model_dispatcher, __MODULE__.MockDispatcher)
 
       on_exit(fn ->
-        Application.delete_env(:nous, :model_dispatcher)
+        if original do
+          Application.put_env(:nous, :model_dispatcher, original)
+        else
+          Application.delete_env(:nous, :model_dispatcher)
+        end
       end)
 
       tool =
@@ -169,7 +174,7 @@ defmodule Nous.HITLTest do
 
     test "handler :approve allows tool execution", %{agent: agent} do
       {:ok, result} =
-        Agent.run(agent, "tool_call_test",
+        Agent.run(agent, "hitl_tool_call_test",
           deps: %{
             hitl_config: %{
               handler: fn _call -> :approve end,
@@ -182,28 +187,26 @@ defmodule Nous.HITLTest do
     end
 
     test "handler :reject returns rejection message", %{agent: agent} do
-      logs =
-        capture_log(fn ->
-          {:ok, result} =
-            Agent.run(agent, "tool_call_test",
-              deps: %{
-                hitl_config: %{
-                  handler: fn _call -> :reject end,
-                  tools: ["send_email"]
-                }
-              }
-            )
+      {:ok, result} =
+        Agent.run(agent, "hitl_tool_call_test",
+          deps: %{
+            hitl_config: %{
+              handler: fn _call -> :reject end,
+              tools: ["send_email"]
+            }
+          }
+        )
 
-          # The agent should still complete; the mock returns a final response after seeing the rejection
-          assert result.output =~ "Response after rejection"
-        end)
+      # The tool result should contain the rejection message
+      tool_msgs = Enum.filter(result.all_messages, &(&1.role == :tool))
 
-      assert logs =~ "rejected by approval handler"
+      assert Enum.any?(tool_msgs, fn m -> m.content =~ "rejected" end),
+             "Expected rejection message in tool results, got: #{inspect(Enum.map(tool_msgs, & &1.content))}"
     end
 
     test "handler {:edit, new_args} modifies tool arguments", %{agent: agent} do
       {:ok, result} =
-        Agent.run(agent, "tool_call_test",
+        Agent.run(agent, "hitl_tool_call_test",
           deps: %{
             hitl_config: %{
               handler: fn _call -> {:edit, %{"input" => "edited_value"}} end,
@@ -239,77 +242,47 @@ defmodule Nous.HITLTest do
 
   # Mock dispatcher for HITL tests
   defmodule MockDispatcher do
+    defp make_response(parts) do
+      legacy = %{
+        parts: parts,
+        usage: %Usage{
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15,
+          tool_calls: 0,
+          requests: 1
+        },
+        model_name: "test-model",
+        timestamp: DateTime.utc_now()
+      }
+
+      {:ok, Message.from_legacy(legacy)}
+    end
+
     def request(_model, messages, _settings) do
-      has_tool_results =
-        Enum.any?(messages, fn
+      tool_messages =
+        Enum.filter(messages, fn
           %Message{role: :tool} -> true
           _ -> false
         end)
 
       has_rejection =
-        Enum.any?(messages, fn
-          %Message{role: :tool, content: content} -> content =~ "rejected"
-          _ -> false
+        Enum.any?(tool_messages, fn msg ->
+          is_binary(msg.content) and String.contains?(msg.content, "rejected")
         end)
 
       cond do
         has_rejection ->
-          # After rejection, return final response
-          legacy = %{
-            parts: [{:text, "Response after rejection"}],
-            usage: %Usage{
-              input_tokens: 10,
-              output_tokens: 5,
-              total_tokens: 15,
-              tool_calls: 0,
-              requests: 1
-            },
-            model_name: "test-model",
-            timestamp: DateTime.utc_now()
-          }
+          make_response([{:text, "Response after rejection"}])
 
-          {:ok, Message.from_legacy(legacy)}
-
-        has_tool_results ->
-          # After tool execution, return final response
-          legacy = %{
-            parts: [{:text, "Tool result: approved"}],
-            usage: %Usage{
-              input_tokens: 10,
-              output_tokens: 5,
-              total_tokens: 15,
-              tool_calls: 0,
-              requests: 1
-            },
-            model_name: "test-model",
-            timestamp: DateTime.utc_now()
-          }
-
-          {:ok, Message.from_legacy(legacy)}
+        tool_messages != [] ->
+          make_response([{:text, "Tool result: approved"}])
 
         true ->
-          # First call, return a tool call
-          legacy = %{
-            parts: [
-              {:tool_call,
-               %{
-                 id: "call_hitl_1",
-                 name: "send_email",
-                 arguments: %{"input" => "test_value"}
-               }}
-            ],
-            usage: %Usage{
-              input_tokens: 10,
-              output_tokens: 5,
-              total_tokens: 15,
-              tool_calls: 0,
-              requests: 1
-            },
-            model_name: "test-model",
-            timestamp: DateTime.utc_now()
-          }
-
-          {:ok, Message.from_legacy(legacy)}
+          make_response([
+            {:tool_call,
+             %{id: "call_hitl_1", name: "send_email", arguments: %{"input" => "test_value"}}}
+          ])
       end
     end
 
