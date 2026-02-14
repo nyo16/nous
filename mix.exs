@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.9.0"
+  @version "0.10.0"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -177,6 +177,37 @@ defmodule Nous.MixProject do
           Nous.Eval.Metrics,
           Nous.Eval.Reporter,
           Nous.Eval.Config
+        ],
+        "Plugin System": [
+          Nous.Plugin,
+          Nous.Plugins.HumanInTheLoop,
+          Nous.Plugins.SubAgent,
+          Nous.Plugins.Summarization
+        ],
+        Persistence: [
+          Nous.Persistence,
+          Nous.Persistence.ETS
+        ],
+        Supervision: [
+          Nous.AgentRegistry,
+          Nous.AgentDynamicSupervisor
+        ],
+        Research: [
+          Nous.Research,
+          Nous.Research.Coordinator,
+          Nous.Research.Planner,
+          Nous.Research.Searcher,
+          Nous.Research.Synthesizer,
+          Nous.Research.Reporter,
+          Nous.Research.Finding,
+          Nous.Research.Report
+        ],
+        "Research Tools": [
+          Nous.Tools.WebFetch,
+          Nous.Tools.Summarize,
+          Nous.Tools.SearchScrape,
+          Nous.Tools.TavilySearch,
+          Nous.Tools.ResearchNotes
         ]
       ]
     ]

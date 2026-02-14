@@ -47,6 +47,26 @@ defmodule Nous do
       agent = Nous.new("ollama:llama2")
       {:ok, result} = Nous.run(agent, "Hello!")
 
+  ## Plugins
+
+  Extend agents with composable plugins:
+
+      agent = Nous.new("openai:gpt-4",
+        plugins: [Nous.Plugins.HumanInTheLoop, Nous.Plugins.Summarization],
+        tools: [&MyTools.send_email/2]
+      )
+
+  ## Deep Research
+
+  Autonomous multi-step research with citations:
+
+      {:ok, report} = Nous.Research.run(
+        "Best practices for Elixir deployment",
+        model: "openai:gpt-4o",
+        search_tool: &Nous.Tools.BraveSearch.web_search/2
+      )
+      IO.puts(report.content)
+
   """
 
   alias Nous.Agent

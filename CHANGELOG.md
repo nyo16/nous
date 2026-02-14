@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-02-14
+
+### Added
+
+- **Plugin System**: Composable agent extensions via `Nous.Plugin` behaviour
+  - Callbacks: `init/2`, `tools/2`, `system_prompt/2`, `before_request/3`, `after_response/3`
+  - Add `plugins: [MyPlugin]` to any agent for cross-cutting concerns
+  - AgentRunner iterates plugins at each stage of the execution loop
+
+- **Human-in-the-Loop (HITL)**: Approval workflows for sensitive tool calls
+  - `requires_approval: true` on `Nous.Tool` struct
+  - `approval_handler` on `Nous.Agent.Context` for approve/edit/reject decisions
+  - `Nous.Plugins.HumanInTheLoop` for per-tool configuration via deps
+
+- **Sub-Agent System**: Enable agents to delegate tasks to specialized child agents
+  - `Nous.Plugins.SubAgent` provides `delegate_task` tool
+  - Pre-configured agent templates via `deps[:sub_agent_templates]`
+  - Isolated context per sub-agent with shared deps support
+
+- **Conversation Summarization**: Automatic context window management
+  - `Nous.Plugins.Summarization` monitors token usage against configurable threshold
+  - LLM-powered summarization with safe split points (never separates tool_call/tool_result pairs)
+  - Error-resilient: keeps all messages if summarization fails
+
+- **State Persistence**: Save and restore agent conversation state
+  - `Nous.Agent.Context.serialize/1` and `deserialize/1` for JSON-safe round-trips
+  - `Nous.Persistence` behaviour with `save/load/delete/list` callbacks
+  - `Nous.Persistence.ETS` reference implementation
+  - Auto-save hooks on `Nous.AgentServer`
+
+- **Enhanced Supervision**: Production lifecycle management for agents
+  - `Nous.AgentRegistry` for session-based process lookup via Registry
+  - `Nous.AgentDynamicSupervisor` for on-demand agent creation/destruction
+  - Configurable inactivity timeout on `AgentServer` (default: 5 minutes)
+  - Added to `Nous.Application` supervision tree
+
+- **Dangling Tool Call Recovery**: Resilient session resumption
+  - `Nous.Agent.Context.patch_dangling_tool_calls/1` injects synthetic results for interrupted tool calls
+  - Called automatically when continuing from an existing context
+
+- **Deep Research Agent**: Autonomous multi-step research with citations
+  - `Nous.Research.run/2` public API with HITL checkpoints between iterations
+  - Five-phase loop: plan → search → synthesize → evaluate → report
+  - `Nous.Research.Planner` decomposes queries into searchable sub-questions
+  - `Nous.Research.Searcher` runs parallel search agents per sub-question
+  - `Nous.Research.Synthesizer` for deduplication, contradiction detection, gap analysis
+  - `Nous.Research.Reporter` generates markdown reports with inline citations
+  - Progress broadcasting via callbacks and `notify_pid`
+
+- **New Research Tools**:
+  - `Nous.Tools.WebFetch` — URL content extraction with Floki HTML parsing
+  - `Nous.Tools.Summarize` — LLM-powered text summarization focused on research queries
+  - `Nous.Tools.SearchScrape` — Parallel fetch + summarize for multiple URLs
+  - `Nous.Tools.TavilySearch` — Tavily AI search API integration
+  - `Nous.Tools.ResearchNotes` — Structured finding/gap/contradiction tracking via ContextUpdate
+
+- **New Dependency**: `floki ~> 0.36` (optional, for HTML content extraction)
+
+### Changed
+
+- `Nous.Agent` struct now accepts `plugins: [module()]` option
+- `Nous.Tool` struct now accepts `requires_approval: boolean()` option
+- `Nous.Agent.Context` now includes `approval_handler` field
+- `Nous.AgentServer` supports optional `:name` registration and `:persistence` backend
+- `Nous.Application` supervision tree includes AgentRegistry and AgentDynamicSupervisor
+
 ## [0.9.0] - 2026-01-04
 
 ### Added
