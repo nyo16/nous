@@ -42,6 +42,23 @@ All notable changes to this project will be documented in this file.
   - `Nous.Agent.Context.patch_dangling_tool_calls/1` injects synthetic results for interrupted tool calls
   - Called automatically when continuing from an existing context
 
+- **PubSub Abstraction Layer**: Unified `Nous.PubSub` module for all PubSub usage
+  - `Nous.PubSub` wraps Phoenix.PubSub with graceful no-op fallback when unavailable
+  - Application-level configuration via `config :nous, pubsub: MyApp.PubSub`
+  - Topic builders: `agent_topic/1`, `research_topic/1`, `approval_topic/1`
+  - `Nous.Agent.Context` gains `pubsub` and `pubsub_topic` fields (runtime-only, never serialized)
+  - `Nous.Agent.Callbacks.execute/3` now broadcasts via PubSub as a third channel alongside callbacks and `notify_pid`
+  - `AgentServer` refactored to use `Nous.PubSub` — removes ad-hoc `setup_pubsub_functions/0` and `subscribe_fn`/`broadcast_fn` from state
+  - Research Coordinator broadcasts progress via PubSub when `:session_id` is provided
+  - SubAgent plugin propagates parent's PubSub context to child agents
+
+- **Async HITL Approval via PubSub**: `Nous.PubSub.Approval` module
+  - `handler/1` builds an approval handler compatible with `Nous.Plugins.HumanInTheLoop`
+  - Broadcasts `{:approval_required, info}` and blocks via `receive` for response
+  - `respond/4` sends approval decisions from external processes (e.g., LiveView)
+  - Configurable timeout with `:reject` as default on expiry
+  - Enables async approval workflows without synchronous I/O
+
 - **Deep Research Agent**: Autonomous multi-step research with citations
   - `Nous.Research.run/2` public API with HITL checkpoints between iterations
   - Five-phase loop: plan → search → synthesize → evaluate → report
@@ -49,7 +66,7 @@ All notable changes to this project will be documented in this file.
   - `Nous.Research.Searcher` runs parallel search agents per sub-question
   - `Nous.Research.Synthesizer` for deduplication, contradiction detection, gap analysis
   - `Nous.Research.Reporter` generates markdown reports with inline citations
-  - Progress broadcasting via callbacks and `notify_pid`
+  - Progress broadcasting via callbacks, `notify_pid`, and PubSub
 
 - **New Research Tools**:
   - `Nous.Tools.WebFetch` — URL content extraction with Floki HTML parsing
@@ -58,14 +75,18 @@ All notable changes to this project will be documented in this file.
   - `Nous.Tools.TavilySearch` — Tavily AI search API integration
   - `Nous.Tools.ResearchNotes` — Structured finding/gap/contradiction tracking via ContextUpdate
 
-- **New Dependency**: `floki ~> 0.36` (optional, for HTML content extraction)
+- **New Dependencies**:
+  - `floki ~> 0.36` (optional, for HTML content extraction)
+  - `phoenix_pubsub ~> 2.1` (test-only, for PubSub integration tests)
 
 ### Changed
 
 - `Nous.Agent` struct now accepts `plugins: [module()]` option
 - `Nous.Tool` struct now accepts `requires_approval: boolean()` option
-- `Nous.Agent.Context` now includes `approval_handler` field
-- `Nous.AgentServer` supports optional `:name` registration and `:persistence` backend
+- `Nous.Agent.Context` now includes `approval_handler`, `pubsub`, and `pubsub_topic` fields
+- `Nous.AgentServer` supports optional `:name` registration, `:persistence` backend, and uses `Nous.PubSub` (removed ad-hoc `setup_pubsub_functions/0`)
+- `Nous.AgentServer` `:pubsub` option now defaults to `Nous.PubSub.configured_pubsub()` instead of `MyApp.PubSub`
+- `Nous.AgentRunner.build_context/3` accepts `:pubsub` and `:pubsub_topic` options
 - Application supervision tree includes AgentRegistry and AgentDynamicSupervisor
 
 ## [0.9.0] - 2026-01-04

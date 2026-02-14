@@ -318,5 +318,16 @@ defmodule Nous.Research.Coordinator do
       %{on_progress: callback} -> callback.(event)
       _ -> :ok
     end
+
+    # Notify via PubSub
+    case Keyword.get(state.opts, :session_id) do
+      nil ->
+        :ok
+
+      session_id ->
+        pubsub = Keyword.get(state.opts, :pubsub) || Nous.PubSub.configured_pubsub()
+        topic = Nous.PubSub.research_topic(session_id)
+        Nous.PubSub.broadcast(pubsub, topic, event)
+    end
   end
 end

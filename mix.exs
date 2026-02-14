@@ -62,7 +62,8 @@ defmodule Nous.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:mox, "~> 1.1", only: :test}
+      {:mox, "~> 1.1", only: :test},
+      {:phoenix_pubsub, "~> 2.1", only: :test}
     ]
   end
 
@@ -183,6 +184,10 @@ defmodule Nous.MixProject do
           Nous.Plugins.HumanInTheLoop,
           Nous.Plugins.SubAgent,
           Nous.Plugins.Summarization
+        ],
+        PubSub: [
+          Nous.PubSub,
+          Nous.PubSub.Approval
         ],
         Persistence: [
           Nous.Persistence,

@@ -225,4 +225,47 @@ end)
 
 :ets.delete(audit_log)
 
-IO.puts("\n\nNext: mix run examples/12_plugins.exs (coming soon)")
+# ============================================================================
+# Example 4: Async Approval via PubSub (for LiveView)
+# ============================================================================
+
+IO.puts("\n\n--- Example 4: Async PubSub Approval (LiveView pattern) ---\n")
+
+IO.puts("""
+For LiveView or other async approval workflows, use Nous.PubSub.Approval:
+
+  # 1. Configure PubSub in config/config.exs:
+  config :nous, pubsub: MyApp.PubSub
+
+  # 2. Use async approval handler in your agent deps:
+  deps = %{
+    hitl_config: %{
+      tools: ["send_email"],
+      handler: Nous.PubSub.Approval.handler(
+        pubsub: MyApp.PubSub,
+        session_id: session_id,
+        timeout: :timer.minutes(5)
+      )
+    }
+  }
+
+  # 3. In your LiveView, handle the approval request:
+  def handle_info({:approval_required, info}, socket) do
+    # info contains: tool_call_id, name, arguments, session_id
+    {:noreply, assign(socket, pending_approval: info)}
+  end
+
+  # 4. When the user clicks "Approve" or "Reject":
+  def handle_event("approve", _params, socket) do
+    info = socket.assigns.pending_approval
+    Nous.PubSub.Approval.respond(
+      MyApp.PubSub, info.session_id, info.tool_call_id, :approve
+    )
+    {:noreply, assign(socket, pending_approval: nil)}
+  end
+
+The handler blocks (via receive) until a response arrives or timeout.
+On timeout, the tool call is automatically rejected.
+""")
+
+IO.puts("\n\nNext: mix run examples/12_pubsub_agent.exs")

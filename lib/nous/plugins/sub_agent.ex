@@ -41,7 +41,13 @@ defmodule Nous.Plugins.SubAgent do
     # Ensure sub-agent tracking exists
     templates = ctx.deps[:sub_agent_templates] || %{}
 
-    %{ctx | deps: Map.put_new(ctx.deps, :sub_agent_templates, templates)}
+    deps =
+      ctx.deps
+      |> Map.put_new(:sub_agent_templates, templates)
+      |> Map.put(:__sub_agent_pubsub__, ctx.pubsub)
+      |> Map.put(:__sub_agent_pubsub_topic__, ctx.pubsub_topic)
+
+    %{ctx | deps: deps}
   end
 
   @impl true
@@ -150,7 +156,21 @@ defmodule Nous.Plugins.SubAgent do
       shared_keys = Map.get(config, :shared_deps, [])
       sub_deps = Map.take(parent_ctx.deps, shared_keys)
 
-      case Nous.Agent.run(agent, task, deps: sub_deps, max_iterations: 10) do
+      # Propagate PubSub from parent with :sub suffix on topic
+      parent_pubsub = parent_ctx.deps[:__sub_agent_pubsub__]
+      parent_topic = parent_ctx.deps[:__sub_agent_pubsub_topic__]
+
+      sub_topic =
+        if parent_topic, do: "#{parent_topic}:sub", else: nil
+
+      run_opts = [
+        deps: sub_deps,
+        max_iterations: 10,
+        pubsub: parent_pubsub,
+        pubsub_topic: sub_topic
+      ]
+
+      case Nous.Agent.run(agent, task, run_opts) do
         {:ok, result} ->
           Logger.info("Sub-agent completed successfully")
 

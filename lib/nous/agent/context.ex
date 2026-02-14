@@ -77,7 +77,11 @@ defmodule Nous.Agent.Context do
           cancellation_check: (-> :ok | {:error, term()}) | nil,
 
           # Human-in-the-loop
-          approval_handler: (map() -> :approve | {:edit, map()} | :reject) | nil
+          approval_handler: (map() -> :approve | {:edit, map()} | :reject) | nil,
+
+          # PubSub (runtime-only, never serialized)
+          pubsub: module() | nil,
+          pubsub_topic: String.t() | nil
         }
 
   defstruct messages: [],
@@ -93,7 +97,9 @@ defmodule Nous.Agent.Context do
             started_at: nil,
             agent_name: nil,
             cancellation_check: nil,
-            approval_handler: nil
+            approval_handler: nil,
+            pubsub: nil,
+            pubsub_topic: nil
 
   @doc """
   Create a new context with options.
@@ -136,7 +142,9 @@ defmodule Nous.Agent.Context do
       started_at: DateTime.utc_now(),
       agent_name: Keyword.get(opts, :agent_name),
       cancellation_check: Keyword.get(opts, :cancellation_check),
-      approval_handler: Keyword.get(opts, :approval_handler)
+      approval_handler: Keyword.get(opts, :approval_handler),
+      pubsub: Keyword.get(opts, :pubsub) || Nous.PubSub.configured_pubsub(),
+      pubsub_topic: Keyword.get(opts, :pubsub_topic)
     }
   end
 
@@ -542,7 +550,9 @@ defmodule Nous.Agent.Context do
       callbacks: %{},
       notify_pid: nil,
       cancellation_check: nil,
-      approval_handler: nil
+      approval_handler: nil,
+      pubsub: nil,
+      pubsub_topic: nil
     }
 
     {:ok, ctx}

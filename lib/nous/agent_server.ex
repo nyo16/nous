@@ -83,13 +83,11 @@ defmodule Nous.AgentServer do
           session_id: String.t(),
           agent: Nous.Agent.t(),
           context: Context.t(),
-          pubsub: module(),
+          pubsub: module() | nil,
           topic: String.t(),
           agent_type: :standard | :react,
           current_task: Task.t() | nil,
-          cancelled: boolean(),
-          subscribe_fn: (any(), String.t() -> :ok | {:error, any()}),
-          broadcast_fn: (any(), String.t(), any() -> :ok | {:error, any()})
+          cancelled: boolean()
         }
 
   # Client API
@@ -207,18 +205,13 @@ defmodule Nous.AgentServer do
   def init(opts) do
     session_id = Keyword.fetch!(opts, :session_id)
     agent_config = Keyword.fetch!(opts, :agent_config)
-    pubsub = Keyword.get(opts, :pubsub, MyApp.PubSub)
+    pubsub = Keyword.get(opts, :pubsub) || Nous.PubSub.configured_pubsub()
     inactivity_timeout = Keyword.get(opts, :inactivity_timeout, @default_inactivity_timeout)
     persistence = Keyword.get(opts, :persistence)
 
     # Subscribe to messages for this session
     topic = "agent:#{session_id}"
-
-    # Set up PubSub functions based on availability
-    {subscribe_fn, broadcast_fn} = setup_pubsub_functions()
-
-    # Subscribe if functions are available
-    subscribe_fn.(pubsub, topic)
+    Nous.PubSub.subscribe(pubsub, topic)
 
     # Create agent based on type
     agent_type = Map.get(agent_config, :type, :standard)
@@ -253,12 +246,15 @@ defmodule Nous.AgentServer do
           loaded_ctx
           |> Context.merge_deps(initial_deps)
           |> Context.patch_dangling_tool_calls()
+          |> Map.merge(%{pubsub: pubsub, pubsub_topic: topic})
 
         _ ->
           Context.new(
             deps: initial_deps,
             system_prompt: Map.get(agent_config, :instructions, ""),
-            agent_name: "agent_server_#{session_id}"
+            agent_name: "agent_server_#{session_id}",
+            pubsub: pubsub,
+            pubsub_topic: topic
           )
       end
 
@@ -276,8 +272,6 @@ defmodule Nous.AgentServer do
       agent_type: agent_type,
       current_task: nil,
       cancelled: false,
-      subscribe_fn: subscribe_fn,
-      broadcast_fn: broadcast_fn,
       inactivity_timeout: inactivity_timeout,
       inactivity_timer_ref: inactivity_timer_ref,
       persistence: persistence
@@ -654,39 +648,6 @@ defmodule Nous.AgentServer do
   end
 
   defp broadcast(state, message) do
-    state.broadcast_fn.(state.pubsub, state.topic, message)
-  end
-
-  # Set up PubSub functions based on Phoenix.PubSub availability
-  defp setup_pubsub_functions do
-    if Code.ensure_loaded?(Phoenix.PubSub) do
-      # Phoenix.PubSub is available, use real functions with apply/3 to avoid compile-time warnings
-      subscribe_fn = fn pubsub, topic ->
-        try do
-          apply(Phoenix.PubSub, :subscribe, [pubsub, topic])
-        catch
-          # Handle case where pubsub module doesn't exist
-          :error, :undef -> :ok
-          :error, _ -> :ok
-        end
-      end
-
-      broadcast_fn = fn pubsub, topic, message ->
-        try do
-          apply(Phoenix.PubSub, :broadcast, [pubsub, topic, message])
-        catch
-          # Handle case where pubsub module doesn't exist
-          :error, :undef -> :ok
-          :error, _ -> :ok
-        end
-      end
-
-      {subscribe_fn, broadcast_fn}
-    else
-      # Phoenix.PubSub not available, use no-op functions
-      no_op = fn _, _ -> :ok end
-      no_op_broadcast = fn _, _, _ -> :ok end
-      {no_op, no_op_broadcast}
-    end
+    Nous.PubSub.broadcast(state.pubsub, state.topic, message)
   end
 end

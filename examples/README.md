@@ -30,6 +30,8 @@ Progressive learning path from basics to advanced features:
 | [08_tool_testing.exs](https://github.com/nyo16/nous/blob/master/examples/08_tool_testing.exs) | Mock tools, spy tools, and test helpers |
 | [09_agent_server.exs](https://github.com/nyo16/nous/blob/master/examples/09_agent_server.exs) | GenServer-based agent with PubSub |
 | [10_react_agent.exs](https://github.com/nyo16/nous/blob/master/examples/10_react_agent.exs) | ReAct pattern for complex reasoning |
+| [11_human_in_the_loop.exs](https://github.com/nyo16/nous/blob/master/examples/11_human_in_the_loop.exs) | HITL approval workflows (sync + async PubSub) |
+| [12_pubsub_agent.exs](https://github.com/nyo16/nous/blob/master/examples/12_pubsub_agent.exs) | PubSub agent lifecycle, registry, persistence |
 
 ## Provider Examples
 

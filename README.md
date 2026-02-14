@@ -294,6 +294,24 @@ agent = Nous.new("openai:gpt-4",
 )
 ```
 
+#### Async Approval via PubSub
+
+For LiveView or other async approval workflows:
+
+```elixir
+# Configure PubSub once in config/config.exs
+config :nous, pubsub: MyApp.PubSub
+
+# Use async approval handler
+deps = %{hitl_config: %{
+  tools: ["send_email"],
+  handler: Nous.PubSub.Approval.handler(session_id: session_id, timeout: :timer.minutes(5))
+}}
+
+# In LiveView: handle {:approval_required, info} and call
+# Nous.PubSub.Approval.respond(MyApp.PubSub, session_id, tool_call_id, :approve)
+```
+
 ### Sub-Agent Delegation
 
 Enable agents to delegate tasks to specialized child agents:
@@ -468,12 +486,13 @@ Nous.new/2 → Agent struct
     ↓
 Nous.run/3 → AgentRunner
     ↓
-├─→ Context (messages, deps, callbacks)
+├─→ Context (messages, deps, callbacks, pubsub)
 ├─→ Behaviour (BasicAgent | ReActAgent | custom)
 ├─→ Plugins (HITL, Summarization, SubAgent, ...)
 ├─→ ModelDispatcher → Provider → HTTP
 ├─→ ToolExecutor (timeout, validation, approval)
-├─→ Callbacks (map | notify_pid)
+├─→ Callbacks (map | notify_pid | PubSub)
+├─→ PubSub (Nous.PubSub → Phoenix.PubSub, optional)
 ├─→ Persistence (ETS | custom backend)
 └─→ Research (Planner → Searcher → Synthesizer → Reporter)
 ```

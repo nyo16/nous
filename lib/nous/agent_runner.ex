@@ -277,7 +277,9 @@ defmodule Nous.AgentRunner do
           callbacks: Keyword.get(opts, :callbacks, %{}),
           notify_pid: Keyword.get(opts, :notify_pid),
           agent_name: agent.name,
-          cancellation_check: Keyword.get(opts, :cancellation_check)
+          cancellation_check: Keyword.get(opts, :cancellation_check),
+          pubsub: Keyword.get(opts, :pubsub),
+          pubsub_topic: Keyword.get(opts, :pubsub_topic)
         )
     end
   end

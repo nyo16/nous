@@ -1,7 +1,7 @@
 #!/usr/bin/env elixir
 
 # Nous AI - PubSub Agent Communication
-# Full agent lifecycle managed via Phoenix.PubSub
+# Full agent lifecycle managed via Nous.PubSub (wraps Phoenix.PubSub)
 #
 # This example shows how to:
 #   1. Start supervised agents via AgentDynamicSupervisor
@@ -14,6 +14,12 @@
 #
 # NOTE: This example requires phoenix_pubsub:
 #   {:phoenix_pubsub, "~> 2.1"}
+#
+# Configuration (in config/config.exs):
+#   config :nous, pubsub: MyApp.PubSub
+#
+# With this config, all AgentServers and Callbacks automatically
+# broadcast events via PubSub without passing pubsub: to each call.
 #
 # For demonstration, we simulate PubSub with a simple process-based approach
 # that mirrors the real Phoenix.PubSub API.
@@ -304,19 +310,50 @@ defmodule MyAppWeb.ChatLive do
     {:noreply, assign(socket, messages: messages, loading: false)}
   end
 
-  # Agent needs approval -> show dialog
-  def handle_info({:approval_required, tool_call}, socket) do
-    {:noreply, assign(socket, pending_approval: tool_call)}
+  # Agent needs approval -> show dialog (via Nous.PubSub.Approval)
+  def handle_info({:approval_required, info}, socket) do
+    {:noreply, assign(socket, pending_approval: info)}
+  end
+
+  # User approves or rejects
+  def handle_event("approve_tool", _params, socket) do
+    info = socket.assigns.pending_approval
+    Nous.PubSub.Approval.respond(
+      MyApp.PubSub, info.session_id, info.tool_call_id, :approve
+    )
+    {:noreply, assign(socket, pending_approval: nil)}
+  end
+
+  def handle_event("reject_tool", _params, socket) do
+    info = socket.assigns.pending_approval
+    Nous.PubSub.Approval.respond(
+      MyApp.PubSub, info.session_id, info.tool_call_id, :reject
+    )
+    {:noreply, assign(socket, pending_approval: nil)}
   end
 end
 ```
 
+To enable async approval, configure HITL with Nous.PubSub.Approval:
+```elixir
+deps = %{hitl_config: %{
+  tools: ["send_email"],
+  handler: Nous.PubSub.Approval.handler(
+    pubsub: MyApp.PubSub,
+    session_id: session_id,
+    timeout: :timer.minutes(5)
+  )
+}}
+```
+
 Key points:
+  - Configure PubSub once: `config :nous, pubsub: MyApp.PubSub`
   - All communication goes through PubSub topics ("agent:{session_id}")
   - No direct PID references in the LiveView
   - AgentRegistry handles lookup by session_id
   - Persistence auto-saves after each response
   - Agent survives LiveView reconnects (supervised)
+  - Async HITL approval via Nous.PubSub.Approval
 """)
 
 # ============================================================================

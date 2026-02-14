@@ -12,13 +12,14 @@ IO.puts("=== Nous AI - AgentServer Demo ===\n")
 IO.puts("--- Basic AgentServer ---")
 
 # Start an AgentServer
-{:ok, pid} = Nous.AgentServer.start_link(
-  agent_config: %{
-    model: "lmstudio:qwen3",
-    instructions: "You are a helpful assistant. Remember our conversation."
-  },
-  session_id: "demo-session-001"
-)
+{:ok, pid} =
+  Nous.AgentServer.start_link(
+    agent_config: %{
+      model: "lmstudio:qwen3",
+      instructions: "You are a helpful assistant. Remember our conversation."
+    },
+    session_id: "demo-session-001"
+  )
 
 IO.puts("Started AgentServer: #{inspect(pid)}")
 
@@ -50,7 +51,6 @@ defmodule EventReceiver do
       {:agent_error, error} ->
         IO.puts("\n[Error: #{inspect(error)}]")
         :error
-
     after
       30_000 ->
         IO.puts("\n[Timeout]")
@@ -81,14 +81,15 @@ get_time = fn _ctx, _args ->
   %{time: DateTime.utc_now() |> DateTime.to_string()}
 end
 
-{:ok, pid2} = Nous.AgentServer.start_link(
-  agent_config: %{
-    model: "lmstudio:qwen3",
-    instructions: "You have a time tool. Use it when asked about time.",
-    tools: [get_time]
-  },
-  session_id: "tools-session"
-)
+{:ok, pid2} =
+  Nous.AgentServer.start_link(
+    agent_config: %{
+      model: "lmstudio:qwen3",
+      instructions: "You have a time tool. Use it when asked about time.",
+      tools: [get_time]
+    },
+    session_id: "tools-session"
+  )
 
 Nous.AgentServer.subscribe(pid2)
 Nous.AgentServer.send_message(pid2, "What time is it?")
@@ -101,18 +102,26 @@ EventReceiver.receive_until_complete()
 IO.puts("""
 --- Phoenix LiveView Integration ---
 
-In a Phoenix application, AgentServer integrates with PubSub:
+In a Phoenix application, AgentServer integrates with Nous.PubSub.
+
+# Configure once in config/config.exs:
+#   config :nous, pubsub: MyApp.PubSub
 
 # In your LiveView
 def mount(_params, %{"user_id" => user_id}, socket) do
-  # Start or lookup existing agent server
-  {:ok, pid} = AgentRegistry.get_or_start(user_id, %{
-    model: "anthropic:claude-sonnet-4-5-20250929",
-    instructions: "You are a helpful assistant."
-  })
+  session_id = user_id
 
-  # Subscribe to agent events
-  Nous.AgentServer.subscribe(pid)
+  # Subscribe to agent events via Nous.PubSub
+  Nous.PubSub.subscribe(MyApp.PubSub, "agent:\#{session_id}")
+
+  # Start agent - pubsub auto-configured from app config
+  {:ok, pid} = Nous.AgentServer.start_link(
+    session_id: session_id,
+    agent_config: %{
+      model: "anthropic:claude-sonnet-4-5-20250929",
+      instructions: "You are a helpful assistant."
+    }
+  )
 
   {:ok, assign(socket, agent: pid, messages: [])}
 end

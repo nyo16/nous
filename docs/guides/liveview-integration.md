@@ -944,6 +944,96 @@ end
 
 ---
 
+## Nous.PubSub Integration
+
+Nous provides a built-in PubSub abstraction (`Nous.PubSub`) that unifies all agent event broadcasting. Configure it once and all `AgentServer` instances, `Callbacks`, and Research Coordinator will broadcast events automatically.
+
+### Configuration
+
+```elixir
+# config/config.exs
+config :nous, pubsub: MyApp.PubSub
+```
+
+With this configuration, you no longer need to pass `pubsub: MyApp.PubSub` to every `AgentServer` — it's read automatically.
+
+### Using AgentServer with Nous.PubSub
+
+```elixir
+defmodule MyAppWeb.ChatLive do
+  use Phoenix.LiveView
+
+  def mount(%{"session_id" => session_id}, _session, socket) do
+    if connected?(socket) do
+      # Subscribe to agent events (topic: "agent:{session_id}")
+      Nous.PubSub.subscribe(MyApp.PubSub, "agent:#{session_id}")
+    end
+
+    # pubsub defaults to Nous.PubSub.configured_pubsub()
+    {:ok, pid} = Nous.AgentServer.start_link(
+      session_id: session_id,
+      agent_config: %{model: "openai:gpt-4", instructions: "Be helpful."}
+    )
+
+    {:ok, assign(socket, agent: pid, session_id: session_id)}
+  end
+
+  # Events arrive automatically via PubSub
+  def handle_info({:agent_delta, text}, socket), do: ...
+  def handle_info({:agent_complete, result}, socket), do: ...
+  def handle_info({:tool_call, call}, socket), do: ...
+end
+```
+
+### Async HITL Approval
+
+For tools that require human approval, `Nous.PubSub.Approval` provides an async approval handler compatible with `Nous.Plugins.HumanInTheLoop`:
+
+```elixir
+# In your agent setup:
+deps = %{
+  hitl_config: %{
+    tools: ["send_email", "delete_record"],
+    handler: Nous.PubSub.Approval.handler(
+      session_id: session_id,
+      timeout: :timer.minutes(5)
+    )
+  }
+}
+
+# In your LiveView:
+def handle_info({:approval_required, info}, socket) do
+  # info: %{tool_call_id: ..., name: ..., arguments: ..., session_id: ...}
+  {:noreply, assign(socket, pending_approval: info)}
+end
+
+def handle_event("approve", _params, socket) do
+  info = socket.assigns.pending_approval
+  Nous.PubSub.Approval.respond(MyApp.PubSub, info.session_id, info.tool_call_id, :approve)
+  {:noreply, assign(socket, pending_approval: nil)}
+end
+
+def handle_event("reject", _params, socket) do
+  info = socket.assigns.pending_approval
+  Nous.PubSub.Approval.respond(MyApp.PubSub, info.session_id, info.tool_call_id, :reject)
+  {:noreply, assign(socket, pending_approval: nil)}
+end
+```
+
+### Topic Builders
+
+Nous provides standardized topic builders:
+
+| Function | Topic Format | Used By |
+|----------|-------------|---------|
+| `Nous.PubSub.agent_topic(id)` | `"nous:agent:{id}"` | Agent events |
+| `Nous.PubSub.research_topic(id)` | `"nous:research:{id}"` | Research progress |
+| `Nous.PubSub.approval_topic(id)` | `"nous:approval:{id}"` | HITL responses |
+
+Note: `AgentServer` uses the topic `"agent:{session_id}"` (without the `nous:` prefix) for backward compatibility.
+
+---
+
 ## PubSub Multi-User Coordination
 
 ### Room-Based Chat with AI Moderation
