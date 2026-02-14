@@ -320,7 +320,7 @@ defmodule Nous.Eval.Metrics.Summary do
   defp percentile(list, p) when p >= 0 and p <= 100 do
     sorted = Enum.sort(list)
     n = length(sorted)
-    k = (p / 100) * (n - 1)
+    k = p / 100 * (n - 1)
     f = floor(k)
     c = ceil(k)
 

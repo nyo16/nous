@@ -62,9 +62,7 @@ defmodule Nous.Eval.Agents.ContextTest do
 
       # Second turn - test recall
       {:ok, result2} =
-        Nous.run(agent, "What is my favorite color?",
-          message_history: result1.messages
-        )
+        Nous.run(agent, "What is my favorite color?", message_history: result1.messages)
 
       output = String.downcase(result2.output || "")
 
@@ -150,7 +148,9 @@ defmodule Nous.Eval.Agents.ContextTest do
              "Expected responses from both turns"
 
       if not has_pirate_speak do
-        IO.puts("[Context 4.6] Note: Model didn't maintain pirate persona (common with smaller models)")
+        IO.puts(
+          "[Context 4.6] Note: Model didn't maintain pirate persona (common with smaller models)"
+        )
       end
     end
   end
@@ -243,6 +243,7 @@ defmodule Nous.Eval.Agents.ContextTest do
       IO.puts("\n[Context 4.9] Output: #{inspect(result.output)}")
 
       output = String.downcase(result.output || "")
+
       assert String.contains?(output, "fluffy"),
              "Expected model to recall 'Fluffy' from history"
     end

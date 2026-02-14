@@ -22,7 +22,8 @@ defmodule Nous.StreamNormalizer.Mistral do
         [{:finish, reason}]
 
       # Already a tuple event, pass through
-      {event_type, _} = event when event_type in [:text_delta, :tool_call_delta, :thinking_delta, :error] ->
+      {event_type, _} = event
+      when event_type in [:text_delta, :tool_call_delta, :thinking_delta, :error] ->
         [event]
 
       # Parsed JSON chunk

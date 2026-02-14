@@ -256,8 +256,7 @@ defmodule Nous.Eval.Evaluators.ToolUsage do
       if mismatches == [] do
         {true, nil, %{}}
       else
-        {false, "Tool argument mismatches: #{inspect(mismatches)}",
-         %{arg_mismatches: mismatches}}
+        {false, "Tool argument mismatches: #{inspect(mismatches)}", %{arg_mismatches: mismatches}}
       end
     end
   end
@@ -284,7 +283,8 @@ defmodule Nous.Eval.Evaluators.ToolUsage do
     end
   end
 
-  defp args_match?(actual_args, expected_args) when is_map(actual_args) and is_map(expected_args) do
+  defp args_match?(actual_args, expected_args)
+       when is_map(actual_args) and is_map(expected_args) do
     Enum.all?(expected_args, fn {key, value} ->
       actual_value = Map.get(actual_args, key) || Map.get(actual_args, to_string(key))
       actual_value == value

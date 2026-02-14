@@ -82,7 +82,8 @@ defmodule Nous.Provider do
     * `{:ok, stream}` - Enumerable of parsed events
     * `{:error, reason}` - Error with reason
   """
-  @callback chat_stream(params :: map(), opts :: keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
+  @callback chat_stream(params :: map(), opts :: keyword()) ::
+              {:ok, Enumerable.t()} | {:error, term()}
 
   @doc """
   High-level request with message conversion, telemetry, and error wrapping.
@@ -222,19 +223,22 @@ defmodule Nous.Provider do
         opts = build_provider_opts(model)
 
         # Make request
-        result = case chat(params, opts) do
-          {:ok, response} ->
-            parsed = Nous.Messages.from_provider_response(response, @provider_id)
-            {:ok, parsed}
+        result =
+          case chat(params, opts) do
+            {:ok, response} ->
+              parsed = Nous.Messages.from_provider_response(response, @provider_id)
+              {:ok, parsed}
 
-          {:error, error} ->
-            wrapped_error = Nous.Errors.ProviderError.exception(
-              provider: @provider_id,
-              message: "Request failed: #{inspect(error)}",
-              details: error
-            )
-            {:error, wrapped_error}
-        end
+            {:error, error} ->
+              wrapped_error =
+                Nous.Errors.ProviderError.exception(
+                  provider: @provider_id,
+                  message: "Request failed: #{inspect(error)}",
+                  details: error
+                )
+
+              {:error, wrapped_error}
+          end
 
         # Emit telemetry
         duration = System.monotonic_time() - start_time
@@ -242,11 +246,12 @@ defmodule Nous.Provider do
         case result do
           {:ok, parsed_response} ->
             # Extract usage - handle both Usage struct and map
-            usage = case parsed_response.metadata do
-              %{usage: %Nous.Usage{} = u} -> u
-              %{usage: u} when is_map(u) -> u
-              _ -> %{}
-            end
+            usage =
+              case parsed_response.metadata do
+                %{usage: %Nous.Usage{} = u} -> u
+                %{usage: u} when is_map(u) -> u
+                _ -> %{}
+              end
 
             :telemetry.execute(
               [:nous, :provider, :request, :stop],
@@ -334,11 +339,13 @@ defmodule Nous.Provider do
               }
             )
 
-            wrapped_error = Nous.Errors.ProviderError.exception(
-              provider: @provider_id,
-              message: "Streaming request failed: #{inspect(error)}",
-              details: error
-            )
+            wrapped_error =
+              Nous.Errors.ProviderError.exception(
+                provider: @provider_id,
+                message: "Streaming request failed: #{inspect(error)}",
+                details: error
+              )
+
             {:error, wrapped_error}
         end
       end
@@ -369,10 +376,11 @@ defmodule Nous.Provider do
         provider_messages = Nous.Messages.to_provider_format(messages, @provider_id)
 
         # Handle providers that return {system, messages} vs just messages
-        {system_prompt, formatted_messages} = case provider_messages do
-          {sys, msgs} -> {sys, msgs}
-          msgs when is_list(msgs) -> {nil, msgs}
-        end
+        {system_prompt, formatted_messages} =
+          case provider_messages do
+            {sys, msgs} -> {sys, msgs}
+            msgs when is_list(msgs) -> {nil, msgs}
+          end
 
         # Build base parameters
         base_params = %{
@@ -381,11 +389,12 @@ defmodule Nous.Provider do
         }
 
         # Add system prompt if present (for Anthropic/Gemini style)
-        base_params = if system_prompt do
-          Map.put(base_params, "system", system_prompt)
-        else
-          base_params
-        end
+        base_params =
+          if system_prompt do
+            Map.put(base_params, "system", system_prompt)
+          else
+            base_params
+          end
 
         # Add optional parameters
         base_params
@@ -411,8 +420,12 @@ defmodule Nous.Provider do
         end
       end
 
-      defoverridable [count_tokens: 1, request: 3, request_stream: 3,
-                      build_request_params: 3, build_provider_opts: 1, default_stream_normalizer: 0]
+      defoverridable count_tokens: 1,
+                     request: 3,
+                     request_stream: 3,
+                     build_request_params: 3,
+                     build_provider_opts: 1,
+                     default_stream_normalizer: 0
     end
   end
 end

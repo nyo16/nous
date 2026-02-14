@@ -13,7 +13,8 @@ defmodule Nous.AgentFunctionalTest do
 
   @fixtures %{
     error_handling: %{
-      output: "The flaky tool was successfully used with `should_fail=false`. The operation completed successfully.",
+      output:
+        "The flaky tool was successfully used with `should_fail=false`. The operation completed successfully.",
       usage: %Nous.Usage{
         requests: 2,
         tool_calls: 1,
@@ -24,7 +25,8 @@ defmodule Nous.AgentFunctionalTest do
       scenario: "tool_success"
     },
     simple_response: %{
-      output: "Elixir is a dynamic, functional programming language designed for building scalable and maintainable applications. It runs on the Erlang Virtual Machine (BEAM), which provides fault tolerance, concurrency, and distributed computing capabilities. Elixir is often used for web development, real-time systems, and distributed applications, particularly in domains like telecommunications, financial services, and IoT. Its syntax is influenced by Ruby, making it approachable for developers familiar with that language.",
+      output:
+        "Elixir is a dynamic, functional programming language designed for building scalable and maintainable applications. It runs on the Erlang Virtual Machine (BEAM), which provides fault tolerance, concurrency, and distributed computing capabilities. Elixir is often used for web development, real-time systems, and distributed applications, particularly in domains like telecommunications, financial services, and IoT. Its syntax is influenced by Ruby, making it approachable for developers familiar with that language.",
       usage: %Nous.Usage{
         requests: 1,
         tool_calls: 0,
@@ -36,7 +38,8 @@ defmodule Nous.AgentFunctionalTest do
       message_count: 3
     },
     tool_call_response: %{
-      output: "Elixir is a dynamic, functional programming language designed for building scalable and maintainable applications. It runs on the Erlang Virtual Machine (BEAM), which provides features like fault tolerance, hot code swapping, and distributed computing. Elixir is commonly used for web development, real-time systems, and distributed applications. Its syntax is influenced by Ruby, making it easy to learn for developers familiar with that language.",
+      output:
+        "Elixir is a dynamic, functional programming language designed for building scalable and maintainable applications. It runs on the Erlang Virtual Machine (BEAM), which provides features like fault tolerance, hot code swapping, and distributed computing. Elixir is commonly used for web development, real-time systems, and distributed applications. Its syntax is influenced by Ruby, making it easy to learn for developers familiar with that language.",
       usage: %Nous.Usage{
         requests: 2,
         tool_calls: 1,
@@ -77,10 +80,11 @@ defmodule Nous.AgentFunctionalTest do
   describe "simple agent responses" do
     @tag :requires_lmstudio
     test "agent provides informative response" do
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "You are a helpful assistant. Be concise.",
-        model_settings: %{temperature: 0.7, max_tokens: 100}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "You are a helpful assistant. Be concise.",
+          model_settings: %{temperature: 0.7, max_tokens: 100}
+        )
 
       {:ok, result} = Agent.run(agent, "What is Elixir?", max_iterations: 1)
 
@@ -105,10 +109,11 @@ defmodule Nous.AgentFunctionalTest do
 
     @tag :requires_lmstudio
     test "agent response contains expected content" do
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "You are a helpful assistant.",
-        model_settings: %{temperature: 0.5}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "You are a helpful assistant.",
+          model_settings: %{temperature: 0.5}
+        )
 
       {:ok, result} = Agent.run(agent, "What is 2 + 2?", max_iterations: 1)
 
@@ -120,27 +125,31 @@ defmodule Nous.AgentFunctionalTest do
   describe "tool calling" do
     @tag :requires_lmstudio
     test "agent uses tool when needed" do
-      search_tool = Tool.from_function(
-        fn _ctx, args ->
-          # Extract query from args flexibly
-          query = Map.get(args, "query", Map.get(args, "search_query", "elixir"))
-          "Found 3 results for '#{query}': Result 1, Result 2, Result 3"
-        end,
-        name: "search",
-        description: "Search for information"
-      )
+      search_tool =
+        Tool.from_function(
+          fn _ctx, args ->
+            # Extract query from args flexibly
+            query = Map.get(args, "query", Map.get(args, "search_query", "elixir"))
+            "Found 3 results for '#{query}': Result 1, Result 2, Result 3"
+          end,
+          name: "search",
+          description: "Search for information"
+        )
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "You have access to a search tool. Use it to answer questions.",
-        tools: [search_tool],
-        model_settings: %{temperature: 0.5, max_tokens: 200}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "You have access to a search tool. Use it to answer questions.",
+          tools: [search_tool],
+          model_settings: %{temperature: 0.5, max_tokens: 200}
+        )
 
-      {:ok, result} = Agent.run(agent, "Search for Elixir programming language", max_iterations: 5)
+      {:ok, result} =
+        Agent.run(agent, "Search for Elixir programming language", max_iterations: 5)
 
       # Verify tool was called
       assert result.usage.tool_calls >= 1
-      assert result.usage.requests >= 2  # Initial + after tool
+      # Initial + after tool
+      assert result.usage.requests >= 2
 
       # Response should incorporate tool results
       assert is_binary(result.output)
@@ -153,28 +162,32 @@ defmodule Nous.AgentFunctionalTest do
 
     @tag :requires_lmstudio
     test "agent uses multiple tools" do
-      calculator = Tool.from_function(
-        fn _ctx, _args ->
-          # Handle any arguments flexibly
-          "4"  # Always return 4 for testing
-        end,
-        name: "calculator",
-        description: "Calculate mathematical expressions"
-      )
+      calculator =
+        Tool.from_function(
+          fn _ctx, _args ->
+            # Handle any arguments flexibly
+            # Always return 4 for testing
+            "4"
+          end,
+          name: "calculator",
+          description: "Calculate mathematical expressions"
+        )
 
-      get_time = Tool.from_function(
-        fn _ctx, %{} ->
-          "Current time: 2025-10-20 15:30:00 UTC"
-        end,
-        name: "get_time",
-        description: "Get current time"
-      )
+      get_time =
+        Tool.from_function(
+          fn _ctx, %{} ->
+            "Current time: 2025-10-20 15:30:00 UTC"
+          end,
+          name: "get_time",
+          description: "Get current time"
+        )
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "You have calculator and time tools. Use them when needed.",
-        tools: [calculator, get_time],
-        model_settings: %{temperature: 0.5, max_tokens: 200}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "You have calculator and time tools. Use them when needed.",
+          tools: [calculator, get_time],
+          model_settings: %{temperature: 0.5, max_tokens: 200}
+        )
 
       {:ok, result} = Agent.run(agent, "What time is it and what is 2 + 2?", max_iterations: 5)
 
@@ -194,10 +207,12 @@ defmodule Nous.AgentFunctionalTest do
   describe "conversation history" do
     @tag :requires_lmstudio
     test "agent maintains context across messages" do
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "You are a helpful assistant. Always respond with complete sentences. Never return empty responses.",
-        model_settings: %{temperature: 0.7, max_tokens: 100}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions:
+            "You are a helpful assistant. Always respond with complete sentences. Never return empty responses.",
+          model_settings: %{temperature: 0.7, max_tokens: 100}
+        )
 
       # First message
       {:ok, result1} = Agent.run(agent, "My favorite color is blue", max_iterations: 1)
@@ -205,10 +220,11 @@ defmodule Nous.AgentFunctionalTest do
       assert String.length(result1.output) > 0
 
       # Second message with history - ask a different question
-      {:ok, result2} = Agent.run(agent, "What did I just tell you about?",
-        message_history: result1.new_messages,
-        max_iterations: 1
-      )
+      {:ok, result2} =
+        Agent.run(agent, "What did I just tell you about?",
+          message_history: result1.new_messages,
+          max_iterations: 1
+        )
 
       # Should have a response (model might not remember perfectly, but should respond)
       assert is_binary(result2.output)
@@ -235,19 +251,21 @@ defmodule Nous.AgentFunctionalTest do
   describe "error handling and tool failures" do
     @tag :requires_lmstudio
     test "agent handles tool success gracefully" do
-      reliable_tool = Tool.from_function(
-        fn _ctx, %{} ->
-          "Success"
-        end,
-        name: "reliable_tool",
-        description: "A tool that always succeeds"
-      )
+      reliable_tool =
+        Tool.from_function(
+          fn _ctx, %{} ->
+            "Success"
+          end,
+          name: "reliable_tool",
+          description: "A tool that always succeeds"
+        )
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "You have a reliable tool. Use it.",
-        tools: [reliable_tool],
-        model_settings: %{temperature: 0.5, max_tokens: 100}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "You have a reliable tool. Use it.",
+          tools: [reliable_tool],
+          model_settings: %{temperature: 0.5, max_tokens: 100}
+        )
 
       result = Agent.run(agent, "Use the reliable tool", max_iterations: 3)
 
@@ -262,36 +280,41 @@ defmodule Nous.AgentFunctionalTest do
 
     @tag :requires_lmstudio
     test "agent recovers from tool errors" do
-      flaky_tool = Tool.from_function(
-        fn _ctx, %{} ->
-          # Random success/failure
-          if :rand.uniform(2) == 1 do
-            "Success"
-          else
-            raise "Simulated error"
-          end
-        end,
-        name: "flaky_tool",
-        description: "A tool that might fail",
-        retries: 2  # Allow retries
-      )
+      flaky_tool =
+        Tool.from_function(
+          fn _ctx, %{} ->
+            # Random success/failure
+            if :rand.uniform(2) == 1 do
+              "Success"
+            else
+              raise "Simulated error"
+            end
+          end,
+          name: "flaky_tool",
+          description: "A tool that might fail",
+          # Allow retries
+          retries: 2
+        )
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "You have a flaky tool. Try using it and handle any errors gracefully.",
-        tools: [flaky_tool],
-        model_settings: %{temperature: 0.5, max_tokens: 150}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "You have a flaky tool. Try using it and handle any errors gracefully.",
+          tools: [flaky_tool],
+          model_settings: %{temperature: 0.5, max_tokens: 150}
+        )
 
       # Run multiple times to test retry logic
-      results = for _i <- 1..3 do
-        Agent.run(agent, "Use the flaky tool", max_iterations: 5)
-      end
+      results =
+        for _i <- 1..3 do
+          Agent.run(agent, "Use the flaky tool", max_iterations: 5)
+        end
 
       # At least some should succeed (due to retries or luck)
-      successes = Enum.count(results, fn
-        {:ok, _} -> true
-        _ -> false
-      end)
+      successes =
+        Enum.count(results, fn
+          {:ok, _} -> true
+          _ -> false
+        end)
 
       # Should have at least 1 success due to retries
       assert successes >= 1
@@ -301,10 +324,11 @@ defmodule Nous.AgentFunctionalTest do
   describe "usage tracking" do
     @tag :requires_lmstudio
     test "accurately tracks token usage" do
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Be brief.",
-        model_settings: %{temperature: 0.5, max_tokens: 50}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "Be brief.",
+          model_settings: %{temperature: 0.5, max_tokens: 50}
+        )
 
       {:ok, result} = Agent.run(agent, "Hi", max_iterations: 1)
 
@@ -318,17 +342,19 @@ defmodule Nous.AgentFunctionalTest do
 
     @tag :requires_lmstudio
     test "tracks cumulative usage across tool calls" do
-      tool = Tool.from_function(
-        fn _ctx, %{} -> "result" end,
-        name: "test_tool",
-        description: "A test tool"
-      )
+      tool =
+        Tool.from_function(
+          fn _ctx, %{} -> "result" end,
+          name: "test_tool",
+          description: "A test tool"
+        )
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Use the tool.",
-        tools: [tool],
-        model_settings: %{temperature: 0.5}
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "Use the tool.",
+          tools: [tool],
+          model_settings: %{temperature: 0.5}
+        )
 
       {:ok, result} = Agent.run(agent, "Use the test tool", max_iterations: 3)
 
@@ -345,10 +371,11 @@ defmodule Nous.AgentFunctionalTest do
     @tag :requires_lmstudio
     test "respects temperature settings" do
       # Low temperature should be more deterministic
-      agent_deterministic = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Answer briefly.",
-        model_settings: %{temperature: 0.1, max_tokens: 50}
-      )
+      agent_deterministic =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "Answer briefly.",
+          model_settings: %{temperature: 0.1, max_tokens: 50}
+        )
 
       # Run same prompt twice
       {:ok, result1} = Agent.run(agent_deterministic, "What is 2+2?", max_iterations: 1)
@@ -361,15 +388,18 @@ defmodule Nous.AgentFunctionalTest do
 
     @tag :requires_lmstudio
     test "respects max_tokens limit" do
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Be very verbose and detailed.",
-        model_settings: %{temperature: 0.7, max_tokens: 30}  # Very short
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "Be very verbose and detailed.",
+          # Very short
+          model_settings: %{temperature: 0.7, max_tokens: 30}
+        )
 
       {:ok, result} = Agent.run(agent, "Tell me about Elixir", max_iterations: 1)
 
       # Output tokens should be close to max_tokens
-      assert result.usage.output_tokens <= 35  # Allow small variance
+      # Allow small variance
+      assert result.usage.output_tokens <= 35
     end
   end
 end

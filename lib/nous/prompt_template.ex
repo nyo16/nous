@@ -323,20 +323,23 @@ defmodule Nous.PromptTemplate do
   @spec compose([t()], String.t()) :: t()
   def compose(templates, separator \\ "\n") when is_list(templates) do
     # Use the role of the first template
-    role = case templates do
-      [first | _] -> first.role
-      [] -> :user
-    end
+    role =
+      case templates do
+        [first | _] -> first.role
+        [] -> :user
+      end
 
     # Merge all inputs
-    merged_inputs = Enum.reduce(templates, %{}, fn template, acc ->
-      Map.merge(acc, template.inputs)
-    end)
+    merged_inputs =
+      Enum.reduce(templates, %{}, fn template, acc ->
+        Map.merge(acc, template.inputs)
+      end)
 
     # Join all texts
-    combined_text = templates
-    |> Enum.map(& &1.text)
-    |> Enum.join(separator)
+    combined_text =
+      templates
+      |> Enum.map(& &1.text)
+      |> Enum.join(separator)
 
     %__MODULE__{
       text: combined_text,

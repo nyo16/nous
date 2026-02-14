@@ -112,7 +112,9 @@ defmodule Mix.Tasks.Nous.Eval do
       opts[:suite] ->
         # Load specific suite
         case Nous.Eval.Suite.from_yaml(opts[:suite]) do
-          {:ok, suite} -> [suite]
+          {:ok, suite} ->
+            [suite]
+
           {:error, reason} ->
             Mix.shell().error("Failed to load suite: #{inspect(reason)}")
             []
@@ -124,7 +126,9 @@ defmodule Mix.Tasks.Nous.Eval do
 
         if File.dir?(dir) do
           case Nous.Eval.Suite.from_directory(dir) do
-            {:ok, suites} -> suites
+            {:ok, suites} ->
+              suites
+
             {:error, reason} ->
               Mix.shell().error("Failed to load suites: #{inspect(reason)}")
               []

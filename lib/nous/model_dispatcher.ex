@@ -102,7 +102,10 @@ defmodule Nous.ModelDispatcher do
   end
 
   def request_stream(%Model{} = model, messages, settings) do
-    Logger.debug("Routing streaming request to OpenAI-compatible provider for: #{model.provider}:#{model.model}")
+    Logger.debug(
+      "Routing streaming request to OpenAI-compatible provider for: #{model.provider}:#{model.model}"
+    )
+
     Providers.OpenAICompatible.request_stream(model, messages, settings)
   end
 

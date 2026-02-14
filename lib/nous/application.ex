@@ -22,7 +22,10 @@ defmodule Nous.Application do
          "http://localhost:11434" => [size: 5],
          # Local LM Studio
          "http://localhost:1234" => [size: 5]
-       }}
+       }},
+      # Agent process registry and dynamic supervisor
+      Nous.AgentRegistry,
+      Nous.AgentDynamicSupervisor
     ]
 
     opts = [strategy: :one_for_one, name: Nous.Supervisor]

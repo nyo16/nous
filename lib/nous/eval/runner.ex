@@ -324,8 +324,7 @@ defmodule Nous.Eval.Runner do
         score: eval_result.score,
         actual_output: output,
         expected_output: test_case.expected,
-        evaluation_details:
-          Map.put(eval_result.details, :reason, eval_result.reason),
+        evaluation_details: Map.put(eval_result.details, :reason, eval_result.reason),
         metrics: metrics,
         duration_ms: duration_ms,
         agent_result: agent_result

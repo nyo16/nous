@@ -44,7 +44,8 @@ defmodule Nous.Providers.LMStudio do
 
   alias Nous.Providers.HTTP
 
-  @default_timeout 120_000  # Local models may be slower
+  # Local models may be slower
+  @default_timeout 120_000
   @streaming_timeout 300_000
 
   @impl Nous.Provider

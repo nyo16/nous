@@ -37,7 +37,8 @@ defmodule Nous.Tool do
           retries: non_neg_integer(),
           timeout: non_neg_integer() | nil,
           validate_args: boolean(),
-          module: module() | nil
+          module: module() | nil,
+          requires_approval: boolean()
         }
 
   @enforce_keys [:name, :function]
@@ -50,7 +51,8 @@ defmodule Nous.Tool do
     takes_ctx: true,
     retries: 1,
     timeout: 30_000,
-    validate_args: true
+    validate_args: true,
+    requires_approval: false
   ]
 
   @doc """
@@ -67,6 +69,7 @@ defmodule Nous.Tool do
     * `:retries` - Number of retries on failure (default: 1)
     * `:timeout` - Timeout in milliseconds (default: 30000)
     * `:validate_args` - Whether to validate arguments against schema (default: true)
+    * `:requires_approval` - Whether tool needs human approval before execution (default: false)
 
   ## Examples
 
@@ -95,8 +98,9 @@ defmodule Nous.Tool do
     function_name = get_function_name(fun)
 
     # Try to extract documentation
-    {description, param_schema} = extract_function_docs(fun) ||
-                                   {Keyword.get(opts, :description, ""), default_schema()}
+    {description, param_schema} =
+      extract_function_docs(fun) ||
+        {Keyword.get(opts, :description, ""), default_schema()}
 
     %__MODULE__{
       name: Keyword.get(opts, :name, function_name),
@@ -107,6 +111,7 @@ defmodule Nous.Tool do
       retries: Keyword.get(opts, :retries, 1),
       timeout: Keyword.get(opts, :timeout, 30_000),
       validate_args: Keyword.get(opts, :validate_args, true),
+      requires_approval: Keyword.get(opts, :requires_approval, false),
       module: nil
     }
   end
@@ -125,6 +130,7 @@ defmodule Nous.Tool do
     * `:retries` - Number of retries on failure (default: 1)
     * `:timeout` - Timeout in milliseconds (default: 30000)
     * `:validate_args` - Whether to validate arguments (default: true)
+    * `:requires_approval` - Whether tool needs human approval before execution (default: false)
 
   ## Example
 
@@ -189,6 +195,7 @@ defmodule Nous.Tool do
       retries: Keyword.get(opts, :retries, 1),
       timeout: Keyword.get(opts, :timeout, 30_000),
       validate_args: Keyword.get(opts, :validate_args, true),
+      requires_approval: Keyword.get(opts, :requires_approval, false),
       module: module
     }
   end
@@ -230,6 +237,7 @@ defmodule Nous.Tool do
     case info[:name] do
       name when is_atom(name) ->
         Atom.to_string(name)
+
       _ ->
         "anonymous_function"
     end
@@ -244,9 +252,11 @@ defmodule Nous.Tool do
         case Code.fetch_docs(module) do
           {:docs_v1, _, _, _, _, _, docs} ->
             find_function_doc(docs, name, arity)
+
           _ ->
             nil
         end
+
       _ ->
         nil
     end

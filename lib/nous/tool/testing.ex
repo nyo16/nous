@@ -124,15 +124,16 @@ defmodule Nous.Tool.Testing do
 
     {:ok, agent} = Agent.start_link(fn -> [] end)
 
-    tool = Tool.from_function(
-      fn ctx, args ->
-        Agent.update(agent, fn calls -> [{ctx, args} | calls] end)
-        result
-      end,
-      name: name,
-      description: description,
-      parameters: parameters
-    )
+    tool =
+      Tool.from_function(
+        fn ctx, args ->
+          Agent.update(agent, fn calls -> [{ctx, args} | calls] end)
+          result
+        end,
+        name: name,
+        description: description,
+        parameters: parameters
+      )
 
     {tool, agent}
   end
@@ -157,15 +158,16 @@ defmodule Nous.Tool.Testing do
 
     {:ok, agent} = Agent.start_link(fn -> [] end)
 
-    tool = Tool.from_function(
-      fn ctx, args ->
-        Agent.update(agent, fn calls -> [{ctx, args} | calls] end)
-        result_fn.(ctx, args)
-      end,
-      name: name,
-      description: description,
-      parameters: parameters
-    )
+    tool =
+      Tool.from_function(
+        fn ctx, args ->
+          Agent.update(agent, fn calls -> [{ctx, args} | calls] end)
+          result_fn.(ctx, args)
+        end,
+        name: name,
+        description: description,
+        parameters: parameters
+      )
 
     {tool, agent}
   end
@@ -349,12 +351,14 @@ defmodule Nous.Tool.Testing do
   def assert_called(agent, expected_args) when is_pid(agent) and is_map(expected_args) do
     calls = get_calls(agent)
 
-    found = Enum.any?(calls, fn {_ctx, args} ->
-      args_match?(args, expected_args)
-    end)
+    found =
+      Enum.any?(calls, fn {_ctx, args} ->
+        args_match?(args, expected_args)
+      end)
 
     unless found do
       actual_args = Enum.map(calls, fn {_ctx, args} -> args end)
+
       raise ExUnit.AssertionError,
         message: """
         Expected tool to be called with arguments:

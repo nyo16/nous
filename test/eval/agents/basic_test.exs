@@ -69,7 +69,8 @@ defmodule Nous.Eval.Agents.BasicTest do
 
       {:ok, result} = Runner.run_case(test_case, model: context[:model] || @default_model)
 
-      assert result.passed, "Expected greeting to contain hello/hi: #{inspect(result.actual_output)}"
+      assert result.passed,
+             "Expected greeting to contain hello/hi: #{inspect(result.actual_output)}"
     end
 
     test "1.2 Math Basic", context do

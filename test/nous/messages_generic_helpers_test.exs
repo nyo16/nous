@@ -15,7 +15,8 @@ defmodule Nous.MessagesGenericHelpersTest do
         Message.from_legacy(%{
           parts: [
             {:text, "I can see an image."},
-            {:tool_call, %{id: "call_123", name: "analyze_image", arguments: %{"url" => "test.jpg"}}}
+            {:tool_call,
+             %{id: "call_123", name: "analyze_image", arguments: %{"url" => "test.jpg"}}}
           ],
           usage: %Usage{input_tokens: 20, output_tokens: 15, total_tokens: 35},
           model_name: "test-model",
@@ -72,7 +73,8 @@ defmodule Nous.MessagesGenericHelpersTest do
 
       assert system == "You are a helpful assistant"
       assert is_list(gemini_messages)
-      assert length(gemini_messages) == 4  # Now includes converted tool message
+      # Now includes converted tool message
+      assert length(gemini_messages) == 4
 
       # Check user message
       user_msg = Enum.at(gemini_messages, 0)
@@ -82,7 +84,8 @@ defmodule Nous.MessagesGenericHelpersTest do
       # Check multi-modal user message (flattened to single text part)
       multimodal_msg = Enum.at(gemini_messages, 1)
       assert multimodal_msg["role"] == "user"
-      assert length(multimodal_msg["parts"]) == 1  # Flattened to single text part
+      # Flattened to single text part
+      assert length(multimodal_msg["parts"]) == 1
     end
 
     test "handles OpenAI-compatible providers (Groq, LMStudio, Mistral)", %{messages: messages} do
@@ -243,7 +246,12 @@ defmodule Nous.MessagesGenericHelpersTest do
 
       result = Messages.from_provider_response(anthropic_response, :anthropic)
 
-      assert %Message{role: :assistant, content: "I'll help you search for that.", tool_calls: tool_calls} = result
+      assert %Message{
+               role: :assistant,
+               content: "I'll help you search for that.",
+               tool_calls: tool_calls
+             } = result
+
       assert [tool_call] = tool_calls
       assert tool_call["id"] == "toolu_123"
       assert tool_call["name"] == "search"
@@ -310,11 +318,17 @@ defmodule Nous.MessagesGenericHelpersTest do
 
       result = Messages.from_provider_response(gemini_response, :gemini)
 
-      assert %Message{role: :assistant, content: "Let me search for that information.", tool_calls: tool_calls} = result
+      assert %Message{
+               role: :assistant,
+               content: "Let me search for that information.",
+               tool_calls: tool_calls
+             } = result
+
       assert [tool_call] = tool_calls
       assert tool_call["name"] == "web_search"
       assert tool_call["arguments"] == %{"query" => "latest news"}
-      assert is_binary(tool_call["id"])  # Gemini generates random ID
+      # Gemini generates random ID
+      assert is_binary(tool_call["id"])
     end
 
     test "handles OpenAI-compatible providers" do
@@ -527,8 +541,10 @@ defmodule Nous.MessagesGenericHelpersTest do
         "choices" => [%{"message" => %{"role" => "assistant"}}],
         "usage" => %{"total_tokens" => 0}
       }
+
       result = Messages.from_provider_response(no_content_response, :openai)
-      assert %Message{content: nil} = result  # No content should result in nil content
+      # No content should result in nil content
+      assert %Message{content: nil} = result
 
       # Anthropic response with missing content
       anthropic_empty = %{"content" => [], "usage" => %{}}
@@ -599,7 +615,8 @@ defmodule Nous.MessagesGenericHelpersTest do
 
       assert user_msg["role"] == "user"
       assert is_list(user_msg["parts"])
-      assert length(user_msg["parts"]) == 1  # Flattened to single text part
+      # Flattened to single text part
+      assert length(user_msg["parts"]) == 1
     end
 
     test "handles empty and nil values gracefully" do

@@ -38,9 +38,9 @@ defmodule Nous.Message.ContentPart do
 
   @primary_key false
   embedded_schema do
-    field :type, Ecto.Enum, values: @content_types
-    field :content, :string
-    field :options, :map, default: %{}
+    field(:type, Ecto.Enum, values: @content_types)
+    field(:content, :string)
+    field(:options, :map, default: %{})
   end
 
   @type t :: %__MODULE__{
@@ -243,12 +243,13 @@ defmodule Nous.Message.ContentPart do
   """
   @spec merge(t(), t()) :: t() | {:error, :incompatible_types}
   def merge(%__MODULE__{type: type} = part1, %__MODULE__{type: type} = part2) do
-    merged_options = Map.merge(part1.options, part2.options, fn _key, v1, v2 ->
-      case {v1, v2} do
-        {s1, s2} when is_binary(s1) and is_binary(s2) -> s1 <> s2
-        {_, v2} -> v2
-      end
-    end)
+    merged_options =
+      Map.merge(part1.options, part2.options, fn _key, v1, v2 ->
+        case {v1, v2} do
+          {s1, s2} when is_binary(s1) and is_binary(s2) -> s1 <> s2
+          {_, v2} -> v2
+        end
+      end)
 
     %__MODULE__{
       type: type,
@@ -334,7 +335,8 @@ defmodule Nous.Message.ContentPart do
 
   """
   @spec base64_to_data_url(String.t(), String.t()) :: String.t()
-  def base64_to_data_url(base64_string, mime_type) when is_binary(base64_string) and is_binary(mime_type) do
+  def base64_to_data_url(base64_string, mime_type)
+      when is_binary(base64_string) and is_binary(mime_type) do
     "data:#{mime_type};base64,#{base64_string}"
   end
 
@@ -387,7 +389,9 @@ defmodule Nous.Message.ContentPart do
   @spec test_image() :: t()
   def test_image do
     # 1x1 transparent PNG
-    data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    data_url =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
     image_url(data_url)
   end
 

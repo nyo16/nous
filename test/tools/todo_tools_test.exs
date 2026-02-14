@@ -26,11 +26,12 @@ defmodule Nous.Tools.TodoToolsTest do
     test "adds todo with custom status and priority" do
       ctx = RunContext.new(%{todos: []})
 
-      result = TodoTools.add_todo(ctx, %{
-        "text" => "Fix bug",
-        "status" => "in_progress",
-        "priority" => "high"
-      })
+      result =
+        TodoTools.add_todo(ctx, %{
+          "text" => "Fix bug",
+          "status" => "in_progress",
+          "priority" => "high"
+        })
 
       assert result.success == true
       assert result.todo.status == "in_progress"
@@ -83,10 +84,11 @@ defmodule Nous.Tools.TodoToolsTest do
     end
 
     test "updates todo text", %{ctx: ctx} do
-      result = TodoTools.update_todo(ctx, %{
-        "id" => 123,
-        "text" => "Updated text"
-      })
+      result =
+        TodoTools.update_todo(ctx, %{
+          "id" => 123,
+          "text" => "Updated text"
+        })
 
       assert result.success == true
       assert result.todo.text == "Updated text"
@@ -96,10 +98,11 @@ defmodule Nous.Tools.TodoToolsTest do
     end
 
     test "updates todo status", %{ctx: ctx} do
-      result = TodoTools.update_todo(ctx, %{
-        "id" => 123,
-        "status" => "in_progress"
-      })
+      result =
+        TodoTools.update_todo(ctx, %{
+          "id" => 123,
+          "status" => "in_progress"
+        })
 
       assert result.success == true
       assert result.todo.status == "in_progress"
@@ -108,20 +111,22 @@ defmodule Nous.Tools.TodoToolsTest do
     end
 
     test "updates todo priority", %{ctx: ctx} do
-      result = TodoTools.update_todo(ctx, %{
-        "id" => 123,
-        "priority" => "high"
-      })
+      result =
+        TodoTools.update_todo(ctx, %{
+          "id" => 123,
+          "priority" => "high"
+        })
 
       assert result.success == true
       assert result.todo.priority == "high"
     end
 
     test "fails when todo not found", %{ctx: ctx} do
-      result = TodoTools.update_todo(ctx, %{
-        "id" => 999,
-        "text" => "New text"
-      })
+      result =
+        TodoTools.update_todo(ctx, %{
+          "id" => 999,
+          "text" => "New text"
+        })
 
       assert result.success == false
       assert result.error =~ "not found"
@@ -129,10 +134,11 @@ defmodule Nous.Tools.TodoToolsTest do
     end
 
     test "returns context update", %{ctx: ctx} do
-      result = TodoTools.update_todo(ctx, %{
-        "id" => 123,
-        "status" => "completed"
-      })
+      result =
+        TodoTools.update_todo(ctx, %{
+          "id" => 123,
+          "status" => "completed"
+        })
 
       assert result.__update_context__.todos == result.todos
       assert length(result.todos) == 1
@@ -180,10 +186,22 @@ defmodule Nous.Tools.TodoToolsTest do
   describe "delete_todo/2" do
     setup do
       todos = [
-        %{id: 1, text: "Todo 1", status: "pending", priority: "medium",
-          created_at: "2025-01-01", updated_at: "2025-01-01"},
-        %{id: 2, text: "Todo 2", status: "completed", priority: "low",
-          created_at: "2025-01-01", updated_at: "2025-01-01"}
+        %{
+          id: 1,
+          text: "Todo 1",
+          status: "pending",
+          priority: "medium",
+          created_at: "2025-01-01",
+          updated_at: "2025-01-01"
+        },
+        %{
+          id: 2,
+          text: "Todo 2",
+          status: "completed",
+          priority: "low",
+          created_at: "2025-01-01",
+          updated_at: "2025-01-01"
+        }
       ]
 
       ctx = RunContext.new(%{todos: todos})
@@ -216,14 +234,38 @@ defmodule Nous.Tools.TodoToolsTest do
   describe "list_todos/2" do
     setup do
       todos = [
-        %{id: 1, text: "Pending task", status: "pending", priority: "high",
-          created_at: "2025-01-01", updated_at: "2025-01-01"},
-        %{id: 2, text: "In progress task", status: "in_progress", priority: "medium",
-          created_at: "2025-01-01", updated_at: "2025-01-01"},
-        %{id: 3, text: "Completed task", status: "completed", priority: "low",
-          created_at: "2025-01-01", updated_at: "2025-01-01"},
-        %{id: 4, text: "Another pending", status: "pending", priority: "medium",
-          created_at: "2025-01-01", updated_at: "2025-01-01"}
+        %{
+          id: 1,
+          text: "Pending task",
+          status: "pending",
+          priority: "high",
+          created_at: "2025-01-01",
+          updated_at: "2025-01-01"
+        },
+        %{
+          id: 2,
+          text: "In progress task",
+          status: "in_progress",
+          priority: "medium",
+          created_at: "2025-01-01",
+          updated_at: "2025-01-01"
+        },
+        %{
+          id: 3,
+          text: "Completed task",
+          status: "completed",
+          priority: "low",
+          created_at: "2025-01-01",
+          updated_at: "2025-01-01"
+        },
+        %{
+          id: 4,
+          text: "Another pending",
+          status: "pending",
+          priority: "medium",
+          created_at: "2025-01-01",
+          updated_at: "2025-01-01"
+        }
       ]
 
       ctx = RunContext.new(%{todos: todos})
@@ -258,10 +300,11 @@ defmodule Nous.Tools.TodoToolsTest do
     end
 
     test "filters by both status and priority", %{ctx: ctx} do
-      result = TodoTools.list_todos(ctx, %{
-        "status" => "pending",
-        "priority" => "medium"
-      })
+      result =
+        TodoTools.list_todos(ctx, %{
+          "status" => "pending",
+          "priority" => "medium"
+        })
 
       assert result.success == true
       assert length(result.todos) == 1

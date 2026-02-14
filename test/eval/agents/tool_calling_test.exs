@@ -33,8 +33,12 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
       city_lower = String.downcase(city)
 
       case Map.get(weathers, city_lower) do
-        nil -> {:ok, "Weather data not available for #{city}"}
-        data -> {:ok, "Weather in #{city}: #{data.temp}°F, #{data.conditions}, #{data.humidity}% humidity"}
+        nil ->
+          {:ok, "Weather data not available for #{city}"}
+
+        data ->
+          {:ok,
+           "Weather in #{city}: #{data.temp}°F, #{data.conditions}, #{data.humidity}% humidity"}
       end
     end
 
@@ -80,7 +84,8 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
           _ -> "Unknown conversion"
         end
 
-      {:ok, "#{value}°#{String.upcase(String.first(from))} = #{Float.round(result * 1.0, 2)}°#{String.upcase(String.first(to))}"}
+      {:ok,
+       "#{value}°#{String.upcase(String.first(from))} = #{Float.round(result * 1.0, 2)}°#{String.upcase(String.first(to))}"}
     end
 
     def get_balance(ctx, _args) do

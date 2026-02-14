@@ -25,13 +25,16 @@ defmodule Nous.Messages.Gemini do
   def to_format(messages) when is_list(messages) do
     {system_messages, other_messages} = Enum.split_with(messages, &Message.is_system?/1)
 
-    system_prompt = case system_messages do
-      [] -> nil
-      msgs ->
-        msgs
-        |> Enum.map(&Message.extract_text/1)
-        |> Enum.join("\n\n")
-    end
+    system_prompt =
+      case system_messages do
+        [] ->
+          nil
+
+        msgs ->
+          msgs
+          |> Enum.map(&Message.extract_text/1)
+          |> Enum.join("\n\n")
+      end
 
     gemini_contents = Enum.map(other_messages, &message_to_gemini/1)
 
@@ -80,11 +83,12 @@ defmodule Nous.Messages.Gemini do
   @spec from_messages([map()]) :: [Message.t()]
   def from_messages(gemini_messages) when is_list(gemini_messages) do
     Enum.map(gemini_messages, fn msg ->
-      role = case Map.get(msg, "role") do
-        "user" -> :user
-        "model" -> :assistant
-        _ -> :user
-      end
+      role =
+        case Map.get(msg, "role") do
+          "user" -> :user
+          "model" -> :assistant
+          _ -> :user
+        end
 
       parts = Map.get(msg, "parts", [])
       {text_content, tool_calls} = parse_parts(parts)
@@ -112,38 +116,45 @@ defmodule Nous.Messages.Gemini do
 
     parts = if content && content != "", do: [%{"text" => content} | parts], else: parts
 
-    parts = if length(tool_calls) > 0 do
-      tool_parts = Enum.map(tool_calls, fn call ->
-        %{
-          "functionCall" => %{
-            "name" => Map.get(call, "name") || Map.get(call, :name),
-            "args" => Map.get(call, "arguments") || Map.get(call, :arguments, %{})
-          }
-        }
-      end)
-      tool_parts ++ parts
-    else
-      parts
-    end
+    parts =
+      if length(tool_calls) > 0 do
+        tool_parts =
+          Enum.map(tool_calls, fn call ->
+            %{
+              "functionCall" => %{
+                "name" => Map.get(call, "name") || Map.get(call, :name),
+                "args" => Map.get(call, "arguments") || Map.get(call, :arguments, %{})
+              }
+            }
+          end)
+
+        tool_parts ++ parts
+      else
+        parts
+      end
 
     %{"role" => "model", "parts" => Enum.reverse(parts)}
   end
 
   defp message_to_gemini(%Message{role: :tool, content: content, tool_call_id: tool_call_id}) do
     # Gemini handles tool results as user messages with functionResponse
-    response = case Jason.decode(content) do
-      {:ok, decoded} -> decoded
-      {:error, _} -> %{"result" => content}  # Treat as plain text
-    end
+    response =
+      case Jason.decode(content) do
+        {:ok, decoded} -> decoded
+        # Treat as plain text
+        {:error, _} -> %{"result" => content}
+      end
 
     %{
       "role" => "user",
-      "parts" => [%{
-        "functionResponse" => %{
-          "name" => tool_call_id,
-          "response" => response
+      "parts" => [
+        %{
+          "functionResponse" => %{
+            "name" => tool_call_id,
+            "response" => response
+          }
         }
-      }]
+      ]
     }
   end
 
@@ -157,53 +168,62 @@ defmodule Nous.Messages.Gemini do
   end
 
   defp parse_content(parts_data) when is_list(parts_data) do
-    {content_parts, tool_calls} = Enum.reduce(parts_data, {[], []}, fn item, {parts, tools} ->
-      case item do
-        %{"text" => text} ->
-          {[ContentPart.text(text) | parts], tools}
+    {content_parts, tool_calls} =
+      Enum.reduce(parts_data, {[], []}, fn item, {parts, tools} ->
+        case item do
+          %{"text" => text} ->
+            {[ContentPart.text(text) | parts], tools}
 
-        %{"functionCall" => %{"name" => name, "args" => args}} ->
-          tool_call = %{
-            "id" => "gemini_#{:rand.uniform(10000)}",
-            "name" => name,
-            "arguments" => args
-          }
-          {parts, [tool_call | tools]}
+          %{"functionCall" => %{"name" => name, "args" => args}} ->
+            tool_call = %{
+              "id" => "gemini_#{:rand.uniform(10000)}",
+              "name" => name,
+              "arguments" => args
+            }
 
-        _ ->
-          {parts, tools}
-      end
-    end)
+            {parts, [tool_call | tools]}
+
+          _ ->
+            {parts, tools}
+        end
+      end)
 
     {Enum.reverse(content_parts), Enum.reverse(tool_calls)}
   end
 
   defp parse_parts(parts) when is_list(parts) do
-    {text_parts, tool_calls} = Enum.reduce(parts, {[], []}, fn part, {texts, tools} ->
-      cond do
-        Map.has_key?(part, "text") ->
-          text = Map.get(part, "text", "")
-          {[text | texts], tools}
-        Map.has_key?(part, "functionCall") ->
-          function_call = Map.get(part, "functionCall")
-          tool_call = %{
-            "id" => "call_#{:rand.uniform(1000000)}",  # Generate random ID since Gemini doesn't provide one
-            "name" => Map.get(function_call, "name"),
-            "arguments" => Map.get(function_call, "args", %{})
-          }
-          {texts, [tool_call | tools]}
-        true ->
-          {texts, tools}
-      end
-    end)
+    {text_parts, tool_calls} =
+      Enum.reduce(parts, {[], []}, fn part, {texts, tools} ->
+        cond do
+          Map.has_key?(part, "text") ->
+            text = Map.get(part, "text", "")
+            {[text | texts], tools}
+
+          Map.has_key?(part, "functionCall") ->
+            function_call = Map.get(part, "functionCall")
+
+            tool_call = %{
+              # Generate random ID since Gemini doesn't provide one
+              "id" => "call_#{:rand.uniform(1_000_000)}",
+              "name" => Map.get(function_call, "name"),
+              "arguments" => Map.get(function_call, "args", %{})
+            }
+
+            {texts, [tool_call | tools]}
+
+          true ->
+            {texts, tools}
+        end
+      end)
 
     text_content = text_parts |> Enum.reverse() |> Enum.join(" ") |> String.trim()
     # Add space after text if there are tool calls
-    text_content = if text_content != "" and length(tool_calls) > 0 do
-      text_content <> " "
-    else
-      text_content
-    end
+    text_content =
+      if text_content != "" and length(tool_calls) > 0 do
+        text_content <> " "
+      else
+        text_content
+      end
 
     {text_content, Enum.reverse(tool_calls)}
   end

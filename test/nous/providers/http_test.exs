@@ -213,6 +213,7 @@ defmodule Nous.Providers.HTTPTest do
         "unicode" => "こんにちは",
         "special_chars" => "line1\nline2\ttab"
       }
+
       event = "data: #{Jason.encode!(json)}"
       result = HTTP.parse_sse_event(event)
 
@@ -332,6 +333,7 @@ defmodule Nous.Providers.HTTPTest do
       data: [DONE]
 
       """
+
       {events, remaining} = HTTP.parse_sse_buffer(buffer)
 
       assert length(events) == 3
@@ -354,6 +356,7 @@ defmodule Nous.Providers.HTTPTest do
       data: {"type":"message_stop"}
 
       """
+
       {events, remaining} = HTTP.parse_sse_buffer(buffer)
 
       assert length(events) == 3
@@ -387,9 +390,11 @@ defmodule Nous.Providers.HTTPTest do
 
     test "handles rapid succession of events" do
       # Many events in quick succession (no trailing newline between chunks)
-      events_data = Enum.map(1..100, fn i ->
-        "data: {\"seq\": #{i}}\n\n"
-      end) |> Enum.join("")
+      events_data =
+        Enum.map(1..100, fn i ->
+          "data: {\"seq\": #{i}}\n\n"
+        end)
+        |> Enum.join("")
 
       {events, remaining} = HTTP.parse_sse_buffer(events_data)
 
@@ -452,6 +457,7 @@ defmodule Nous.Providers.HTTPTest do
           }
         }
       }
+
       event = "data: #{Jason.encode!(nested)}"
       result = HTTP.parse_sse_event(event)
 

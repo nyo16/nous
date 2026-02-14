@@ -75,7 +75,11 @@ defmodule Nous.Providers.OpenAI do
 
     # Reasoning models don't support streaming (as of early 2025)
     if reasoning_model?(model) do
-      {:error, %{reason: :streaming_not_supported, message: "Reasoning models (#{model}) don't support streaming"}}
+      {:error,
+       %{
+         reason: :streaming_not_supported,
+         message: "Reasoning models (#{model}) don't support streaming"
+       }}
     else
       url = "#{base_url(opts)}/chat/completions"
       headers = build_headers(api_key(opts), opts)
@@ -100,6 +104,7 @@ defmodule Nous.Providers.OpenAI do
   def reasoning_model?(model) when is_binary(model) do
     Enum.any?(@reasoning_models, &String.starts_with?(model, &1))
   end
+
   def reasoning_model?(_), do: false
 
   # Adjust parameters for reasoning models
@@ -112,6 +117,7 @@ defmodule Nous.Providers.OpenAI do
       |> Map.delete(:temperature)
       |> Map.delete("top_p")
       |> Map.delete(:top_p)
+
       # Note: System messages should be converted to developer messages by the caller
     else
       params
@@ -125,17 +131,19 @@ defmodule Nous.Providers.OpenAI do
     ]
 
     # Add authorization
-    headers = if api_key && api_key != "" do
-      [{"authorization", "Bearer #{api_key}"} | headers]
-    else
-      headers
-    end
+    headers =
+      if api_key && api_key != "" do
+        [{"authorization", "Bearer #{api_key}"} | headers]
+      else
+        headers
+      end
 
     # Add organization header if provided
-    headers = case Keyword.get(opts, :organization) do
-      nil -> headers
-      org -> [{"openai-organization", org} | headers]
-    end
+    headers =
+      case Keyword.get(opts, :organization) do
+        nil -> headers
+        org -> [{"openai-organization", org} | headers]
+      end
 
     # Add project header if provided (for project-scoped API keys)
     case Keyword.get(opts, :project) do

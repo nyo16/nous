@@ -32,7 +32,10 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
       {:ok, result} = Nous.ReActAgent.run(agent, "What is 5 plus 3?")
 
       IO.puts("\n[ReAct 7.1] Output: #{inspect(result.output)}")
-      IO.puts("[ReAct 7.1] Messages count: #{length(result.messages || result.all_messages || [])}")
+
+      IO.puts(
+        "[ReAct 7.1] Messages count: #{length(result.messages || result.all_messages || [])}"
+      )
 
       assert result.output != nil, "Expected output from ReAct agent"
     end
@@ -43,7 +46,10 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
       agent = Nous.ReActAgent.new(context[:model])
 
       {:ok, result} =
-        Nous.ReActAgent.run(agent, "Plan how to calculate the area of a rectangle that is 5 by 10")
+        Nous.ReActAgent.run(
+          agent,
+          "Plan how to calculate the area of a rectangle that is 5 by 10"
+        )
 
       IO.puts("\n[ReAct 7.2] Output: #{inspect(result.output)}")
 
@@ -62,7 +68,10 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
         )
 
       {:ok, result} =
-        Nous.ReActAgent.run(agent, "Make a todo list for learning Elixir, then answer with the list")
+        Nous.ReActAgent.run(
+          agent,
+          "Make a todo list for learning Elixir, then answer with the list"
+        )
 
       IO.puts("\n[ReAct 7.3] Output: #{inspect(result.output)}")
 
@@ -120,6 +129,7 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
 
       # The output should contain "4" since that's the answer
       output = String.downcase(result.output || "")
+
       assert String.contains?(output, "4") or result.output != nil,
              "Expected answer containing 4"
     end

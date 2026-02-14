@@ -116,11 +116,12 @@ defmodule Nous.ReActAgent do
   def new(model_string, opts \\ []) do
     # Use the new behaviour-based implementation
     # Remove ReAct-specific options that are handled by the behaviour
-    agent_opts = opts
-    |> Keyword.put(:behaviour_module, Nous.Agents.ReActAgent)
-    |> Keyword.delete(:react_system_prompt)
-    |> Keyword.delete(:require_planning)
-    |> Keyword.delete(:track_history)
+    agent_opts =
+      opts
+      |> Keyword.put(:behaviour_module, Nous.Agents.ReActAgent)
+      |> Keyword.delete(:react_system_prompt)
+      |> Keyword.delete(:require_planning)
+      |> Keyword.delete(:track_history)
 
     # Create the underlying agent with ReAct behaviour
     Agent.new(model_string, agent_opts)
@@ -180,12 +181,13 @@ defmodule Nous.ReActAgent do
     # Initialize ReAct-specific context
     existing_deps = Keyword.get(opts, :deps, %{})
 
-    react_deps = Map.merge(existing_deps, %{
-      todos: [],
-      plans: [],
-      notes: [],
-      tool_history: []
-    })
+    react_deps =
+      Map.merge(existing_deps, %{
+        todos: [],
+        plans: [],
+        notes: [],
+        tool_history: []
+      })
 
     # Update opts with ReAct context
     react_opts = Keyword.put(opts, :deps, react_deps)
@@ -228,12 +230,13 @@ defmodule Nous.ReActAgent do
     # Initialize ReAct-specific context
     existing_deps = Keyword.get(opts, :deps, %{})
 
-    react_deps = Map.merge(existing_deps, %{
-      todos: [],
-      plans: [],
-      notes: [],
-      tool_history: []
-    })
+    react_deps =
+      Map.merge(existing_deps, %{
+        todos: [],
+        plans: [],
+        notes: [],
+        tool_history: []
+      })
 
     react_opts = Keyword.put(opts, :deps, react_deps)
 

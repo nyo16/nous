@@ -39,6 +39,7 @@ defmodule Nous.Agent do
           model_settings: map(),
           retries: non_neg_integer(),
           tools: [Tool.t()],
+          plugins: [module()],
           end_strategy: :early | :exhaustive,
           enable_todos: boolean(),
           behaviour_module: module() | nil
@@ -56,6 +57,7 @@ defmodule Nous.Agent do
     model_settings: %{},
     retries: 1,
     tools: [],
+    plugins: [],
     end_strategy: :early,
     enable_todos: false
   ]
@@ -77,6 +79,7 @@ defmodule Nous.Agent do
     * `:retries` - Default retry count for tools
     * `:enable_todos` - Enable automatic todo tracking (default: false)
     * `:tools` - List of tool functions or Tool structs
+    * `:plugins` - List of plugin modules implementing `Nous.Plugin` behaviour
     * `:end_strategy` - How to handle tool calls (`:early` or `:exhaustive`)
     * `:behaviour_module` - Custom agent behaviour module (default: BasicAgent)
 
@@ -116,6 +119,7 @@ defmodule Nous.Agent do
       model_settings: Keyword.get(opts, :model_settings, %{}),
       retries: Keyword.get(opts, :retries, 1),
       tools: parse_tools(Keyword.get(opts, :tools, [])),
+      plugins: Keyword.get(opts, :plugins, []),
       end_strategy: Keyword.get(opts, :end_strategy, :early),
       behaviour_module: Keyword.get(opts, :behaviour_module)
     }
@@ -221,16 +225,17 @@ defmodule Nous.Agent do
     alias Nous.Agent.Context
 
     # Build initial context from messages
-    ctx = Context.new(
-      messages: messages,
-      deps: Keyword.get(opts, :deps, %{}),
-      max_iterations: Keyword.get(opts, :max_iterations, 10),
-      callbacks: Keyword.get(opts, :callbacks, %{}),
-      notify_pid: Keyword.get(opts, :notify_pid),
-      agent_name: agent.name,
-      cancellation_check: Keyword.get(opts, :cancellation_check),
-      needs_response: true
-    )
+    ctx =
+      Context.new(
+        messages: messages,
+        deps: Keyword.get(opts, :deps, %{}),
+        max_iterations: Keyword.get(opts, :max_iterations, 10),
+        callbacks: Keyword.get(opts, :callbacks, %{}),
+        notify_pid: Keyword.get(opts, :notify_pid),
+        agent_name: agent.name,
+        cancellation_check: Keyword.get(opts, :cancellation_check),
+        needs_response: true
+      )
 
     # Run with pre-built context
     Nous.AgentRunner.run_with_context(agent, ctx, opts)

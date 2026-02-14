@@ -233,7 +233,10 @@ defmodule Nous.ProviderTest do
       Code.ensure_loaded!(Nous.Providers.Gemini)
 
       assert Nous.Providers.Gemini.provider_id() == :gemini
-      assert Nous.Providers.Gemini.default_base_url() == "https://generativelanguage.googleapis.com/v1beta"
+
+      assert Nous.Providers.Gemini.default_base_url() ==
+               "https://generativelanguage.googleapis.com/v1beta"
+
       assert Nous.Providers.Gemini.default_env_key() == "GOOGLE_AI_API_KEY"
     end
 

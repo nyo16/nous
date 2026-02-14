@@ -64,7 +64,8 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   """
   @spec grid(t()) :: [map()]
   def grid(%__MODULE__{size: :infinite}) do
-    raise ArgumentError, "Cannot generate grid for infinite search space. Add step sizes to parameters."
+    raise ArgumentError,
+          "Cannot generate grid for infinite search space. Add step sizes to parameters."
   end
 
   def grid(%__MODULE__{parameters: parameters}) do

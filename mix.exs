@@ -49,6 +49,9 @@ defmodule Nous.MixProject do
       {:finch, "~> 0.19"},
       {:req, "~> 0.5"},
 
+      # HTML parsing (for web content extraction in research tools)
+      {:floki, "~> 0.36", optional: true},
+
       # Telemetry
       {:telemetry, "~> 1.2"},
 
@@ -77,15 +80,21 @@ defmodule Nous.MixProject do
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
 
         # Production Guides
-        {"docs/guides/liveview-integration.md", filename: "liveview_integration", title: "Phoenix LiveView Integration"},
-        {"docs/guides/best_practices.md", filename: "best_practices", title: "Production Best Practices"},
-        {"docs/guides/tool_development.md", filename: "tool_development", title: "Tool Development Guide"},
-        {"docs/guides/troubleshooting.md", filename: "troubleshooting", title: "Troubleshooting Guide"},
+        {"docs/guides/liveview-integration.md",
+         filename: "liveview_integration", title: "Phoenix LiveView Integration"},
+        {"docs/guides/best_practices.md",
+         filename: "best_practices", title: "Production Best Practices"},
+        {"docs/guides/tool_development.md",
+         filename: "tool_development", title: "Tool Development Guide"},
+        {"docs/guides/troubleshooting.md",
+         filename: "troubleshooting", title: "Troubleshooting Guide"},
         {"docs/guides/migration_guide.md", filename: "migration_guide", title: "Migration Guide"},
-        {"docs/guides/evaluation.md", filename: "evaluation", title: "Evaluation Framework Guide"},
+        {"docs/guides/evaluation.md",
+         filename: "evaluation", title: "Evaluation Framework Guide"},
 
         # Design Documents
-        {"docs/design/llm_council_design.md", filename: "council_design", title: "LLM Council Design"}
+        {"docs/design/llm_council_design.md",
+         filename: "council_design", title: "LLM Council Design"}
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,
@@ -103,7 +112,7 @@ defmodule Nous.MixProject do
           "migration_guide.html",
           "evaluation.html"
         ],
-        "Design": [
+        Design: [
           "council_design.html"
         ]
       ],
@@ -144,10 +153,10 @@ defmodule Nous.MixProject do
           Nous.ToolSchema,
           Nous.ToolExecutor
         ],
-        "Testing": [
+        Testing: [
           Nous.Tool.Testing
         ],
-        "Templates": [
+        Templates: [
           Nous.PromptTemplate
         ],
         "Data Types": [
@@ -155,11 +164,11 @@ defmodule Nous.MixProject do
           Nous.Usage,
           Nous.Messages
         ],
-        "Infrastructure": [
+        Infrastructure: [
           Nous.Telemetry,
           Nous.Errors
         ],
-        "Evaluation": [
+        Evaluation: [
           Nous.Eval,
           Nous.Eval.Suite,
           Nous.Eval.TestCase,

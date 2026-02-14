@@ -206,7 +206,8 @@ defmodule Nous.Agent.Callbacks do
 
   """
   @spec put_callback(Context.t(), event(), function()) :: Context.t()
-  def put_callback(%Context{} = ctx, event, callback) when is_atom(event) and is_function(callback, 2) do
+  def put_callback(%Context{} = ctx, event, callback)
+      when is_atom(event) and is_function(callback, 2) do
     %{ctx | callbacks: Map.put(ctx.callbacks, event, callback)}
   end
 

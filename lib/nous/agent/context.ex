@@ -74,7 +74,10 @@ defmodule Nous.Agent.Context do
           agent_name: String.t() | nil,
 
           # Cancellation
-          cancellation_check: (-> :ok | {:error, term()}) | nil
+          cancellation_check: (-> :ok | {:error, term()}) | nil,
+
+          # Human-in-the-loop
+          approval_handler: (map() -> :approve | {:edit, map()} | :reject) | nil
         }
 
   defstruct messages: [],
@@ -89,7 +92,8 @@ defmodule Nous.Agent.Context do
             notify_pid: nil,
             started_at: nil,
             agent_name: nil,
-            cancellation_check: nil
+            cancellation_check: nil,
+            approval_handler: nil
 
   @doc """
   Create a new context with options.
@@ -104,6 +108,7 @@ defmodule Nous.Agent.Context do
     * `:notify_pid` - PID to receive event messages
     * `:agent_name` - Name for telemetry/logging
     * `:cancellation_check` - Function to check for cancellation
+    * `:approval_handler` - Function called for tools with `requires_approval: true`
 
   ## Examples
 
@@ -130,7 +135,8 @@ defmodule Nous.Agent.Context do
       notify_pid: Keyword.get(opts, :notify_pid),
       started_at: DateTime.utc_now(),
       agent_name: Keyword.get(opts, :agent_name),
-      cancellation_check: Keyword.get(opts, :cancellation_check)
+      cancellation_check: Keyword.get(opts, :cancellation_check),
+      approval_handler: Keyword.get(opts, :approval_handler)
     }
   end
 
@@ -216,6 +222,7 @@ defmodule Nous.Agent.Context do
       output_tokens: Map.get(usage, :output_tokens, 0),
       total_tokens: Map.get(usage, :total_tokens, 0)
     }
+
     new_usage = Usage.add(ctx.usage, usage_struct)
     %{ctx | usage: new_usage}
   end
@@ -366,7 +373,251 @@ defmodule Nous.Agent.Context do
     )
   end
 
+  @doc """
+  Patch dangling tool calls in the conversation.
+
+  Scans messages for assistant messages with tool_calls that have no
+  corresponding tool result message. Injects synthetic tool results
+  for unmatched calls with a message indicating the call was interrupted.
+
+  This is critical when resuming from a persisted context where the
+  session was interrupted mid-tool-execution.
+
+  ## Examples
+
+      iex> ctx = Context.new(messages: [
+      ...>   Message.assistant("Let me search", tool_calls: [%{id: "call_1", name: "search"}])
+      ...> ])
+      iex> ctx = Context.patch_dangling_tool_calls(ctx)
+      iex> length(ctx.messages)
+      2
+
+  """
+  @spec patch_dangling_tool_calls(t()) :: t()
+  def patch_dangling_tool_calls(%__MODULE__{messages: messages} = ctx) do
+    # Collect all tool_call IDs from assistant messages
+    tool_call_ids =
+      messages
+      |> Enum.filter(&(&1.role == :assistant))
+      |> Enum.flat_map(fn msg ->
+        (msg.tool_calls || [])
+        |> Enum.map(fn call ->
+          Map.get(call, :id) || Map.get(call, "id")
+        end)
+        |> Enum.reject(&is_nil/1)
+      end)
+      |> MapSet.new()
+
+    # Collect all tool result IDs
+    tool_result_ids =
+      messages
+      |> Enum.filter(&(&1.role == :tool))
+      |> Enum.map(& &1.tool_call_id)
+      |> Enum.reject(&is_nil/1)
+      |> MapSet.new()
+
+    # Find unmatched tool calls
+    dangling_ids = MapSet.difference(tool_call_ids, tool_result_ids)
+
+    if MapSet.size(dangling_ids) == 0 do
+      ctx
+    else
+      # Inject synthetic tool results for dangling calls
+      synthetic_results =
+        Enum.map(dangling_ids, fn id ->
+          Message.tool(id, "Tool call was interrupted and not executed. Please retry if needed.")
+        end)
+
+      %{ctx | messages: messages ++ synthetic_results}
+    end
+  end
+
+  # Serialization
+
+  @doc """
+  Serialize context to a JSON-encodable map.
+
+  Persists messages, usage, metadata. Never persists functions, PIDs, or modules.
+  Includes a `version` field for future migrations.
+
+  ## Examples
+
+      iex> ctx = Context.new(system_prompt: "Be helpful", max_iterations: 5)
+      iex> data = Context.serialize(ctx)
+      iex> data.version
+      1
+      iex> data.system_prompt
+      "Be helpful"
+
+  """
+  @spec serialize(t()) :: map()
+  def serialize(%__MODULE__{} = ctx) do
+    %{
+      version: 1,
+      messages: Enum.map(ctx.messages, &serialize_message/1),
+      tool_calls: ctx.tool_calls,
+      system_prompt: ctx.system_prompt,
+      deps: serialize_deps(ctx.deps),
+      usage: serialize_usage(ctx.usage),
+      needs_response: ctx.needs_response,
+      iteration: ctx.iteration,
+      max_iterations: ctx.max_iterations,
+      started_at: ctx.started_at && DateTime.to_iso8601(ctx.started_at),
+      agent_name: ctx.agent_name
+    }
+  end
+
+  @doc """
+  Deserialize a map back into a Context struct.
+
+  Handles version migrations and restores messages, usage, and metadata.
+  Functions, PIDs, and callbacks are not restored and will use defaults.
+
+  Returns `{:ok, context}` or `{:error, reason}`.
+
+  ## Examples
+
+      iex> ctx = Context.new(system_prompt: "Be helpful")
+      iex> data = Context.serialize(ctx)
+      iex> {:ok, restored} = Context.deserialize(data)
+      iex> restored.system_prompt
+      "Be helpful"
+
+  """
+  @spec deserialize(map()) :: {:ok, t()} | {:error, term()}
+  def deserialize(%{version: 1} = data) do
+    do_deserialize(data)
+  end
+
+  def deserialize(%{"version" => 1} = data) do
+    data
+    |> atomize_keys()
+    |> do_deserialize()
+  end
+
+  def deserialize(%{version: v}) when is_integer(v) do
+    {:error, "unsupported version: #{v}"}
+  end
+
+  def deserialize(%{"version" => v}) when is_integer(v) do
+    {:error, "unsupported version: #{v}"}
+  end
+
+  def deserialize(_data) do
+    {:error, "missing or invalid version field"}
+  end
+
   # Private functions
+
+  defp do_deserialize(data) do
+    messages =
+      (data[:messages] || [])
+      |> Enum.map(&deserialize_message/1)
+
+    usage = deserialize_usage(data[:usage] || %{})
+
+    started_at =
+      case data[:started_at] do
+        nil ->
+          nil
+
+        iso when is_binary(iso) ->
+          case DateTime.from_iso8601(iso) do
+            {:ok, dt, _offset} -> dt
+            _ -> nil
+          end
+      end
+
+    ctx = %__MODULE__{
+      messages: messages,
+      tool_calls: data[:tool_calls] || [],
+      system_prompt: data[:system_prompt],
+      deps: data[:deps] || %{},
+      usage: usage,
+      needs_response: data[:needs_response] || false,
+      iteration: data[:iteration] || 0,
+      max_iterations: data[:max_iterations] || 10,
+      started_at: started_at,
+      agent_name: data[:agent_name],
+      callbacks: %{},
+      notify_pid: nil,
+      cancellation_check: nil,
+      approval_handler: nil
+    }
+
+    {:ok, ctx}
+  rescue
+    e -> {:error, Exception.message(e)}
+  end
+
+  defp serialize_message(%Message{} = msg) do
+    %{
+      role: msg.role,
+      content: msg.content,
+      tool_calls: msg.tool_calls,
+      tool_call_id: msg.tool_call_id,
+      name: msg.name,
+      metadata: msg.metadata
+    }
+  end
+
+  defp deserialize_message(data) when is_map(data) do
+    data = atomize_keys(data)
+
+    role =
+      case data[:role] do
+        r when is_atom(r) -> r
+        r when is_binary(r) -> String.to_existing_atom(r)
+      end
+
+    attrs = %{
+      role: role,
+      content: data[:content],
+      tool_calls: data[:tool_calls] || [],
+      tool_call_id: data[:tool_call_id],
+      name: data[:name],
+      metadata: data[:metadata] || %{}
+    }
+
+    Message.new!(attrs)
+  end
+
+  defp serialize_usage(%Usage{} = usage) do
+    %{
+      requests: usage.requests,
+      tool_calls: usage.tool_calls,
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      total_tokens: usage.total_tokens
+    }
+  end
+
+  defp serialize_deps(deps) when is_map(deps) do
+    deps
+    |> Enum.reject(fn {_k, v} -> is_function(v) or is_pid(v) or is_port(v) end)
+    |> Map.new()
+  end
+
+  defp serialize_deps(_), do: %{}
+
+  defp deserialize_usage(data) when is_map(data) do
+    data = atomize_keys(data)
+
+    %Usage{
+      requests: data[:requests] || 0,
+      tool_calls: data[:tool_calls] || 0,
+      input_tokens: data[:input_tokens] || 0,
+      output_tokens: data[:output_tokens] || 0,
+      total_tokens: data[:total_tokens] || 0
+    }
+  end
+
+  defp atomize_keys(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
+      {k, v} when is_atom(k) -> {k, v}
+    end)
+  end
 
   defp update_needs_response(ctx, %Message{role: :assistant} = message) do
     # Assistant messages with tool calls need a response (tool results)

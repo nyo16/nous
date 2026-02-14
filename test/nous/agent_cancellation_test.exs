@@ -10,16 +10,18 @@ defmodule Nous.AgentCancellationTest do
   describe "cancellation via cancellation_check" do
     test "agent stops when cancellation check throws" do
       # Create a simple tool
-      tool = Tool.from_function(
-        fn _ctx, %{"input" => input} -> "Result: #{input}" end,
-        name: "echo",
-        description: "Echo input"
-      )
+      tool =
+        Tool.from_function(
+          fn _ctx, %{"input" => input} -> "Result: #{input}" end,
+          name: "echo",
+          description: "Echo input"
+        )
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Use the echo tool",
-        tools: [tool]
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "Use the echo tool",
+          tools: [tool]
+        )
 
       # Create cancellation flag
       cancellation_ref = :atomics.new(1, [])
@@ -34,12 +36,13 @@ defmodule Nous.AgentCancellationTest do
       end
 
       # Run in a task so we can trigger cancellation
-      task = Task.async(fn ->
-        Agent.run(agent, "Echo hello",
-          cancellation_check: check_fn,
-          max_iterations: 5
-        )
-      end)
+      task =
+        Task.async(fn ->
+          Agent.run(agent, "Echo hello",
+            cancellation_check: check_fn,
+            max_iterations: 5
+          )
+        end)
 
       # Trigger cancellation after a tiny delay
       Process.sleep(10)
@@ -55,16 +58,18 @@ defmodule Nous.AgentCancellationTest do
     test "agent completes normally without cancellation check" do
       # This test just verifies that without cancellation check, things work normally
       # We can't actually run the model in tests, so we expect a model error
-      tool = Tool.from_function(
-        fn _ctx, %{"input" => input} -> "Result: #{input}" end,
-        name: "echo",
-        description: "Echo input"
-      )
+      tool =
+        Tool.from_function(
+          fn _ctx, %{"input" => input} -> "Result: #{input}" end,
+          name: "echo",
+          description: "Echo input"
+        )
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Use the echo tool",
-        tools: [tool]
-      )
+      agent =
+        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+          instructions: "Use the echo tool",
+          tools: [tool]
+        )
 
       # Run without cancellation check (will fail on model call, but that's expected)
       result = Agent.run(agent, "Echo hello", max_iterations: 1)
@@ -77,14 +82,15 @@ defmodule Nous.AgentCancellationTest do
 
   describe "AgentServer cancellation" do
     test "tracks current task" do
-      {:ok, pid} = Nous.AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        Nous.AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # Initially no task
       state = :sys.get_state(pid)
@@ -107,28 +113,30 @@ defmodule Nous.AgentCancellationTest do
     end
 
     test "returns :no_execution when nothing is running" do
-      {:ok, pid} = Nous.AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        Nous.AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # No execution running
       {:ok, :no_execution} = Nous.AgentServer.cancel_execution(pid)
     end
 
     test "cancels existing task when new message arrives" do
-      {:ok, pid} = Nous.AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        Nous.AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # Start first execution
       Nous.AgentServer.send_message(pid, "First message")
