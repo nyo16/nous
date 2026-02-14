@@ -86,7 +86,7 @@ All notable changes to this project will be documented in this file.
 - `Nous.Agent.Context` now includes `approval_handler`, `pubsub`, and `pubsub_topic` fields
 - `Nous.AgentServer` supports optional `:name` registration, `:persistence` backend, and uses `Nous.PubSub` (removed ad-hoc `setup_pubsub_functions/0`)
 - `Nous.AgentServer` `:pubsub` option now defaults to `Nous.PubSub.configured_pubsub()` instead of `MyApp.PubSub`
-- `Nous.AgentRunner.build_context/3` accepts `:pubsub` and `:pubsub_topic` options
+- `Nous.AgentRunner` accepts `:pubsub` and `:pubsub_topic` options when building context
 - Application supervision tree includes AgentRegistry and AgentDynamicSupervisor
 
 ## [0.9.0] - 2026-01-04
