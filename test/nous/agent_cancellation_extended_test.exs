@@ -13,7 +13,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }
@@ -39,7 +39,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }
@@ -68,7 +68,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }
@@ -97,7 +97,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }
@@ -123,7 +123,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }
@@ -162,7 +162,7 @@ defmodule Nous.AgentCancellationExtendedTest do
 
       # Create ReActAgent
       agent =
-        ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        ReActAgent.new(Nous.LLMTestHelper.test_model(),
           instructions: "Test agent"
         )
 
@@ -182,7 +182,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: [],
             type: :react
@@ -207,7 +207,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Agent 1",
             tools: []
           }
@@ -217,7 +217,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Agent 2",
             tools: []
           }
@@ -227,7 +227,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Agent 3",
             tools: []
           }
@@ -260,7 +260,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }
@@ -299,7 +299,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       end
 
       agent =
-        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        Agent.new(Nous.LLMTestHelper.test_model(),
           instructions: "Test",
           tools: []
         )
@@ -316,7 +316,7 @@ defmodule Nous.AgentCancellationExtendedTest do
 
     test "nil cancellation_check is safe" do
       agent =
-        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        Agent.new(Nous.LLMTestHelper.test_model(),
           instructions: "Test",
           tools: []
         )
@@ -350,7 +350,7 @@ defmodule Nous.AgentCancellationExtendedTest do
         AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }

@@ -23,7 +23,7 @@ defmodule FixtureGenerator do
     content = """
     # Generated LLM response fixtures
     # Generated at: #{DateTime.utc_now() |> DateTime.to_string()}
-    # Model: lmstudio:qwen3-vl-4b-thinking-mlx
+    # Model: #{Nous.LLMTestHelper.test_model()}
 
     defmodule NousTest.Fixtures.LLMResponses do
       @moduledoc \"\"\"
@@ -44,7 +44,7 @@ defmodule FixtureGenerator do
     IO.puts("📝 Generating simple response...")
 
     agent =
-      Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+      Agent.new(Nous.LLMTestHelper.test_model(),
         instructions: "You are a helpful assistant. Be concise.",
         model_settings: %{temperature: 0.7, max_tokens: 100}
       )
@@ -73,7 +73,7 @@ defmodule FixtureGenerator do
       )
 
     agent =
-      Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+      Agent.new(Nous.LLMTestHelper.test_model(),
         instructions: "You have access to a search tool. Use it to answer questions.",
         tools: [search_tool],
         model_settings: %{temperature: 0.5, max_tokens: 200}
@@ -118,7 +118,7 @@ defmodule FixtureGenerator do
       )
 
     agent =
-      Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+      Agent.new(Nous.LLMTestHelper.test_model(),
         instructions: "You have calculator and time tools. Use them when needed.",
         tools: [calculator, get_time],
         model_settings: %{temperature: 0.5, max_tokens: 200}
@@ -140,7 +140,7 @@ defmodule FixtureGenerator do
     IO.puts("💬 Generating conversation...")
 
     agent =
-      Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+      Agent.new(Nous.LLMTestHelper.test_model(),
         instructions: "You are a helpful assistant. Remember context from previous messages.",
         model_settings: %{temperature: 0.7, max_tokens: 100}
       )
@@ -182,7 +182,7 @@ defmodule FixtureGenerator do
       )
 
     agent =
-      Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+      Agent.new(Nous.LLMTestHelper.test_model(),
         instructions: "You have a tool. Try using it.",
         tools: [flaky_tool],
         model_settings: %{temperature: 0.5, max_tokens: 100}

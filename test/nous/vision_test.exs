@@ -29,7 +29,7 @@ defmodule Nous.VisionTest do
         ])
 
       agent =
-        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        Agent.new(Nous.LLMTestHelper.test_model(),
           instructions:
             "You are a helpful assistant that describes images accurately. Be concise."
         )
@@ -55,7 +55,7 @@ defmodule Nous.VisionTest do
         ])
       ]
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx")
+      agent = Agent.new(Nous.LLMTestHelper.test_model())
 
       {:ok, result} = Agent.run(agent, messages: messages)
 
@@ -82,7 +82,7 @@ defmodule Nous.VisionTest do
         ])
 
       agent =
-        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        Agent.new(Nous.LLMTestHelper.test_model(),
           instructions: "Answer questions briefly."
         )
 
@@ -115,7 +115,7 @@ defmodule Nous.VisionTest do
         )
 
       agent =
-        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        Agent.new(Nous.LLMTestHelper.test_model(),
           instructions: "Describe images briefly. Use the save_note tool to record observations.",
           tools: [save_note]
         )
@@ -149,7 +149,7 @@ defmodule Nous.VisionTest do
         ])
 
       agent =
-        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        Agent.new(Nous.LLMTestHelper.test_model(),
           instructions: "Describe images concisely."
         )
 

@@ -18,7 +18,7 @@ defmodule Nous.AgentCancellationTest do
         )
 
       agent =
-        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        Agent.new(Nous.LLMTestHelper.test_model(),
           instructions: "Use the echo tool",
           tools: [tool]
         )
@@ -66,7 +66,7 @@ defmodule Nous.AgentCancellationTest do
         )
 
       agent =
-        Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+        Agent.new(Nous.LLMTestHelper.test_model(),
           instructions: "Use the echo tool",
           tools: [tool]
         )
@@ -86,7 +86,7 @@ defmodule Nous.AgentCancellationTest do
         Nous.AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }
@@ -117,7 +117,7 @@ defmodule Nous.AgentCancellationTest do
         Nous.AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }
@@ -132,7 +132,7 @@ defmodule Nous.AgentCancellationTest do
         Nous.AgentServer.start_link(
           session_id: "test-#{:rand.uniform(10000)}",
           agent_config: %{
-            model: "lmstudio:qwen3-vl-4b-thinking-mlx",
+            model: Nous.LLMTestHelper.test_model(),
             instructions: "Test agent",
             tools: []
           }

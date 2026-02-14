@@ -12,12 +12,12 @@ defmodule Nous.Eval.Agents.StreamingTest do
   @moduletag :streaming
   @moduletag timeout: 120_000
 
-  @default_model "lmstudio:ministral-3-14b-reasoning"
+  @default_model Nous.LLMTestHelper.test_model()
 
   setup_all do
-    case check_lmstudio_available() do
+    case Nous.LLMTestHelper.check_model_available() do
       :ok -> {:ok, model: @default_model}
-      {:error, reason} -> {:ok, skip: "LM Studio not available: #{reason}"}
+      {:error, reason} -> {:ok, skip: "LLM not available: #{reason}"}
     end
   end
 
@@ -207,22 +207,5 @@ defmodule Nous.Eval.Agents.StreamingTest do
     _ -> []
   end
 
-  defp check_lmstudio_available do
-    url = System.get_env("LMSTUDIO_BASE_URL") || "http://localhost:1234/v1"
-
-    case Req.get("#{url}/models", receive_timeout: 5_000) do
-      {:ok, %{status: 200}} -> :ok
-      {:ok, %{status: status}} -> {:error, "Status #{status}"}
-      {:error, reason} -> {:error, inspect(reason)}
-    end
-  rescue
-    e -> {:error, Exception.message(e)}
-  end
-
-  defp skip_if_unavailable(%{skip: reason}) do
-    ExUnit.Case.register_attribute(__ENV__, :skip, reason)
-    :skip
-  end
-
-  defp skip_if_unavailable(_), do: :ok
+  defp skip_if_unavailable(ctx), do: Nous.LLMTestHelper.skip_if_unavailable(ctx)
 end
