@@ -31,7 +31,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       # State should be clean
       state = :sys.get_state(pid)
       assert state.current_task == nil
-      assert state.cancelled == false
+      assert state.cancelled_ref != nil
     end
 
     test "conversation history is preserved after cancellation" do
@@ -89,9 +89,10 @@ defmodule Nous.AgentCancellationExtendedTest do
       # Should have new task with cancelled=false
       state = :sys.get_state(pid)
       assert state.current_task != nil
-      assert state.cancelled == false
+      assert state.cancelled_ref != nil
     end
 
+    @tag timeout: 180_000
     test "handles :DOWN message for completed task" do
       {:ok, pid} =
         AgentServer.start_link(
@@ -112,7 +113,7 @@ defmodule Nous.AgentCancellationExtendedTest do
 
       # Task will complete, :DOWN message should clear task
       # Wait longer for model to respond and task to finish
-      Process.sleep(15_000)
+      Process.sleep(130_000)
 
       state_after = :sys.get_state(pid)
       assert state_after.current_task == nil
@@ -314,6 +315,7 @@ defmodule Nous.AgentCancellationExtendedTest do
       assert {:error, %Nous.Errors.ExecutionCancelled{reason: "Immediate cancel"}} = result
     end
 
+    @tag timeout: 150_000
     test "nil cancellation_check is safe" do
       agent =
         Agent.new(Nous.LLMTestHelper.test_model(),

@@ -147,14 +147,14 @@ defmodule Nous.Agents.ReActAgent do
 
     has_final_answer =
       Enum.any?(tool_calls, fn call ->
-        call.name == "final_answer" or call[:name] == "final_answer"
+        call["name"] == "final_answer" or call[:name] == "final_answer"
       end)
 
     if has_final_answer do
       # Extract final answer from tool call
       final_call =
         Enum.find(tool_calls, fn call ->
-          call.name == "final_answer" or call[:name] == "final_answer"
+          call["name"] == "final_answer" or call[:name] == "final_answer"
         end)
 
       answer =

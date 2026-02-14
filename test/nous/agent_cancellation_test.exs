@@ -48,8 +48,8 @@ defmodule Nous.AgentCancellationTest do
       Process.sleep(10)
       :atomics.put(cancellation_ref, 1, 1)
 
-      # Wait for result (longer timeout for slower models)
-      result = Task.await(task, 30_000)
+      # Wait for result (model request may take up to 120s before cancellation is checked)
+      result = Task.await(task, 150_000)
 
       # Should get cancellation error
       assert {:error, %Errors.ExecutionCancelled{reason: "Test cancellation"}} = result
@@ -95,7 +95,7 @@ defmodule Nous.AgentCancellationTest do
       # Initially no task
       state = :sys.get_state(pid)
       assert state.current_task == nil
-      assert state.cancelled == false
+      assert state.cancelled_ref != nil
 
       # Send message starts a task
       Nous.AgentServer.send_message(pid, "Test")

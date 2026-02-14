@@ -8,7 +8,7 @@ defmodule Nous.LLMTestHelper do
       TEST_MODEL=openai:gpt-4o-mini mix test --include llm
   """
 
-  @default_model "lmstudio:qwen3-vl-4b-thinking-mlx"
+  @default_model "lmstudio:qwen3-vl-4b-instruct-mlx"
 
   def test_model, do: System.get_env("TEST_MODEL") || @default_model
 

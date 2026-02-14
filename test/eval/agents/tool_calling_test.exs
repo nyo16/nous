@@ -344,7 +344,8 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
       IO.puts("\n[Multi-Tool] Output: #{result.actual_output}")
       IO.puts("[Multi-Tool] Score: #{result.score}")
 
-      assert result.metrics.tool_calls >= 1, "Expected at least one tool call"
+      tool_calls = if result.metrics, do: result.metrics.tool_calls, else: 0
+      assert tool_calls >= 1, "Expected at least one tool call"
     end
 
     test "2.4 Multiple cities weather", context do
@@ -364,9 +365,10 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
 
       {:ok, result} = Runner.run_case(test_case, model: context[:model], timeout: 60_000)
 
-      IO.puts("\n[Multi-City] Tool calls: #{result.metrics.tool_calls}")
+      tool_calls = if result.metrics, do: result.metrics.tool_calls, else: 0
+      IO.puts("\n[Multi-City] Tool calls: #{tool_calls}")
 
-      assert result.metrics.tool_calls >= 1, "Expected tool calls for multiple cities"
+      assert tool_calls >= 1, "Expected tool calls for multiple cities"
     end
   end
 
@@ -416,11 +418,12 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
 
       {:ok, result} = Runner.run_case(test_case, model: context[:model], timeout: 60_000)
 
+      tool_calls = if result.metrics, do: result.metrics.tool_calls, else: 0
       IO.puts("\n[Cart] Output: #{result.actual_output}")
-      IO.puts("[Cart] Tool calls: #{result.metrics.tool_calls}")
+      IO.puts("[Cart] Tool calls: #{tool_calls}")
 
       # This test might need multiple iterations
-      assert result.metrics.tool_calls >= 1, "Expected at least one tool call"
+      assert tool_calls >= 1, "Expected at least one tool call"
     end
   end
 
@@ -443,7 +446,9 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
 
       IO.puts("\n[Time] Output: #{result.actual_output}")
 
-      assert result.metrics.tool_calls >= 1 or String.length(result.actual_output || "") > 0,
+      tool_calls = if result.metrics, do: result.metrics.tool_calls, else: 0
+
+      assert tool_calls >= 1 or String.length(result.actual_output || "") > 0,
              "Expected time tool call or response"
     end
   end
