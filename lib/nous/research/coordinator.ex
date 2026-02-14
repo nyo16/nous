@@ -105,16 +105,12 @@ defmodule Nous.Research.Coordinator do
         state.query
       end
 
-    case Planner.plan(query, model: model, strategy: strategy) do
-      {:ok, plan} ->
-        Logger.info(
-          "Research plan created: #{length(plan.steps)} steps (iteration #{state.iteration + 1})"
-        )
+    with {:ok, plan} <- Planner.plan(query, model: model, strategy: strategy) do
+      Logger.info(
+        "Research plan created: #{length(plan.steps)} steps (iteration #{state.iteration + 1})"
+      )
 
-        {:ok, plan, state}
-
-      {:error, reason} ->
-        {:error, reason}
+      {:ok, plan, state}
     end
   end
 
@@ -126,47 +122,39 @@ defmodule Nous.Research.Coordinator do
     )
 
     # Phase 2: Search - execute all steps
-    case search_phase(plan, state) do
-      {:ok, new_findings, state} ->
-        all_findings = state.all_findings ++ new_findings
-        state = %{state | all_findings: all_findings}
+    with {:ok, new_findings, state} <- search_phase(plan, state) do
+      all_findings = state.all_findings ++ new_findings
+      state = %{state | all_findings: all_findings}
+
+      notify(
+        state,
+        {:research_progress,
+         %{phase: :synthesizing, iteration: state.iteration, findings: length(all_findings)}}
+      )
+
+      # Phase 3: Synthesize
+      with {:ok, synthesis, state} <- synthesize_phase(state) do
+        state = %{state | synthesis: synthesis, iteration: state.iteration + 1}
 
         notify(
           state,
           {:research_progress,
-           %{phase: :synthesizing, iteration: state.iteration, findings: length(all_findings)}}
+           %{
+             phase: :evaluating,
+             iteration: state.iteration,
+             gaps: length(synthesis[:gaps] || [])
+           }}
         )
 
-        # Phase 3: Synthesize
-        case synthesize_phase(state) do
-          {:ok, synthesis, state} ->
-            state = %{state | synthesis: synthesis, iteration: state.iteration + 1}
+        # Phase 4: Evaluate - should we continue?
+        case evaluate_termination(state) do
+          :continue ->
+            research_loop(state)
 
-            notify(
-              state,
-              {:research_progress,
-               %{
-                 phase: :evaluating,
-                 iteration: state.iteration,
-                 gaps: length(synthesis[:gaps] || [])
-               }}
-            )
-
-            # Phase 4: Evaluate - should we continue?
-            case evaluate_termination(state) do
-              :continue ->
-                research_loop(state)
-
-              :stop ->
-                generate_report(state)
-            end
-
-          {:error, reason} ->
-            {:error, reason}
+          :stop ->
+            generate_report(state)
         end
-
-      {:error, reason} ->
-        {:error, reason}
+      end
     end
   end
 
@@ -242,16 +230,13 @@ defmodule Nous.Research.Coordinator do
     existing_contradictions =
       if state.synthesis, do: state.synthesis[:contradictions] || [], else: []
 
-    case Synthesizer.synthesize(state.all_findings,
-           model: model,
-           gaps: existing_gaps,
-           contradictions: existing_contradictions
-         ) do
-      {:ok, synthesis} ->
-        {:ok, synthesis, state}
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, synthesis} <-
+           Synthesizer.synthesize(state.all_findings,
+             model: model,
+             gaps: existing_gaps,
+             contradictions: existing_contradictions
+           ) do
+      {:ok, synthesis, state}
     end
   end
 

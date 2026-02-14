@@ -385,7 +385,9 @@ defmodule Nous.Providers.HTTP do
                   {:data, data}, acc ->
                     send(parent, {:sse, :data, data})
                     acc
-                end, receive_timeout: timeout)
+                end,
+                receive_timeout: timeout
+              )
             rescue
               e ->
                 Logger.error("Finch.stream raised: #{inspect(e)}")
