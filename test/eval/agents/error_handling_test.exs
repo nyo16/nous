@@ -200,6 +200,7 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
   end
 
   describe "Cancellation" do
+    @tag timeout: 150_000
     test "6.8 cancellation via check function", context do
       skip_if_unavailable(context)
 
