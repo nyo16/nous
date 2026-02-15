@@ -23,6 +23,8 @@ defmodule Nous.Application do
          # Local LM Studio
          "http://localhost:1234" => [size: 5]
        }},
+      # Task supervisor for async agent tasks
+      {Task.Supervisor, name: Nous.TaskSupervisor},
       # Agent process registry and dynamic supervisor
       Nous.AgentRegistry,
       Nous.AgentDynamicSupervisor

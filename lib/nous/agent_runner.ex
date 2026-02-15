@@ -285,21 +285,10 @@ defmodule Nous.AgentRunner do
   end
 
   defp build_initial_messages(history, prompt, system_prompt) do
-    messages = []
+    system =
+      if system_prompt && system_prompt != "", do: [Message.system(system_prompt)], else: []
 
-    # Add system prompt if present
-    messages =
-      if system_prompt && system_prompt != "" do
-        [Message.system(system_prompt) | messages]
-      else
-        messages
-      end
-
-    # Add history
-    messages = messages ++ history
-
-    # Add user prompt
-    messages ++ [Message.user(prompt)]
+    system ++ history ++ [Message.user(prompt)]
   end
 
   defp resolve_prompt(nil, _opts), do: nil
@@ -337,123 +326,119 @@ defmodule Nous.AgentRunner do
     end
   end
 
+  defp do_iteration(_agent, _behaviour, %{needs_response: false} = ctx), do: {:ok, ctx}
+
   defp do_iteration(agent, behaviour, ctx) do
-    # Check needs_response - if false, we're done
-    if not ctx.needs_response do
-      {:ok, ctx}
-      # Check max iterations
+    if Context.max_iterations_reached?(ctx) do
+      Logger.error("""
+      Max iterations exceeded
+        Agent: #{agent.name}
+        Max iterations: #{ctx.max_iterations}
+        Total tokens used: #{ctx.usage.total_tokens}
+      """)
+
+      error = Errors.MaxIterationsExceeded.exception(max_iterations: ctx.max_iterations)
+      {:error, error}
     else
-      if Context.max_iterations_reached?(ctx) do
-        Logger.error("""
-        Max iterations exceeded
-          Agent: #{agent.name}
-          Max iterations: #{ctx.max_iterations}
-          Total tokens used: #{ctx.usage.total_tokens}
-        """)
+      # Get tools from behaviour + plugins
+      tools = behaviour.get_tools(agent)
+      plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
+      all_tools = tools ++ plugin_tools
 
-        error = Errors.MaxIterationsExceeded.exception(max_iterations: ctx.max_iterations)
-        {:error, error}
-      else
-        # Get tools from behaviour + plugins
-        tools = behaviour.get_tools(agent)
-        plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
-        all_tools = tools ++ plugin_tools
+      # Apply plugin system prompt fragments only on first iteration
+      ctx = if ctx.iteration == 0, do: apply_plugin_system_prompts(agent, ctx), else: ctx
 
-        # Apply plugin system prompt fragments
-        ctx = apply_plugin_system_prompts(agent, ctx)
+      # Run plugin before_request hooks
+      {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
 
-        # Run plugin before_request hooks
-        {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
+      # Build messages via behaviour
+      messages = behaviour.build_messages(agent, ctx)
 
-        # Build messages via behaviour
-        messages = behaviour.build_messages(agent, ctx)
-
-        # Add tools to model settings if any
-        model_settings =
-          if Enum.empty?(all_tools) do
-            agent.model_settings
-          else
-            Logger.debug(
-              "Converting #{length(all_tools)} tools for provider: #{agent.model.provider}"
-            )
-
-            tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
-            Map.put(agent.model_settings, :tools, tool_schemas)
-          end
-
-        # Apply before_request callback if implemented
-        model_settings =
-          Behaviour.call(
-            behaviour,
-            :before_request,
-            [agent, ctx, Keyword.new(model_settings)],
-            Keyword.new(model_settings)
+      # Add tools to model settings if any
+      model_settings =
+        if Enum.empty?(all_tools) do
+          agent.model_settings
+        else
+          Logger.debug(
+            "Converting #{length(all_tools)} tools for provider: #{agent.model.provider}"
           )
-          |> Map.new()
 
-        # Make model request
-        Logger.debug(
-          "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
-        )
-
-        case get_dispatcher().request(agent.model, messages, model_settings) do
-          {:ok, response} ->
-            # Update usage
-            usage_update = response.metadata.usage || %{}
-            ctx = Context.add_usage(ctx, usage_update)
-            ctx = Context.increment_iteration(ctx)
-
-            # Get total tokens safely from struct or map
-            tokens_added =
-              case usage_update do
-                %{total_tokens: t} when is_integer(t) -> t
-                _ -> 0
-              end
-
-            Logger.debug(
-              "Model response received (tokens: +#{tokens_added}, total: #{ctx.usage.total_tokens})"
-            )
-
-            # Execute callback
-            Callbacks.execute(ctx, :on_llm_new_message, response)
-
-            # Run plugin after_response hooks
-            ctx = Plugin.run_after_response(agent.plugins, agent, response, ctx)
-
-            # Process response via behaviour - this handles tool calls and updates needs_response
-            ctx = behaviour.process_response(agent, response, ctx)
-
-            # Check if we need to handle tool calls (behaviour may have set this up)
-            ctx =
-              if Message.has_tool_calls?(response) do
-                handle_tool_calls(agent, behaviour, ctx, response, all_tools)
-              else
-                ctx
-              end
-
-            # Continue loop
-            execute_loop(agent, behaviour, ctx)
-
-          {:error, reason} ->
-            Logger.error("""
-            Model request failed in iteration #{ctx.iteration + 1}
-              Agent: #{agent.name}
-              Model: #{agent.model.provider}:#{agent.model.model}
-              Reason: #{inspect(reason)}
-            """)
-
-            # Try error handler if implemented
-            case Behaviour.call(behaviour, :handle_error, [agent, reason, ctx], {:error, reason}) do
-              {:retry, new_ctx} ->
-                execute_loop(agent, behaviour, new_ctx)
-
-              {:continue, new_ctx} ->
-                execute_loop(agent, behaviour, new_ctx)
-
-              {:error, _} = err ->
-                err
-            end
+          tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
+          Map.put(agent.model_settings, :tools, tool_schemas)
         end
+
+      # Apply before_request callback if implemented
+      model_settings =
+        Behaviour.call(
+          behaviour,
+          :before_request,
+          [agent, ctx, Keyword.new(model_settings)],
+          Keyword.new(model_settings)
+        )
+        |> Map.new()
+
+      # Make model request
+      Logger.debug(
+        "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
+      )
+
+      case get_dispatcher().request(agent.model, messages, model_settings) do
+        {:ok, response} ->
+          # Update usage
+          usage_update = response.metadata.usage || %{}
+          ctx = Context.add_usage(ctx, usage_update)
+          ctx = Context.increment_iteration(ctx)
+
+          # Get total tokens safely from struct or map
+          tokens_added =
+            case usage_update do
+              %{total_tokens: t} when is_integer(t) -> t
+              _ -> 0
+            end
+
+          Logger.debug(
+            "Model response received (tokens: +#{tokens_added}, total: #{ctx.usage.total_tokens})"
+          )
+
+          # Execute callback
+          Callbacks.execute(ctx, :on_llm_new_message, response)
+
+          # Run plugin after_response hooks
+          ctx = Plugin.run_after_response(agent.plugins, agent, response, ctx)
+
+          # Process response via behaviour - this handles tool calls and updates needs_response
+          ctx = behaviour.process_response(agent, response, ctx)
+
+          # Check if we need to handle tool calls (behaviour may have set this up)
+          ctx =
+            if Message.has_tool_calls?(response) do
+              handle_tool_calls(agent, behaviour, ctx, response, all_tools)
+            else
+              ctx
+            end
+
+          # Continue loop
+          execute_loop(agent, behaviour, ctx)
+
+        {:error, reason} ->
+          Logger.error("""
+          Model request failed in iteration #{ctx.iteration + 1}
+            Agent: #{agent.name}
+            Model: #{agent.model.provider}:#{agent.model.model}
+            Reason: #{inspect(reason)}
+          """)
+
+          # Try error handler if implemented
+          case Behaviour.call(behaviour, :handle_error, [agent, reason, ctx], {:error, reason}) do
+            {:retry, new_ctx} ->
+              execute_loop(agent, behaviour, new_ctx)
+
+            {:continue, new_ctx} ->
+              execute_loop(agent, behaviour, new_ctx)
+
+            {:error, _} = err ->
+              err
+          end
       end
     end
   end
@@ -501,56 +486,15 @@ defmodule Nous.AgentRunner do
             {:edit, new_args} ->
               Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
               edited_call = put_tool_field(call, :arguments, new_args)
-              {result_msg, context_updates} = execute_single_tool(tools, edited_call, run_ctx)
 
-              Callbacks.execute(acc_ctx, :on_tool_response, %{
-                id: call_id,
-                name: call_name,
-                result: result_msg.content
-              })
-
-              acc_ctx =
-                Behaviour.call(
-                  behaviour,
-                  :after_tool,
-                  [agent, edited_call, result_msg.content, acc_ctx],
-                  acc_ctx
-                )
-
-              acc_ctx =
-                if map_size(context_updates) > 0 do
-                  Logger.debug("Merging context updates: #{inspect(Map.keys(context_updates))}")
-                  Context.merge_deps(acc_ctx, context_updates)
-                else
-                  acc_ctx
-                end
+              {result_msg, acc_ctx} =
+                execute_and_record_tool(tools, edited_call, run_ctx, behaviour, agent, acc_ctx)
 
               {[result_msg | results], acc_ctx}
 
             :approve ->
-              {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
-
-              Callbacks.execute(acc_ctx, :on_tool_response, %{
-                id: call_id,
-                name: call_name,
-                result: result_msg.content
-              })
-
-              acc_ctx =
-                Behaviour.call(
-                  behaviour,
-                  :after_tool,
-                  [agent, call, result_msg.content, acc_ctx],
-                  acc_ctx
-                )
-
-              acc_ctx =
-                if map_size(context_updates) > 0 do
-                  Logger.debug("Merging context updates: #{inspect(Map.keys(context_updates))}")
-                  Context.merge_deps(acc_ctx, context_updates)
-                else
-                  acc_ctx
-                end
+              {result_msg, acc_ctx} =
+                execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
 
               {[result_msg | results], acc_ctx}
           end
@@ -565,6 +509,37 @@ defmodule Nous.AgentRunner do
         Context.add_tool_call(acc, call)
       end)
     end
+  end
+
+  # Execute a tool call and record its result, returning the result message and updated context
+  defp execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx) do
+    call_name = get_tool_field(call, :name)
+    call_id = get_tool_field(call, :id)
+    {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
+
+    Callbacks.execute(acc_ctx, :on_tool_response, %{
+      id: call_id,
+      name: call_name,
+      result: result_msg.content
+    })
+
+    acc_ctx =
+      Behaviour.call(
+        behaviour,
+        :after_tool,
+        [agent, call, result_msg.content, acc_ctx],
+        acc_ctx
+      )
+
+    acc_ctx =
+      if map_size(context_updates) > 0 do
+        Logger.debug("Merging context updates: #{inspect(Map.keys(context_updates))}")
+        Context.merge_deps(acc_ctx, context_updates)
+      else
+        acc_ctx
+      end
+
+    {result_msg, acc_ctx}
   end
 
   defp execute_single_tool(tools, call, run_ctx) do
@@ -787,29 +762,24 @@ defmodule Nous.AgentRunner do
   end
 
   defp wrap_stream_with_callbacks(stream, ctx) do
-    Stream.transform(stream, nil, fn event, acc ->
+    Stream.map(stream, fn event ->
       case event do
         {:text_delta, text} ->
           Callbacks.execute(ctx, :on_llm_new_delta, text)
-          {[event], acc}
 
         {:thinking_delta, text} ->
           Callbacks.execute(ctx, :on_llm_new_delta, "[thinking] #{text}")
-          {[event], acc}
 
         {:tool_call_delta, calls} ->
           Enum.each(calls, fn call ->
             Callbacks.execute(ctx, :on_tool_call, call)
           end)
 
-          {[event], acc}
-
-        {:finish, _reason} = finish ->
-          {[finish], acc}
-
-        other ->
-          {[other], acc}
+        _ ->
+          :ok
       end
+
+      event
     end)
   end
 
@@ -861,59 +831,38 @@ defmodule Nous.AgentRunner do
   end
 
   defp format_todos_for_prompt(todos) do
-    in_progress = Enum.filter(todos, &(&1.status == "in_progress"))
-    pending = Enum.filter(todos, &(&1.status == "pending"))
-    completed = Enum.filter(todos, &(&1.status == "completed"))
+    grouped = Enum.group_by(todos, & &1.status)
 
-    sections = []
+    section_defs = [
+      {"in_progress", "In Progress",
+       fn todo ->
+         "  #{priority_icon(todo.priority)} [#{todo.id}] #{todo.text}"
+       end},
+      {"pending", "Pending",
+       fn todo ->
+         "  #{priority_icon(todo.priority)} [#{todo.id}] #{todo.text}"
+       end},
+      {"completed", "Completed",
+       fn todo ->
+         "  * [#{todo.id}] #{todo.text}"
+       end}
+    ]
 
-    # In Progress section
     sections =
-      if length(in_progress) > 0 do
-        in_progress_list =
-          Enum.map_join(in_progress, "\n", fn todo ->
-            priority_icon = priority_icon(todo.priority)
-            "  #{priority_icon} [#{todo.id}] #{todo.text}"
-          end)
+      Enum.flat_map(section_defs, fn {status, label, formatter} ->
+        case Map.get(grouped, status, []) do
+          [] ->
+            []
 
-        ["\nIn Progress (#{length(in_progress)}):\n#{in_progress_list}" | sections]
-      else
-        sections
-      end
+          items ->
+            list = Enum.map_join(items, "\n", formatter)
+            ["\n#{label} (#{length(items)}):\n#{list}"]
+        end
+      end)
 
-    # Pending section
-    sections =
-      if length(pending) > 0 do
-        pending_list =
-          Enum.map_join(pending, "\n", fn todo ->
-            priority_icon = priority_icon(todo.priority)
-            "  #{priority_icon} [#{todo.id}] #{todo.text}"
-          end)
-
-        ["\nPending (#{length(pending)}):\n#{pending_list}" | sections]
-      else
-        sections
-      end
-
-    # Completed section
-    sections =
-      if length(completed) > 0 do
-        completed_list =
-          Enum.map_join(completed, "\n", fn todo ->
-            "  * [#{todo.id}] #{todo.text}"
-          end)
-
-        ["\nCompleted (#{length(completed)}):\n#{completed_list}" | sections]
-      else
-        sections
-      end
-
-    if sections == [] do
-      "No tasks yet. Use add_todo() to create tasks."
-    else
-      sections
-      |> Enum.reverse()
-      |> Enum.join("\n")
+    case sections do
+      [] -> "No tasks yet. Use add_todo() to create tasks."
+      _ -> Enum.join(sections, "\n")
     end
   end
 
