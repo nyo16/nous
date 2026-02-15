@@ -32,6 +32,7 @@ Progressive learning path from basics to advanced features:
 | [10_react_agent.exs](https://github.com/nyo16/nous/blob/master/examples/10_react_agent.exs) | ReAct pattern for complex reasoning |
 | [11_human_in_the_loop.exs](https://github.com/nyo16/nous/blob/master/examples/11_human_in_the_loop.exs) | HITL approval workflows (sync + async PubSub) |
 | [12_pubsub_agent.exs](https://github.com/nyo16/nous/blob/master/examples/12_pubsub_agent.exs) | PubSub agent lifecycle, registry, persistence |
+| [13_sub_agents.exs](https://github.com/nyo16/nous/blob/master/examples/13_sub_agents.exs) | Sub-agents (single + parallel) with fan-out/fan-in |
 
 ## Provider Examples
 

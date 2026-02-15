@@ -17,7 +17,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.10.0"}
+    {:nous, "~> 0.10.1"}
   ]
 end
 ```
@@ -320,12 +320,37 @@ Enable agents to delegate tasks to specialized child agents:
 agent = Nous.new("openai:gpt-4",
   plugins: [Nous.Plugins.SubAgent],
   deps: %{sub_agent_templates: %{
-    researcher: %{model: "openai:gpt-4", instructions: "Research topics thoroughly"},
-    coder: %{model: "openai:gpt-4", instructions: "Write clean Elixir code"}
+    "researcher" => Agent.new("openai:gpt-4o-mini",
+      instructions: "Research topics thoroughly"
+    ),
+    "coder" => Agent.new("openai:gpt-4",
+      instructions: "Write clean Elixir code"
+    )
   }}
 )
 
+# delegate_task — single sub-agent for focused work
 {:ok, result} = Nous.run(agent, "Research Elixir GenServers, then write an example")
+
+# spawn_agents — multiple sub-agents in parallel
+{:ok, result} = Nous.run(agent,
+  "Compare GenServer vs Agent vs ETS for caching. Research each in parallel."
+)
+```
+
+The `SubAgent` plugin provides two tools:
+- `delegate_task` — run a single sub-agent for sequential delegation
+- `spawn_agents` — run multiple sub-agents concurrently via `Task.Supervisor`
+
+Each sub-agent runs in its own isolated context. Configure concurrency
+limits and timeouts via deps:
+
+```elixir
+deps: %{
+  sub_agent_templates: templates,
+  parallel_max_concurrency: 3,  # Max concurrent sub-agents (default: 5)
+  parallel_timeout: 60_000      # Per-task timeout in ms (default: 120_000)
+}
 ```
 
 ### Deep Research
@@ -408,6 +433,7 @@ See [examples/advanced/liveview_integration.exs](examples/advanced/liveview_inte
 | [08_tool_testing.exs](examples/08_tool_testing.exs) | Test helpers |
 | [09_agent_server.exs](examples/09_agent_server.exs) | GenServer agent |
 | [10_react_agent.exs](examples/10_react_agent.exs) | ReAct pattern |
+| [13_sub_agents.exs](examples/13_sub_agents.exs) | Sub-agents (single + parallel) |
 
 ### Provider Examples
 
