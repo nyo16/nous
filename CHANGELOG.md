@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.1] - 2026-02-14
+
+### Changed
+
+- **Sub-Agent plugin unified**: Merged `ParallelSubAgent` into `Nous.Plugins.SubAgent`
+  - Single plugin now provides both `delegate_task` (single) and `spawn_agents` (parallel) tools
+  - `system_prompt/2` callback injects orchestration guidance including available templates
+  - Templates accept `%Nous.Agent{}` structs (recommended) or config maps (legacy)
+  - Parallel execution via `Task.Supervisor.async_stream_nolink`
+  - Configurable concurrency (`parallel_max_concurrency`, default: 5) and timeout (`parallel_timeout`, default: 120s)
+  - Graceful partial failure: crashed/timed-out sub-agents don't block others
+
+- **New Example**: `examples/13_sub_agents.exs`
+  - Template-based sub-agents using `Agent.new/2` structs
+  - Parallel execution with inline model config
+  - Direct programmatic invocation bypassing the LLM
+
 ## [0.10.0] - 2026-02-14
 
 ### Added
