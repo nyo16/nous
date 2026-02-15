@@ -1,4 +1,6 @@
 defmodule Nous.PubSub do
+  require Logger
+
   @moduledoc """
   Thin PubSub abstraction for Nous.
 
@@ -70,7 +72,12 @@ defmodule Nous.PubSub do
       try do
         apply(Phoenix.PubSub, :subscribe, [pubsub, topic])
       catch
-        :error, _ -> :ok
+        :error, %ArgumentError{} ->
+          :ok
+
+        :error, reason ->
+          Logger.debug("PubSub subscribe failed: #{inspect(reason)}")
+          :ok
       end
     else
       :ok
@@ -93,7 +100,12 @@ defmodule Nous.PubSub do
       try do
         apply(Phoenix.PubSub, :broadcast, [pubsub, topic, message])
       catch
-        :error, _ -> :ok
+        :error, %ArgumentError{} ->
+          :ok
+
+        :error, reason ->
+          Logger.debug("PubSub broadcast failed: #{inspect(reason)}")
+          :ok
       end
     else
       :ok

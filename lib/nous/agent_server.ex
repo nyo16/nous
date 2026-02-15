@@ -87,7 +87,7 @@ defmodule Nous.AgentServer do
           topic: String.t(),
           agent_type: :standard | :react,
           current_task: Task.t() | nil,
-          cancelled: boolean()
+          cancelled_ref: :atomics.atomics_ref()
         }
 
   # Client API
@@ -263,6 +263,9 @@ defmodule Nous.AgentServer do
     # Schedule initial inactivity timer
     inactivity_timer_ref = schedule_inactivity_timeout(inactivity_timeout)
 
+    # Atomics ref for lock-free cancellation checks from the task process
+    cancelled_ref = :atomics.new(1, signed: false)
+
     state = %{
       session_id: session_id,
       agent: agent,
@@ -271,7 +274,7 @@ defmodule Nous.AgentServer do
       topic: topic,
       agent_type: agent_type,
       current_task: nil,
-      cancelled: false,
+      cancelled_ref: cancelled_ref,
       inactivity_timeout: inactivity_timeout,
       inactivity_timer_ref: inactivity_timer_ref,
       persistence: persistence
@@ -288,7 +291,7 @@ defmodule Nous.AgentServer do
         Logger.warning("Cancelling existing task for new message in session: #{state.session_id}")
 
         # Set cancelled flag to signal the task to stop
-        state = %{state | cancelled: true}
+        :atomics.put(state.cancelled_ref, 1, 1)
 
         # Attempt graceful shutdown first
         case Task.shutdown(state.current_task, 2_000) do
@@ -314,20 +317,17 @@ defmodule Nous.AgentServer do
     context = Context.add_message(state.context, Message.user(message))
 
     # Reset cancelled flag for new execution and reset inactivity timer
-    state = %{state | cancelled: false, context: context}
+    :atomics.put(state.cancelled_ref, 1, 0)
+    state = %{state | context: context}
     state = reset_inactivity_timer(state)
 
     # Run agent asynchronously and track the task
     server_pid = self()
+    cancelled_ref = state.cancelled_ref
 
     task =
-      Task.async(fn ->
-        try do
-          run_agent_and_respond(server_pid, state, message)
-        after
-          # Always ensure cleanup message is sent
-          send(server_pid, {:agent_task_finished})
-        end
+      Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
+        run_agent_and_respond(server_pid, state, message, cancelled_ref)
       end)
 
     {:noreply, %{state | current_task: task}}
@@ -369,8 +369,8 @@ defmodule Nous.AgentServer do
       task ->
         Logger.info("Cancelling execution for session: #{state.session_id}")
 
-        # Set cancelled flag - the runner will check this
-        state = %{state | cancelled: true}
+        # Set cancelled flag - the runner will check this via atomics
+        :atomics.put(state.cancelled_ref, 1, 1)
 
         # Shutdown task gracefully with timeout
         shutdown_result = Task.shutdown(task, 5_000)
@@ -390,15 +390,11 @@ defmodule Nous.AgentServer do
         broadcast(state, {:agent_cancelled, "Execution cancelled by user"})
 
         # Clear current task and reset cancelled flag
-        state = %{state | current_task: nil, cancelled: false}
+        state = %{state | current_task: nil}
+        :atomics.put(state.cancelled_ref, 1, 0)
 
         {:reply, {:ok, :cancelled}, state}
     end
-  end
-
-  @impl true
-  def handle_call(:is_cancelled, _from, state) do
-    {:reply, state.cancelled, state}
   end
 
   @impl true
@@ -492,8 +488,8 @@ defmodule Nous.AgentServer do
 
   @impl true
   def handle_info({:agent_response_ready, context, _result}, state) do
-    # Update state with new context and clear current task
-    state = %{state | context: context, current_task: nil}
+    # Update state with new context (current_task is cleared by :DOWN)
+    state = %{state | context: context}
 
     # Auto-save context if persistence is configured
     do_save_context(state)
@@ -504,12 +500,6 @@ defmodule Nous.AgentServer do
   @impl true
   def handle_info({:agent_task_completed, _reason}, state) do
     # Task completed (with error or cancellation), clear it
-    {:noreply, %{state | current_task: nil}}
-  end
-
-  @impl true
-  def handle_info({:agent_task_finished}, state) do
-    # Task finished (cleanup from try/after), clear it
     {:noreply, %{state | current_task: nil}}
   end
 
@@ -589,25 +579,29 @@ defmodule Nous.AgentServer do
     end
   end
 
-  defp run_agent_and_respond(server_pid, state, message) do
+  defp run_agent_and_respond(server_pid, state, message, cancelled_ref) do
     # Check if cancelled before starting
-    if state.cancelled do
+    if :atomics.get(cancelled_ref, 1) == 1 do
       Logger.info("Execution cancelled before agent run for session: #{state.session_id}")
       broadcast(state, {:agent_cancelled, "Execution cancelled"})
       :cancelled
     else
-      do_agent_run(server_pid, state, message)
+      do_agent_run(server_pid, state, message, cancelled_ref)
     end
   end
 
-  defp do_agent_run(server_pid, state, message) do
+  defp do_agent_run(server_pid, state, message, cancelled_ref) do
     # Run agent with context continuation and notify_pid for events
     result =
       Nous.AgentRunner.run(state.agent, message,
         context: state.context,
         notify_pid: server_pid,
         max_iterations: 15,
-        cancellation_check: fn -> check_cancelled(server_pid) end
+        cancellation_check: fn ->
+          if :atomics.get(cancelled_ref, 1) == 1 do
+            throw({:cancelled, "Execution cancelled"})
+          end
+        end
       )
 
     case result do
@@ -631,19 +625,6 @@ defmodule Nous.AgentServer do
         # Broadcast error
         broadcast(state, {:agent_error, error_msg})
         send(server_pid, {:agent_task_completed, :error})
-    end
-  end
-
-  defp check_cancelled(server_pid) do
-    # Check if the server's cancelled flag is set
-    try do
-      case GenServer.call(server_pid, :is_cancelled, 100) do
-        true -> throw({:cancelled, "Execution cancelled"})
-        false -> :ok
-      end
-    catch
-      # Server might be shutting down, continue
-      :exit, _ -> :ok
     end
   end
 
