@@ -36,14 +36,15 @@ defmodule Nous.Tools.DateTimeTools do
 
     date = get_date_in_timezone(timezone)
 
-    formatted_date = case format do
-      "iso8601" -> Date.to_iso8601(date)
-      "us" -> Calendar.strftime(date, "%m/%d/%Y")
-      "eu" -> Calendar.strftime(date, "%d/%m/%Y")
-      "full" -> Calendar.strftime(date, "%A, %B %-d, %Y")
-      "short" -> Calendar.strftime(date, "%b %-d, %Y")
-      _ -> Date.to_iso8601(date)
-    end
+    formatted_date =
+      case format do
+        "iso8601" -> Date.to_iso8601(date)
+        "us" -> Calendar.strftime(date, "%m/%d/%Y")
+        "eu" -> Calendar.strftime(date, "%d/%m/%Y")
+        "full" -> Calendar.strftime(date, "%A, %B %-d, %Y")
+        "short" -> Calendar.strftime(date, "%b %-d, %Y")
+        _ -> Date.to_iso8601(date)
+      end
 
     %{
       date: formatted_date,
@@ -68,12 +69,13 @@ defmodule Nous.Tools.DateTimeTools do
 
     time = get_time_in_timezone(timezone)
 
-    formatted_time = case format do
-      "24h" -> Time.to_iso8601(time)
-      "12h" -> Calendar.strftime(time, "%I:%M:%S %p")
-      "short" -> Calendar.strftime(time, "%H:%M")
-      _ -> Time.to_iso8601(time)
-    end
+    formatted_time =
+      case format do
+        "24h" -> Time.to_iso8601(time)
+        "12h" -> Calendar.strftime(time, "%I:%M:%S %p")
+        "short" -> Calendar.strftime(time, "%H:%M")
+        _ -> Time.to_iso8601(time)
+      end
 
     %{
       time: formatted_time,
@@ -99,13 +101,14 @@ defmodule Nous.Tools.DateTimeTools do
 
     datetime = get_datetime_in_timezone(timezone)
 
-    formatted = case format do
-      "iso8601" -> DateTime.to_iso8601(datetime)
-      "rfc3339" -> DateTime.to_string(datetime)
-      "unix" -> DateTime.to_unix(datetime) |> to_string()
-      "human" -> Calendar.strftime(datetime, "%A, %B %-d, %Y at %I:%M %p %Z")
-      _ -> DateTime.to_iso8601(datetime)
-    end
+    formatted =
+      case format do
+        "iso8601" -> DateTime.to_iso8601(datetime)
+        "rfc3339" -> DateTime.to_string(datetime)
+        "unix" -> DateTime.to_unix(datetime) |> to_string()
+        "human" -> Calendar.strftime(datetime, "%A, %B %-d, %Y at %I:%M %p %Z")
+        _ -> DateTime.to_iso8601(datetime)
+      end
 
     %{
       datetime: formatted,
@@ -134,16 +137,18 @@ defmodule Nous.Tools.DateTimeTools do
 
     with {:ok, date1} <- Date.from_iso8601(date1_str),
          {:ok, date2} <- Date.from_iso8601(date2_str) do
-
       diff_days = Date.diff(date2, date1)
 
-      result = case unit do
-        "days" -> diff_days
-        "weeks" -> Float.round(diff_days / 7, 2)
-        "months" -> Float.round(diff_days / 30.44, 2)  # Average month length
-        "years" -> Float.round(diff_days / 365.25, 2)  # Account for leap years
-        _ -> diff_days
-      end
+      result =
+        case unit do
+          "days" -> diff_days
+          "weeks" -> Float.round(diff_days / 7, 2)
+          # Average month length
+          "months" -> Float.round(diff_days / 30.44, 2)
+          # Account for leap years
+          "years" -> Float.round(diff_days / 365.25, 2)
+          _ -> diff_days
+        end
 
       %{
         date1: date1_str,
@@ -171,14 +176,15 @@ defmodule Nous.Tools.DateTimeTools do
     date_str = Map.get(args, "date")
     days = Map.get(args, "days", 0)
 
-    base_date = if date_str do
-      case Date.from_iso8601(date_str) do
-        {:ok, date} -> date
-        _ -> Date.utc_today()
+    base_date =
+      if date_str do
+        case Date.from_iso8601(date_str) do
+          {:ok, date} -> date
+          _ -> Date.utc_today()
+        end
+      else
+        Date.utc_today()
       end
-    else
-      Date.utc_today()
-    end
 
     result_date = Date.add(base_date, days)
 
@@ -201,14 +207,15 @@ defmodule Nous.Tools.DateTimeTools do
   def is_weekend(_ctx, args) do
     date_str = Map.get(args, "date")
 
-    date = if date_str do
-      case Date.from_iso8601(date_str) do
-        {:ok, date} -> date
-        _ -> Date.utc_today()
+    date =
+      if date_str do
+        case Date.from_iso8601(date_str) do
+          {:ok, date} -> date
+          _ -> Date.utc_today()
+        end
+      else
+        Date.utc_today()
       end
-    else
-      Date.utc_today()
-    end
 
     day_of_week = Date.day_of_week(date)
     is_weekend = day_of_week in [6, 7]
@@ -232,14 +239,15 @@ defmodule Nous.Tools.DateTimeTools do
   def day_of_week(_ctx, args) do
     date_str = Map.get(args, "date")
 
-    date = if date_str do
-      case Date.from_iso8601(date_str) do
-        {:ok, date} -> date
-        _ -> Date.utc_today()
+    date =
+      if date_str do
+        case Date.from_iso8601(date_str) do
+          {:ok, date} -> date
+          _ -> Date.utc_today()
+        end
+      else
+        Date.utc_today()
       end
-    else
-      Date.utc_today()
-    end
 
     %{
       date: Date.to_iso8601(date),
@@ -263,21 +271,22 @@ defmodule Nous.Tools.DateTimeTools do
     date_string = Map.get(args, "date_string") || Map.get(args, "date")
     format_hint = Map.get(args, "format", "iso8601")
 
-    result = case format_hint do
-      "iso8601" ->
-        Date.from_iso8601(date_string)
+    result =
+      case format_hint do
+        "iso8601" ->
+          Date.from_iso8601(date_string)
 
-      "us" ->
-        # MM/DD/YYYY
-        parse_us_date(date_string)
+        "us" ->
+          # MM/DD/YYYY
+          parse_us_date(date_string)
 
-      "eu" ->
-        # DD/MM/YYYY
-        parse_eu_date(date_string)
+        "eu" ->
+          # DD/MM/YYYY
+          parse_eu_date(date_string)
 
-      _ ->
-        Date.from_iso8601(date_string)
-    end
+        _ ->
+          Date.from_iso8601(date_string)
+      end
 
     case result do
       {:ok, date} ->
@@ -307,7 +316,8 @@ defmodule Nous.Tools.DateTimeTools do
   """
   def current_week(_ctx, args) do
     timezone = Map.get(args, "timezone", "Etc/UTC")
-    week_start = Map.get(args, "week_start", 1)  # Monday
+    # Monday
+    week_start = Map.get(args, "week_start", 1)
 
     today = get_date_in_timezone(timezone)
     day_of_week = Date.day_of_week(today)
@@ -371,7 +381,10 @@ defmodule Nous.Tools.DateTimeTools do
     # MM/DD/YYYY
     case String.split(date_string, "/") do
       [month, day, year] ->
-        Date.from_iso8601("#{year}-#{String.pad_leading(month, 2, "0")}-#{String.pad_leading(day, 2, "0")}")
+        Date.from_iso8601(
+          "#{year}-#{String.pad_leading(month, 2, "0")}-#{String.pad_leading(day, 2, "0")}"
+        )
+
       _ ->
         {:error, :invalid_format}
     end
@@ -381,7 +394,10 @@ defmodule Nous.Tools.DateTimeTools do
     # DD/MM/YYYY
     case String.split(date_string, "/") do
       [day, month, year] ->
-        Date.from_iso8601("#{year}-#{String.pad_leading(month, 2, "0")}-#{String.pad_leading(day, 2, "0")}")
+        Date.from_iso8601(
+          "#{year}-#{String.pad_leading(month, 2, "0")}-#{String.pad_leading(day, 2, "0")}"
+        )
+
       _ ->
         {:error, :invalid_format}
     end
@@ -391,6 +407,7 @@ defmodule Nous.Tools.DateTimeTools do
     0..6
     |> Enum.map(fn offset ->
       date = Date.add(start_date, offset)
+
       %{
         date: Date.to_iso8601(date),
         day_of_week: Calendar.strftime(date, "%A"),

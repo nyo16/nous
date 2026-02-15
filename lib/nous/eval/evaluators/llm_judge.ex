@@ -187,7 +187,8 @@ defmodule Nous.Eval.Evaluators.LLMJudge do
         %{
           score: normalized_score,
           passed: passed,
-          reason: if(not passed, do: "Score #{normalized_score} below threshold #{pass_threshold}"),
+          reason:
+            if(not passed, do: "Score #{normalized_score} below threshold #{pass_threshold}"),
           details: %{
             raw_score: score,
             explanation: explanation,

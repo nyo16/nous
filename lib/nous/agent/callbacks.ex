@@ -134,6 +134,9 @@ defmodule Nous.Agent.Callbacks do
     # 2. Send process message if pid configured
     send_notification(ctx.notify_pid, event, payload)
 
+    # 3. Broadcast via PubSub if configured
+    broadcast_event(ctx, event, payload)
+
     :ok
   end
 
@@ -206,7 +209,8 @@ defmodule Nous.Agent.Callbacks do
 
   """
   @spec put_callback(Context.t(), event(), function()) :: Context.t()
-  def put_callback(%Context{} = ctx, event, callback) when is_atom(event) and is_function(callback, 2) do
+  def put_callback(%Context{} = ctx, event, callback)
+      when is_atom(event) and is_function(callback, 2) do
     %{ctx | callbacks: Map.put(ctx.callbacks, event, callback)}
   end
 
@@ -306,4 +310,12 @@ defmodule Nous.Agent.Callbacks do
   def to_message(:on_agent_complete, result), do: {:agent_complete, result}
   def to_message(:on_error, error), do: {:agent_error, error}
   def to_message(event, payload), do: {event, payload}
+
+  defp broadcast_event(%Context{pubsub: nil}, _event, _payload), do: :ok
+  defp broadcast_event(%Context{pubsub_topic: nil}, _event, _payload), do: :ok
+
+  defp broadcast_event(%Context{pubsub: pubsub, pubsub_topic: topic}, event, payload) do
+    message = to_message(event, payload)
+    Nous.PubSub.broadcast(pubsub, topic, message)
+  end
 end

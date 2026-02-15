@@ -205,7 +205,9 @@ defmodule Nous.Telemetry do
   # Event handlers
 
   defp handle_event([:nous, :agent, :run, :start], _measurements, metadata, _config) do
-    Logger.info("[Nous] Agent #{metadata.agent_name} starting (#{metadata.model_provider}:#{metadata.model_name})")
+    Logger.info(
+      "[Nous] Agent #{metadata.agent_name} starting (#{metadata.model_provider}:#{metadata.model_name})"
+    )
   end
 
   defp handle_event([:nous, :agent, :run, :stop], measurements, metadata, _config) do
@@ -294,9 +296,7 @@ defmodule Nous.Telemetry do
 
   # Tool timeout
   defp handle_event([:nous, :tool, :timeout], measurements, metadata, _config) do
-    Logger.warning(
-      "[Nous] Tool #{metadata.tool_name} timed out after #{measurements.timeout}ms"
-    )
+    Logger.warning("[Nous] Tool #{metadata.tool_name} timed out after #{measurements.timeout}ms")
   end
 
   # Agent iteration events

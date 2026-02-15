@@ -81,25 +81,28 @@ defmodule Nous.Providers.Anthropic do
     ]
 
     # Add API key authentication
-    headers = if api_key && api_key != "" do
-      [{"x-api-key", api_key} | headers]
-    else
-      headers
-    end
+    headers =
+      if api_key && api_key != "" do
+        [{"x-api-key", api_key} | headers]
+      else
+        headers
+      end
 
     # Add beta headers for long context
-    headers = if Keyword.get(opts, :enable_long_context, false) do
-      [{"anthropic-beta", @long_context_beta} | headers]
-    else
-      headers
-    end
+    headers =
+      if Keyword.get(opts, :enable_long_context, false) do
+        [{"anthropic-beta", @long_context_beta} | headers]
+      else
+        headers
+      end
 
     # Add any custom beta features
-    headers = case Keyword.get(opts, :beta) do
-      nil -> headers
-      beta when is_binary(beta) -> [{"anthropic-beta", beta} | headers]
-      betas when is_list(betas) -> [{"anthropic-beta", Enum.join(betas, ",")} | headers]
-    end
+    headers =
+      case Keyword.get(opts, :beta) do
+        nil -> headers
+        beta when is_binary(beta) -> [{"anthropic-beta", beta} | headers]
+        betas when is_list(betas) -> [{"anthropic-beta", Enum.join(betas, ",")} | headers]
+      end
 
     headers
   end

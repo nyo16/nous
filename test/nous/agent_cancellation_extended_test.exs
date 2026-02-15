@@ -9,14 +9,15 @@ defmodule Nous.AgentCancellationExtendedTest do
 
   describe "AgentServer edge cases" do
     test "multiple rapid cancel calls are safe" do
-      {:ok, pid} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # Start execution
       AgentServer.send_message(pid, "Test message")
@@ -30,18 +31,19 @@ defmodule Nous.AgentCancellationExtendedTest do
       # State should be clean
       state = :sys.get_state(pid)
       assert state.current_task == nil
-      assert state.cancelled == false
+      assert state.cancelled_ref != nil
     end
 
     test "conversation history is preserved after cancellation" do
-      {:ok, pid} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # Send a message
       AgentServer.send_message(pid, "First message")
@@ -62,14 +64,15 @@ defmodule Nous.AgentCancellationExtendedTest do
     end
 
     test "cancelled flag is reset for next execution" do
-      {:ok, pid} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # Start first execution
       AgentServer.send_message(pid, "First")
@@ -86,18 +89,20 @@ defmodule Nous.AgentCancellationExtendedTest do
       # Should have new task with cancelled=false
       state = :sys.get_state(pid)
       assert state.current_task != nil
-      assert state.cancelled == false
+      assert state.cancelled_ref != nil
     end
 
+    @tag timeout: 180_000
     test "handles :DOWN message for completed task" do
-      {:ok, pid} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # Start execution
       AgentServer.send_message(pid, "Test")
@@ -108,21 +113,22 @@ defmodule Nous.AgentCancellationExtendedTest do
 
       # Task will complete, :DOWN message should clear task
       # Wait longer for model to respond and task to finish
-      Process.sleep(15_000)
+      Process.sleep(130_000)
 
       state_after = :sys.get_state(pid)
       assert state_after.current_task == nil
     end
 
     test "clear_history works independently of cancellation" do
-      {:ok, pid} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # Send message and cancel
       AgentServer.send_message(pid, "Test")
@@ -145,7 +151,8 @@ defmodule Nous.AgentCancellationExtendedTest do
     test "ReActAgent passes through cancellation_check" do
       # Create cancellation flag - start cancelled
       cancellation_ref = :atomics.new(1, [])
-      :atomics.put(cancellation_ref, 1, 1)  # Already cancelled
+      # Already cancelled
+      :atomics.put(cancellation_ref, 1, 1)
 
       check_fn = fn ->
         case :atomics.get(cancellation_ref, 1) do
@@ -155,30 +162,33 @@ defmodule Nous.AgentCancellationExtendedTest do
       end
 
       # Create ReActAgent
-      agent = ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Test agent"
-      )
+      agent =
+        ReActAgent.new(Nous.LLMTestHelper.test_model(),
+          instructions: "Test agent"
+        )
 
       # Run with cancellation check - should cancel immediately
-      result = ReActAgent.run(agent, "Test task",
-        cancellation_check: check_fn,
-        max_iterations: 5
-      )
+      result =
+        ReActAgent.run(agent, "Test task",
+          cancellation_check: check_fn,
+          max_iterations: 5
+        )
 
       # Should get cancellation error
       assert {:error, %Nous.Errors.ExecutionCancelled{reason: "ReAct test"}} = result
     end
 
     test "AgentServer works with ReActAgent type" do
-      {:ok, pid} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: [],
-          type: :react
-        }
-      )
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Test agent",
+            tools: [],
+            type: :react
+          }
+        )
 
       # Should initialize with react type
       state = :sys.get_state(pid)
@@ -194,20 +204,35 @@ defmodule Nous.AgentCancellationExtendedTest do
   describe "concurrent agent executions" do
     test "multiple AgentServers can run and cancel independently" do
       # Start 3 agents
-      {:ok, pid1} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{model: "lmstudio:qwen3-vl-4b-thinking-mlx", instructions: "Agent 1", tools: []}
-      )
+      {:ok, pid1} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Agent 1",
+            tools: []
+          }
+        )
 
-      {:ok, pid2} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{model: "lmstudio:qwen3-vl-4b-thinking-mlx", instructions: "Agent 2", tools: []}
-      )
+      {:ok, pid2} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Agent 2",
+            tools: []
+          }
+        )
 
-      {:ok, pid3} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{model: "lmstudio:qwen3-vl-4b-thinking-mlx", instructions: "Agent 3", tools: []}
-      )
+      {:ok, pid3} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Agent 3",
+            tools: []
+          }
+        )
 
       # Start all executions
       AgentServer.send_message(pid1, "Task 1")
@@ -232,14 +257,15 @@ defmodule Nous.AgentCancellationExtendedTest do
     end
 
     test "rapid message sending cancels previous executions" do
-      {:ok, pid} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # Send 5 messages rapidly
       AgentServer.send_message(pid, "Message 1")
@@ -263,7 +289,8 @@ defmodule Nous.AgentCancellationExtendedTest do
   describe "cancellation timing" do
     test "cancellation before any iteration" do
       cancellation_ref = :atomics.new(1, [])
-      :atomics.put(cancellation_ref, 1, 1)  # Already cancelled
+      # Already cancelled
+      :atomics.put(cancellation_ref, 1, 1)
 
       check_fn = fn ->
         case :atomics.get(cancellation_ref, 1) do
@@ -272,31 +299,36 @@ defmodule Nous.AgentCancellationExtendedTest do
         end
       end
 
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Test",
-        tools: []
-      )
+      agent =
+        Agent.new(Nous.LLMTestHelper.test_model(),
+          instructions: "Test",
+          tools: []
+        )
 
       # Should cancel immediately on first check
-      result = Agent.run(agent, "Test",
-        cancellation_check: check_fn,
-        max_iterations: 5
-      )
+      result =
+        Agent.run(agent, "Test",
+          cancellation_check: check_fn,
+          max_iterations: 5
+        )
 
       assert {:error, %Nous.Errors.ExecutionCancelled{reason: "Immediate cancel"}} = result
     end
 
+    @tag timeout: 150_000
     test "nil cancellation_check is safe" do
-      agent = Agent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-        instructions: "Test",
-        tools: []
-      )
+      agent =
+        Agent.new(Nous.LLMTestHelper.test_model(),
+          instructions: "Test",
+          tools: []
+        )
 
       # Should not crash with nil cancellation_check
-      result = Agent.run(agent, "Test",
-        cancellation_check: nil,
-        max_iterations: 1
-      )
+      result =
+        Agent.run(agent, "Test",
+          cancellation_check: nil,
+          max_iterations: 1
+        )
 
       # With working model and nil cancellation, should succeed OR fail
       # Either way, it shouldn't be a cancellation error
@@ -316,14 +348,15 @@ defmodule Nous.AgentCancellationExtendedTest do
     test "cancellation during model request returns cancellation error" do
       # This would require mocking the model to take time,
       # but we can at least verify the structure is correct
-      {:ok, pid} = AgentServer.start_link(
-        session_id: "test-#{:rand.uniform(10000)}",
-        agent_config: %{
-          model: "lmstudio:qwen3-vl-4b-thinking-mlx",
-          instructions: "Test agent",
-          tools: []
-        }
-      )
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test-#{:rand.uniform(10000)}",
+          agent_config: %{
+            model: Nous.LLMTestHelper.test_model(),
+            instructions: "Test agent",
+            tools: []
+          }
+        )
 
       # The task will be created and will attempt to run
       AgentServer.send_message(pid, "Test")

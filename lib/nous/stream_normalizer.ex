@@ -83,8 +83,12 @@ defmodule Nous.StreamNormalizer do
     |> Stream.flat_map(&normalizer_mod.normalize_chunk/1)
     |> Stream.reject(fn
       {:unknown, chunk} ->
-        Logger.debug("Stream normalizer filtered unknown chunk: #{inspect(chunk, limit: :infinity)}")
+        Logger.debug(
+          "Stream normalizer filtered unknown chunk: #{inspect(chunk, limit: :infinity)}"
+        )
+
         true
+
       _ ->
         false
     end)

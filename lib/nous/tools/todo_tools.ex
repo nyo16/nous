@@ -141,11 +141,12 @@ defmodule Nous.Tools.TodoTools do
         }
 
       todo ->
-        updated_todo = todo
-        |> maybe_update(:text, new_text)
-        |> maybe_update(:status, new_status)
-        |> maybe_update(:priority, new_priority)
-        |> Map.put(:updated_at, DateTime.utc_now() |> DateTime.to_iso8601())
+        updated_todo =
+          todo
+          |> maybe_update(:text, new_text)
+          |> maybe_update(:status, new_status)
+          |> maybe_update(:priority, new_priority)
+          |> Map.put(:updated_at, DateTime.utc_now() |> DateTime.to_iso8601())
 
         updated_todos = replace_todo(current_todos, id, updated_todo)
 
@@ -187,10 +188,11 @@ defmodule Nous.Tools.TodoTools do
         }
 
       todo ->
-        completed_todo = todo
-        |> Map.put(:status, "completed")
-        |> Map.put(:completed_at, DateTime.utc_now() |> DateTime.to_iso8601())
-        |> Map.put(:updated_at, DateTime.utc_now() |> DateTime.to_iso8601())
+        completed_todo =
+          todo
+          |> Map.put(:status, "completed")
+          |> Map.put(:completed_at, DateTime.utc_now() |> DateTime.to_iso8601())
+          |> Map.put(:updated_at, DateTime.utc_now() |> DateTime.to_iso8601())
 
         updated_todos = replace_todo(current_todos, id, completed_todo)
 
@@ -262,9 +264,10 @@ defmodule Nous.Tools.TodoTools do
 
     current_todos = ctx.deps[:todos] || []
 
-    filtered_todos = current_todos
-    |> filter_by_status(status_filter)
-    |> filter_by_priority(priority_filter)
+    filtered_todos =
+      current_todos
+      |> filter_by_status(status_filter)
+      |> filter_by_priority(priority_filter)
 
     %{
       success: true,

@@ -30,6 +30,7 @@ copy these patterns into your Phoenix LiveView application.
 # ============================================================================
 
 IO.puts("--- Pattern 1: Non-Streaming ---")
+
 IO.puts("""
 # Simple request/response pattern - good for quick responses
 
@@ -101,6 +102,7 @@ end
 # ============================================================================
 
 IO.puts("--- Pattern 2: Streaming (Recommended) ---")
+
 IO.puts("""
 # Real-time streaming using notify_pid - provides the best UX
 
@@ -218,6 +220,7 @@ end
 # ============================================================================
 
 IO.puts("--- Pattern 3: Tool Call Visualization ---")
+
 IO.puts("""
 # Show tool calls and results in the chat UI
 
@@ -314,6 +317,7 @@ end
 # ============================================================================
 
 IO.puts("--- Pattern 4: Cancellation Support ---")
+
 IO.puts("""
 # Allow users to cancel generation mid-stream
 
@@ -375,8 +379,14 @@ end
 # ============================================================================
 
 IO.puts("--- Pattern 5: AgentServer (Production) ---")
+
 IO.puts("""
-# For production apps, use AgentServer with PubSub
+# For production apps, use AgentServer with Nous.PubSub
+#
+# Configure once in config/config.exs:
+#   config :nous, pubsub: MyApp.PubSub
+#
+# All AgentServers will automatically use it.
 
 defmodule MyAppWeb.ChatLive.Production do
   use MyAppWeb, :live_view
@@ -385,8 +395,8 @@ defmodule MyAppWeb.ChatLive.Production do
     # Start or connect to existing AgentServer
     {:ok, agent_pid} = ensure_agent_server(session_id)
 
-    # Subscribe to agent events via PubSub
-    Phoenix.PubSub.subscribe(MyApp.PubSub, "agent:#{session_id}")
+    # Subscribe to agent events via Nous.PubSub
+    Nous.PubSub.subscribe(MyApp.PubSub, "agent:#{session_id}")
 
     {:ok, assign(socket,
       session_id: session_id,
@@ -403,9 +413,9 @@ defmodule MyAppWeb.ChatLive.Production do
         {:ok, pid}
 
       [] ->
+        # pubsub defaults to Nous.PubSub.configured_pubsub()
         Nous.AgentServer.start_link(
           session_id: session_id,
-          pubsub: MyApp.PubSub,
           agent_config: %{
             model: "lmstudio:qwen3",
             instructions: "You are a helpful assistant."
@@ -468,6 +478,7 @@ end
 # ============================================================================
 
 IO.puts("--- Pattern 6: Map Callbacks Alternative ---")
+
 IO.puts("""
 # If you prefer callbacks over process messages
 
@@ -523,6 +534,7 @@ end
 # ============================================================================
 
 IO.puts("--- Complete Template ---")
+
 IO.puts("""
 # Copy this template to get started quickly
 

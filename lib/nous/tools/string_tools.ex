@@ -57,21 +57,23 @@ defmodule Nous.Tools.StringTools do
     replacement = Map.get(args, "replacement") || Map.get(args, "new") || ""
     case_sensitive = Map.get(args, "case_sensitive", true)
 
-    result = if case_sensitive do
-      String.replace(text, pattern, replacement)
-    else
-      # Case-insensitive replacement
-      regex = Regex.compile!(Regex.escape(pattern), "i")
-      Regex.replace(regex, text, replacement)
-    end
+    result =
+      if case_sensitive do
+        String.replace(text, pattern, replacement)
+      else
+        # Case-insensitive replacement
+        regex = Regex.compile!(Regex.escape(pattern), "i")
+        Regex.replace(regex, text, replacement)
+      end
 
-    count = if case_sensitive do
-      (String.length(text) - String.length(String.replace(text, pattern, "")))
-      |> div(max(String.length(pattern), 1))
-    else
-      regex = Regex.compile!(Regex.escape(pattern), "i")
-      length(Regex.scan(regex, text))
-    end
+    count =
+      if case_sensitive do
+        (String.length(text) - String.length(String.replace(text, pattern, "")))
+        |> div(max(String.length(pattern), 1))
+      else
+        regex = Regex.compile!(Regex.escape(pattern), "i")
+        length(Regex.scan(regex, text))
+      end
 
     %{
       original: text,
@@ -102,17 +104,19 @@ defmodule Nous.Tools.StringTools do
 
     parts = String.split(text, delimiter)
 
-    parts = if trim do
-      Enum.map(parts, &String.trim/1)
-    else
-      parts
-    end
+    parts =
+      if trim do
+        Enum.map(parts, &String.trim/1)
+      else
+        parts
+      end
 
-    parts = if remove_empty do
-      Enum.reject(parts, &(&1 == ""))
-    else
-      parts
-    end
+    parts =
+      if remove_empty do
+        Enum.reject(parts, &(&1 == ""))
+      else
+        parts
+      end
 
     %{
       original: text,
@@ -134,11 +138,12 @@ defmodule Nous.Tools.StringTools do
   """
   def join_text(_ctx, args) do
     # Support both array and comma-separated string
-    parts = case Map.get(args, "parts") do
-      list when is_list(list) -> list
-      string when is_binary(string) -> String.split(string, ",")
-      _ -> []
-    end
+    parts =
+      case Map.get(args, "parts") do
+        list when is_list(list) -> list
+        string when is_binary(string) -> String.split(string, ",")
+        _ -> []
+      end
 
     delimiter = Map.get(args, "delimiter", " ")
 
@@ -167,21 +172,22 @@ defmodule Nous.Tools.StringTools do
     pattern = Map.get(args, "pattern") || Map.get(args, "substring") || ""
     case_sensitive = Map.get(args, "case_sensitive", true)
 
-    count = if case_sensitive do
-      if pattern == "" do
-        0
+    count =
+      if case_sensitive do
+        if pattern == "" do
+          0
+        else
+          (String.length(text) - String.length(String.replace(text, pattern, "")))
+          |> div(String.length(pattern))
+        end
       else
-        (String.length(text) - String.length(String.replace(text, pattern, "")))
-        |> div(String.length(pattern))
+        if pattern == "" do
+          0
+        else
+          regex = Regex.compile!(Regex.escape(pattern), "i")
+          length(Regex.scan(regex, text))
+        end
       end
-    else
-      if pattern == "" do
-        0
-      else
-        regex = Regex.compile!(Regex.escape(pattern), "i")
-        length(Regex.scan(regex, text))
-      end
-    end
 
     %{
       text: text,
@@ -235,25 +241,26 @@ defmodule Nous.Tools.StringTools do
     text = Map.get(args, "text", "")
     mode = Map.get(args, "mode", "words")
 
-    result = case mode do
-      "first" ->
-        String.capitalize(text)
+    result =
+      case mode do
+        "first" ->
+          String.capitalize(text)
 
-      "words" ->
-        text
-        |> String.split()
-        |> Enum.map(&String.capitalize/1)
-        |> Enum.join(" ")
+        "words" ->
+          text
+          |> String.split()
+          |> Enum.map(&String.capitalize/1)
+          |> Enum.join(" ")
 
-      "sentences" ->
-        text
-        |> String.split(". ")
-        |> Enum.map(&String.capitalize/1)
-        |> Enum.join(". ")
+        "sentences" ->
+          text
+          |> String.split(". ")
+          |> Enum.map(&String.capitalize/1)
+          |> Enum.join(". ")
 
-      _ ->
-        String.capitalize(text)
-    end
+        _ ->
+          String.capitalize(text)
+      end
 
     %{
       original: text,
@@ -274,11 +281,12 @@ defmodule Nous.Tools.StringTools do
     text = Map.get(args, "text", "")
     side = Map.get(args, "side", "both")
 
-    result = case side do
-      "left" -> String.trim_leading(text)
-      "right" -> String.trim_trailing(text)
-      _ -> String.trim(text)
-    end
+    result =
+      case side do
+        "left" -> String.trim_leading(text)
+        "right" -> String.trim_trailing(text)
+        _ -> String.trim(text)
+      end
 
     %{
       original: text,
@@ -301,14 +309,16 @@ defmodule Nous.Tools.StringTools do
     text = Map.get(args, "text", "")
     start = Map.get(args, "start", 0)
     # Support "length" or "end" parameter
-    length = Map.get(args, "length") ||
-             (Map.get(args, "end") && Map.get(args, "end") - start + 1)
+    length =
+      Map.get(args, "length") ||
+        (Map.get(args, "end") && Map.get(args, "end") - start + 1)
 
-    result = if length do
-      String.slice(text, start, length)
-    else
-      String.slice(text, start..-1//1)
-    end
+    result =
+      if length do
+        String.slice(text, start, length)
+      else
+        String.slice(text, start..-1//1)
+      end
 
     %{
       original: text,
@@ -333,11 +343,12 @@ defmodule Nous.Tools.StringTools do
     pattern = Map.get(args, "pattern") || Map.get(args, "substring") || ""
     case_sensitive = Map.get(args, "case_sensitive", true)
 
-    contains = if case_sensitive do
-      String.contains?(text, pattern)
-    else
-      String.downcase(text) |> String.contains?(String.downcase(pattern))
-    end
+    contains =
+      if case_sensitive do
+        String.contains?(text, pattern)
+      else
+        String.downcase(text) |> String.contains?(String.downcase(pattern))
+      end
 
     %{
       text: text,
@@ -361,11 +372,12 @@ defmodule Nous.Tools.StringTools do
     prefix = Map.get(args, "prefix", "")
     case_sensitive = Map.get(args, "case_sensitive", true)
 
-    starts = if case_sensitive do
-      String.starts_with?(text, prefix)
-    else
-      String.downcase(text) |> String.starts_with?(String.downcase(prefix))
-    end
+    starts =
+      if case_sensitive do
+        String.starts_with?(text, prefix)
+      else
+        String.downcase(text) |> String.starts_with?(String.downcase(prefix))
+      end
 
     %{
       text: text,
@@ -389,11 +401,12 @@ defmodule Nous.Tools.StringTools do
     suffix = Map.get(args, "suffix", "")
     case_sensitive = Map.get(args, "case_sensitive", true)
 
-    ends = if case_sensitive do
-      String.ends_with?(text, suffix)
-    else
-      String.downcase(text) |> String.ends_with?(String.downcase(suffix))
-    end
+    ends =
+      if case_sensitive do
+        String.ends_with?(text, suffix)
+      else
+        String.downcase(text) |> String.ends_with?(String.downcase(suffix))
+      end
 
     %{
       text: text,
@@ -413,10 +426,11 @@ defmodule Nous.Tools.StringTools do
   def reverse_text(_ctx, args) do
     text = Map.get(args, "text", "")
 
-    result = text
-    |> String.graphemes()
-    |> Enum.reverse()
-    |> Enum.join()
+    result =
+      text
+      |> String.graphemes()
+      |> Enum.reverse()
+      |> Enum.join()
 
     %{
       original: text,
@@ -434,7 +448,8 @@ defmodule Nous.Tools.StringTools do
   """
   def repeat_text(_ctx, args) do
     text = Map.get(args, "text", "")
-    times = Map.get(args, "times", 1) |> min(100)  # Limit to prevent abuse
+    # Limit to prevent abuse
+    times = Map.get(args, "times", 1) |> min(100)
 
     result = String.duplicate(text, times)
 
@@ -458,9 +473,10 @@ defmodule Nous.Tools.StringTools do
     text = Map.get(args, "text", "")
     min_length = Map.get(args, "min_length", 1)
 
-    words = text
-    |> String.split(~r/\W+/, trim: true)
-    |> Enum.filter(&(String.length(&1) >= min_length))
+    words =
+      text
+      |> String.split(~r/\W+/, trim: true)
+      |> Enum.filter(&(String.length(&1) >= min_length))
 
     %{
       text: text,
@@ -487,17 +503,25 @@ defmodule Nous.Tools.StringTools do
     padding = Map.get(args, "padding", " ")
     side = Map.get(args, "side", "right")
 
-    result = case side do
-      "left" -> String.pad_leading(text, target_length, padding)
-      "right" -> String.pad_trailing(text, target_length, padding)
-      "both" ->
-        diff = target_length - String.length(text)
-        left_pad = div(diff, 2)
-        text
-        |> String.pad_leading(String.length(text) + left_pad, padding)
-        |> String.pad_trailing(target_length, padding)
-      _ -> String.pad_trailing(text, target_length, padding)
-    end
+    result =
+      case side do
+        "left" ->
+          String.pad_leading(text, target_length, padding)
+
+        "right" ->
+          String.pad_trailing(text, target_length, padding)
+
+        "both" ->
+          diff = target_length - String.length(text)
+          left_pad = div(diff, 2)
+
+          text
+          |> String.pad_leading(String.length(text) + left_pad, padding)
+          |> String.pad_trailing(target_length, padding)
+
+        _ ->
+          String.pad_trailing(text, target_length, padding)
+      end
 
     %{
       original: text,
@@ -525,10 +549,11 @@ defmodule Nous.Tools.StringTools do
     processed = if ignore_case, do: String.downcase(processed), else: processed
     processed = if ignore_spaces, do: String.replace(processed, " ", ""), else: processed
 
-    reversed = processed
-    |> String.graphemes()
-    |> Enum.reverse()
-    |> Enum.join()
+    reversed =
+      processed
+      |> String.graphemes()
+      |> Enum.reverse()
+      |> Enum.join()
 
     is_palindrome = processed == reversed
 
@@ -552,16 +577,18 @@ defmodule Nous.Tools.StringTools do
     text = Map.get(args, "text", "")
 
     # Find all numbers (including decimals)
-    numbers = Regex.scan(~r/-?\d+\.?\d*/, text)
-    |> Enum.map(fn [num] -> num end)
+    numbers =
+      Regex.scan(~r/-?\d+\.?\d*/, text)
+      |> Enum.map(fn [num] -> num end)
 
-    parsed_numbers = Enum.map(numbers, fn num ->
-      case Float.parse(num) do
-        {value, _} -> value
-        :error -> nil
-      end
-    end)
-    |> Enum.reject(&is_nil/1)
+    parsed_numbers =
+      Enum.map(numbers, fn num ->
+        case Float.parse(num) do
+          {value, _} -> value
+          :error -> nil
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
 
     %{
       text: text,

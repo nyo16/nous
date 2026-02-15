@@ -204,19 +204,45 @@ defmodule Nous.Messages do
   @spec to_provider_format([Message.t()], atom()) :: any()
   def to_provider_format(messages, provider) when is_list(messages) do
     case provider do
-      :openai -> to_openai_format(messages)
-      :openai_compatible -> to_openai_format(messages)
-      :groq -> to_openai_format(messages)
-      :lmstudio -> to_openai_format(messages)
-      :ollama -> to_openai_format(messages)
-      :openrouter -> to_openai_format(messages)
-      :together -> to_openai_format(messages)
-      :vllm -> to_openai_format(messages)
-      :sglang -> to_openai_format(messages)
-      :anthropic -> to_anthropic_format(messages)
-      :gemini -> to_gemini_format(messages)
-      :mistral -> to_openai_format(messages)
-      :custom -> to_openai_format(messages)
+      :openai ->
+        to_openai_format(messages)
+
+      :openai_compatible ->
+        to_openai_format(messages)
+
+      :groq ->
+        to_openai_format(messages)
+
+      :lmstudio ->
+        to_openai_format(messages)
+
+      :ollama ->
+        to_openai_format(messages)
+
+      :openrouter ->
+        to_openai_format(messages)
+
+      :together ->
+        to_openai_format(messages)
+
+      :vllm ->
+        to_openai_format(messages)
+
+      :sglang ->
+        to_openai_format(messages)
+
+      :anthropic ->
+        to_anthropic_format(messages)
+
+      :gemini ->
+        to_gemini_format(messages)
+
+      :mistral ->
+        to_openai_format(messages)
+
+      :custom ->
+        to_openai_format(messages)
+
       _ ->
         raise ArgumentError, """
         Unsupported provider: #{inspect(provider)}
@@ -289,19 +315,45 @@ defmodule Nous.Messages do
   @spec from_provider_response(map(), atom()) :: Message.t()
   def from_provider_response(response, provider) when is_map(response) do
     case provider do
-      :openai -> from_openai_response(response)
-      :openai_compatible -> from_openai_response(response)
-      :groq -> from_openai_response(response)
-      :lmstudio -> from_openai_response(response)
-      :ollama -> from_openai_response(response)
-      :openrouter -> from_openai_response(response)
-      :together -> from_openai_response(response)
-      :vllm -> from_openai_response(response)
-      :sglang -> from_openai_response(response)
-      :anthropic -> from_anthropic_response(response)
-      :gemini -> from_gemini_response(response)
-      :mistral -> from_openai_response(response)
-      :custom -> from_openai_response(response)
+      :openai ->
+        from_openai_response(response)
+
+      :openai_compatible ->
+        from_openai_response(response)
+
+      :groq ->
+        from_openai_response(response)
+
+      :lmstudio ->
+        from_openai_response(response)
+
+      :ollama ->
+        from_openai_response(response)
+
+      :openrouter ->
+        from_openai_response(response)
+
+      :together ->
+        from_openai_response(response)
+
+      :vllm ->
+        from_openai_response(response)
+
+      :sglang ->
+        from_openai_response(response)
+
+      :anthropic ->
+        from_anthropic_response(response)
+
+      :gemini ->
+        from_gemini_response(response)
+
+      :mistral ->
+        from_openai_response(response)
+
+      :custom ->
+        from_openai_response(response)
+
       _ ->
         raise ArgumentError, """
         Unsupported provider: #{inspect(provider)}
@@ -325,11 +377,21 @@ defmodule Nous.Messages do
   @spec normalize_format(any()) :: [Message.t()]
   def normalize_format(messages) when is_list(messages) do
     case detect_format(messages) do
-      :message -> messages
-      :legacy -> Enum.map(messages, &Message.from_legacy/1)
-      :openai -> OpenAI.from_messages(messages)
-      :anthropic -> Anthropic.from_messages(messages)
-      :gemini -> Gemini.from_messages(messages)
+      :message ->
+        messages
+
+      :legacy ->
+        Enum.map(messages, &Message.from_legacy/1)
+
+      :openai ->
+        OpenAI.from_messages(messages)
+
+      :anthropic ->
+        Anthropic.from_messages(messages)
+
+      :gemini ->
+        Gemini.from_messages(messages)
+
       :unknown ->
         Logger.warning("Unknown message format, attempting generic conversion")
         attempt_generic_conversion(messages)
@@ -346,13 +408,26 @@ defmodule Nous.Messages do
 
   defp detect_format([first | _rest]) do
     cond do
-      is_struct(first, Message) -> :message
-      match?({:system_prompt, _}, first) or match?({:user_prompt, _}, first) -> :legacy
-      is_struct(first) and Map.has_key?(first, :role) -> :openai
-      is_map(first) and Map.has_key?(first, "role") and Map.has_key?(first, "content") -> :anthropic
-      is_map(first) and Map.has_key?(first, "role") and Map.has_key?(first, "parts") -> :gemini
-      is_map(first) and Map.has_key?(first, :role) -> :openai
-      true -> :unknown
+      is_struct(first, Message) ->
+        :message
+
+      match?({:system_prompt, _}, first) or match?({:user_prompt, _}, first) ->
+        :legacy
+
+      is_struct(first) and Map.has_key?(first, :role) ->
+        :openai
+
+      is_map(first) and Map.has_key?(first, "role") and Map.has_key?(first, "content") ->
+        :anthropic
+
+      is_map(first) and Map.has_key?(first, "role") and Map.has_key?(first, "parts") ->
+        :gemini
+
+      is_map(first) and Map.has_key?(first, :role) ->
+        :openai
+
+      true ->
+        :unknown
     end
   end
 

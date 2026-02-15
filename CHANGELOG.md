@@ -2,6 +2,93 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] - 2026-02-14
+
+### Added
+
+- **Plugin System**: Composable agent extensions via `Nous.Plugin` behaviour
+  - Callbacks: `init/2`, `tools/2`, `system_prompt/2`, `before_request/3`, `after_response/3`
+  - Add `plugins: [MyPlugin]` to any agent for cross-cutting concerns
+  - AgentRunner iterates plugins at each stage of the execution loop
+
+- **Human-in-the-Loop (HITL)**: Approval workflows for sensitive tool calls
+  - `requires_approval: true` on `Nous.Tool` struct
+  - `approval_handler` on `Nous.Agent.Context` for approve/edit/reject decisions
+  - `Nous.Plugins.HumanInTheLoop` for per-tool configuration via deps
+
+- **Sub-Agent System**: Enable agents to delegate tasks to specialized child agents
+  - `Nous.Plugins.SubAgent` provides `delegate_task` tool
+  - Pre-configured agent templates via `deps[:sub_agent_templates]`
+  - Isolated context per sub-agent with shared deps support
+
+- **Conversation Summarization**: Automatic context window management
+  - `Nous.Plugins.Summarization` monitors token usage against configurable threshold
+  - LLM-powered summarization with safe split points (never separates tool_call/tool_result pairs)
+  - Error-resilient: keeps all messages if summarization fails
+
+- **State Persistence**: Save and restore agent conversation state
+  - `Nous.Agent.Context.serialize/1` and `deserialize/1` for JSON-safe round-trips
+  - `Nous.Persistence` behaviour with `save/load/delete/list` callbacks
+  - `Nous.Persistence.ETS` reference implementation
+  - Auto-save hooks on `Nous.AgentServer`
+
+- **Enhanced Supervision**: Production lifecycle management for agents
+  - `Nous.AgentRegistry` for session-based process lookup via Registry
+  - `Nous.AgentDynamicSupervisor` for on-demand agent creation/destruction
+  - Configurable inactivity timeout on `AgentServer` (default: 5 minutes)
+  - Added to application supervision tree
+
+- **Dangling Tool Call Recovery**: Resilient session resumption
+  - `Nous.Agent.Context.patch_dangling_tool_calls/1` injects synthetic results for interrupted tool calls
+  - Called automatically when continuing from an existing context
+
+- **PubSub Abstraction Layer**: Unified `Nous.PubSub` module for all PubSub usage
+  - `Nous.PubSub` wraps Phoenix.PubSub with graceful no-op fallback when unavailable
+  - Application-level configuration via `config :nous, pubsub: MyApp.PubSub`
+  - Topic builders: `agent_topic/1`, `research_topic/1`, `approval_topic/1`
+  - `Nous.Agent.Context` gains `pubsub` and `pubsub_topic` fields (runtime-only, never serialized)
+  - `Nous.Agent.Callbacks.execute/3` now broadcasts via PubSub as a third channel alongside callbacks and `notify_pid`
+  - `AgentServer` refactored to use `Nous.PubSub` — removes ad-hoc `setup_pubsub_functions/0` and `subscribe_fn`/`broadcast_fn` from state
+  - Research Coordinator broadcasts progress via PubSub when `:session_id` is provided
+  - SubAgent plugin propagates parent's PubSub context to child agents
+
+- **Async HITL Approval via PubSub**: `Nous.PubSub.Approval` module
+  - `handler/1` builds an approval handler compatible with `Nous.Plugins.HumanInTheLoop`
+  - Broadcasts `{:approval_required, info}` and blocks via `receive` for response
+  - `respond/4` sends approval decisions from external processes (e.g., LiveView)
+  - Configurable timeout with `:reject` as default on expiry
+  - Enables async approval workflows without synchronous I/O
+
+- **Deep Research Agent**: Autonomous multi-step research with citations
+  - `Nous.Research.run/2` public API with HITL checkpoints between iterations
+  - Five-phase loop: plan → search → synthesize → evaluate → report
+  - `Nous.Research.Planner` decomposes queries into searchable sub-questions
+  - `Nous.Research.Searcher` runs parallel search agents per sub-question
+  - `Nous.Research.Synthesizer` for deduplication, contradiction detection, gap analysis
+  - `Nous.Research.Reporter` generates markdown reports with inline citations
+  - Progress broadcasting via callbacks, `notify_pid`, and PubSub
+
+- **New Research Tools**:
+  - `Nous.Tools.WebFetch` — URL content extraction with Floki HTML parsing
+  - `Nous.Tools.Summarize` — LLM-powered text summarization focused on research queries
+  - `Nous.Tools.SearchScrape` — Parallel fetch + summarize for multiple URLs
+  - `Nous.Tools.TavilySearch` — Tavily AI search API integration
+  - `Nous.Tools.ResearchNotes` — Structured finding/gap/contradiction tracking via ContextUpdate
+
+- **New Dependencies**:
+  - `floki ~> 0.36` (optional, for HTML content extraction)
+  - `phoenix_pubsub ~> 2.1` (test-only, for PubSub integration tests)
+
+### Changed
+
+- `Nous.Agent` struct now accepts `plugins: [module()]` option
+- `Nous.Tool` struct now accepts `requires_approval: boolean()` option
+- `Nous.Agent.Context` now includes `approval_handler`, `pubsub`, and `pubsub_topic` fields
+- `Nous.AgentServer` supports optional `:name` registration, `:persistence` backend, and uses `Nous.PubSub` (removed ad-hoc `setup_pubsub_functions/0`)
+- `Nous.AgentServer` `:pubsub` option now defaults to `Nous.PubSub.configured_pubsub()` instead of `MyApp.PubSub`
+- `Nous.AgentRunner` accepts `:pubsub` and `:pubsub_topic` options when building context
+- Application supervision tree includes AgentRegistry and AgentDynamicSupervisor
+
 ## [0.9.0] - 2026-01-04
 
 ### Added

@@ -60,7 +60,10 @@ defmodule Nous.ToolExecutor do
   """
   @spec execute(Tool.t(), map(), RunContext.t()) :: execute_result()
   def execute(%Tool{} = tool, arguments, %RunContext{} = ctx) do
-    Logger.debug("Executing tool '#{tool.name}' (retries: #{tool.retries}, takes_ctx: #{tool.takes_ctx}, timeout: #{tool.timeout}ms)")
+    Logger.debug(
+      "Executing tool '#{tool.name}' (retries: #{tool.retries}, takes_ctx: #{tool.takes_ctx}, timeout: #{tool.timeout}ms)"
+    )
+
     do_execute(tool, arguments, ctx, 0)
   end
 
@@ -89,7 +92,9 @@ defmodule Nous.ToolExecutor do
       duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
       if attempt > 0 do
-        Logger.info("Tool '#{tool.name}' succeeded on retry attempt #{attempt + 1} (#{duration_ms}ms)")
+        Logger.info(
+          "Tool '#{tool.name}' succeeded on retry attempt #{attempt + 1} (#{duration_ms}ms)"
+        )
       else
         Logger.debug("Tool '#{tool.name}' completed in #{duration_ms}ms")
       end
@@ -107,7 +112,6 @@ defmodule Nous.ToolExecutor do
 
       # Normalize result to handle ContextUpdate
       normalize_result(result)
-
     rescue
       error ->
         handle_execution_error(tool, arguments, ctx, attempt, start_time, error, __STACKTRACE__)
@@ -125,18 +129,19 @@ defmodule Nous.ToolExecutor do
       caller = self()
       ref = make_ref()
 
-      {pid, monitor_ref} = spawn_monitor(fn ->
-        try do
-          result = apply_tool_function(tool, arguments, ctx)
-          send(caller, {ref, {:ok, result}})
-        rescue
-          e ->
-            send(caller, {ref, {:exception, e, __STACKTRACE__}})
-        catch
-          kind, reason ->
-            send(caller, {ref, {:caught, kind, reason, __STACKTRACE__}})
-        end
-      end)
+      {pid, monitor_ref} =
+        spawn_monitor(fn ->
+          try do
+            result = apply_tool_function(tool, arguments, ctx)
+            send(caller, {ref, {:ok, result}})
+          rescue
+            e ->
+              send(caller, {ref, {:exception, e, __STACKTRACE__}})
+          catch
+            kind, reason ->
+              send(caller, {ref, {:caught, kind, reason, __STACKTRACE__}})
+          end
+        end)
 
       receive do
         {^ref, {:ok, result}} ->
@@ -168,9 +173,9 @@ defmodule Nous.ToolExecutor do
           )
 
           raise Errors.ToolTimeout.exception(
-            tool_name: tool.name,
-            timeout: tool.timeout
-          )
+                  tool_name: tool.name,
+                  timeout: tool.timeout
+                )
       end
     else
       # No timeout, execute directly
@@ -194,10 +199,11 @@ defmodule Nous.ToolExecutor do
       }
     )
 
-    {:error, Errors.ToolTimeout.exception(
-      tool_name: tool.name,
-      timeout: tool.timeout
-    )}
+    {:error,
+     Errors.ToolTimeout.exception(
+       tool_name: tool.name,
+       timeout: tool.timeout
+     )}
   end
 
   # Handle execution errors with retry logic
@@ -239,12 +245,13 @@ defmodule Nous.ToolExecutor do
         Total duration: #{duration_ms}ms
       """)
 
-      wrapped_error = Errors.ToolError.exception(
-        tool_name: tool.name,
-        attempt: attempt + 1,
-        original_error: error,
-        message: "Tool execution failed: #{Exception.message(error)}"
-      )
+      wrapped_error =
+        Errors.ToolError.exception(
+          tool_name: tool.name,
+          attempt: attempt + 1,
+          original_error: error,
+          message: "Tool execution failed: #{Exception.message(error)}"
+        )
 
       {:error, wrapped_error}
     end

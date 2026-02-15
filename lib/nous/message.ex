@@ -46,12 +46,13 @@ defmodule Nous.Message do
 
   @primary_key false
   embedded_schema do
-    field :role, Ecto.Enum, values: @roles
-    field :content, :string
-    field :tool_calls, {:array, :map}, default: []
-    field :tool_call_id, :string
-    field :name, :string  # For tool messages
-    field :metadata, :map, default: %{}
+    field(:role, Ecto.Enum, values: @roles)
+    field(:content, :string)
+    field(:tool_calls, {:array, :map}, default: [])
+    field(:tool_call_id, :string)
+    # For tool messages
+    field(:name, :string)
+    field(:metadata, :map, default: %{})
     timestamps(type: :utc_datetime_usec, inserted_at: :created_at, updated_at: false)
   end
 
@@ -124,8 +125,9 @@ defmodule Nous.Message do
   """
   @spec system(String.t() | [ContentPart.t()], keyword()) :: t()
   def system(content, opts \\ []) do
-    attrs = %{role: :system, content: content}
-    |> Map.merge(Map.new(opts))
+    attrs =
+      %{role: :system, content: content}
+      |> Map.merge(Map.new(opts))
 
     new!(attrs)
   end
@@ -148,8 +150,9 @@ defmodule Nous.Message do
   def user(content, opts \\ [])
 
   def user(content, opts) when is_binary(content) do
-    attrs = %{role: :user, content: content}
-    |> Map.merge(Map.new(opts))
+    attrs =
+      %{role: :user, content: content}
+      |> Map.merge(Map.new(opts))
 
     new!(attrs)
   end
@@ -183,8 +186,9 @@ defmodule Nous.Message do
   """
   @spec assistant(String.t() | [ContentPart.t()], keyword()) :: t()
   def assistant(content, opts \\ []) do
-    attrs = %{role: :assistant, content: content}
-    |> Map.merge(Map.new(opts))
+    attrs =
+      %{role: :assistant, content: content}
+      |> Map.merge(Map.new(opts))
 
     new!(attrs)
   end
@@ -204,8 +208,9 @@ defmodule Nous.Message do
   def tool(tool_call_id, result, opts \\ []) do
     content = if is_binary(result), do: result, else: Jason.encode!(result)
 
-    attrs = %{role: :tool, content: content, tool_call_id: tool_call_id}
-    |> Map.merge(Map.new(opts))
+    attrs =
+      %{role: :tool, content: content, tool_call_id: tool_call_id}
+      |> Map.merge(Map.new(opts))
 
     new!(attrs)
   end
@@ -413,12 +418,13 @@ defmodule Nous.Message do
   end
 
   def from_legacy({:user_prompt, content}) when is_list(content) do
-    parts = Enum.map(content, fn
-      {:text, text} -> ContentPart.text(text)
-      {:image_url, url} -> ContentPart.image_url(url)
-      text when is_binary(text) -> ContentPart.text(text)
-      other -> ContentPart.text(inspect(other))
-    end)
+    parts =
+      Enum.map(content, fn
+        {:text, text} -> ContentPart.text(text)
+        {:image_url, url} -> ContentPart.image_url(url)
+        text when is_binary(text) -> ContentPart.text(text)
+        other -> ContentPart.text(inspect(other))
+      end)
 
     user(parts)
   end
@@ -527,12 +533,13 @@ defmodule Nous.Message do
   defp validate_tool_calls(changeset, _), do: changeset
 
   defp convert_response_parts(parts) when is_list(parts) do
-    content_parts = Enum.map(parts, fn
-      {:text, text} -> ContentPart.text(text)
-      {:thinking, content} -> ContentPart.thinking(content)
-      _ -> nil
-    end)
-    |> Enum.reject(&is_nil/1)
+    content_parts =
+      Enum.map(parts, fn
+        {:text, text} -> ContentPart.text(text)
+        {:thinking, content} -> ContentPart.thinking(content)
+        _ -> nil
+      end)
+      |> Enum.reject(&is_nil/1)
 
     case content_parts do
       [] -> ""

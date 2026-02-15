@@ -44,7 +44,10 @@ defmodule Nous.Eval.Reporter.Console do
   end
 
   defp print_summary(result) do
-    pass_color = if result.pass_rate >= 0.8, do: :green, else: if(result.pass_rate >= 0.5, do: :yellow, else: :red)
+    pass_color =
+      if result.pass_rate >= 0.8,
+        do: :green,
+        else: if(result.pass_rate >= 0.5, do: :yellow, else: :red)
 
     IO.puts("  Summary")
     IO.puts("  -------")
@@ -113,8 +116,15 @@ defmodule Nous.Eval.Reporter.Console do
   defp print_metrics(%{metrics_summary: metrics}) do
     IO.puts("  Metrics")
     IO.puts("  -------")
-    IO.puts("  Tokens:       #{metrics.total_tokens} total (avg: #{Float.round(metrics.mean_tokens, 1)})")
-    IO.puts("  Latency:      p50=#{metrics.p50_latency_ms}ms, p95=#{metrics.p95_latency_ms}ms, p99=#{metrics.p99_latency_ms}ms")
+
+    IO.puts(
+      "  Tokens:       #{metrics.total_tokens} total (avg: #{Float.round(metrics.mean_tokens, 1)})"
+    )
+
+    IO.puts(
+      "  Latency:      p50=#{metrics.p50_latency_ms}ms, p95=#{metrics.p95_latency_ms}ms, p99=#{metrics.p99_latency_ms}ms"
+    )
+
     IO.puts("  Tool Calls:   #{metrics.total_tool_calls}")
 
     if metrics.total_estimated_cost do

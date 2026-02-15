@@ -43,19 +43,22 @@ defmodule Nous.Messages.OpenAI do
     choices = Map.get(response, "choices") || Map.get(response, :choices) || []
     choice = List.first(choices)
 
-    message_data = if choice do
-      Map.get(choice, "message") || Map.get(choice, :message)
-    end
+    message_data =
+      if choice do
+        Map.get(choice, "message") || Map.get(choice, :message)
+      end
 
-    content = if message_data do
-      Map.get(message_data, "content") || Map.get(message_data, :content)
-    end
+    content =
+      if message_data do
+        Map.get(message_data, "content") || Map.get(message_data, :content)
+      end
 
-    tool_calls = if message_data do
-      Map.get(message_data, "tool_calls") || Map.get(message_data, :tool_calls) || []
-    else
-      []
-    end
+    tool_calls =
+      if message_data do
+        Map.get(message_data, "tool_calls") || Map.get(message_data, :tool_calls) || []
+      else
+        []
+      end
 
     usage_data = Map.get(response, "usage") || Map.get(response, :usage)
     model_name = Map.get(response, "model") || Map.get(response, :model)
@@ -74,7 +77,11 @@ defmodule Nous.Messages.OpenAI do
     }
 
     attrs = if content && content != "", do: Map.put(attrs, :content, content), else: attrs
-    attrs = if length(converted_tool_calls) > 0, do: Map.put(attrs, :tool_calls, converted_tool_calls), else: attrs
+
+    attrs =
+      if length(converted_tool_calls) > 0,
+        do: Map.put(attrs, :tool_calls, converted_tool_calls),
+        else: attrs
 
     Message.new!(attrs)
   end
@@ -85,13 +92,14 @@ defmodule Nous.Messages.OpenAI do
   @spec from_messages([map()]) :: [Message.t()]
   def from_messages(openai_messages) when is_list(openai_messages) do
     Enum.map(openai_messages, fn msg ->
-      role = case Map.get(msg, :role) || Map.get(msg, "role") do
-        "system" -> :system
-        "user" -> :user
-        "assistant" -> :assistant
-        "tool" -> :tool
-        other -> other
-      end
+      role =
+        case Map.get(msg, :role) || Map.get(msg, "role") do
+          "system" -> :system
+          "user" -> :user
+          "assistant" -> :assistant
+          "tool" -> :tool
+          other -> other
+        end
 
       content = Map.get(msg, :content) || Map.get(msg, "content")
 
@@ -105,7 +113,8 @@ defmodule Nous.Messages.OpenAI do
     %{"role" => "system", "content" => content}
   end
 
-  defp message_to_openai(%Message{role: :user, metadata: %{content_parts: content_parts}}) when is_list(content_parts) do
+  defp message_to_openai(%Message{role: :user, metadata: %{content_parts: content_parts}})
+       when is_list(content_parts) do
     openai_content = Enum.map(content_parts, &content_part_to_openai/1)
     %{"role" => "user", "content" => openai_content}
   end
@@ -130,7 +139,12 @@ defmodule Nous.Messages.OpenAI do
     end
   end
 
-  defp message_to_openai(%Message{role: :tool, content: content, tool_call_id: tool_call_id, name: _name}) do
+  defp message_to_openai(%Message{
+         role: :tool,
+         content: content,
+         tool_call_id: tool_call_id,
+         name: _name
+       }) do
     %{"role" => "tool", "content" => content, "tool_call_id" => tool_call_id}
   end
 
@@ -153,7 +167,8 @@ defmodule Nous.Messages.OpenAI do
       "type" => "function",
       "function" => %{
         "name" => Map.get(tool_call, "name") || Map.get(tool_call, :name),
-        "arguments" => Jason.encode!(Map.get(tool_call, "arguments") || Map.get(tool_call, :arguments, %{}))
+        "arguments" =>
+          Jason.encode!(Map.get(tool_call, "arguments") || Map.get(tool_call, :arguments, %{}))
       }
     }
   end
@@ -164,12 +179,15 @@ defmodule Nous.Messages.OpenAI do
     name = Map.get(func, "name") || Map.get(func, :name)
     arguments = Map.get(func, "arguments") || Map.get(func, :arguments)
 
-    parsed_args = case Jason.decode(arguments) do
-      {:ok, decoded_args} -> decoded_args
-      {:error, _} ->
-        Logger.warning("Failed to decode tool arguments: #{inspect(arguments)}")
-        %{"error" => "Invalid JSON arguments", "raw" => arguments}
-    end
+    parsed_args =
+      case Jason.decode(arguments) do
+        {:ok, decoded_args} ->
+          decoded_args
+
+        {:error, _} ->
+          Logger.warning("Failed to decode tool arguments: #{inspect(arguments)}")
+          %{"error" => "Invalid JSON arguments", "raw" => arguments}
+      end
 
     %{
       "id" => id,
@@ -181,8 +199,10 @@ defmodule Nous.Messages.OpenAI do
   defp parse_usage(usage_data) when is_map(usage_data) do
     %Usage{
       requests: 1,
-      input_tokens: Map.get(usage_data, "prompt_tokens") || Map.get(usage_data, :prompt_tokens) || 0,
-      output_tokens: Map.get(usage_data, "completion_tokens") || Map.get(usage_data, :completion_tokens) || 0,
+      input_tokens:
+        Map.get(usage_data, "prompt_tokens") || Map.get(usage_data, :prompt_tokens) || 0,
+      output_tokens:
+        Map.get(usage_data, "completion_tokens") || Map.get(usage_data, :completion_tokens) || 0,
       total_tokens: Map.get(usage_data, "total_tokens") || Map.get(usage_data, :total_tokens) || 0
     }
   end

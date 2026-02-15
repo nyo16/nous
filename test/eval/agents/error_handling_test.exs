@@ -14,37 +14,26 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
 
   alias Nous.Tool
 
-  @default_model "lmstudio:ministral-3-14b-reasoning"
+  @default_model Nous.LLMTestHelper.test_model()
 
   setup_all do
-    case check_lmstudio_available() do
+    case Nous.LLMTestHelper.check_model_available() do
       :ok -> {:ok, model: @default_model}
-      {:error, reason} -> {:ok, skip: "LM Studio not available: #{reason}"}
+      {:error, reason} -> {:ok, skip: "LLM not available: #{reason}"}
     end
   end
 
   describe "Invalid Model Handling" do
     test "6.1 invalid model string returns error", _context do
       # Don't skip - this should work without LM Studio
-
-      agent = Nous.new("invalid:nonexistent-model-xyz", instructions: "Test")
-
-      result = Nous.run(agent, "Hello")
-
-      case result do
-        {:error, error} ->
-          IO.puts("\n[Error 6.1] Got expected error: #{inspect(error)}")
-          assert true
-
-        {:ok, _} ->
-          # Some providers might silently handle this
-          IO.puts("\n[Error 6.1] Warning: Invalid model didn't return error")
-          assert true
+      # Model.parse raises ArgumentError for unknown providers
+      assert_raise ArgumentError, fn ->
+        Nous.new("invalid:nonexistent-model-xyz", instructions: "Test")
       end
     end
 
     test "6.2 malformed model format", _context do
-      # Test various malformed model strings
+      # Test various malformed model strings - all raise ArgumentError
       malformed_models = [
         "no-provider-prefix",
         ":missing-provider",
@@ -53,31 +42,20 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
       ]
 
       for model_str <- malformed_models do
-        agent = Nous.new(model_str, instructions: "Test")
-        result = Nous.run(agent, "Hello")
-
-        case result do
-          {:error, _} ->
-            IO.puts("[Error 6.2] Model '#{model_str}' correctly returned error")
-
-          {:ok, _} ->
-            IO.puts("[Error 6.2] Model '#{model_str}' unexpectedly succeeded")
+        assert_raise ArgumentError, fn ->
+          Nous.new(model_str, instructions: "Test")
         end
       end
-
-      assert true
     end
   end
 
   describe "Provider Connection Errors" do
     test "6.3 unreachable provider returns error", _context do
-      # Configure with unreachable endpoint
+      # Configure with unreachable endpoint using custom provider
       agent =
-        Nous.new("openai_compatible:test-model",
+        Nous.new("custom:test-model",
           instructions: "Test",
-          provider_config: %{
-            base_url: "http://localhost:59999/v1"
-          }
+          base_url: "http://localhost:59999/v1"
         )
 
       result = Nous.run(agent, "Hello")
@@ -225,30 +203,33 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
     test "6.8 cancellation via check function", context do
       skip_if_unavailable(context)
 
-      # Cancellation flag
-      cancel_ref = make_ref()
-      Process.put(cancel_ref, false)
+      # Use :atomics for cross-process cancellation flag
+      cancellation_ref = :atomics.new(1, [])
+      :atomics.put(cancellation_ref, 1, 0)
 
       agent =
         Nous.new(context[:model],
           instructions: "Write a very long story about robots."
         )
 
+      check_fn = fn ->
+        case :atomics.get(cancellation_ref, 1) do
+          1 -> throw({:cancelled, "Test cancellation"})
+          0 -> :ok
+        end
+      end
+
       # Start async
       task =
         Task.async(fn ->
-          Nous.run(agent, "Write a 1000 word story",
-            cancellation_check: fn ->
-              Process.get(cancel_ref, false)
-            end
-          )
+          Nous.run(agent, "Write a 1000 word story", cancellation_check: check_fn)
         end)
 
       # Cancel after a short delay
       Process.sleep(500)
-      Process.put(cancel_ref, true)
+      :atomics.put(cancellation_ref, 1, 1)
 
-      result = Task.await(task, 30_000)
+      result = Task.await(task, 150_000)
 
       IO.puts("\n[Error 6.8] Cancellation result: #{inspect(result)}")
       assert result != nil
@@ -285,10 +266,16 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
 
       agent = Nous.new(context[:model])
 
-      result = Nous.run(agent, "")
+      # Empty string raises validation error
+      result =
+        try do
+          Nous.run(agent, "")
+        rescue
+          e -> {:error, e}
+        end
 
       IO.puts("\n[Error 6.10] Empty input result: #{inspect(result)}")
-      # Should handle gracefully
+      # Should handle gracefully (either error tuple or exception)
       assert result != nil
     end
 
@@ -349,24 +336,5 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
     end
   end
 
-  # Helper functions
-
-  defp check_lmstudio_available do
-    url = System.get_env("LMSTUDIO_BASE_URL") || "http://localhost:1234/v1"
-
-    case Req.get("#{url}/models", receive_timeout: 5_000) do
-      {:ok, %{status: 200}} -> :ok
-      {:ok, %{status: status}} -> {:error, "Status #{status}"}
-      {:error, reason} -> {:error, inspect(reason)}
-    end
-  rescue
-    e -> {:error, Exception.message(e)}
-  end
-
-  defp skip_if_unavailable(%{skip: reason}) do
-    ExUnit.Case.register_attribute(__ENV__, :skip, reason)
-    :skip
-  end
-
-  defp skip_if_unavailable(_), do: :ok
+  defp skip_if_unavailable(ctx), do: Nous.LLMTestHelper.skip_if_unavailable(ctx)
 end

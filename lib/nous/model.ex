@@ -14,7 +14,19 @@ defmodule Nous.Model do
 
   """
 
-  @type provider :: :openai | :anthropic | :gemini | :groq | :ollama | :lmstudio | :openrouter | :together | :vllm | :sglang | :mistral | :custom
+  @type provider ::
+          :openai
+          | :anthropic
+          | :gemini
+          | :groq
+          | :ollama
+          | :lmstudio
+          | :openrouter
+          | :together
+          | :vllm
+          | :sglang
+          | :mistral
+          | :custom
 
   @type t :: %__MODULE__{
           provider: provider(),
@@ -35,7 +47,8 @@ defmodule Nous.Model do
     :api_key,
     :organization,
     :stream_normalizer,
-    receive_timeout: 60_000,  # 60 seconds default (OpenaiEx default is 15s which is too short for local models)
+    # 60 seconds default (OpenaiEx default is 15s which is too short for local models)
+    receive_timeout: 60_000,
     default_settings: %{}
   ]
 
@@ -174,7 +187,8 @@ defmodule Nous.Model do
   defp default_base_url(:openrouter), do: "https://openrouter.ai/api/v1"
   defp default_base_url(:together), do: "https://api.together.xyz/v1"
   defp default_base_url(:mistral), do: "https://api.mistral.ai/v1"
-  defp default_base_url(:vllm), do: nil  # vLLM requires explicit base_url
+  # vLLM requires explicit base_url
+  defp default_base_url(:vllm), do: nil
   defp default_base_url(:sglang), do: "http://localhost:30000/v1"
   defp default_base_url(:custom), do: nil
 
@@ -188,17 +202,25 @@ defmodule Nous.Model do
   defp default_api_key(:mistral), do: Application.get_env(:nous, :mistral_api_key)
   defp default_api_key(:ollama), do: "ollama"
   defp default_api_key(:lmstudio), do: "not-needed"
-  defp default_api_key(:vllm), do: nil  # vLLM API key is optional
-  defp default_api_key(:sglang), do: nil  # SGLang API key is optional
+  # vLLM API key is optional
+  defp default_api_key(:vllm), do: nil
+  # SGLang API key is optional
+  defp default_api_key(:sglang), do: nil
   defp default_api_key(:custom), do: nil
 
   # Default receive timeouts per provider
   # Local providers get longer timeouts since they're typically slower
   @spec default_receive_timeout(provider()) :: non_neg_integer()
-  defp default_receive_timeout(:ollama), do: 120_000     # 2 minutes for local Ollama
-  defp default_receive_timeout(:lmstudio), do: 120_000   # 2 minutes for local LM Studio
-  defp default_receive_timeout(:vllm), do: 120_000       # 2 minutes for local vLLM
-  defp default_receive_timeout(:sglang), do: 120_000     # 2 minutes for local SGLang
-  defp default_receive_timeout(:custom), do: 120_000     # 2 minutes for custom endpoints
-  defp default_receive_timeout(_provider), do: 60_000    # 60 seconds for cloud providers
+  # 2 minutes for local Ollama
+  defp default_receive_timeout(:ollama), do: 120_000
+  # 2 minutes for local LM Studio
+  defp default_receive_timeout(:lmstudio), do: 120_000
+  # 2 minutes for local vLLM
+  defp default_receive_timeout(:vllm), do: 120_000
+  # 2 minutes for local SGLang
+  defp default_receive_timeout(:sglang), do: 120_000
+  # 2 minutes for custom endpoints
+  defp default_receive_timeout(:custom), do: 120_000
+  # 60 seconds for cloud providers
+  defp default_receive_timeout(_provider), do: 60_000
 end

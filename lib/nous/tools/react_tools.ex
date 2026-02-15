@@ -45,7 +45,10 @@ defmodule Nous.Tools.ReActTools do
   """
   def plan(ctx, args) do
     # Support multiple parameter formats
-    task = Map.get(args, "task") || Map.get(args, "query") || Map.get(args, "problem") || "Current task"
+    task =
+      Map.get(args, "task") || Map.get(args, "query") || Map.get(args, "problem") ||
+        "Current task"
+
     timestamp = DateTime.utc_now() |> DateTime.to_string()
 
     plan_record = %{
@@ -55,7 +58,7 @@ defmodule Nous.Tools.ReActTools do
     }
 
     # Store plan in context
-    plans = [plan_record | (ctx.deps[:plans] || [])]
+    plans = [plan_record | ctx.deps[:plans] || []]
 
     Logger.info("ReAct: Plan created for task: #{String.slice(task, 0, 60)}...")
 
@@ -101,7 +104,7 @@ defmodule Nous.Tools.ReActTools do
       timestamp: timestamp
     }
 
-    notes = [note_record | (ctx.deps[:notes] || [])]
+    notes = [note_record | ctx.deps[:notes] || []]
 
     Logger.debug("ReAct: Note recorded: #{String.slice(content, 0, 60)}...")
 
@@ -175,24 +178,27 @@ defmodule Nous.Tools.ReActTools do
     todos = ctx.deps[:todos] || []
 
     # Support both id and item-based completion
-    {completed_id, updated_todos} = cond do
-      Map.has_key?(args, "id") ->
-        id = args["id"]
-        complete_by_id(todos, id)
+    {completed_id, updated_todos} =
+      cond do
+        Map.has_key?(args, "id") ->
+          id = args["id"]
+          complete_by_id(todos, id)
 
-      Map.has_key?(args, "item") ->
-        item = args["item"]
-        complete_by_item(todos, item)
+        Map.has_key?(args, "item") ->
+          item = args["item"]
+          complete_by_item(todos, item)
 
-      true ->
-        {nil, todos}
-    end
+        true ->
+          {nil, todos}
+      end
 
     if completed_id do
       completed_count = Enum.count(updated_todos, fn t -> t.status == :completed end)
       pending_count = Enum.count(updated_todos, fn t -> t.status == :pending end)
 
-      Logger.info("ReAct: Todo ##{completed_id} completed (#{completed_count}/#{length(updated_todos)} done)")
+      Logger.info(
+        "ReAct: Todo ##{completed_id} completed (#{completed_count}/#{length(updated_todos)} done)"
+      )
 
       %{
         success: true,
@@ -279,7 +285,9 @@ defmodule Nous.Tools.ReActTools do
     completed_todos = Enum.count(todos, fn t -> t.status == :completed end)
     pending_todos = Enum.count(todos, fn t -> t.status == :pending end)
 
-    Logger.info("ReAct: Final answer provided (#{completed_todos}/#{length(todos)} todos completed)")
+    Logger.info(
+      "ReAct: Final answer provided (#{completed_todos}/#{length(todos)} todos completed)"
+    )
 
     if pending_todos > 0 do
       Logger.warning("ReAct: Task completed with #{pending_todos} pending todos")
@@ -314,11 +322,12 @@ defmodule Nous.Tools.ReActTools do
         {nil, todos}
 
       index ->
-        updated_todos = List.update_at(todos, index, fn todo ->
-          todo
-          |> Map.put(:status, :completed)
-          |> Map.put(:completed_at, DateTime.utc_now() |> DateTime.to_string())
-        end)
+        updated_todos =
+          List.update_at(todos, index, fn todo ->
+            todo
+            |> Map.put(:status, :completed)
+            |> Map.put(:completed_at, DateTime.utc_now() |> DateTime.to_string())
+          end)
 
         {id, updated_todos}
     end
@@ -329,18 +338,20 @@ defmodule Nous.Tools.ReActTools do
     item_lower = String.downcase(item)
 
     case Enum.find_index(todos, fn t ->
-      String.contains?(String.downcase(t.item), item_lower)
-    end) do
+           String.contains?(String.downcase(t.item), item_lower)
+         end) do
       nil ->
         {nil, todos}
 
       index ->
         todo = Enum.at(todos, index)
-        updated_todos = List.update_at(todos, index, fn t ->
-          t
-          |> Map.put(:status, :completed)
-          |> Map.put(:completed_at, DateTime.utc_now() |> DateTime.to_string())
-        end)
+
+        updated_todos =
+          List.update_at(todos, index, fn t ->
+            t
+            |> Map.put(:status, :completed)
+            |> Map.put(:completed_at, DateTime.utc_now() |> DateTime.to_string())
+          end)
 
         {todo.id, updated_todos}
     end
@@ -352,11 +363,12 @@ defmodule Nous.Tools.ReActTools do
     formatted_items =
       todos
       |> Enum.map(fn todo ->
-        priority_icon = case todo.priority do
-          "high" -> "🔴"
-          "low" -> "🟢"
-          _ -> "🟡"
-        end
+        priority_icon =
+          case todo.priority do
+            "high" -> "🔴"
+            "low" -> "🟢"
+            _ -> "🟡"
+          end
 
         status_icon = if todo.status == :completed, do: "✅", else: "📝"
 

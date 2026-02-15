@@ -17,7 +17,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.9.0"}
+    {:nous, "~> 0.10.0"}
   ]
 end
 ```
@@ -262,6 +262,103 @@ agent = Nous.ReActAgent.new("openai:gpt-4",
 )
 ```
 
+### Plugin System
+
+Extend agents with composable plugins for cross-cutting concerns:
+
+```elixir
+agent = Nous.new("openai:gpt-4",
+  instructions: "You are an assistant.",
+  plugins: [Nous.Plugins.Summarization, Nous.Plugins.HumanInTheLoop],
+  tools: [&MyTools.send_email/2]
+)
+
+{:ok, result} = Nous.run(agent, "Send a welcome email to alice@example.com")
+```
+
+### Human-in-the-Loop
+
+Add approval workflows for sensitive tool calls:
+
+```elixir
+agent = Nous.new("openai:gpt-4",
+  plugins: [Nous.Plugins.HumanInTheLoop],
+  tools: [&MyTools.delete_record/2]
+)
+
+{:ok, result} = Nous.run(agent, "Delete user 42",
+  approval_handler: fn tool_call ->
+    IO.puts("Approve #{tool_call.name}? [y/n]")
+    if IO.gets("") |> String.trim() == "y", do: :approve, else: :reject
+  end
+)
+```
+
+#### Async Approval via PubSub
+
+For LiveView or other async approval workflows:
+
+```elixir
+# Configure PubSub once in config/config.exs
+config :nous, pubsub: MyApp.PubSub
+
+# Use async approval handler
+deps = %{hitl_config: %{
+  tools: ["send_email"],
+  handler: Nous.PubSub.Approval.handler(session_id: session_id, timeout: :timer.minutes(5))
+}}
+
+# In LiveView: handle {:approval_required, info} and call
+# Nous.PubSub.Approval.respond(MyApp.PubSub, session_id, tool_call_id, :approve)
+```
+
+### Sub-Agent Delegation
+
+Enable agents to delegate tasks to specialized child agents:
+
+```elixir
+agent = Nous.new("openai:gpt-4",
+  plugins: [Nous.Plugins.SubAgent],
+  deps: %{sub_agent_templates: %{
+    researcher: %{model: "openai:gpt-4", instructions: "Research topics thoroughly"},
+    coder: %{model: "openai:gpt-4", instructions: "Write clean Elixir code"}
+  }}
+)
+
+{:ok, result} = Nous.run(agent, "Research Elixir GenServers, then write an example")
+```
+
+### Deep Research
+
+Autonomous multi-step research with citations:
+
+```elixir
+{:ok, report} = Nous.Research.run(
+  "Best practices for Elixir deployment",
+  model: "openai:gpt-4o",
+  search_tool: &Nous.Tools.TavilySearch.search/2
+)
+
+IO.puts(report.content)  # Markdown report with inline citations
+```
+
+### Agent Supervision & Persistence
+
+Production lifecycle management with state persistence:
+
+```elixir
+# Start a supervised agent with persistence
+{:ok, pid} = Nous.AgentDynamicSupervisor.start_agent(
+  agent, session_id: "user-123",
+  persistence: Nous.Persistence.ETS,
+  name: {:via, Registry, {Nous.AgentRegistry, "user-123"}}
+)
+
+# Agent state auto-saves; restore later
+{:ok, context} = Nous.Persistence.ETS.load("user-123")
+{:ok, result} = Nous.run(agent, "Continue our conversation", context: context)
+```
+
 ### LiveView Integration
 
 ```elixir
@@ -389,11 +486,15 @@ Nous.new/2 → Agent struct
     ↓
 Nous.run/3 → AgentRunner
     ↓
-├─→ Context (messages, deps, callbacks)
+├─→ Context (messages, deps, callbacks, pubsub)
 ├─→ Behaviour (BasicAgent | ReActAgent | custom)
+├─→ Plugins (HITL, Summarization, SubAgent, ...)
 ├─→ ModelDispatcher → Provider → HTTP
-├─→ ToolExecutor (timeout, validation)
-└─→ Callbacks (map | notify_pid)
+├─→ ToolExecutor (timeout, validation, approval)
+├─→ Callbacks (map | notify_pid | PubSub)
+├─→ PubSub (Nous.PubSub → Phoenix.PubSub, optional)
+├─→ Persistence (ETS | custom backend)
+└─→ Research (Planner → Searcher → Synthesizer → Reporter)
 ```
 
 ## Contributing

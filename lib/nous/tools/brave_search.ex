@@ -59,7 +59,8 @@ defmodule Nous.Tools.BraveSearch do
   def web_search(ctx, args) do
     # Support both "query" and "q" parameter names
     query = Map.get(args, "query") || Map.get(args, "q") || ""
-    count = Map.get(args, "count", 5) |> min(20)  # Max 20 results
+    # Max 20 results
+    count = Map.get(args, "count", 5) |> min(20)
     country = Map.get(args, "country")
     search_lang = Map.get(args, "search_lang")
     safesearch = Map.get(args, "safesearch", "moderate")
@@ -79,6 +80,7 @@ defmodule Nous.Tools.BraveSearch do
 
         {:error, reason} ->
           Logger.error("Brave search failed: #{inspect(reason)}")
+
           %{
             query: query,
             error: "Search failed: #{inspect(reason)}",
@@ -125,6 +127,7 @@ defmodule Nous.Tools.BraveSearch do
 
         {:error, reason} ->
           Logger.error("Brave news search failed: #{inspect(reason)}")
+
           %{
             query: query,
             error: "News search failed: #{inspect(reason)}",
@@ -144,9 +147,9 @@ defmodule Nous.Tools.BraveSearch do
 
   defp get_api_key(ctx) do
     # Try context first, then config, then environment
-    (ctx.deps[:brave_api_key] ||
-     Application.get_env(:nous, :brave_api_key) ||
-     System.get_env("BRAVE_API_KEY"))
+    ctx.deps[:brave_api_key] ||
+      Application.get_env(:nous, :brave_api_key) ||
+      System.get_env("BRAVE_API_KEY")
   end
 
   defp perform_search(query, api_key, count, country, search_lang, safesearch) do
@@ -186,12 +189,13 @@ defmodule Nous.Tools.BraveSearch do
   defp perform_news_search(query, api_key, count, country, search_lang) do
     url = "https://api.search.brave.com/res/v1/news/search"
 
-    params = %{
-      "q" => query,
-      "count" => count
-    }
-    |> maybe_add_param("country", country)
-    |> maybe_add_param("search_lang", search_lang)
+    params =
+      %{
+        "q" => query,
+        "count" => count
+      }
+      |> maybe_add_param("country", country)
+      |> maybe_add_param("search_lang", search_lang)
 
     headers = [
       {~c"X-Subscription-Token", String.to_charlist(api_key)},

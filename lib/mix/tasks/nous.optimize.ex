@@ -174,11 +174,21 @@ defmodule Mix.Tasks.Nous.Optimize do
   defp build_opts(opts) do
     strategy =
       case opts[:strategy] do
-        "grid_search" -> :grid_search
-        "grid" -> :grid_search
-        "random" -> :random
-        "bayesian" -> :bayesian
-        nil -> :bayesian
+        "grid_search" ->
+          :grid_search
+
+        "grid" ->
+          :grid_search
+
+        "random" ->
+          :random
+
+        "bayesian" ->
+          :bayesian
+
+        nil ->
+          :bayesian
+
         other ->
           Mix.shell().error("Unknown strategy: #{other}")
           exit({:shutdown, 1})
@@ -186,14 +196,30 @@ defmodule Mix.Tasks.Nous.Optimize do
 
     metric =
       case opts[:metric] do
-        "score" -> :score
-        "pass_rate" -> :pass_rate
-        "latency_p50" -> :latency_p50
-        "latency_p95" -> :latency_p95
-        "latency_p99" -> :latency_p99
-        "total_tokens" -> :total_tokens
-        "cost" -> :cost
-        nil -> :score
+        "score" ->
+          :score
+
+        "pass_rate" ->
+          :pass_rate
+
+        "latency_p50" ->
+          :latency_p50
+
+        "latency_p95" ->
+          :latency_p95
+
+        "latency_p99" ->
+          :latency_p99
+
+        "total_tokens" ->
+          :total_tokens
+
+        "cost" ->
+          :cost
+
+        nil ->
+          :score
+
         other ->
           Mix.shell().error("Unknown metric: #{other}")
           exit({:shutdown, 1})

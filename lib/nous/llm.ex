@@ -121,8 +121,11 @@ defmodule Nous.LLM do
   @spec generate_text!(String.t() | Model.t(), String.t(), [option()]) :: String.t()
   def generate_text!(model, prompt, opts \\ []) do
     case generate_text(model, prompt, opts) do
-      {:ok, text} -> text
-      {:error, reason} -> raise Nous.Errors.ModelError, message: "Generation failed: #{inspect(reason)}"
+      {:ok, text} ->
+        text
+
+      {:error, reason} ->
+        raise Nous.Errors.ModelError, message: "Generation failed: #{inspect(reason)}"
     end
   end
 
@@ -178,7 +181,8 @@ defmodule Nous.LLM do
   # Private helpers
 
   # Tool execution loop
-  defp run_with_tools(model, messages, settings, tools, ctx, iteration) when iteration < @max_tool_iterations do
+  defp run_with_tools(model, messages, settings, tools, ctx, iteration)
+       when iteration < @max_tool_iterations do
     case ModelDispatcher.request(model, messages, settings) do
       {:ok, response} ->
         tool_calls = Messages.extract_tool_calls([response])

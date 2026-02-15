@@ -144,19 +144,23 @@ defmodule Nous.Agents.ReActAgent do
 
     # Check if final_answer was called
     tool_calls = response.tool_calls || []
-    has_final_answer = Enum.any?(tool_calls, fn call ->
-      call.name == "final_answer" or call[:name] == "final_answer"
-    end)
+
+    has_final_answer =
+      Enum.any?(tool_calls, fn call ->
+        call["name"] == "final_answer" or call[:name] == "final_answer"
+      end)
 
     if has_final_answer do
       # Extract final answer from tool call
-      final_call = Enum.find(tool_calls, fn call ->
-        call.name == "final_answer" or call[:name] == "final_answer"
-      end)
+      final_call =
+        Enum.find(tool_calls, fn call ->
+          call["name"] == "final_answer" or call[:name] == "final_answer"
+        end)
 
-      answer = get_in(final_call, [:arguments, "answer"]) ||
-               get_in(final_call, [:arguments, :answer]) ||
-               "No answer provided"
+      answer =
+        get_in(final_call, [:arguments, "answer"]) ||
+          get_in(final_call, [:arguments, :answer]) ||
+          "No answer provided"
 
       ctx
       |> Context.merge_deps(%{final_answer: answer})
@@ -201,17 +205,17 @@ defmodule Nous.Agents.ReActAgent do
   def after_tool(_agent, call, _result, ctx) do
     # Record tool call in history
     history_entry = %{
-      name: call.name || call[:name],
-      arguments: call.arguments || call[:arguments],
+      name: call["name"] || call[:name],
+      arguments: call["arguments"] || call[:arguments],
       timestamp: DateTime.utc_now()
     }
 
-    tool_history = [history_entry | (ctx.deps[:tool_history] || [])]
+    tool_history = [history_entry | ctx.deps[:tool_history] || []]
 
     # Check for duplicate calls (loop detection)
     if is_duplicate_call?(call, ctx.deps[:tool_history] || []) do
       require Logger
-      Logger.warning("ReAct loop detection: duplicate tool call #{call.name || call[:name]}")
+      Logger.warning("ReAct loop detection: duplicate tool call #{call["name"] || call[:name]}")
     end
 
     Context.merge_deps(ctx, %{tool_history: tool_history})
@@ -242,27 +246,33 @@ defmodule Nous.Agents.ReActAgent do
     [
       Tool.from_function(&ReActTools.plan/2,
         name: "plan",
-        description: "Create a structured plan for solving the task. Analyzes known facts, facts to look up, and facts to derive. Use this FIRST before taking any actions."
+        description:
+          "Create a structured plan for solving the task. Analyzes known facts, facts to look up, and facts to derive. Use this FIRST before taking any actions."
       ),
       Tool.from_function(&ReActTools.note/2,
         name: "note",
-        description: "Record an observation, insight, or intermediate finding. Use this to document important information discovered during your work."
+        description:
+          "Record an observation, insight, or intermediate finding. Use this to document important information discovered during your work."
       ),
       Tool.from_function(&ReActTools.add_todo/2,
         name: "add_todo",
-        description: "Add a task to your todo list. Use this to break down complex problems into manageable subtasks. Parameters: item (required), priority (optional: high/medium/low)."
+        description:
+          "Add a task to your todo list. Use this to break down complex problems into manageable subtasks. Parameters: item (required), priority (optional: high/medium/low)."
       ),
       Tool.from_function(&ReActTools.complete_todo/2,
         name: "complete_todo",
-        description: "Mark a todo item as complete. Parameters: id (todo number) OR item (description matching the todo)."
+        description:
+          "Mark a todo item as complete. Parameters: id (todo number) OR item (description matching the todo)."
       ),
       Tool.from_function(&ReActTools.list_todos/2,
         name: "list_todos",
-        description: "View all current todos with their status. Shows pending and completed tasks to help track progress."
+        description:
+          "View all current todos with their status. Shows pending and completed tasks to help track progress."
       ),
       Tool.from_function(&ReActTools.final_answer/2,
         name: "final_answer",
-        description: "Provide the final answer to complete the task. REQUIRED to finish. Only call this after you have gathered all necessary information and solved the problem. Parameter: answer (your complete solution)."
+        description:
+          "Provide the final answer to complete the task. REQUIRED to finish. Only call this after you have gathered all necessary information and solved the problem. Parameter: answer (your complete solution)."
       )
     ]
   end
@@ -277,8 +287,8 @@ defmodule Nous.Agents.ReActAgent do
   end
 
   defp is_duplicate_call?(call, history) do
-    call_name = call.name || call[:name]
-    call_args = call.arguments || call[:arguments]
+    call_name = call["name"] || call[:name]
+    call_args = call["arguments"] || call[:arguments]
 
     Enum.any?(history, fn entry ->
       entry.name == call_name and entry.arguments == call_args

@@ -74,11 +74,12 @@ defmodule Nous.Providers.OpenAICompatible do
     ]
 
     # Add authorization if API key provided
-    headers = if api_key && api_key != "" && api_key != "not-needed" do
-      [{"authorization", "Bearer #{api_key}"} | headers]
-    else
-      headers
-    end
+    headers =
+      if api_key && api_key != "" && api_key != "not-needed" do
+        [{"authorization", "Bearer #{api_key}"} | headers]
+      else
+        headers
+      end
 
     # Add organization header if provided
     case Keyword.get(opts, :organization) do

@@ -85,11 +85,13 @@ defmodule Nous.Tool.Validator do
       # => {:error, {:missing_required, ["b"]}}
 
   """
-  @spec validate_required(map(), [String.t()]) :: :ok | {:error, {:missing_required, [String.t()]}}
+  @spec validate_required(map(), [String.t()]) ::
+          :ok | {:error, {:missing_required, [String.t()]}}
   def validate_required(args, required) when is_map(args) and is_list(required) do
-    missing = Enum.filter(required, fn key ->
-      not Map.has_key?(args, key)
-    end)
+    missing =
+      Enum.filter(required, fn key ->
+        not Map.has_key?(args, key)
+      end)
 
     if Enum.empty?(missing) do
       :ok
@@ -113,32 +115,33 @@ defmodule Nous.Tool.Validator do
   """
   @spec validate_types(map(), map()) :: :ok | {:error, {:type_mismatch, list()}}
   def validate_types(args, properties) when is_map(args) and is_map(properties) do
-    errors = args
-    |> Enum.reduce([], fn {key, value}, acc ->
-      case Map.get(properties, key) do
-        nil ->
-          # Unknown keys are allowed (additionalProperties: true by default)
-          acc
-
-        %{"type" => expected_type} ->
-          if matches_type?(value, expected_type) do
+    errors =
+      args
+      |> Enum.reduce([], fn {key, value}, acc ->
+        case Map.get(properties, key) do
+          nil ->
+            # Unknown keys are allowed (additionalProperties: true by default)
             acc
-          else
-            [{key, expected_type, typeof(value)} | acc]
-          end
 
-        %{"enum" => allowed_values} ->
-          if value in allowed_values do
+          %{"type" => expected_type} ->
+            if matches_type?(value, expected_type) do
+              acc
+            else
+              [{key, expected_type, typeof(value)} | acc]
+            end
+
+          %{"enum" => allowed_values} ->
+            if value in allowed_values do
+              acc
+            else
+              [{key, "enum:#{inspect(allowed_values)}", inspect(value)} | acc]
+            end
+
+          _other ->
+            # Schema without type constraint
             acc
-          else
-            [{key, "enum:#{inspect(allowed_values)}", inspect(value)} | acc]
-          end
-
-        _other ->
-          # Schema without type constraint
-          acc
-      end
-    end)
+        end
+      end)
 
     if Enum.empty?(errors) do
       :ok
@@ -169,7 +172,8 @@ defmodule Nous.Tool.Validator do
   def matches_type?(value, "array"), do: is_list(value)
   def matches_type?(value, "object"), do: is_map(value)
   def matches_type?(nil, "null"), do: true
-  def matches_type?(_value, _type), do: true  # Unknown types are permissive
+  # Unknown types are permissive
+  def matches_type?(_value, _type), do: true
 
   @doc """
   Get the JSON schema type name for a value.
@@ -210,9 +214,11 @@ defmodule Nous.Tool.Validator do
   end
 
   def format_error({:type_mismatch, errors}) do
-    formatted = Enum.map_join(errors, "; ", fn {field, expected, actual} ->
-      "#{field}: expected #{expected}, got #{actual}"
-    end)
+    formatted =
+      Enum.map_join(errors, "; ", fn {field, expected, actual} ->
+        "#{field}: expected #{expected}, got #{actual}"
+      end)
+
     "Type mismatch: #{formatted}"
   end
 

@@ -14,7 +14,7 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
   alias Nous.Eval.{TestCase, Runner}
   alias Nous.Tool
 
-  @default_model "lmstudio:ministral-3-14b-reasoning"
+  @default_model Nous.LLMTestHelper.test_model()
 
   # Test Tools
 
@@ -33,8 +33,12 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
       city_lower = String.downcase(city)
 
       case Map.get(weathers, city_lower) do
-        nil -> {:ok, "Weather data not available for #{city}"}
-        data -> {:ok, "Weather in #{city}: #{data.temp}°F, #{data.conditions}, #{data.humidity}% humidity"}
+        nil ->
+          {:ok, "Weather data not available for #{city}"}
+
+        data ->
+          {:ok,
+           "Weather in #{city}: #{data.temp}°F, #{data.conditions}, #{data.humidity}% humidity"}
       end
     end
 
@@ -80,7 +84,8 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
           _ -> "Unknown conversion"
         end
 
-      {:ok, "#{value}°#{String.upcase(String.first(from))} = #{Float.round(result * 1.0, 2)}°#{String.upcase(String.first(to))}"}
+      {:ok,
+       "#{value}°#{String.upcase(String.first(from))} = #{Float.round(result * 1.0, 2)}°#{String.upcase(String.first(to))}"}
     end
 
     def get_balance(ctx, _args) do
@@ -262,9 +267,9 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
   end
 
   setup_all do
-    case check_lmstudio_available() do
+    case Nous.LLMTestHelper.check_model_available() do
       :ok -> {:ok, model: @default_model}
-      {:error, reason} -> {:ok, skip: "LM Studio not available: #{reason}"}
+      {:error, reason} -> {:ok, skip: "LLM not available: #{reason}"}
     end
   end
 
@@ -339,7 +344,8 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
       IO.puts("\n[Multi-Tool] Output: #{result.actual_output}")
       IO.puts("[Multi-Tool] Score: #{result.score}")
 
-      assert result.metrics.tool_calls >= 1, "Expected at least one tool call"
+      tool_calls = if result.metrics, do: result.metrics.tool_calls, else: 0
+      assert tool_calls >= 1, "Expected at least one tool call"
     end
 
     test "2.4 Multiple cities weather", context do
@@ -359,9 +365,10 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
 
       {:ok, result} = Runner.run_case(test_case, model: context[:model], timeout: 60_000)
 
-      IO.puts("\n[Multi-City] Tool calls: #{result.metrics.tool_calls}")
+      tool_calls = if result.metrics, do: result.metrics.tool_calls, else: 0
+      IO.puts("\n[Multi-City] Tool calls: #{tool_calls}")
 
-      assert result.metrics.tool_calls >= 1, "Expected tool calls for multiple cities"
+      assert tool_calls >= 1, "Expected tool calls for multiple cities"
     end
   end
 
@@ -411,11 +418,12 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
 
       {:ok, result} = Runner.run_case(test_case, model: context[:model], timeout: 60_000)
 
+      tool_calls = if result.metrics, do: result.metrics.tool_calls, else: 0
       IO.puts("\n[Cart] Output: #{result.actual_output}")
-      IO.puts("[Cart] Tool calls: #{result.metrics.tool_calls}")
+      IO.puts("[Cart] Tool calls: #{tool_calls}")
 
       # This test might need multiple iterations
-      assert result.metrics.tool_calls >= 1, "Expected at least one tool call"
+      assert tool_calls >= 1, "Expected at least one tool call"
     end
   end
 
@@ -438,29 +446,12 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
 
       IO.puts("\n[Time] Output: #{result.actual_output}")
 
-      assert result.metrics.tool_calls >= 1 or String.length(result.actual_output || "") > 0,
+      tool_calls = if result.metrics, do: result.metrics.tool_calls, else: 0
+
+      assert tool_calls >= 1 or String.length(result.actual_output || "") > 0,
              "Expected time tool call or response"
     end
   end
 
-  # Helper functions
-
-  defp check_lmstudio_available do
-    url = System.get_env("LMSTUDIO_BASE_URL") || "http://localhost:1234/v1"
-
-    case Req.get("#{url}/models", receive_timeout: 5_000) do
-      {:ok, %{status: 200}} -> :ok
-      {:ok, %{status: status}} -> {:error, "Status #{status}"}
-      {:error, reason} -> {:error, inspect(reason)}
-    end
-  rescue
-    e -> {:error, Exception.message(e)}
-  end
-
-  defp skip_if_unavailable(%{skip: reason}) do
-    ExUnit.Case.register_attribute(__ENV__, :skip, reason)
-    :skip
-  end
-
-  defp skip_if_unavailable(_), do: :ok
+  defp skip_if_unavailable(ctx), do: Nous.LLMTestHelper.skip_if_unavailable(ctx)
 end

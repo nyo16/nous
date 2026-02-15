@@ -26,7 +26,8 @@ defmodule Nous.Providers.HTTP do
   require Logger
 
   @default_timeout 60_000
-  @max_buffer_size 10 * 1024 * 1024  # 10MB max buffer
+  # 10MB max buffer
+  @max_buffer_size 10 * 1024 * 1024
 
   # ============================================================================
   # Public API
@@ -60,7 +61,10 @@ defmodule Nous.Providers.HTTP do
         {:ok, response_body}
 
       {:ok, %Req.Response{status: status, body: response_body}} ->
-        Logger.warning("HTTP request failed with status #{status}: #{truncate_for_log(response_body)}")
+        Logger.warning(
+          "HTTP request failed with status #{status}: #{truncate_for_log(response_body)}"
+        )
+
         {:error, %{status: status, body: response_body}}
 
       {:error, %Mint.TransportError{reason: reason} = error} ->
@@ -74,10 +78,12 @@ defmodule Nous.Providers.HTTP do
   end
 
   def post(url, body, headers, _opts) do
-    {:error, %ArgumentError{
-      message: "Invalid arguments: url must be string, body must be map, headers must be list. " <>
-               "Got: url=#{inspect(url)}, body=#{inspect(body)}, headers=#{inspect(headers)}"
-    }}
+    {:error,
+     %ArgumentError{
+       message:
+         "Invalid arguments: url must be string, body must be map, headers must be list. " <>
+           "Got: url=#{inspect(url)}, body=#{inspect(body)}, headers=#{inspect(headers)}"
+     }}
   end
 
   @doc """
@@ -96,7 +102,8 @@ defmodule Nous.Providers.HTTP do
   @spec stream(String.t(), map(), list(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
   def stream(url, body, headers, opts \\ [])
 
-  def stream(url, body, headers, opts) when is_binary(url) and is_map(body) and is_list(headers) do
+  def stream(url, body, headers, opts)
+      when is_binary(url) and is_map(body) and is_list(headers) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
 
@@ -105,11 +112,12 @@ defmodule Nous.Providers.HTTP do
         # Add streaming headers if not present
         headers = ensure_streaming_headers(headers)
 
-        stream = Stream.resource(
-          fn -> start_streaming(url, headers, json_body, finch_name, timeout) end,
-          &next_chunk/1,
-          &cleanup/1
-        )
+        stream =
+          Stream.resource(
+            fn -> start_streaming(url, headers, json_body, finch_name, timeout) end,
+            &next_chunk/1,
+            &cleanup/1
+          )
 
         {:ok, stream}
 
@@ -120,10 +128,12 @@ defmodule Nous.Providers.HTTP do
   end
 
   def stream(url, body, headers, _opts) do
-    {:error, %ArgumentError{
-      message: "Invalid arguments: url must be string, body must be map, headers must be list. " <>
-               "Got: url=#{inspect(url)}, body=#{inspect(body)}, headers=#{inspect(headers)}"
-    }}
+    {:error,
+     %ArgumentError{
+       message:
+         "Invalid arguments: url must be string, body must be map, headers must be list. " <>
+           "Got: url=#{inspect(url)}, body=#{inspect(body)}, headers=#{inspect(headers)}"
+     }}
   end
 
   # ============================================================================
@@ -158,12 +168,13 @@ defmodule Nous.Providers.HTTP do
   @spec parse_sse_buffer(String.t()) :: {list(), String.t()}
   def parse_sse_buffer(buffer) when is_binary(buffer) do
     # Protect against buffer overflow
-    buffer = if byte_size(buffer) > @max_buffer_size do
-      Logger.warning("SSE buffer exceeded max size (#{@max_buffer_size} bytes), truncating")
-      binary_part(buffer, byte_size(buffer) - @max_buffer_size, @max_buffer_size)
-    else
-      buffer
-    end
+    buffer =
+      if byte_size(buffer) > @max_buffer_size do
+        Logger.warning("SSE buffer exceeded max size (#{@max_buffer_size} bytes), truncating")
+        binary_part(buffer, byte_size(buffer) - @max_buffer_size, @max_buffer_size)
+      else
+        buffer
+      end
 
     # Split on double newlines (SSE event separator)
     # Handle both \n\n and \r\n\r\n
@@ -177,10 +188,12 @@ defmodule Nous.Providers.HTTP do
       parts ->
         # All but the last part are complete events
         {complete, [incomplete]} = Enum.split(parts, -1)
+
         events =
           complete
           |> Enum.map(&parse_sse_event/1)
           |> Enum.reject(&is_nil/1)
+
         {events, incomplete}
     end
   end
@@ -214,7 +227,8 @@ defmodule Nous.Providers.HTTP do
       iex> parse_sse_event("")
       nil
   """
-  @spec parse_sse_event(String.t()) :: map() | {:stream_done, String.t()} | {:parse_error, term()} | nil
+  @spec parse_sse_event(String.t()) ::
+          map() | {:stream_done, String.t()} | {:parse_error, term()} | nil
   def parse_sse_event(event) when is_binary(event) do
     # Trim and check for empty
     event = String.trim(event)
@@ -241,7 +255,10 @@ defmodule Nous.Providers.HTTP do
   def bearer_auth_header(nil), do: []
   def bearer_auth_header(""), do: []
   def bearer_auth_header("not-needed"), do: []
-  def bearer_auth_header(api_key) when is_binary(api_key), do: [{"authorization", "Bearer #{api_key}"}]
+
+  def bearer_auth_header(api_key) when is_binary(api_key),
+    do: [{"authorization", "Bearer #{api_key}"}]
+
   def bearer_auth_header(_), do: []
 
   @doc """
@@ -252,9 +269,11 @@ defmodule Nous.Providers.HTTP do
   @spec api_key_header(String.t() | nil, String.t()) :: list()
   def api_key_header(nil, _header_name), do: []
   def api_key_header("", _header_name), do: []
+
   def api_key_header(api_key, header_name) when is_binary(api_key) and is_binary(header_name) do
     [{header_name, api_key}]
   end
+
   def api_key_header(_, _), do: []
 
   # ============================================================================
@@ -270,6 +289,7 @@ defmodule Nous.Providers.HTTP do
 
   defp maybe_add_header(headers, key, value) do
     key_lower = String.downcase(key)
+
     if Enum.any?(headers, fn {k, _} -> String.downcase(to_string(k)) == key_lower end) do
       headers
     else
@@ -324,9 +344,13 @@ defmodule Nous.Providers.HTTP do
     case Jason.decode(data) do
       {:ok, parsed} ->
         parsed
+
       {:error, error} ->
         # Only log at debug level - malformed data is common during streaming
-        Logger.debug("Failed to parse SSE data as JSON: #{truncate_for_log(data)}, error: #{inspect(error)}")
+        Logger.debug(
+          "Failed to parse SSE data as JSON: #{truncate_for_log(data)}, error: #{inspect(error)}"
+        )
+
         {:parse_error, %{data: data, error: error}}
     end
   end
@@ -335,40 +359,48 @@ defmodule Nous.Providers.HTTP do
   defp start_streaming(url, headers, body, finch_name, timeout) do
     parent = self()
 
-    pid = spawn_link(fn ->
-      Process.flag(:trap_exit, true)
-      parent_ref = Process.monitor(parent)
+    pid =
+      spawn_link(fn ->
+        Process.flag(:trap_exit, true)
+        parent_ref = Process.monitor(parent)
 
-      request = Finch.build(:post, url, headers, body)
+        request = Finch.build(:post, url, headers, body)
 
-      stream_task = Task.async(fn ->
-        try do
-          Finch.stream(request, finch_name, nil, fn
-            {:status, status}, acc ->
-              send(parent, {:sse, :status, status})
-              acc
+        stream_task =
+          Task.async(fn ->
+            try do
+              Finch.stream(
+                request,
+                finch_name,
+                nil,
+                fn
+                  {:status, status}, acc ->
+                    send(parent, {:sse, :status, status})
+                    acc
 
-            {:headers, resp_headers}, acc ->
-              send(parent, {:sse, :headers, resp_headers})
-              acc
+                  {:headers, resp_headers}, acc ->
+                    send(parent, {:sse, :headers, resp_headers})
+                    acc
 
-            {:data, data}, acc ->
-              send(parent, {:sse, :data, data})
-              acc
-          end, receive_timeout: timeout)
-        rescue
-          e ->
-            Logger.error("Finch.stream raised: #{inspect(e)}")
-            {:error, e}
-        catch
-          kind, reason ->
-            Logger.error("Finch.stream caught #{kind}: #{inspect(reason)}")
-            {:error, {kind, reason}}
-        end
+                  {:data, data}, acc ->
+                    send(parent, {:sse, :data, data})
+                    acc
+                end,
+                receive_timeout: timeout
+              )
+            rescue
+              e ->
+                Logger.error("Finch.stream raised: #{inspect(e)}")
+                {:error, e}
+            catch
+              kind, reason ->
+                Logger.error("Finch.stream caught #{kind}: #{inspect(reason)}")
+                {:error, {kind, reason}}
+            end
+          end)
+
+        handle_stream_lifecycle(parent, parent_ref, stream_task)
       end)
-
-      handle_stream_lifecycle(parent, parent_ref, stream_task)
-    end)
 
     %{
       pid: pid,
@@ -393,6 +425,7 @@ defmodule Nous.Providers.HTTP do
 
       {:EXIT, _from, :shutdown} ->
         Logger.debug("Graceful shutdown requested for stream")
+
         case Task.shutdown(stream_task, 1_000) do
           {:ok, _} -> send(parent, {:sse, :done, :ok})
           nil -> send(parent, {:sse, :done, :ok})
@@ -408,12 +441,15 @@ defmodule Nous.Providers.HTTP do
         case Task.await(stream_task, :infinity) do
           {:ok, _} ->
             send(parent, {:sse, :done, :ok})
+
           {:error, %Mint.TransportError{reason: :closed}} ->
             # Normal close
             send(parent, {:sse, :done, :ok})
+
           {:error, error} ->
             Logger.error("Stream task error: #{inspect(error)}")
             send(parent, {:sse, :done, {:error, error}})
+
           other ->
             Logger.warning("Unexpected stream task result: #{inspect(other)}")
             send(parent, {:sse, :done, {:error, {:unexpected, other}}})
@@ -449,10 +485,11 @@ defmodule Nous.Providers.HTTP do
           {events, remaining_buffer} = parse_sse_buffer(new_buffer)
 
           # Filter out parse errors if we want to be lenient
-          {valid_events, errors} = Enum.split_with(events, fn
-            {:parse_error, _} -> false
-            _ -> true
-          end)
+          {valid_events, errors} =
+            Enum.split_with(events, fn
+              {:parse_error, _} -> false
+              _ -> true
+            end)
 
           # Log parse errors but don't emit them (they're usually partial data)
           for {:parse_error, err} <- errors do
@@ -469,11 +506,13 @@ defmodule Nous.Providers.HTTP do
       {:sse, :done, :ok} ->
         # Flush any remaining buffer
         {events, _} = parse_sse_buffer(state.buffer <> "\n\n")
-        final_events = Enum.reject(events, fn
-          nil -> true
-          {:parse_error, _} -> true
-          _ -> false
-        end)
+
+        final_events =
+          Enum.reject(events, fn
+            nil -> true
+            {:parse_error, _} -> true
+            _ -> false
+          end)
 
         if Enum.empty?(final_events) do
           {:halt, %{state | done: true}}
@@ -484,7 +523,6 @@ defmodule Nous.Providers.HTTP do
       {:sse, :done, {:error, error}} ->
         Logger.error("SSE stream error: #{inspect(error)}")
         {[{:stream_error, error}], %{state | done: true}}
-
     after
       timeout ->
         Logger.error("SSE stream timeout after #{timeout}ms")
@@ -505,6 +543,7 @@ defmodule Nous.Providers.HTTP do
         Process.exit(state.pid, :kill)
       end
     end
+
     :ok
   end
 

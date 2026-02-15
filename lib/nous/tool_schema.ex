@@ -92,7 +92,8 @@ defmodule Nous.ToolSchema do
       "pattern" -> :pattern
       "format" -> :format
       "additionalProperties" -> :additionalProperties
-      _ -> string  # Keep unknown keys as strings to prevent atom exhaustion
+      # Keep unknown keys as strings to prevent atom exhaustion
+      _ -> string
     end
   end
 

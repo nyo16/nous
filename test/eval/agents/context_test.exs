@@ -12,12 +12,12 @@ defmodule Nous.Eval.Agents.ContextTest do
   @moduletag :context
   @moduletag timeout: 180_000
 
-  @default_model "lmstudio:ministral-3-14b-reasoning"
+  @default_model Nous.LLMTestHelper.test_model()
 
   setup_all do
-    case check_lmstudio_available() do
+    case Nous.LLMTestHelper.check_model_available() do
       :ok -> {:ok, model: @default_model}
-      {:error, reason} -> {:ok, skip: "LM Studio not available: #{reason}"}
+      {:error, reason} -> {:ok, skip: "LLM not available: #{reason}"}
     end
   end
 
@@ -62,9 +62,7 @@ defmodule Nous.Eval.Agents.ContextTest do
 
       # Second turn - test recall
       {:ok, result2} =
-        Nous.run(agent, "What is my favorite color?",
-          message_history: result1.messages
-        )
+        Nous.run(agent, "What is my favorite color?", message_history: result1.all_messages)
 
       output = String.downcase(result2.output || "")
 
@@ -86,16 +84,18 @@ defmodule Nous.Eval.Agents.ContextTest do
       IO.puts("\n[Context 4.4] Turn 1: #{inspect(r1.output)}")
 
       # Turn 2
-      {:ok, r2} = Nous.run(agent, "Now multiply that result by 2", message_history: r1.messages)
+      {:ok, r2} =
+        Nous.run(agent, "Now multiply that result by 2", message_history: r1.all_messages)
+
       IO.puts("[Context 4.4] Turn 2: #{inspect(r2.output)}")
 
       # Turn 3
-      {:ok, r3} = Nous.run(agent, "What was our first answer?", message_history: r2.messages)
+      {:ok, r3} = Nous.run(agent, "What was our first answer?", message_history: r2.all_messages)
       IO.puts("[Context 4.4] Turn 3: #{inspect(r3.output)}")
 
       # Should reference 8 somewhere in context
-      assert r3.messages != nil, "Expected messages to be preserved"
-      assert length(r3.messages) >= 4, "Expected at least 4 messages in history"
+      assert r3.all_messages != nil, "Expected messages to be preserved"
+      assert length(r3.all_messages) >= 4, "Expected at least 4 messages in history"
     end
   end
 
@@ -130,7 +130,7 @@ defmodule Nous.Eval.Agents.ContextTest do
         )
 
       {:ok, r1} = Nous.run(agent, "Hello!")
-      {:ok, r2} = Nous.run(agent, "How are you?", message_history: r1.messages)
+      {:ok, r2} = Nous.run(agent, "How are you?", message_history: r1.all_messages)
 
       IO.puts("\n[Context 4.6] Turn 1: #{inspect(r1.output)}")
       IO.puts("[Context 4.6] Turn 2: #{inspect(r2.output)}")
@@ -150,7 +150,9 @@ defmodule Nous.Eval.Agents.ContextTest do
              "Expected responses from both turns"
 
       if not has_pirate_speak do
-        IO.puts("[Context 4.6] Note: Model didn't maintain pirate persona (common with smaller models)")
+        IO.puts(
+          "[Context 4.6] Note: Model didn't maintain pirate persona (common with smaller models)"
+        )
       end
     end
   end
@@ -178,7 +180,7 @@ defmodule Nous.Eval.Agents.ContextTest do
         Enum.reduce(turns, {nil, 0}, fn prompt, {prev_result, count} ->
           opts =
             if prev_result do
-              [message_history: prev_result.messages]
+              [message_history: prev_result.all_messages]
             else
               []
             end
@@ -197,7 +199,7 @@ defmodule Nous.Eval.Agents.ContextTest do
       assert turn_count >= 3, "Expected at least 3 successful turns, got #{turn_count}"
 
       if final_result do
-        IO.puts("\n[Context 4.7] Final message count: #{length(final_result.messages)}")
+        IO.puts("\n[Context 4.7] Final message count: #{length(final_result.all_messages)}")
       end
     end
   end
@@ -229,10 +231,10 @@ defmodule Nous.Eval.Agents.ContextTest do
     test "4.9 custom message history", context do
       skip_if_unavailable(context)
 
-      # Pre-built message history
+      # Pre-built message history using Nous.Message structs
       custom_history = [
-        %{role: "user", content: "My pet's name is Fluffy"},
-        %{role: "assistant", content: "That's a lovely name for a pet!"}
+        Nous.Message.user("My pet's name is Fluffy"),
+        Nous.Message.assistant("That's a lovely name for a pet!")
       ]
 
       agent = Nous.new(context[:model], instructions: "Be helpful and concise.")
@@ -243,29 +245,11 @@ defmodule Nous.Eval.Agents.ContextTest do
       IO.puts("\n[Context 4.9] Output: #{inspect(result.output)}")
 
       output = String.downcase(result.output || "")
+
       assert String.contains?(output, "fluffy"),
              "Expected model to recall 'Fluffy' from history"
     end
   end
 
-  # Helper functions
-
-  defp check_lmstudio_available do
-    url = System.get_env("LMSTUDIO_BASE_URL") || "http://localhost:1234/v1"
-
-    case Req.get("#{url}/models", receive_timeout: 5_000) do
-      {:ok, %{status: 200}} -> :ok
-      {:ok, %{status: status}} -> {:error, "Status #{status}"}
-      {:error, reason} -> {:error, inspect(reason)}
-    end
-  rescue
-    e -> {:error, Exception.message(e)}
-  end
-
-  defp skip_if_unavailable(%{skip: reason}) do
-    ExUnit.Case.register_attribute(__ENV__, :skip, reason)
-    :skip
-  end
-
-  defp skip_if_unavailable(_), do: :ok
+  defp skip_if_unavailable(ctx), do: Nous.LLMTestHelper.skip_if_unavailable(ctx)
 end

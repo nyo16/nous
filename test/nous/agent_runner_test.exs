@@ -1,5 +1,5 @@
 defmodule Nous.AgentRunnerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Nous.{Agent, AgentRunner, Message, Tool, Usage}
   alias Nous.Errors
@@ -12,17 +12,19 @@ defmodule Nous.AgentRunnerTest do
 
     def request(_model, messages, _settings) do
       # Find the user prompt content to determine test behavior
-      user_content = messages
+      user_content =
+        messages
         |> Enum.find_value(fn
           %Message{role: :user, content: content} -> content
           _ -> nil
         end)
 
       # Check if there are tool results in messages (indicates subsequent iteration)
-      has_tool_results = Enum.any?(messages, fn
-        %Message{role: :tool} -> true
-        _ -> false
-      end)
+      has_tool_results =
+        Enum.any?(messages, fn
+          %Message{role: :tool} -> true
+          _ -> false
+        end)
 
       case {user_content, has_tool_results} do
         {"error_test", _} ->
@@ -32,22 +34,25 @@ defmodule Nous.AgentRunnerTest do
           # First call - return tool call
           legacy_response = %{
             parts: [
-              {:tool_call, %{
-                id: "call_123",
-                name: "test_tool",
-                arguments: %{"input" => "test"}
-              }}
+              {:tool_call,
+               %{
+                 id: "call_123",
+                 name: "test_tool",
+                 arguments: %{"input" => "test"}
+               }}
             ],
             usage: %Usage{
               input_tokens: 10,
               output_tokens: 5,
               total_tokens: 15,
-              tool_calls: 0,  # AgentRunner tracks tool calls separately
+              # AgentRunner tracks tool calls separately
+              tool_calls: 0,
               requests: 1
             },
             model_name: "test-model",
             timestamp: DateTime.utc_now()
           }
+
           response = Message.from_legacy(legacy_response)
           {:ok, response}
 
@@ -59,12 +64,14 @@ defmodule Nous.AgentRunnerTest do
               input_tokens: 10,
               output_tokens: 5,
               total_tokens: 15,
-              tool_calls: 0,  # No tool calls in this response
+              # No tool calls in this response
+              tool_calls: 0,
               requests: 1
             },
             model_name: "test-model",
             timestamp: DateTime.utc_now()
           }
+
           response = Message.from_legacy(legacy_response)
           {:ok, response}
 
@@ -81,6 +88,7 @@ defmodule Nous.AgentRunnerTest do
             model_name: "test-model",
             timestamp: DateTime.utc_now()
           }
+
           response = Message.from_legacy(legacy_response)
           {:ok, response}
       end
@@ -94,6 +102,7 @@ defmodule Nous.AgentRunnerTest do
         {:text_delta, "streaming"},
         {:finish, "stop"}
       ]
+
       {:ok, stream}
     end
 
@@ -126,15 +135,17 @@ defmodule Nous.AgentRunnerTest do
       Application.delete_env(:nous, :model_dispatcher)
     end)
 
-    test_tool = Tool.from_function(&TestTool.test_function/2,
-      name: "test_tool",
-      description: "A test tool"
-    )
+    test_tool =
+      Tool.from_function(&TestTool.test_function/2,
+        name: "test_tool",
+        description: "A test tool"
+      )
 
-    failing_tool = Tool.from_function(&TestTool.failing_tool/2,
-      name: "failing_tool",
-      description: "A tool that fails"
-    )
+    failing_tool =
+      Tool.from_function(&TestTool.failing_tool/2,
+        name: "failing_tool",
+        description: "A tool that fails"
+      )
 
     # Use a simple model string for testing
     model_string = "openai:test-model"
@@ -166,21 +177,23 @@ defmodule Nous.AgentRunnerTest do
       agent = Agent.new(model, instructions: "Be helpful")
 
       with_mock_dispatcher(fn ->
-        logs = capture_log(fn ->
-          assert {:error, error} = AgentRunner.run(agent, "error_test")
-          assert %Errors.ModelError{} = error
-          assert error.message == "Test model error"
-        end)
+        logs =
+          capture_log(fn ->
+            assert {:error, error} = AgentRunner.run(agent, "error_test")
+            assert %Errors.ModelError{} = error
+            assert error.message == "Test model error"
+          end)
 
         assert logs =~ "Model request failed"
       end)
     end
 
     test "executes tool calls correctly", %{model: model, test_tool: test_tool} do
-      agent = Agent.new(model,
-        instructions: "Use tools when needed",
-        tools: [test_tool]
-      )
+      agent =
+        Agent.new(model,
+          instructions: "Use tools when needed",
+          tools: [test_tool]
+        )
 
       with_mock_dispatcher(fn ->
         assert {:ok, result} = AgentRunner.run(agent, "tool_call_test")
@@ -188,45 +201,57 @@ defmodule Nous.AgentRunnerTest do
         # Should have both the tool call and final response
         assert result.output =~ "Tool received: test"
         assert result.usage.tool_calls == 1
-        assert result.iterations >= 2  # Tool call + response
+        # Tool call + response
+        assert result.iterations >= 2
       end)
     end
 
     test "handles tool execution failures", %{model: model, failing_tool: failing_tool} do
-      agent = Agent.new(model,
-        instructions: "Use tools when needed",
-        tools: [failing_tool]
-      )
+      agent =
+        Agent.new(model,
+          instructions: "Use tools when needed",
+          tools: [failing_tool]
+        )
 
       # Create a custom mock that returns a tool call for the failing tool
       mock_dispatcher = fn
-        (_model, messages, _settings) ->
-          user_content = Enum.find_value(messages, fn
-            %Message{role: :user, content: content} -> content
-            _ -> nil
-          end)
+        _model, messages, _settings ->
+          user_content =
+            Enum.find_value(messages, fn
+              %Message{role: :user, content: content} -> content
+              _ -> nil
+            end)
 
           # Check if there are tool results in messages (indicates subsequent iteration after tool failure)
-          has_tool_results = Enum.any?(messages, fn
-            %Message{role: :tool} -> true
-            _ -> false
-          end)
+          has_tool_results =
+            Enum.any?(messages, fn
+              %Message{role: :tool} -> true
+              _ -> false
+            end)
 
           case {user_content, has_tool_results} do
             {"use_failing_tool", false} ->
               # First call - return tool call that will fail
               legacy_response = %{
                 parts: [
-                  {:tool_call, %{
-                    id: "call_fail",
-                    name: "failing_tool",
-                    arguments: %{}
-                  }}
+                  {:tool_call,
+                   %{
+                     id: "call_fail",
+                     name: "failing_tool",
+                     arguments: %{}
+                   }}
                 ],
-                usage: %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15, tool_calls: 0, requests: 1},
+                usage: %Usage{
+                  input_tokens: 10,
+                  output_tokens: 5,
+                  total_tokens: 15,
+                  tool_calls: 0,
+                  requests: 1
+                },
                 model_name: "test-model",
                 timestamp: DateTime.utc_now()
               }
+
               response = Message.from_legacy(legacy_response)
               {:ok, response}
 
@@ -234,32 +259,47 @@ defmodule Nous.AgentRunnerTest do
               # After tool failure - return final response
               legacy_response = %{
                 parts: [{:text, "Final response after tool failure"}],
-                usage: %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15, tool_calls: 0, requests: 1},
+                usage: %Usage{
+                  input_tokens: 10,
+                  output_tokens: 5,
+                  total_tokens: 15,
+                  tool_calls: 0,
+                  requests: 1
+                },
                 model_name: "test-model",
                 timestamp: DateTime.utc_now()
               }
+
               response = Message.from_legacy(legacy_response)
               {:ok, response}
 
             _ ->
               legacy_response = %{
                 parts: [{:text, "This is a test response"}],
-                usage: %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15, tool_calls: 0, requests: 1},
+                usage: %Usage{
+                  input_tokens: 10,
+                  output_tokens: 5,
+                  total_tokens: 15,
+                  tool_calls: 0,
+                  requests: 1
+                },
                 model_name: "test-model",
                 timestamp: DateTime.utc_now()
               }
+
               response = Message.from_legacy(legacy_response)
               {:ok, response}
           end
       end
 
       with_mock_dispatcher(mock_dispatcher, fn ->
-        logs = capture_log(fn ->
-          assert {:ok, result} = AgentRunner.run(agent, "use_failing_tool")
+        logs =
+          capture_log(fn ->
+            assert {:ok, result} = AgentRunner.run(agent, "use_failing_tool")
 
-          # Tool should fail but agent should continue
-          assert result.output == "Final response after tool failure"
-        end)
+            # Tool should fail but agent should continue
+            assert result.output == "Final response after tool failure"
+          end)
 
         assert logs =~ "Tool 'failing_tool' execution failed"
         assert logs =~ "Tool 'failing_tool' failed after all"
@@ -267,25 +307,34 @@ defmodule Nous.AgentRunnerTest do
     end
 
     test "respects max_iterations limit", %{model: model, test_tool: test_tool} do
-      agent = Agent.new(model,
-        instructions: "Keep using tools",
-        tools: [test_tool]
-      )
+      agent =
+        Agent.new(model,
+          instructions: "Keep using tools",
+          tools: [test_tool]
+        )
 
       # Mock that always returns tool calls to trigger max iterations
-      mock_dispatcher = fn(_model, _messages, _settings) ->
+      mock_dispatcher = fn _model, _messages, _settings ->
         legacy_response = %{
           parts: [
-            {:tool_call, %{
-              id: "call_#{:rand.uniform(1000)}",
-              name: "test_tool",
-              arguments: %{"input" => "endless"}
-            }}
+            {:tool_call,
+             %{
+               id: "call_#{:rand.uniform(1000)}",
+               name: "test_tool",
+               arguments: %{"input" => "endless"}
+             }}
           ],
-          usage: %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15, tool_calls: 1, requests: 1},
+          usage: %Usage{
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            tool_calls: 1,
+            requests: 1
+          },
           model_name: "test-model",
           timestamp: DateTime.utc_now()
         }
+
         response = Message.from_legacy(legacy_response)
         {:ok, response}
       end
@@ -298,18 +347,21 @@ defmodule Nous.AgentRunnerTest do
     end
 
     test "handles empty tool list when tool calls are made", %{model: model} do
-      agent = Agent.new(model,
-        instructions: "Be helpful",
-        tools: []  # No tools available
-      )
+      agent =
+        Agent.new(model,
+          instructions: "Be helpful",
+          # No tools available
+          tools: []
+        )
 
       with_mock_dispatcher(fn ->
-        logs = capture_log(fn ->
-          assert {:ok, result} = AgentRunner.run(agent, "tool_call_test")
+        logs =
+          capture_log(fn ->
+            assert {:ok, result} = AgentRunner.run(agent, "tool_call_test")
 
-          # Should get final response after tool call fails due to missing tool
-          assert result.output == "Tool received: test and processed successfully"
-        end)
+            # Should get final response after tool call fails due to missing tool
+            assert result.output == "Tool received: test and processed successfully"
+          end)
 
         assert logs =~ "Tool not found: test_tool"
       end)
@@ -374,7 +426,8 @@ defmodule Nous.AgentRunnerTest do
     test_fn.()
   end
 
-  defp with_mock_dispatcher(mock_fn, test_fn) when is_function(mock_fn) and is_function(test_fn, 0) do
+  defp with_mock_dispatcher(mock_fn, test_fn)
+       when is_function(mock_fn) and is_function(test_fn, 0) do
     original_dispatcher = Application.get_env(:nous, :model_dispatcher, MockModelDispatcher)
 
     # Store the mock function temporarily

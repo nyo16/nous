@@ -78,12 +78,13 @@ defmodule Nous.ToolExecutorTest do
     def stateful_tool(ctx, %{"action" => action}) do
       current_state = Map.get(ctx.deps, :state, 0)
 
-      new_state = case action do
-        "increment" -> current_state + 1
-        "decrement" -> current_state - 1
-        "reset" -> 0
-        _ -> current_state
-      end
+      new_state =
+        case action do
+          "increment" -> current_state + 1
+          "decrement" -> current_state - 1
+          "reset" -> 0
+          _ -> current_state
+        end
 
       %{
         success: true,
@@ -152,6 +153,7 @@ defmodule Nous.ToolExecutorTest do
       api_key: "test-key",
       state: 42
     }
+
     ctx = RunContext.new(deps)
 
     %{ctx: ctx}
@@ -159,10 +161,11 @@ defmodule Nous.ToolExecutorTest do
 
   describe "execute/3 with context tools" do
     test "executes tool that takes context successfully", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.context_tool/2,
-        name: "context_tool",
-        description: "A tool that uses context"
-      )
+      tool =
+        Tool.from_function(&TestTools.context_tool/2,
+          name: "context_tool",
+          description: "A tool that uses context"
+        )
 
       assert {:ok, result} = ToolExecutor.execute(tool, %{"input" => "test"}, ctx)
 
@@ -174,10 +177,11 @@ defmodule Nous.ToolExecutorTest do
     end
 
     test "passes correct context information", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.validation_tool/2,
-        name: "validation_tool",
-        description: "Tool that validates input"
-      )
+      tool =
+        Tool.from_function(&TestTools.validation_tool/2,
+          name: "validation_tool",
+          description: "Tool that validates input"
+        )
 
       args = %{"name" => "Alice", "age" => 30}
       assert {:ok, result} = ToolExecutor.execute(tool, args, ctx)
@@ -189,17 +193,19 @@ defmodule Nous.ToolExecutorTest do
     end
 
     test "handles tool validation failures", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.validation_tool/2,
-        name: "validation_tool",
-        retries: 0
-      )
+      tool =
+        Tool.from_function(&TestTools.validation_tool/2,
+          name: "validation_tool",
+          retries: 0
+        )
 
-      logs = capture_log(fn ->
-        assert {:error, error} = ToolExecutor.execute(tool, %{"invalid" => true}, ctx)
-        assert %Errors.ToolError{} = error
-        assert error.tool_name == "validation_tool"
-        assert error.attempt == 1
-      end)
+      logs =
+        capture_log(fn ->
+          assert {:error, error} = ToolExecutor.execute(tool, %{"invalid" => true}, ctx)
+          assert %Errors.ToolError{} = error
+          assert error.tool_name == "validation_tool"
+          assert error.attempt == 1
+        end)
 
       assert logs =~ "Tool 'validation_tool' failed after all"
     end
@@ -207,10 +213,11 @@ defmodule Nous.ToolExecutorTest do
 
   describe "execute/3 with simple tools" do
     test "executes tool without context successfully", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.simple_tool/1,
-        name: "simple_tool",
-        description: "A simple tool"
-      )
+      tool =
+        Tool.from_function(&TestTools.simple_tool/1,
+          name: "simple_tool",
+          description: "A simple tool"
+        )
 
       assert {:ok, result} = ToolExecutor.execute(tool, %{"value" => 21}, ctx)
 
@@ -232,38 +239,44 @@ defmodule Nous.ToolExecutorTest do
 
   describe "execute/3 retry logic" do
     test "retries failing tool and succeeds on retry", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.flaky_tool/2,
-        name: "flaky_tool",
-        retries: 2
-      )
+      tool =
+        Tool.from_function(&TestTools.flaky_tool/2,
+          name: "flaky_tool",
+          retries: 2
+        )
 
-      logs = capture_log(fn ->
-        assert {:ok, result} = ToolExecutor.execute(tool, %{"should_fail" => true}, ctx)
+      logs =
+        capture_log(fn ->
+          assert {:ok, result} = ToolExecutor.execute(tool, %{"should_fail" => true}, ctx)
 
-        assert result.success == true
-        assert result.attempt == 2  # Succeeded on second attempt (retry count 1)
-        assert result.message =~ "Succeeded on attempt 2"
-      end)
+          assert result.success == true
+          # Succeeded on second attempt (retry count 1)
+          assert result.attempt == 2
+          assert result.message =~ "Succeeded on attempt 2"
+        end)
 
       assert logs =~ "Tool 'flaky_tool' failed (attempt 1/3), will retry"
       assert logs =~ "Tool 'flaky_tool' succeeded on retry attempt 2"
     end
 
     test "exhausts all retries for always-failing tool", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.failing_tool/2,
-        name: "failing_tool",
-        retries: 2
-      )
+      tool =
+        Tool.from_function(&TestTools.failing_tool/2,
+          name: "failing_tool",
+          retries: 2
+        )
 
-      logs = capture_log(fn ->
-        assert {:error, error} = ToolExecutor.execute(tool, %{}, ctx)
+      logs =
+        capture_log(fn ->
+          assert {:error, error} = ToolExecutor.execute(tool, %{}, ctx)
 
-        assert %Errors.ToolError{} = error
-        assert error.tool_name == "failing_tool"
-        assert error.attempt == 3  # Failed after 3 attempts
-        assert error.original_error
-        assert Exception.message(error.original_error) == "This tool always fails"
-      end)
+          assert %Errors.ToolError{} = error
+          assert error.tool_name == "failing_tool"
+          # Failed after 3 attempts
+          assert error.attempt == 3
+          assert error.original_error
+          assert Exception.message(error.original_error) == "This tool always fails"
+        end)
 
       assert logs =~ "Tool 'failing_tool' failed (attempt 1/3), will retry"
       assert logs =~ "Tool 'failing_tool' failed (attempt 2/3), will retry"
@@ -271,27 +284,31 @@ defmodule Nous.ToolExecutorTest do
     end
 
     test "updates context retry count on retries", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.flaky_tool/2,
-        name: "retry_counter",
-        retries: 3
-      )
+      tool =
+        Tool.from_function(&TestTools.flaky_tool/2,
+          name: "retry_counter",
+          retries: 3
+        )
 
       # This will fail once, then succeed, so we can verify retry count was passed
       assert {:ok, result} = ToolExecutor.execute(tool, %{"should_fail" => true}, ctx)
-      assert result.attempt == 2  # First attempt failed (retry=0), second succeeded (retry=1)
+      # First attempt failed (retry=0), second succeeded (retry=1)
+      assert result.attempt == 2
     end
 
     test "respects tool retry configuration", %{ctx: ctx} do
       # Tool with 0 retries should fail immediately
-      tool_no_retry = Tool.from_function(&TestTools.failing_tool/2,
-        name: "no_retry",
-        retries: 0
-      )
+      tool_no_retry =
+        Tool.from_function(&TestTools.failing_tool/2,
+          name: "no_retry",
+          retries: 0
+        )
 
-      logs = capture_log(fn ->
-        assert {:error, error} = ToolExecutor.execute(tool_no_retry, %{}, ctx)
-        assert error.attempt == 1
-      end)
+      logs =
+        capture_log(fn ->
+          assert {:error, error} = ToolExecutor.execute(tool_no_retry, %{}, ctx)
+          assert error.attempt == 1
+        end)
 
       assert logs =~ "Tool 'no_retry' failed after all 1 attempt(s)"
       refute logs =~ "will retry"
@@ -300,10 +317,11 @@ defmodule Nous.ToolExecutorTest do
 
   describe "execute/3 error handling" do
     test "wraps different error types correctly", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.custom_error_tool/2,
-        name: "error_tool",
-        retries: 0
-      )
+      tool =
+        Tool.from_function(&TestTools.custom_error_tool/2,
+          name: "error_tool",
+          retries: 0
+        )
 
       # Test RuntimeError
       assert {:error, error1} = ToolExecutor.execute(tool, %{"error_type" => "runtime"}, ctx)
@@ -320,14 +338,16 @@ defmodule Nous.ToolExecutorTest do
     end
 
     test "logs detailed error information", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.custom_error_tool/2,
-        name: "detailed_errors",
-        retries: 1
-      )
+      tool =
+        Tool.from_function(&TestTools.custom_error_tool/2,
+          name: "detailed_errors",
+          retries: 1
+        )
 
-      logs = capture_log(fn ->
-        ToolExecutor.execute(tool, %{"error_type" => "runtime"}, ctx)
-      end)
+      logs =
+        capture_log(fn ->
+          ToolExecutor.execute(tool, %{"error_type" => "runtime"}, ctx)
+        end)
 
       assert logs =~ "Tool 'detailed_errors' failed after all 2 attempt(s)"
       assert logs =~ "Error: Custom runtime error"
@@ -351,7 +371,8 @@ defmodule Nous.ToolExecutorTest do
       assert start_measurements.monotonic_time
       assert start_metadata.tool_name == "telemetry_test"
       assert start_metadata.attempt == 1
-      assert start_metadata.max_retries == 2  # default retries + 1
+      # default retries + 1
+      assert start_metadata.max_retries == 2
 
       # Check stop event
       {stop_event, stop_measurements, stop_metadata} = Enum.at(events, 1)
@@ -363,10 +384,11 @@ defmodule Nous.ToolExecutorTest do
     end
 
     test "emits exception events for failures", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.failing_tool/2,
-        name: "telemetry_fail",
-        retries: 1
-      )
+      tool =
+        Tool.from_function(&TestTools.failing_tool/2,
+          name: "telemetry_fail",
+          retries: 1
+        )
 
       capture_log(fn ->
         ToolExecutor.execute(tool, %{}, ctx)
@@ -377,9 +399,10 @@ defmodule Nous.ToolExecutorTest do
       # Should have: start -> exception -> start -> exception (2 attempts)
       assert length(events) == 4
 
-      exception_events = Enum.filter(events, fn {event, _, _} ->
-        event == [:nous, :tool, :execute, :exception]
-      end)
+      exception_events =
+        Enum.filter(events, fn {event, _, _} ->
+          event == [:nous, :tool, :execute, :exception]
+        end)
 
       assert length(exception_events) == 2
 
@@ -398,19 +421,22 @@ defmodule Nous.ToolExecutorTest do
     end
 
     test "includes stacktrace in exception events", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.custom_error_tool/2,
-        name: "stacktrace_test",
-        retries: 0
-      )
+      tool =
+        Tool.from_function(&TestTools.custom_error_tool/2,
+          name: "stacktrace_test",
+          retries: 0
+        )
 
       capture_log(fn ->
         ToolExecutor.execute(tool, %{"error_type" => "runtime"}, ctx)
       end)
 
       events = TelemetryCapture.get_events()
-      exception_events = Enum.filter(events, fn {event, _, _} ->
-        event == [:nous, :tool, :execute, :exception]
-      end)
+
+      exception_events =
+        Enum.filter(events, fn {event, _, _} ->
+          event == [:nous, :tool, :execute, :exception]
+        end)
 
       assert length(exception_events) == 1
       {_event, _measurements, metadata} = hd(exception_events)
@@ -421,14 +447,16 @@ defmodule Nous.ToolExecutorTest do
 
   describe "execute/3 context updates" do
     test "handles stateful tool context updates", %{ctx: ctx} do
-      tool = Tool.from_function(&TestTools.stateful_tool/2,
-        name: "stateful_tool"
-      )
+      tool =
+        Tool.from_function(&TestTools.stateful_tool/2,
+          name: "stateful_tool"
+        )
 
       assert {:ok, result} = ToolExecutor.execute(tool, %{"action" => "increment"}, ctx)
 
       assert result.success == true
-      assert result.previous_state == 42  # Original state from setup
+      # Original state from setup
+      assert result.previous_state == 42
       assert result.new_state == 43
       assert result.__update_context__.state == 43
     end
@@ -445,6 +473,7 @@ defmodule Nous.ToolExecutorTest do
         else
           current = Map.get(ctx.deps, :counter, 0)
           new_count = current + ctx.retry + 1
+
           %{
             success: true,
             final_count: new_count,
@@ -454,10 +483,11 @@ defmodule Nous.ToolExecutorTest do
         end
       end
 
-      tool = Tool.from_function(counter_tool,
-        name: "counter_tool",
-        retries: 2
-      )
+      tool =
+        Tool.from_function(counter_tool,
+          name: "counter_tool",
+          retries: 2
+        )
 
       capture_log(fn ->
         assert {:ok, result} = ToolExecutor.execute(tool, %{"increment" => true}, ctx)
@@ -479,10 +509,11 @@ defmodule Nous.ToolExecutorTest do
         end
       end
 
-      tool = Tool.from_function(conditional_tool,
-        name: "conditional",
-        retries: 0
-      )
+      tool =
+        Tool.from_function(conditional_tool,
+          name: "conditional",
+          retries: 0
+        )
 
       # Test success path
       assert {:ok, result} = ToolExecutor.execute(tool, %{"should_succeed" => true}, ctx)
@@ -543,13 +574,16 @@ defmodule Nous.ToolExecutorTest do
 
       # Check telemetry recorded duration
       events = TelemetryCapture.get_events()
-      stop_events = Enum.filter(events, fn {event, _, _} ->
-        event == [:nous, :tool, :execute, :stop]
-      end)
+
+      stop_events =
+        Enum.filter(events, fn {event, _, _} ->
+          event == [:nous, :tool, :execute, :stop]
+        end)
 
       assert length(stop_events) == 1
       {_event, measurements, _metadata} = hd(stop_events)
-      assert measurements.duration >= 10_000  # At least 10ms in native time units
+      # At least 10ms in native time units
+      assert measurements.duration >= 10_000
     end
   end
 
@@ -600,15 +634,17 @@ defmodule Nous.ToolExecutorTest do
         end
       end
 
-      tool = Tool.from_function(eventually_succeeding_tool,
-        name: "persistent_tool",
-        retries: 10
-      )
+      tool =
+        Tool.from_function(eventually_succeeding_tool,
+          name: "persistent_tool",
+          retries: 10
+        )
 
       capture_log(fn ->
         assert {:ok, result} = ToolExecutor.execute(tool, %{}, ctx)
         assert result.success == true
-        assert result.succeeded_on_attempt == 6  # Succeeded on 6th attempt (retry 5)
+        # Succeeded on 6th attempt (retry 5)
+        assert result.succeeded_on_attempt == 6
       end)
     end
   end
