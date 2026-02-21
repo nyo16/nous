@@ -9,8 +9,26 @@ defmodule Nous.Types do
   @typedoc "Model identifier - provider:model string"
   @type model :: String.t()
 
-  @typedoc "Output type specification - :string or an Ecto schema module"
-  @type output_type :: :string | module()
+  @typedoc """
+  Output type specification.
+
+  Controls how agent output is parsed and validated:
+  - `:string` — raw text (default)
+  - `module()` — Ecto schema module → JSON schema + changeset validation
+  - `%{atom() => atom()}` — schemaless Ecto types (e.g. `%{name: :string, age: :integer}`)
+  - `%{String.t() => map()}` — raw JSON schema map (string keys, passed through as-is)
+  - `{:regex, String.t()}` — regex-constrained output (vLLM/SGLang)
+  - `{:grammar, String.t()}` — EBNF grammar-constrained output (vLLM)
+  - `{:choice, [String.t()]}` — choice-constrained output (vLLM/SGLang)
+  """
+  @type output_type ::
+          :string
+          | module()
+          | %{atom() => atom()}
+          | map()
+          | {:regex, String.t()}
+          | {:grammar, String.t()}
+          | {:choice, [String.t()]}
 
   @typedoc """
   Message content - can be text or multi-modal.

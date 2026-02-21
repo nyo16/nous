@@ -31,6 +31,7 @@ defmodule Nous.AgentRunner do
     Message,
     Messages,
     ModelDispatcher,
+    OutputSchema,
     Plugin,
     RunContext,
     Tool,
@@ -144,6 +145,21 @@ defmodule Nous.AgentRunner do
 
             {:ok, agent_result}
 
+          {:error, %Errors.ValidationError{} = err} ->
+            max_retries = Keyword.get(agent.structured_output, :max_retries, 0)
+
+            case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
+              {:ok, retry_ctx, output} ->
+                agent_result = build_result(agent, retry_ctx, output)
+                Callbacks.execute(retry_ctx, :on_agent_complete, agent_result)
+                {:ok, agent_result}
+
+              {:error, reason} ->
+                emit_error_telemetry(agent, duration, reason)
+                Callbacks.execute(final_ctx, :on_error, reason)
+                {:error, reason}
+            end
+
           {:error, reason} ->
             emit_error_telemetry(agent, duration, reason)
             Callbacks.execute(final_ctx, :on_error, reason)
@@ -180,6 +196,17 @@ defmodule Nous.AgentRunner do
         case behaviour.extract_output(agent, final_ctx) do
           {:ok, output} ->
             {:ok, build_result(agent, final_ctx, output)}
+
+          {:error, %Errors.ValidationError{} = err} ->
+            max_retries = Keyword.get(agent.structured_output, :max_retries, 0)
+
+            case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
+              {:ok, retry_ctx, output} ->
+                {:ok, build_result(agent, retry_ctx, output)}
+
+              {:error, _} = err ->
+                err
+            end
 
           {:error, _} = err ->
             err
@@ -224,6 +251,14 @@ defmodule Nous.AgentRunner do
         Map.put(agent.model_settings, :tools, tool_schemas)
       end
 
+    # Inject structured output settings for streaming
+    model_settings =
+      if agent.output_type != :string do
+        inject_structured_output_settings(agent, model_settings, tools)
+      else
+        model_settings
+      end
+
     # Request stream from model
     case get_dispatcher().request_stream(agent.model, messages, model_settings) do
       {:ok, stream} ->
@@ -262,6 +297,21 @@ defmodule Nous.AgentRunner do
         system_prompt =
           if agent.enable_todos do
             inject_todos_into_prompt(system_prompt || "", Keyword.get(opts, :deps, %{}))
+          else
+            system_prompt
+          end
+
+        # Inject structured output schema instructions
+        system_prompt =
+          if agent.output_type != :string do
+            mode = Keyword.get(agent.structured_output, :mode, :auto)
+            suffix = OutputSchema.system_prompt_suffix(agent.output_type, mode: mode)
+
+            if suffix do
+              (system_prompt || "") <> "\n\n" <> suffix
+            else
+              system_prompt
+            end
           else
             system_prompt
           end
@@ -365,6 +415,14 @@ defmodule Nous.AgentRunner do
 
           tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
           Map.put(agent.model_settings, :tools, tool_schemas)
+        end
+
+      # Inject structured output settings
+      model_settings =
+        if agent.output_type != :string do
+          inject_structured_output_settings(agent, model_settings, all_tools)
+        else
+          model_settings
         end
 
       # Apply before_request callback if implemented
@@ -908,5 +966,128 @@ defmodule Nous.AgentRunner do
   # Get the model dispatcher, allowing dependency injection for testing
   defp get_dispatcher do
     Application.get_env(:nous, :model_dispatcher, ModelDispatcher)
+  end
+
+  # --- Structured Output Helpers ---
+
+  # Inject structured output settings into model_settings
+  defp inject_structured_output_settings(agent, model_settings, all_tools) do
+    mode = Keyword.get(agent.structured_output, :mode, :auto)
+
+    so_settings =
+      OutputSchema.to_provider_settings(
+        agent.output_type,
+        agent.model.provider,
+        mode: mode,
+        has_other_tools: not Enum.empty?(all_tools)
+      )
+
+    merge_structured_output_settings(model_settings, so_settings, agent.model.provider)
+  end
+
+  # Merge structured output settings into model_settings
+  defp merge_structured_output_settings(model_settings, so_settings, provider) do
+    # Handle synthetic tool injection separately
+    {tool_settings, other_settings} =
+      Map.split(so_settings, [:__structured_output_tool__, :__structured_output_tool_choice__])
+
+    # Merge non-tool settings
+    merged = Map.merge(model_settings, other_settings)
+
+    # Inject synthetic tool into existing tools list
+    case tool_settings do
+      %{__structured_output_tool__: tool} ->
+        existing_tools = merged[:tools] || []
+
+        # Convert synthetic tool to provider format
+        formatted_tool =
+          case provider do
+            :anthropic -> convert_synthetic_tool_anthropic(tool)
+            _ -> tool
+          end
+
+        merged = Map.put(merged, :tools, existing_tools ++ [formatted_tool])
+
+        case tool_settings[:__structured_output_tool_choice__] do
+          nil -> merged
+          choice -> Map.put(merged, :tool_choice, choice)
+        end
+
+      _ ->
+        merged
+    end
+  end
+
+  # Convert synthetic tool to Anthropic format (atom keys)
+  defp convert_synthetic_tool_anthropic(tool) do
+    func = tool["function"]
+    # Use ToolSchema.to_anthropic with a minimal Tool struct
+    %{
+      name: func["name"],
+      description: func["description"],
+      input_schema: %{
+        type: "object",
+        properties: func["parameters"]["properties"] || %{},
+        required: func["parameters"]["required"] || []
+      }
+    }
+  end
+
+  # Validation retry loop
+  defp maybe_retry_validation(_agent, _behaviour, _ctx, err, 0) do
+    {:error, err}
+  end
+
+  defp maybe_retry_validation(agent, behaviour, ctx, err, retries_left) do
+    Logger.info(
+      "Structured output validation failed, retrying (#{retries_left} retries left): #{OutputSchema.format_errors(err)}"
+    )
+
+    # Find the raw response text from the last assistant message
+    raw_response =
+      ctx.messages
+      |> Enum.reverse()
+      |> Enum.find_value(fn
+        %Message{role: :assistant} = msg -> Messages.extract_text(msg)
+        _ -> nil
+      end)
+
+    # Build retry message
+    error_text = OutputSchema.format_errors(err)
+
+    retry_msg =
+      Message.user("""
+      The response did not pass validation. Your previous response was:
+
+      #{raw_response}
+
+      Please fix these errors and try again:
+      #{error_text}
+
+      Respond with valid JSON only.
+      """)
+
+    # Add retry message and re-enter loop
+    ctx =
+      ctx
+      |> Context.add_message(retry_msg)
+      |> Context.set_needs_response(true)
+
+    case execute_loop(agent, behaviour, ctx) do
+      {:ok, retry_ctx} ->
+        case behaviour.extract_output(agent, retry_ctx) do
+          {:ok, output} ->
+            {:ok, retry_ctx, output}
+
+          {:error, %Errors.ValidationError{} = new_err} ->
+            maybe_retry_validation(agent, behaviour, retry_ctx, new_err, retries_left - 1)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, _} = err ->
+        err
+    end
   end
 end

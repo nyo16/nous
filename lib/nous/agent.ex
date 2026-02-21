@@ -32,6 +32,7 @@ defmodule Nous.Agent do
   @type t :: %__MODULE__{
           model: Model.t(),
           output_type: Types.output_type(),
+          structured_output: keyword(),
           instructions: String.t() | function() | nil,
           system_prompt: String.t() | function() | nil,
           deps_type: module() | nil,
@@ -51,6 +52,7 @@ defmodule Nous.Agent do
     :deps_type,
     :behaviour_module,
     output_type: :string,
+    structured_output: [],
     instructions: nil,
     system_prompt: nil,
     name: nil,
@@ -70,7 +72,8 @@ defmodule Nous.Agent do
     * `opts` - Configuration options
 
   ## Options
-    * `:output_type` - Expected output type (`:string` or Ecto schema module)
+    * `:output_type` - Expected output type (`:string`, Ecto schema, schemaless map, JSON schema, or guided mode tuple)
+    * `:structured_output` - Structured output options (`mode:`, `max_retries:`)
     * `:instructions` - Static instructions or function returning instructions
     * `:system_prompt` - Static system prompt or function
     * `:deps_type` - Module defining dependency structure
@@ -112,6 +115,7 @@ defmodule Nous.Agent do
     %__MODULE__{
       model: model,
       output_type: Keyword.get(opts, :output_type, :string),
+      structured_output: Keyword.get(opts, :structured_output, []),
       instructions: Keyword.get(opts, :instructions),
       system_prompt: Keyword.get(opts, :system_prompt),
       deps_type: Keyword.get(opts, :deps_type),

@@ -23,7 +23,7 @@ defmodule Nous.Agents.BasicAgent do
 
   @behaviour Nous.Agent.Behaviour
 
-  alias Nous.{Message, Messages}
+  alias Nous.{Message, Messages, OutputSchema}
   alias Nous.Agent.Context
 
   @doc """
@@ -62,26 +62,34 @@ defmodule Nous.Agents.BasicAgent do
   Extract the final output from the context.
 
   Returns the text content of the last assistant message.
+  When `output_type` is set, parses and validates the response.
   """
   @impl true
-  def extract_output(_agent, ctx) do
-    case Context.last_message(ctx) do
-      %Message{role: :assistant} = msg ->
-        {:ok, Messages.extract_text(msg)}
-
-      %Message{role: :tool} ->
-        # Last message was a tool result, look for preceding assistant message
-        case find_last_assistant_message(ctx.messages) do
-          nil -> {:error, :no_output}
-          msg -> {:ok, Messages.extract_text(msg)}
-        end
-
+  def extract_output(agent, ctx) do
+    case find_output_message(ctx) do
       nil ->
         {:error, :no_output}
 
-      _other ->
-        {:error, :no_output}
+      msg ->
+        extract_with_output_type(agent, msg)
     end
+  end
+
+  defp find_output_message(ctx) do
+    case Context.last_message(ctx) do
+      %Message{role: :assistant} = msg -> msg
+      %Message{role: :tool} -> find_last_assistant_message(ctx.messages)
+      _ -> nil
+    end
+  end
+
+  defp extract_with_output_type(%{output_type: :string}, msg) do
+    {:ok, Messages.extract_text(msg)}
+  end
+
+  defp extract_with_output_type(%{output_type: output_type, model: model}, msg) do
+    text = OutputSchema.extract_response_text(msg, model.provider)
+    OutputSchema.parse_and_validate(text, output_type)
   end
 
   @doc """

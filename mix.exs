@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.10.1"
+  @version "0.11.0"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -92,6 +92,8 @@ defmodule Nous.MixProject do
         {"docs/guides/migration_guide.md", filename: "migration_guide", title: "Migration Guide"},
         {"docs/guides/evaluation.md",
          filename: "evaluation", title: "Evaluation Framework Guide"},
+        {"docs/guides/structured_output.md",
+         filename: "structured_output", title: "Structured Output Guide"},
 
         # Design Documents
         {"docs/design/llm_council_design.md",
@@ -111,7 +113,8 @@ defmodule Nous.MixProject do
           "tool_development.html",
           "troubleshooting.html",
           "migration_guide.html",
-          "evaluation.html"
+          "evaluation.html",
+          "structured_output.html"
         ],
         Design: [
           "council_design.html"

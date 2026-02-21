@@ -14,6 +14,11 @@ Complete guide for creating powerful, production-ready tools for Nous AI agents.
 
 **Topics covered:** Tool fundamentals, function signatures, input validation, error handling, security, performance, testing
 
+### 📐 [Structured Output Guide](structured_output.md)
+Return validated, typed data from LLM responses using Ecto schemas, schemaless types, or raw JSON schema.
+
+**Topics covered:** Ecto schema output types, schemaless types, raw JSON schema, `@llm_doc`, `validate_changeset/1`, provider modes, validation retries, vLLM/SGLang guided decoding, error handling
+
 ### 🏗️ [Best Practices](best_practices.md)
 Production deployment patterns, security, performance optimization, and operational considerations.
 
@@ -36,8 +41,9 @@ Guide for migrating between Nous versions and upgrading existing applications.
 **New to production deployment?** Start here:
 1. **[LiveView Integration](liveview-integration.md)** - Build real-time AI chat applications
 2. **[Tool Development](tool_development.md)** - Learn to build robust tools
-3. **[Best Practices](best_practices.md)** - Production-ready patterns
-4. **[Troubleshooting](troubleshooting.md)** - Fix common issues
+3. **[Structured Output](structured_output.md)** - Return validated, typed data from agents
+4. **[Best Practices](best_practices.md)** - Production-ready patterns
+5. **[Troubleshooting](troubleshooting.md)** - Fix common issues
 
 **Having issues?** Jump directly to [Troubleshooting](troubleshooting.md).
 

@@ -93,6 +93,24 @@ agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
 IO.puts(result.output)  # AI automatically calls the weather tool
 ```
 
+### Structured Output
+```elixir
+defmodule UserInfo do
+  use Ecto.Schema
+  @primary_key false
+  embedded_schema do
+    field :name, :string
+    field :age, :integer
+  end
+end
+
+agent = Nous.new("openai:gpt-4o-mini", output_type: UserInfo)
+{:ok, result} = Nous.run(agent, "Generate a user named Alice, age 30")
+# result.output == %UserInfo{name: "Alice", age: 30}
+```
+
+For more details, see the **[Structured Output Guide](structured_output.md)**.
+
 ### Streaming Responses
 ```elixir
 agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")

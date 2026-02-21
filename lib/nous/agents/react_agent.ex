@@ -43,7 +43,7 @@ defmodule Nous.Agents.ReActAgent do
 
   @behaviour Nous.Agent.Behaviour
 
-  alias Nous.{Message, Messages, Tool}
+  alias Nous.{Message, Messages, OutputSchema, Tool}
   alias Nous.Agent.Context
   alias Nous.Tools.ReActTools
 
@@ -173,20 +173,27 @@ defmodule Nous.Agents.ReActAgent do
 
   @doc """
   Extract output from final_answer or last assistant message.
+
+  When `output_type` is set, parses and validates the answer text.
   """
   @impl true
-  def extract_output(_agent, ctx) do
+  def extract_output(agent, ctx) do
     # First check for captured final_answer
-    case ctx.deps[:final_answer] do
-      nil ->
-        # Fall back to last assistant message
-        case find_last_assistant_text(ctx.messages) do
-          nil -> {:error, :no_output}
-          text -> {:ok, text}
-        end
+    text =
+      case ctx.deps[:final_answer] do
+        nil -> find_last_assistant_text(ctx.messages)
+        answer -> answer
+      end
 
-      answer ->
-        {:ok, answer}
+    case text do
+      nil ->
+        {:error, :no_output}
+
+      text when agent.output_type == :string ->
+        {:ok, text}
+
+      text ->
+        OutputSchema.parse_and_validate(text, agent.output_type)
     end
   end
 
