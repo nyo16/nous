@@ -2,6 +2,53 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-02-20
+
+### Added
+
+- **Structured Output Mode**: Agents return validated, typed data instead of raw strings. Inspired by [instructor_ex](https://github.com/thmsmlr/instructor_ex).
+  - `Nous.OutputSchema` core module: JSON schema generation, provider settings dispatch, parsing and validation
+  - `use Nous.OutputSchema` macro with `@llm_doc` attribute for schema-level LLM documentation
+  - `validate_changeset/1` optional callback for custom Ecto validation rules
+  - Validation retry loop: failed outputs are sent back to the LLM with error details (`max_retries` option)
+  - System prompt augmentation with schema instructions
+
+- **Output Type Variants**:
+  - Ecto schema modules — full JSON schema + changeset validation
+  - Schemaless Ecto types (`%{name: :string, age: :integer}`) — lightweight, no module needed
+  - Raw JSON schema maps (string keys) — passed through as-is
+  - `{:regex, pattern}` — regex-constrained output (vLLM/SGLang)
+  - `{:grammar, ebnf}` — EBNF grammar-constrained output (vLLM)
+  - `{:choice, choices}` — choice-constrained output (vLLM/SGLang)
+
+- **Provider Modes**: Controls how structured output is enforced per-provider
+  - `:auto` (default) — picks best mode for the provider
+  - `:json_schema` — `response_format` with strict JSON schema (OpenAI, vLLM, SGLang, Gemini)
+  - `:tool_call` — synthetic tool with tool_choice (Anthropic default)
+  - `:json` — `response_format: json_object` (OpenAI-compatible)
+  - `:md_json` — prompt-only enforcement with markdown fence + stop token (all providers)
+
+- **Provider Passthrough**: `response_format`, `guided_json`, `guided_regex`, `guided_grammar`, `guided_choice`, `json_schema`, `regex`, `generationConfig` now passed through in `build_request_params`
+
+- **New Files**:
+  - `lib/nous/output_schema.ex` — core module
+  - `lib/nous/output_schema/validator.ex` — behaviour definition
+  - `lib/nous/output_schema/use_macro.ex` — `use Nous.OutputSchema` macro
+  - `docs/guides/structured_output.md` — comprehensive guide
+  - `examples/14_structured_output.exs` — example script with 5 patterns
+  - `test/nous/output_schema_test.exs` — 42 unit tests
+  - `test/nous/structured_output_integration_test.exs` — 16 integration tests
+  - `test/eval/agents/structured_output_test.exs` — 3 LLM integration tests
+
+### Changed
+
+- `Nous.Agent` struct gains `structured_output` keyword list field (mode, max_retries)
+- `Nous.Types.output_type` expanded with schemaless, raw JSON schema, and guided mode tuples
+- `Nous.AgentRunner` injects structured output settings, augments system prompt, handles validation retries
+- `Nous.Agents.BasicAgent.extract_output/2` routes through `OutputSchema.parse_and_validate/2`
+- `Nous.Agents.ReActAgent.extract_output/2` validates `final_answer` against output_type
+- Provider `build_request_params/3` passes through structured output parameters
+
 ## [0.10.1] - 2026-02-14
 
 ### Changed
