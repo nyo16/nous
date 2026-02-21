@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
   - Graceful partial failure: crashed/timed-out sub-agents don't block others
 
 - **New Example**: `examples/13_sub_agents.exs`
-  - Template-based sub-agents using `Agent.new/2` structs
+  - Template-based sub-agents using `Nous.Agent.new/2` structs
   - Parallel execution with inline model config
   - Direct programmatic invocation bypassing the LLM
 
