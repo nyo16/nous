@@ -403,9 +403,21 @@ defmodule Nous.Provider do
         |> maybe_put("top_p", merged_settings[:top_p])
         |> maybe_put("frequency_penalty", merged_settings[:frequency_penalty])
         |> maybe_put("presence_penalty", merged_settings[:presence_penalty])
-        |> maybe_put("stop", merged_settings[:stop_sequences])
+        |> maybe_put("stop", merged_settings[:stop_sequences] || merged_settings[:stop])
         |> maybe_put("tools", merged_settings[:tools])
         |> maybe_put("tool_choice", merged_settings[:tool_choice])
+        # Structured output: response_format
+        |> maybe_put("response_format", merged_settings[:response_format])
+        # vLLM guided decoding
+        |> maybe_put("guided_json", merged_settings[:guided_json])
+        |> maybe_put("guided_regex", merged_settings[:guided_regex])
+        |> maybe_put("guided_grammar", merged_settings[:guided_grammar])
+        |> maybe_put("guided_choice", merged_settings[:guided_choice])
+        # SGLang guided decoding
+        |> maybe_put("json_schema", merged_settings[:json_schema])
+        |> maybe_put("regex", merged_settings[:regex])
+        # Gemini
+        |> maybe_put("generationConfig", merged_settings[:generationConfig])
       end
 
       defp maybe_put(params, _key, nil), do: params
