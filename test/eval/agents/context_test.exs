@@ -221,7 +221,6 @@ defmodule Nous.Eval.Agents.ContextTest do
       IO.puts("[Context 4.8] Second agent: #{inspect(r2.output)}")
 
       # The second agent shouldn't know the code (no shared history)
-      output2 = String.downcase(r2.output || "")
       # If it contains 42, that's just a coincidence or the model guessing
       assert r2.output != nil, "Expected response from fresh agent"
     end

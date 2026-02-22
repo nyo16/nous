@@ -5,8 +5,6 @@ defmodule Nous.HITLTest do
   alias Nous.Agent.Context
   alias Nous.Plugins.HumanInTheLoop
 
-  import ExUnit.CaptureLog
-
   describe "Tool requires_approval option" do
     test "Tool struct accepts requires_approval: true" do
       tool =

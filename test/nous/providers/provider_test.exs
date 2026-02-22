@@ -12,9 +12,11 @@ defmodule Nous.ProviderTest do
       default_env_key: "TEST_PROVIDER_API_KEY"
 
     @impl true
+    def chat(%{error: reason}, _opts), do: {:error, reason}
     def chat(_params, _opts), do: {:ok, %{"response" => "test"}}
 
     @impl true
+    def chat_stream(%{error: reason}, _opts), do: {:error, reason}
     def chat_stream(_params, _opts), do: {:ok, Stream.map([], & &1)}
   end
 
@@ -25,9 +27,11 @@ defmodule Nous.ProviderTest do
       default_env_key: "CUSTOM_API_KEY"
 
     @impl true
+    def chat(%{error: reason}, _opts), do: {:error, reason}
     def chat(_params, _opts), do: {:ok, %{}}
 
     @impl true
+    def chat_stream(%{error: reason}, _opts), do: {:error, reason}
     def chat_stream(_params, _opts), do: {:ok, Stream.map([], & &1)}
 
     # Override count_tokens with custom implementation
