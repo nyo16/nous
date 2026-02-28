@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.0] - 2026-02-28
+
+### Added
+
+- **Memory System**: Persistent memory for agents with hybrid text + vector search, temporal decay, importance weighting, and flexible scoping.
+  - `Nous.Memory.Entry` — memory entry struct with type (semantic/episodic/procedural), importance, evergreen flag, and scoping fields (agent_id, session_id, user_id, namespace)
+  - `Nous.Memory.Store` — storage behaviour with 8 callbacks (init, store, fetch, delete, update, search_text, search_vector, list)
+  - `Nous.Memory.Store.ETS` — zero-dep in-memory backend with Jaro-distance text search
+  - `Nous.Memory.Store.SQLite` — SQLite + FTS5 backend (requires `exqlite`)
+  - `Nous.Memory.Store.DuckDB` — DuckDB + FTS + vector backend (requires `duckdbex`)
+  - `Nous.Memory.Store.Muninn` — Tantivy BM25 text search backend (requires `muninn`)
+  - `Nous.Memory.Store.Zvec` — HNSW vector search backend (requires `zvec`)
+  - `Nous.Memory.Store.Hybrid` — combines Muninn + Zvec for maximum retrieval quality
+  - `Nous.Memory.Scoring` — pure functions for Reciprocal Rank Fusion, temporal decay, composite scoring
+  - `Nous.Memory.Search` — hybrid search orchestrator (text + vector → RRF merge → decay → composite score)
+  - `Nous.Memory.Embedding` — embedding provider behaviour with pluggable implementations
+  - `Nous.Memory.Embedding.Bumblebee` — local on-device embeddings via Bumblebee + EXLA (Qwen 0.6B default)
+  - `Nous.Memory.Embedding.OpenAI` — OpenAI text-embedding-3-small provider
+  - `Nous.Memory.Embedding.Local` — generic local endpoint (Ollama, vLLM, LMStudio)
+  - `Nous.Memory.Tools` — agent tools: `remember`, `recall`, `forget`
+  - `Nous.Plugins.Memory` — plugin with auto-injection of relevant memories, configurable search scope and injection strategy
+  - 6 example scripts in `examples/memory/` (basic ETS, Bumblebee, SQLite, DuckDB, Hybrid, cross-agent)
+  - 62 new tests across 6 test files
+
+- **Graceful degradation**: No embedding provider = keyword-only search. No optional deps = `Store.ETS` with Jaro matching. The core memory system has zero additional dependencies.
+
 ## [0.11.3] - 2026-02-26
 
 ### Fixed

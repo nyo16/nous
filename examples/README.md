@@ -45,6 +45,19 @@ Provider-specific configuration and features:
 | [providers/lmstudio.exs](https://github.com/nyo16/nous/blob/master/examples/providers/lmstudio.exs) | Local AI with LM Studio |
 | [providers/switching_providers.exs](https://github.com/nyo16/nous/blob/master/examples/providers/switching_providers.exs) | Provider comparison and selection |
 
+## Memory Examples
+
+Persistent agent memory with hybrid search:
+
+| File | Description |
+|------|-------------|
+| [memory/basic_ets.exs](https://github.com/nyo16/nous/blob/master/examples/memory/basic_ets.exs) | Simplest setup — ETS store, keyword search, zero deps |
+| [memory/local_bumblebee.exs](https://github.com/nyo16/nous/blob/master/examples/memory/local_bumblebee.exs) | Local semantic search via Bumblebee, no API keys |
+| [memory/sqlite_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/sqlite_full.exs) | SQLite + FTS5, single-file production setup |
+| [memory/duckdb_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/duckdb_full.exs) | DuckDB with FTS + vector search |
+| [memory/hybrid_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/hybrid_full.exs) | Muninn + Zvec for maximum search quality |
+| [memory/cross_agent.exs](https://github.com/nyo16/nous/blob/master/examples/memory/cross_agent.exs) | Two agents sharing memory with scoping |
+
 ## Advanced Examples
 
 Production patterns and advanced features:

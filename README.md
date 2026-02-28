@@ -17,7 +17,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.10.1"}
+    {:nous, "~> 0.12.0"}
   ]
 end
 ```
@@ -353,6 +353,47 @@ deps: %{
 }
 ```
 
+### Agent Memory
+
+Persistent memory across conversations with hybrid text + vector search:
+
+```elixir
+# Minimal setup — ETS store, keyword-only search, zero deps
+agent = Nous.new("openai:gpt-4",
+  plugins: [Nous.Plugins.Memory],
+  deps: %{memory_config: %{store: Nous.Memory.Store.ETS}}
+)
+
+# Agent can now use remember/recall/forget tools
+{:ok, r1} = Nous.run(agent, "Remember that my favorite color is blue")
+{:ok, r2} = Nous.run(agent, "What is my favorite color?", context: r1.context)
+# => Recalls "blue" from memory
+```
+
+Add semantic search with embeddings:
+
+```elixir
+agent = Nous.new("openai:gpt-4",
+  plugins: [Nous.Plugins.Memory],
+  deps: %{
+    memory_config: %{
+      store: Nous.Memory.Store.ETS,
+      embedding: Nous.Memory.Embedding.OpenAI,
+      embedding_opts: %{api_key: System.get_env("OPENAI_API_KEY")},
+      auto_inject: true  # Auto-retrieves relevant memories before each request
+    }
+  }
+)
+```
+
+**Store backends:** ETS (zero deps), SQLite (FTS5), DuckDB (FTS + vector), Muninn (Tantivy BM25), Zvec (HNSW), Hybrid (Muninn + Zvec).
+
+**Embedding providers:** Bumblebee (local, offline), OpenAI, Local (Ollama/vLLM).
+
+**Features:** Memory scoping (agent/user/session/global), temporal decay, importance weighting, RRF scoring, configurable auto-injection.
+
+See the [Memory Examples](#memory-examples) section below for complete examples.
+
 ### Deep Research
 
 Autonomous multi-step research with citations:
@@ -442,6 +483,15 @@ See [examples/advanced/liveview_integration.exs](examples/advanced/liveview_inte
 - [providers/lmstudio.exs](examples/providers/lmstudio.exs) - Local AI
 - [providers/switching_providers.exs](examples/providers/switching_providers.exs) - Provider comparison
 
+### Memory Examples
+
+- [memory/basic_ets.exs](examples/memory/basic_ets.exs) - Simplest setup, ETS + keyword search
+- [memory/local_bumblebee.exs](examples/memory/local_bumblebee.exs) - Local semantic search, no API keys
+- [memory/sqlite_full.exs](examples/memory/sqlite_full.exs) - SQLite + FTS5 production setup
+- [memory/duckdb_full.exs](examples/memory/duckdb_full.exs) - DuckDB analytics-friendly setup
+- [memory/hybrid_full.exs](examples/memory/hybrid_full.exs) - Muninn + Zvec maximum quality
+- [memory/cross_agent.exs](examples/memory/cross_agent.exs) - Multi-agent shared memory with scoping
+
 ### Advanced Examples
 
 - [advanced/context_updates.exs](examples/advanced/context_updates.exs) - Tool state management
@@ -514,7 +564,8 @@ Nous.run/3 → AgentRunner
     ↓
 ├─→ Context (messages, deps, callbacks, pubsub)
 ├─→ Behaviour (BasicAgent | ReActAgent | custom)
-├─→ Plugins (HITL, Summarization, SubAgent, ...)
+├─→ Plugins (HITL, Summarization, SubAgent, Memory, ...)
+├─→ Memory (Store → Search → Scoring → Embedding)
 ├─→ ModelDispatcher → Provider → HTTP
 ├─→ ToolExecutor (timeout, validation, approval)
 ├─→ Callbacks (map | notify_pid | PubSub)
