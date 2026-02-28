@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.11.3"
+  @version "0.12.0"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -51,6 +51,16 @@ defmodule Nous.MixProject do
 
       # HTML parsing (for web content extraction in research tools)
       {:floki, "~> 0.36", optional: true},
+
+      # Memory system store backends (all optional — add to your app's deps to unlock)
+      # {:muninn, "~> 0.4", optional: true},
+      # {:zvec, "~> 0.2", optional: true},
+      # {:exqlite, "~> 0.27", optional: true},
+      # {:duckdbex, "~> 0.3", optional: true},
+
+      # Memory system embedding providers (all optional — add to your app's deps to unlock)
+      # {:bumblebee, "~> 0.6", optional: true},
+      # {:exla, "~> 0.9", optional: true},
 
       # Telemetry
       {:telemetry, "~> 1.2"},
@@ -185,8 +195,27 @@ defmodule Nous.MixProject do
         "Plugin System": [
           Nous.Plugin,
           Nous.Plugins.HumanInTheLoop,
+          Nous.Plugins.Memory,
           Nous.Plugins.SubAgent,
           Nous.Plugins.Summarization
+        ],
+        Memory: [
+          Nous.Memory,
+          Nous.Memory.Entry,
+          Nous.Memory.Store,
+          Nous.Memory.Store.ETS,
+          Nous.Memory.Store.SQLite,
+          Nous.Memory.Store.DuckDB,
+          Nous.Memory.Store.Muninn,
+          Nous.Memory.Store.Zvec,
+          Nous.Memory.Store.Hybrid,
+          Nous.Memory.Scoring,
+          Nous.Memory.Search,
+          Nous.Memory.Tools,
+          Nous.Memory.Embedding,
+          Nous.Memory.Embedding.Bumblebee,
+          Nous.Memory.Embedding.OpenAI,
+          Nous.Memory.Embedding.Local
         ],
         PubSub: [
           Nous.PubSub,
