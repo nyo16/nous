@@ -43,6 +43,7 @@ Provider-specific configuration and features:
 | [providers/anthropic.exs](https://github.com/nyo16/nous/blob/master/examples/providers/anthropic.exs) | Claude models, extended thinking, tools |
 | [providers/openai.exs](https://github.com/nyo16/nous/blob/master/examples/providers/openai.exs) | GPT models, function calling, settings |
 | [providers/lmstudio.exs](https://github.com/nyo16/nous/blob/master/examples/providers/lmstudio.exs) | Local AI with LM Studio |
+| [providers/vllm_sglang.exs](https://github.com/nyo16/nous/blob/master/examples/providers/vllm_sglang.exs) | vLLM & SGLang high-performance local inference |
 | [providers/switching_providers.exs](https://github.com/nyo16/nous/blob/master/examples/providers/switching_providers.exs) | Provider comparison and selection |
 
 ## Memory Examples
