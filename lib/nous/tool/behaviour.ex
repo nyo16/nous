@@ -114,7 +114,29 @@ defmodule Nous.Tool.Behaviour do
               parameters: map()
             }
 
-  @optional_callbacks [metadata: 0]
+  @doc """
+  Return the tool's schema definition for introspection.
+
+  This callback is optional. When using `Nous.Tool.Schema`, it is
+  generated automatically as `__tool_schema__/0`.
+
+  ## Return Value
+
+      %{
+        name: "tool_name",
+        description: "...",
+        category: :read,
+        tags: [:file],
+        params: [
+          %{name: :path, type: :string, required: true, doc: "..."},
+          ...
+        ]
+      }
+
+  """
+  @callback schema() :: map()
+
+  @optional_callbacks [metadata: 0, schema: 0]
 
   @doc """
   Check if a module implements the Tool.Behaviour.
@@ -129,15 +151,20 @@ defmodule Nous.Tool.Behaviour do
   """
   @spec get_metadata(module()) :: map()
   def get_metadata(module) when is_atom(module) do
-    if function_exported?(module, :metadata, 0) do
-      module.metadata()
-    else
-      %{
-        name: module_to_name(module),
-        description: "",
-        parameters: default_schema()
-      }
-    end
+    base =
+      if function_exported?(module, :metadata, 0) do
+        module.metadata()
+      else
+        %{
+          name: module_to_name(module),
+          description: "",
+          parameters: default_schema()
+        }
+      end
+
+    base
+    |> Map.put_new(:category, nil)
+    |> Map.put_new(:tags, [])
   end
 
   @doc """

@@ -28,6 +28,8 @@ defmodule Nous.Tool do
 
   """
 
+  @type category :: :read | :write | :execute | :communicate | :search | nil
+
   @type t :: %__MODULE__{
           name: String.t(),
           description: String.t(),
@@ -38,7 +40,9 @@ defmodule Nous.Tool do
           timeout: non_neg_integer() | nil,
           validate_args: boolean(),
           module: module() | nil,
-          requires_approval: boolean()
+          requires_approval: boolean(),
+          category: category(),
+          tags: [atom()]
         }
 
   @enforce_keys [:name, :function]
@@ -52,7 +56,9 @@ defmodule Nous.Tool do
     retries: 1,
     timeout: 30_000,
     validate_args: true,
-    requires_approval: false
+    requires_approval: false,
+    category: nil,
+    tags: []
   ]
 
   @doc """
@@ -70,6 +76,8 @@ defmodule Nous.Tool do
     * `:timeout` - Timeout in milliseconds (default: 30000)
     * `:validate_args` - Whether to validate arguments against schema (default: true)
     * `:requires_approval` - Whether tool needs human approval before execution (default: false)
+    * `:category` - Tool category: `:read`, `:write`, `:execute`, `:communicate`, `:search`, or `nil`
+    * `:tags` - Arbitrary tags for filtering (default: `[]`)
 
   ## Examples
 
@@ -112,7 +120,9 @@ defmodule Nous.Tool do
       timeout: Keyword.get(opts, :timeout, 30_000),
       validate_args: Keyword.get(opts, :validate_args, true),
       requires_approval: Keyword.get(opts, :requires_approval, false),
-      module: nil
+      module: nil,
+      category: Keyword.get(opts, :category),
+      tags: Keyword.get(opts, :tags, [])
     }
   end
 
@@ -131,6 +141,8 @@ defmodule Nous.Tool do
     * `:timeout` - Timeout in milliseconds (default: 30000)
     * `:validate_args` - Whether to validate arguments (default: true)
     * `:requires_approval` - Whether tool needs human approval before execution (default: false)
+    * `:category` - Override category from metadata
+    * `:tags` - Override tags from metadata
 
   ## Example
 
@@ -196,7 +208,9 @@ defmodule Nous.Tool do
       timeout: Keyword.get(opts, :timeout, 30_000),
       validate_args: Keyword.get(opts, :validate_args, true),
       requires_approval: Keyword.get(opts, :requires_approval, false),
-      module: module
+      module: module,
+      category: Keyword.get(opts, :category, Map.get(metadata, :category)),
+      tags: Keyword.get(opts, :tags, Map.get(metadata, :tags, []))
     }
   end
 
