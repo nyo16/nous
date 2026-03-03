@@ -48,6 +48,7 @@ defmodule Nous.Message do
   embedded_schema do
     field(:role, Ecto.Enum, values: @roles)
     field(:content, :string)
+    field(:reasoning_content, :string)
     field(:tool_calls, {:array, :map}, default: [])
     field(:tool_call_id, :string)
     # For tool messages
@@ -59,6 +60,7 @@ defmodule Nous.Message do
   @type t :: %__MODULE__{
           role: atom(),
           content: String.t() | nil,
+          reasoning_content: String.t() | nil,
           tool_calls: [map()],
           tool_call_id: String.t() | nil,
           name: String.t() | nil,
@@ -457,7 +459,15 @@ defmodule Nous.Message do
 
   defp changeset(message, attrs) do
     message
-    |> cast(attrs, [:role, :content, :tool_calls, :tool_call_id, :name, :metadata])
+    |> cast(attrs, [
+      :role,
+      :content,
+      :reasoning_content,
+      :tool_calls,
+      :tool_call_id,
+      :name,
+      :metadata
+    ])
     |> validate_required([:role])
     |> put_change(:created_at, DateTime.utc_now())
     |> validate_content()

@@ -53,6 +53,11 @@ defmodule Nous.Messages.OpenAI do
         Map.get(message_data, "content") || Map.get(message_data, :content)
       end
 
+    reasoning_content =
+      if message_data do
+        Map.get(message_data, "reasoning_content") || Map.get(message_data, :reasoning_content)
+      end
+
     tool_calls =
       if message_data do
         Map.get(message_data, "tool_calls") || Map.get(message_data, :tool_calls) || []
@@ -77,6 +82,11 @@ defmodule Nous.Messages.OpenAI do
     }
 
     attrs = if content && content != "", do: Map.put(attrs, :content, content), else: attrs
+
+    attrs =
+      if reasoning_content && reasoning_content != "",
+        do: Map.put(attrs, :reasoning_content, reasoning_content),
+        else: attrs
 
     attrs =
       if length(converted_tool_calls) > 0,
@@ -123,19 +133,27 @@ defmodule Nous.Messages.OpenAI do
     %{"role" => "user", "content" => content}
   end
 
-  defp message_to_openai(%Message{role: :assistant, content: content, tool_calls: tool_calls}) do
+  defp message_to_openai(%Message{
+         role: :assistant,
+         content: content,
+         reasoning_content: reasoning,
+         tool_calls: tool_calls
+       }) do
+    base = %{
+      "role" => "assistant",
+      "content" => content || ""
+    }
+
+    base = if reasoning, do: Map.put(base, "reasoning_content", reasoning), else: base
+
     if length(tool_calls) > 0 do
       # Assistant message with tool calls
       openai_tool_calls = Enum.map(tool_calls, &tool_call_to_openai/1)
 
-      %{
-        "role" => "assistant",
-        "content" => content || "",
-        "tool_calls" => openai_tool_calls
-      }
+      Map.put(base, "tool_calls", openai_tool_calls)
     else
       # Simple assistant message
-      %{"role" => "assistant", "content" => content || ""}
+      base
     end
   end
 

@@ -62,10 +62,18 @@ defmodule Nous.StreamNormalizer.OpenAI do
       [choice | _] ->
         message = get_flexible(choice, :message)
         content = get_flexible(message, :content)
+        reasoning = get_flexible(message, :reasoning) || get_flexible(message, :reasoning_content)
         finish_reason = get_flexible(choice, :finish_reason) || "stop"
 
         events = []
+
+        events =
+          if reasoning && reasoning != "",
+            do: [{:thinking_delta, reasoning} | events],
+            else: events
+
         events = if content && content != "", do: [{:text_delta, content} | events], else: events
+
         events = [{:finish, finish_reason} | events]
 
         Enum.reverse(events)
