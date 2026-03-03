@@ -57,11 +57,12 @@ defmodule Nous.Messages.Anthropic do
     model = Map.get(response, "model", "claude")
     usage_data = Map.get(response, "usage", %{})
 
-    {content_parts, tool_calls} = parse_content(content_data)
+    {content_parts, reasoning_content, tool_calls} = parse_content(content_data)
 
     attrs = %{
       role: :assistant,
       content: consolidate_content_parts(content_parts),
+      reasoning_content: consolidate_content_parts(reasoning_content),
       metadata: %{
         model_name: model,
         usage: parse_usage(usage_data),
@@ -89,19 +90,25 @@ defmodule Nous.Messages.Anthropic do
 
       content = Map.get(msg, "content")
 
-      {text_content, tool_calls} =
+      {text_content, reasoning_content, tool_calls} =
         case content do
           content when is_binary(content) ->
-            {content, []}
+            {content, "", []}
 
           content when is_list(content) ->
             parse_content_parts(content)
 
           _ ->
-            {inspect(content), []}
+            {inspect(content), "", []}
         end
 
       attrs = %{role: role, content: text_content}
+
+      attrs =
+        if reasoning_content != "",
+          do: Map.put(attrs, :reasoning_content, reasoning_content),
+          else: attrs
+
       attrs = if length(tool_calls) > 0, do: Map.put(attrs, :tool_calls, tool_calls), else: attrs
 
       Message.new!(attrs)
@@ -119,12 +126,27 @@ defmodule Nous.Messages.Anthropic do
     %{"role" => "user", "content" => anthropic_content}
   end
 
-  defp message_to_anthropic(%Message{role: :assistant, content: content, tool_calls: tool_calls}) do
+  defp message_to_anthropic(%Message{
+         role: :assistant,
+         content: content,
+         reasoning_content: reasoning,
+         tool_calls: tool_calls
+       }) do
     parts = []
+
+    parts =
+      if reasoning && reasoning != "",
+        do: [%{"type" => "thinking", "thinking" => reasoning} | parts],
+        else: parts
 
     parts =
       if content && content != "",
         do: [%{"type" => "text", "text" => content} | parts],
+        else: parts
+
+    parts =
+      if reasoning && reasoning != "",
+        do: [%{"type" => "thinking", "thinking" => reasoning} | parts],
         else: parts
 
     parts =
@@ -181,31 +203,38 @@ defmodule Nous.Messages.Anthropic do
   end
 
   defp parse_content(content_data) when is_list(content_data) do
-    {content_parts, tool_calls} =
-      Enum.reduce(content_data, {[], []}, fn item, {parts, tools} ->
+    {content_parts, reasoning_content, tool_calls} =
+      Enum.reduce(content_data, {[], [], []}, fn item, {parts, reasoning, tools} ->
         case item do
           %{"type" => "text", "text" => text} ->
-            {[ContentPart.text(text) | parts], tools}
+            {[ContentPart.text(text) | parts], reasoning, tools}
+
+          %{"type" => "thinking", "thinking" => text} ->
+            {parts, [ContentPart.thinking(text) | reasoning], tools}
 
           %{"type" => "tool_use", "id" => id, "name" => name, "input" => input} ->
             tool_call = %{"id" => id, "name" => name, "arguments" => input}
-            {parts, [tool_call | tools]}
+            {parts, reasoning, [tool_call | tools]}
 
           _ ->
-            {parts, tools}
+            {parts, reasoning, tools}
         end
       end)
 
-    {Enum.reverse(content_parts), Enum.reverse(tool_calls)}
+    {Enum.reverse(content_parts), Enum.reverse(reasoning_content), Enum.reverse(tool_calls)}
   end
 
   defp parse_content_parts(content_parts) when is_list(content_parts) do
-    {text_parts, tool_calls} =
-      Enum.reduce(content_parts, {[], []}, fn part, {texts, tools} ->
+    {text_parts, reasoning_parts, tool_calls} =
+      Enum.reduce(content_parts, {[], [], []}, fn part, {texts, reasoning, tools} ->
         case Map.get(part, "type") do
           "text" ->
             text = Map.get(part, "text", "")
-            {[text | texts], tools}
+            {[text | texts], reasoning, tools}
+
+          "thinking" ->
+            text = Map.get(part, "thinking", "")
+            {texts, [text | reasoning], tools}
 
           "tool_use" ->
             tool_call = %{
@@ -214,15 +243,16 @@ defmodule Nous.Messages.Anthropic do
               "arguments" => Map.get(part, "input", %{})
             }
 
-            {texts, [tool_call | tools]}
+            {texts, reasoning, [tool_call | tools]}
 
           _ ->
-            {texts, tools}
+            {texts, reasoning, tools}
         end
       end)
 
     text_content = text_parts |> Enum.reverse() |> Enum.join(" ") |> String.trim()
-    {text_content, Enum.reverse(tool_calls)}
+    reasoning_content = reasoning_parts |> Enum.reverse() |> Enum.join(" ") |> String.trim()
+    {text_content, reasoning_content, Enum.reverse(tool_calls)}
   end
 
   defp parse_usage(usage_data) when is_map(usage_data) do
@@ -238,5 +268,6 @@ defmodule Nous.Messages.Anthropic do
 
   defp consolidate_content_parts([]), do: ""
   defp consolidate_content_parts([%ContentPart{type: :text, content: content}]), do: content
+  defp consolidate_content_parts([%ContentPart{type: :thinking, content: content}]), do: content
   defp consolidate_content_parts(parts) when is_list(parts), do: parts
 end
