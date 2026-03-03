@@ -75,8 +75,12 @@ defmodule Nous.StreamNormalizer.Gemini do
     end
   end
 
-  defp parse_part(%{"text" => text}) when text != "" do
-    [{:text_delta, text}]
+  defp parse_part(%{"text" => text} = part) when text != "" do
+    if Map.get(part, "thought") do
+      [{:thinking_delta, text}]
+    else
+      [{:text_delta, text}]
+    end
   end
 
   defp parse_part(%{"functionCall" => %{"name" => name, "args" => args}}) do

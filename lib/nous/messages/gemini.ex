@@ -60,11 +60,12 @@ defmodule Nous.Messages.Gemini do
     content_data = Map.get(candidate, "content", %{})
     parts_data = Map.get(content_data, "parts", [])
 
-    {content_parts, tool_calls} = parse_content(parts_data)
+    {content_parts, reasoning_content, tool_calls} = parse_content(parts_data)
 
     attrs = %{
       role: :assistant,
       content: consolidate_content_parts(content_parts),
+      reasoning_content: consolidate_content_parts(reasoning_content),
       metadata: %{
         model_name: "gemini-model",
         usage: parse_usage(usage_data),
@@ -91,9 +92,15 @@ defmodule Nous.Messages.Gemini do
         end
 
       parts = Map.get(msg, "parts", [])
-      {text_content, tool_calls} = parse_parts(parts)
+      {text_content, reasoning_content, tool_calls} = parse_parts(parts)
 
       attrs = %{role: role, content: text_content}
+
+      attrs =
+        if reasoning_content != "",
+          do: Map.put(attrs, :reasoning_content, reasoning_content),
+          else: attrs
+
       attrs = if length(tool_calls) > 0, do: Map.put(attrs, :tool_calls, tool_calls), else: attrs
 
       Message.new!(attrs)
@@ -111,10 +118,20 @@ defmodule Nous.Messages.Gemini do
     %{"role" => "user", "parts" => gemini_parts}
   end
 
-  defp message_to_gemini(%Message{role: :assistant, content: content, tool_calls: tool_calls}) do
+  defp message_to_gemini(%Message{
+         role: :assistant,
+         content: content,
+         reasoning_content: reasoning,
+         tool_calls: tool_calls
+       }) do
     parts = []
 
     parts = if content && content != "", do: [%{"text" => content} | parts], else: parts
+
+    parts =
+      if reasoning && reasoning != "",
+        do: [%{"text" => reasoning, "thought" => true} | parts],
+        else: parts
 
     parts =
       if length(tool_calls) > 0 do
@@ -168,11 +185,15 @@ defmodule Nous.Messages.Gemini do
   end
 
   defp parse_content(parts_data) when is_list(parts_data) do
-    {content_parts, tool_calls} =
-      Enum.reduce(parts_data, {[], []}, fn item, {parts, tools} ->
+    {content_parts, reasoning_content, tool_calls} =
+      Enum.reduce(parts_data, {[], [], []}, fn item, {parts, reasoning, tools} ->
         case item do
           %{"text" => text} ->
-            {[ContentPart.text(text) | parts], tools}
+            if Map.get(item, "thought") do
+              {parts, [ContentPart.thinking(text) | reasoning], tools}
+            else
+              {[ContentPart.text(text) | parts], reasoning, tools}
+            end
 
           %{"functionCall" => %{"name" => name, "args" => args}} ->
             tool_call = %{
@@ -181,23 +202,28 @@ defmodule Nous.Messages.Gemini do
               "arguments" => args
             }
 
-            {parts, [tool_call | tools]}
+            {parts, reasoning, [tool_call | tools]}
 
           _ ->
-            {parts, tools}
+            {parts, reasoning, tools}
         end
       end)
 
-    {Enum.reverse(content_parts), Enum.reverse(tool_calls)}
+    {Enum.reverse(content_parts), Enum.reverse(reasoning_content), Enum.reverse(tool_calls)}
   end
 
   defp parse_parts(parts) when is_list(parts) do
-    {text_parts, tool_calls} =
-      Enum.reduce(parts, {[], []}, fn part, {texts, tools} ->
+    {text_parts, reasoning_parts, tool_calls} =
+      Enum.reduce(parts, {[], [], []}, fn part, {texts, reasoning, tools} ->
         cond do
           Map.has_key?(part, "text") ->
             text = Map.get(part, "text", "")
-            {[text | texts], tools}
+
+            if Map.get(part, "thought") do
+              {texts, [text | reasoning], tools}
+            else
+              {[text | texts], reasoning, tools}
+            end
 
           Map.has_key?(part, "functionCall") ->
             function_call = Map.get(part, "functionCall")
@@ -209,14 +235,15 @@ defmodule Nous.Messages.Gemini do
               "arguments" => Map.get(function_call, "args", %{})
             }
 
-            {texts, [tool_call | tools]}
+            {texts, reasoning, [tool_call | tools]}
 
           true ->
-            {texts, tools}
+            {texts, reasoning, tools}
         end
       end)
 
     text_content = text_parts |> Enum.reverse() |> Enum.join(" ") |> String.trim()
+    reasoning_content = reasoning_parts |> Enum.reverse() |> Enum.join(" ") |> String.trim()
     # Add space after text if there are tool calls
     text_content =
       if text_content != "" and length(tool_calls) > 0 do
@@ -225,7 +252,7 @@ defmodule Nous.Messages.Gemini do
         text_content
       end
 
-    {text_content, Enum.reverse(tool_calls)}
+    {text_content, reasoning_content, Enum.reverse(tool_calls)}
   end
 
   defp parse_usage(usage_data) when is_map(usage_data) do
@@ -240,5 +267,6 @@ defmodule Nous.Messages.Gemini do
 
   defp consolidate_content_parts([]), do: ""
   defp consolidate_content_parts([%ContentPart{type: :text, content: content}]), do: content
+  defp consolidate_content_parts([%ContentPart{type: :thinking, content: content}]), do: content
   defp consolidate_content_parts(parts) when is_list(parts), do: parts
 end
