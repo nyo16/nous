@@ -26,9 +26,9 @@ defmodule Nous.MessagesThinkingTest do
 
     test "message_to_openai includes reasoning_content" do
       msg = Message.new!(%{role: :assistant, content: "Answer", reasoning_content: "Thoughts"})
-      
+
       formatted = OpenAI.to_format([msg]) |> List.first()
-      
+
       assert formatted["role"] == "assistant"
       assert formatted["content"] == "Answer"
       assert formatted["reasoning_content"] == "Thoughts"
@@ -44,7 +44,7 @@ defmodule Nous.MessagesThinkingTest do
           }
         ]
       }
-      
+
       events = StreamNormalizer.normalize_chunk(chunk)
       assert [{:thinking_delta, "I'm thinking"}] = events
     end
@@ -57,7 +57,7 @@ defmodule Nous.MessagesThinkingTest do
           }
         ]
       }
-      
+
       events = StreamNormalizer.normalize_chunk(chunk)
       assert [{:thinking_delta, "vLLM style"}] = events
     end
@@ -74,13 +74,14 @@ defmodule Nous.MessagesThinkingTest do
           }
         ]
       }
-      
+
       events = StreamNormalizer.convert_complete_response(chunk)
+
       assert [
-        {:thinking_delta, "Aha!"},
-        {:text_delta, "Hello"},
-        {:finish, "stop"}
-      ] = events
+               {:thinking_delta, "Aha!"},
+               {:text_delta, "Hello"},
+               {:finish, "stop"}
+             ] = events
     end
   end
 end

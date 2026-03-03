@@ -11,7 +11,7 @@ defmodule Nous.StreamNormalizer.OpenAIComprehensiveTest do
           }
         ]
       }
-      
+
       events = StreamNormalizer.normalize_chunk(chunk)
       assert [{:thinking_delta, "Let me calculate"}] = events
     end
@@ -26,7 +26,7 @@ defmodule Nous.StreamNormalizer.OpenAIComprehensiveTest do
           }
         ]
       }
-      
+
       events = StreamNormalizer.normalize_chunk(chunk)
       assert [{:thinking_delta, "Step 1"}] = events
     end
@@ -42,15 +42,16 @@ defmodule Nous.StreamNormalizer.OpenAIComprehensiveTest do
           }
         ]
       }
-      
+
       events = StreamNormalizer.convert_complete_response(chunk)
+
       assert [
-        {:thinking_delta, "2+2=4"},
-        {:text_delta, "4"},
-        {:finish, "stop"}
-      ] = events
+               {:thinking_delta, "2+2=4"},
+               {:text_delta, "4"},
+               {:finish, "stop"}
+             ] = events
     end
-    
+
     test "handles reasoning from message.reasoning_content" do
       chunk = %{
         "choices" => [
@@ -60,13 +61,14 @@ defmodule Nous.StreamNormalizer.OpenAIComprehensiveTest do
           }
         ]
       }
-      
+
       events = StreamNormalizer.convert_complete_response(chunk)
+
       assert [
-        {:thinking_delta, "2+2=4"},
-        {:text_delta, "4"},
-        {:finish, "stop"}
-      ] = events
+               {:thinking_delta, "2+2=4"},
+               {:text_delta, "4"},
+               {:finish, "stop"}
+             ] = events
     end
   end
 end
