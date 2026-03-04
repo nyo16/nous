@@ -537,7 +537,7 @@ defmodule Nous.OutputSchema do
       response_format: %{
         "type" => "json_schema",
         "json_schema" => %{
-          "name" => name || "output",
+          "name" => name,
           "schema" => json_schema,
           "strict" => true
         }
@@ -564,7 +564,7 @@ defmodule Nous.OutputSchema do
       "type" => "function",
       "function" => %{
         "name" => tool_name,
-        "description" => "Return structured output matching the schema for: #{name || "output"}",
+        "description" => "Return structured output matching the schema for: #{name}",
         "parameters" => json_schema
       }
     }

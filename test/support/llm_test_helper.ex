@@ -35,8 +35,7 @@ defmodule Nous.LLMTestHelper do
   end
 
   def skip_if_unavailable(%{skip: reason}) do
-    ExUnit.Case.register_attribute(__ENV__, :skip, reason)
-    :skip
+    {:skip, reason}
   end
 
   def skip_if_unavailable(_), do: :ok

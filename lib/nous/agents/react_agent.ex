@@ -124,11 +124,7 @@ defmodule Nous.Agents.ReActAgent do
     non_system_messages = Enum.reject(ctx.messages, &Message.is_system?/1)
 
     # Return messages with ReAct system prompt first
-    if system_prompt do
-      [Message.system(system_prompt) | non_system_messages]
-    else
-      non_system_messages
-    end
+    [Message.system(system_prompt) | non_system_messages]
   end
 
   @doc """
@@ -143,7 +139,7 @@ defmodule Nous.Agents.ReActAgent do
     ctx = Context.add_message(ctx, response)
 
     # Check if final_answer was called
-    tool_calls = response.tool_calls || []
+    tool_calls = response.tool_calls
 
     has_final_answer =
       Enum.any?(tool_calls, fn call ->

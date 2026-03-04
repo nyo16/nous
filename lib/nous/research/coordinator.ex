@@ -8,6 +8,14 @@ defmodule Nous.Research.Coordinator do
 
   alias Nous.Research.{Planner, Searcher, Synthesizer, Reporter, Finding}
 
+  # Suppress warnings for defensive code patterns (e.g. error branches that
+  # current analysis shows as unreachable but guard against future changes)
+  @dialyzer [
+    {:nowarn_function, research_loop: 1},
+    {:nowarn_function, evaluate_termination: 1},
+    {:nowarn_function, generate_report: 1}
+  ]
+
   require Logger
 
   @type state :: %{

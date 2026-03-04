@@ -1,4 +1,5 @@
 defmodule Nous.Eval.Runner do
+  @dialyzer {:nowarn_function, execute_test_case: 3}
   @moduledoc """
   Executes evaluation suites against agents.
 

@@ -273,24 +273,11 @@ defmodule Nous.LLM do
     Enum.map(tools, &Tool.to_openai_schema/1)
   end
 
-  # Handle Message struct (from OpenAI-compatible providers)
   defp extract_text(%Nous.Message{content: content}) when is_binary(content) do
     content
   end
 
-  # Handle response with parts (from native Anthropic/Gemini)
-  defp extract_text(%{parts: parts}) when is_list(parts) do
-    parts
-    |> Enum.filter(fn
-      {:text, _} -> true
-      _ -> false
-    end)
-    |> Enum.map(fn {:text, text} -> text end)
-    |> Enum.join("")
-  end
-
-  # Fallback for any map with content field
-  defp extract_text(%{content: content}) when is_binary(content) do
-    content
+  defp extract_text(%Nous.Message{content: _}) do
+    ""
   end
 end

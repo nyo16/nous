@@ -176,6 +176,9 @@ else
 
     @behaviour Nous.Memory.Store
 
+    @dialyzer {:nowarn_function,
+               init: 1, store: 2, fetch: 2, delete: 2, update: 3, search_text: 3, list: 2}
+
     @impl true
     def init(_opts) do
       {:error, "Zvec is not available. Add {:zvec, \"~> 0.1\"} to your mix.exs deps."}

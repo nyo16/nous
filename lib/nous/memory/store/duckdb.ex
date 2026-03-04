@@ -347,6 +347,16 @@ else
 
     @behaviour Nous.Memory.Store
 
+    @dialyzer {:nowarn_function,
+               init: 1,
+               store: 2,
+               fetch: 2,
+               delete: 2,
+               update: 3,
+               search_text: 3,
+               search_vector: 3,
+               list: 2}
+
     @error {:error,
             "Duckdbex is not available. Add {:duckdbex, \"~> 0.3\"} to your dependencies."}
 

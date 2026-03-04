@@ -118,16 +118,12 @@ if Code.ensure_loaded?(Floki) do
       |> clean_text()
     end
 
-    defp extract_content(text, _selector) when is_binary(text), do: clean_text(text)
-
     defp extract_title(doc) when is_list(doc) do
       case Floki.find(doc, "title") do
-        [{_, _, children} | _] -> Floki.text([{nil, nil, children}]) |> String.trim()
+        [{_, _, children} | _] -> Floki.text([{"span", [], children}]) |> String.trim()
         _ -> nil
       end
     end
-
-    defp extract_title(_), do: nil
 
     defp find_main_content(doc) do
       # Try common content containers in order of specificity

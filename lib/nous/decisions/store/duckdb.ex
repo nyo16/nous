@@ -421,6 +421,16 @@ else
 
     @behaviour Nous.Decisions.Store
 
+    @dialyzer {:nowarn_function,
+               init: 1,
+               add_node: 2,
+               update_node: 3,
+               get_node: 2,
+               delete_node: 2,
+               add_edge: 2,
+               get_edges: 3,
+               query: 3}
+
     @error {:error,
             "Duckdbex is not available. Add {:duckdbex, \"~> 0.3\"} to your dependencies."}
 

@@ -132,6 +132,14 @@ defmodule Nous.Provider do
     quote do
       @behaviour Nous.Provider
 
+      # Suppress dialyzer warnings for macro-generated functions that contain
+      # pattern matches on provider IDs that can never match in a specific provider
+      @dialyzer [
+        {:nowarn_function, default_stream_normalizer: 0},
+        {:nowarn_function, build_request_params: 3},
+        {:nowarn_function, request: 3}
+      ]
+
       @provider_id unquote(id)
       @default_base_url unquote(default_base_url)
       @default_env_key unquote(default_env_key)
@@ -264,7 +272,7 @@ defmodule Nous.Provider do
               %{
                 provider: @provider_id,
                 model_name: model.model,
-                has_tool_calls: length(parsed_response.tool_calls || []) > 0
+                has_tool_calls: length(parsed_response.tool_calls) > 0
               }
             )
 

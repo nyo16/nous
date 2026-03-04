@@ -181,7 +181,6 @@ defmodule Nous.Eval.Reporter.Console do
         :green -> "\e[32m"
         :yellow -> "\e[33m"
         :cyan -> "\e[36m"
-        _ -> ""
       end
 
     reset = "\e[0m"
