@@ -180,7 +180,7 @@ defmodule Nous.Model do
   @spec default_base_url(provider()) :: String.t()
   defp default_base_url(:openai), do: "https://api.openai.com/v1"
   defp default_base_url(:anthropic), do: "https://api.anthropic.com"
-  defp default_base_url(:gemini), do: "https://generativelanguage.googleapis.com"
+  defp default_base_url(:gemini), do: "https://generativelanguage.googleapis.com/v1beta"
   defp default_base_url(:groq), do: "https://api.groq.com/openai/v1"
   defp default_base_url(:ollama), do: "http://localhost:11434/v1"
   defp default_base_url(:lmstudio), do: "http://localhost:1234/v1"

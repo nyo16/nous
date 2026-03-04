@@ -28,6 +28,9 @@ defmodule Nous.ModelTest do
 
       lmstudio = Model.new(:lmstudio, "qwen3")
       assert lmstudio.base_url == "http://localhost:1234/v1"
+
+      gemini = Model.new(:gemini, "gemini-2.0-flash")
+      assert gemini.base_url == "https://generativelanguage.googleapis.com/v1beta"
     end
 
     test "uses default api_key from config for known providers" do
