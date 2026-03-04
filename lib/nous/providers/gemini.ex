@@ -47,6 +47,41 @@ defmodule Nous.Providers.Gemini do
   @default_timeout 60_000
   @streaming_timeout 120_000
 
+  # Override to convert from generic format to Gemini's format
+  defp build_request_params(model, messages, settings) do
+    merged_settings = Map.merge(model.default_settings, settings)
+
+    # Convert messages to Gemini format: {system_prompt, contents}
+    {system_prompt, contents} = Nous.Messages.to_provider_format(messages, :gemini)
+
+    params = %{"model" => model.model, "contents" => contents}
+
+    params =
+      if system_prompt do
+        Map.put(params, "systemInstruction", %{"parts" => [%{"text" => system_prompt}]})
+      else
+        params
+      end
+
+    # Map generic settings to Gemini's generationConfig
+    generation_config =
+      %{}
+      |> maybe_put("temperature", merged_settings[:temperature])
+      |> maybe_put("maxOutputTokens", merged_settings[:max_tokens])
+      |> maybe_put("topP", merged_settings[:top_p])
+      |> maybe_put("stopSequences", merged_settings[:stop_sequences] || merged_settings[:stop])
+
+    # Merge any explicit generationConfig from settings
+    generation_config =
+      Map.merge(generation_config, merged_settings[:generationConfig] || %{})
+
+    if map_size(generation_config) > 0 do
+      Map.put(params, "generationConfig", generation_config)
+    else
+      params
+    end
+  end
+
   @impl Nous.Provider
   def chat(params, opts \\ []) do
     model = Map.get(params, "model") || Map.get(params, :model) || "gemini-2.0-flash-exp"

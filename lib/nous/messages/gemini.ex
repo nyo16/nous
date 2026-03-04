@@ -55,6 +55,7 @@ defmodule Nous.Messages.Gemini do
   def from_response(response) when is_map(response) do
     candidates = Map.get(response, "candidates", [])
     usage_data = Map.get(response, "usageMetadata", %{})
+    model_version = Map.get(response, "modelVersion", "gemini-model")
 
     candidate = List.first(candidates) || %{}
     content_data = Map.get(candidate, "content", %{})
@@ -67,7 +68,7 @@ defmodule Nous.Messages.Gemini do
       content: consolidate_content_parts(content_parts),
       reasoning_content: consolidate_content_parts(reasoning_content),
       metadata: %{
-        model_name: "gemini-model",
+        model_name: model_version,
         usage: parse_usage(usage_data),
         timestamp: DateTime.utc_now()
       }
