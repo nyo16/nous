@@ -14,7 +14,8 @@ IO.puts("""
 
 1. Add {:llama_cpp_ex, "~> 0.5.0"} to your mix.exs deps
 2. Download a GGUF model (e.g., from HuggingFace)
-3. Run this example with: mix run examples/providers/llamacpp.exs
+3. Set LLAMACPP_MODEL_PATH or edit the path below
+4. Run: mix run examples/providers/llamacpp.exs
 """)
 
 # Initialize and load model
@@ -32,15 +33,18 @@ IO.puts("Loading model from #{model_path}...")
 IO.puts("Model loaded successfully!\n")
 
 # ============================================================================
-# Basic Usage
+# Basic Usage (with thinking disabled)
 # ============================================================================
 
 IO.puts("--- Basic Chat ---")
 
+# Thinking models (Qwen3, etc.) emit <think>...</think> tags by default.
+# Set enable_thinking: false to get clean output.
 agent =
   Nous.new("llamacpp:local",
     llamacpp_model: llm,
-    instructions: "You are helpful and concise."
+    instructions: "You are helpful and concise.",
+    model_settings: %{enable_thinking: false}
   )
 
 case Nous.run(agent, "What is 2 + 2?") do
@@ -60,7 +64,10 @@ IO.puts("")
 
 IO.puts("--- Simple Text Generation ---")
 
-case Nous.generate_text("llamacpp:local", "What is Elixir?", llamacpp_model: llm) do
+case Nous.generate_text("llamacpp:local", "What is Elixir?",
+       llamacpp_model: llm,
+       enable_thinking: false
+     ) do
   {:ok, text} ->
     IO.puts("Response: #{text}")
 
@@ -76,13 +83,45 @@ IO.puts("")
 
 IO.puts("--- Streaming ---")
 
-case Nous.stream_text("llamacpp:local", "Write a haiku about programming.", llamacpp_model: llm) do
+case Nous.stream_text("llamacpp:local", "Write a haiku about programming.",
+       llamacpp_model: llm,
+       enable_thinking: false
+     ) do
   {:ok, stream} ->
     stream |> Stream.each(&IO.write/1) |> Stream.run()
     IO.puts("")
 
   {:error, error} ->
     IO.puts("Error: #{inspect(error)}")
+end
+
+IO.puts("")
+
+# ============================================================================
+# Thinking Models
+# ============================================================================
+
+IO.puts("--- Thinking vs Non-Thinking ---")
+
+IO.puts("With thinking (default for Qwen3, DeepSeek, etc.):")
+
+case Nous.generate_text("llamacpp:local", "What is 1+1?",
+       llamacpp_model: llm,
+       max_tokens: 100
+     ) do
+  {:ok, text} -> IO.puts("  #{String.slice(text, 0, 120)}...")
+  {:error, e} -> IO.puts("  Error: #{inspect(e)}")
+end
+
+IO.puts("\nWithout thinking (enable_thinking: false):")
+
+case Nous.generate_text("llamacpp:local", "What is 1+1?",
+       llamacpp_model: llm,
+       max_tokens: 100,
+       enable_thinking: false
+     ) do
+  {:ok, text} -> IO.puts("  #{text}")
+  {:error, e} -> IO.puts("  Error: #{inspect(e)}")
 end
 
 IO.puts("")
@@ -107,7 +146,7 @@ structured_agent =
   Nous.new("llamacpp:local",
     llamacpp_model: llm,
     instructions: "You respond only with valid JSON matching the schema.",
-    model_settings: %{json_schema: schema}
+    model_settings: %{json_schema: schema, enable_thinking: false}
   )
 
 case Nous.run(structured_agent, "Describe a fictional character.") do
@@ -126,6 +165,16 @@ IO.puts("")
 
 IO.puts("--- Model Settings ---")
 
+IO.puts("""
+Settings mapping (Nous -> LlamaCppEx):
+
+  temperature:     -> temp          (sampling temperature)
+  max_tokens:      -> max_tokens    (max tokens to generate)
+  top_p:           -> top_p         (nucleus sampling)
+  json_schema:     -> json_schema   (constrained JSON output)
+  enable_thinking: -> enable_thinking (thinking token control)
+""")
+
 configured_agent =
   Nous.new("llamacpp:local",
     llamacpp_model: llm,
@@ -133,7 +182,8 @@ configured_agent =
     model_settings: %{
       temperature: 0.9,
       max_tokens: 200,
-      top_p: 0.95
+      top_p: 0.95,
+      enable_thinking: false
     }
   )
 
@@ -166,12 +216,17 @@ IO.puts("""
    - Default is 512. Set n_ctx: 4096 (or higher) for longer conversations
    - More context = more memory usage
 
-4. When to use LlamaCpp vs HTTP providers:
+4. Thinking models:
+   - Qwen3, DeepSeek R1, etc. emit <think> tags by default
+   - Set enable_thinking: false in model_settings for clean output
+   - Keep thinking enabled for complex reasoning tasks
+
+5. When to use LlamaCpp vs HTTP providers:
    - LlamaCpp: Lowest latency, no network overhead, full control
    - Ollama/LMStudio: Easier model management, multiple models
    - Cloud: Largest models, no local hardware needed
 
-5. Memory management:
+6. Memory management:
    - GGUF models stay loaded in memory
    - Unload when done if running multiple models
 """)

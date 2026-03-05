@@ -28,6 +28,34 @@ if Code.ensure_loaded?(LlamaCppEx) do
     when creating the model or agent. It is stored in `default_settings`.
 
     No API key or base URL is needed since inference runs locally via NIFs.
+
+    ## Settings Mapping
+
+    Nous settings are mapped to LlamaCppEx options:
+
+    | Nous Setting | LlamaCppEx Option | Description |
+    |---|---|---|
+    | `:temperature` | `:temp` | Sampling temperature |
+    | `:max_tokens` | `:max_tokens` | Maximum tokens to generate |
+    | `:top_p` | `:top_p` | Nucleus sampling |
+    | `:json_schema` | `:json_schema` | Constrained JSON output |
+    | `:enable_thinking` | `:enable_thinking` | Enable/disable thinking tokens |
+
+    ## Thinking Models
+
+    Models like Qwen3 emit `<think>...</think>` tags by default. To disable:
+
+        agent = Nous.new("llamacpp:local",
+          llamacpp_model: llm,
+          model_settings: %{enable_thinking: false}
+        )
+
+    Or via `generate_text`:
+
+        {:ok, text} = Nous.generate_text("llamacpp:local", "Hello",
+          llamacpp_model: llm,
+          enable_thinking: false
+        )
     """
 
     use Nous.Provider,

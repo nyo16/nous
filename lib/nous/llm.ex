@@ -254,7 +254,7 @@ defmodule Nous.LLM do
   defp build_settings(opts, tools, provider) do
     base_settings =
       opts
-      |> Keyword.take([:temperature, :max_tokens, :top_p])
+      |> Keyword.take([:temperature, :max_tokens, :top_p, :enable_thinking])
       |> Map.new()
 
     if tools == [] do

@@ -646,6 +646,12 @@ agent = Nous.new("ollama:llama2")
 :ok = LlamaCppEx.init()
 {:ok, llm} = LlamaCppEx.load_model("model.gguf", n_gpu_layers: -1)
 agent = Nous.new("llamacpp:local", llamacpp_model: llm)
+
+# For thinking models (Qwen3, DeepSeek, etc.), disable <think> tags:
+agent = Nous.new("llamacpp:local",
+  llamacpp_model: llm,
+  model_settings: %{enable_thinking: false}
+)
 ```
 
 ### Running Examples
