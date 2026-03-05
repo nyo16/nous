@@ -21,6 +21,7 @@ defmodule Nous.Model do
           | :groq
           | :ollama
           | :lmstudio
+          | :llamacpp
           | :openrouter
           | :together
           | :vllm
@@ -66,6 +67,7 @@ defmodule Nous.Model do
     * `"mistral:mistral-large-latest"` - Mistral models
     * `"ollama:llama2"` - Local Ollama
     * `"lmstudio:qwen3-vl-4b-thinking-mlx"` - Local LM Studio
+    * `"llamacpp:local"` - Local LlamaCpp NIF (requires `:llamacpp_model` option)
     * `"vllm:qwen3-vl-4b-thinking-mlx"` - vLLM server
     * `"sglang:meta-llama/Llama-3-8B"` - SGLang server
     * `"openrouter:anthropic/claude-3.5-sonnet"` - OpenRouter
@@ -112,6 +114,25 @@ defmodule Nous.Model do
 
   def parse("sglang:" <> model_name, opts), do: new(:sglang, model_name, opts)
 
+  def parse("llamacpp:" <> model_name, opts) do
+    {llamacpp_model, opts} = Keyword.pop(opts, :llamacpp_model)
+
+    opts =
+      if llamacpp_model do
+        default_settings = Keyword.get(opts, :default_settings, %{})
+
+        Keyword.put(
+          opts,
+          :default_settings,
+          Map.put(default_settings, :llamacpp_model, llamacpp_model)
+        )
+      else
+        opts
+      end
+
+    new(:llamacpp, model_name, opts)
+  end
+
   def parse("custom:" <> model_name, opts) do
     unless Keyword.has_key?(opts, :base_url) do
       raise ArgumentError,
@@ -126,7 +147,7 @@ defmodule Nous.Model do
     raise ArgumentError,
           "Invalid model string format: #{inspect(invalid_string)}. " <>
             "Expected format: \"provider:model-name\". " <>
-            "Supported providers: openai, anthropic, gemini, groq, mistral, ollama, lmstudio, openrouter, together, vllm, sglang, custom"
+            "Supported providers: openai, anthropic, gemini, groq, mistral, ollama, lmstudio, llamacpp, openrouter, together, vllm, sglang, custom"
   end
 
   @doc """
@@ -190,6 +211,7 @@ defmodule Nous.Model do
   # vLLM requires explicit base_url
   defp default_base_url(:vllm), do: nil
   defp default_base_url(:sglang), do: "http://localhost:30000/v1"
+  defp default_base_url(:llamacpp), do: "local"
   defp default_base_url(:custom), do: nil
 
   @spec default_api_key(provider()) :: String.t() | nil
@@ -206,6 +228,8 @@ defmodule Nous.Model do
   defp default_api_key(:vllm), do: nil
   # SGLang API key is optional
   defp default_api_key(:sglang), do: nil
+  # LlamaCpp runs locally via NIFs, no API key needed
+  defp default_api_key(:llamacpp), do: nil
   defp default_api_key(:custom), do: nil
 
   # Default receive timeouts per provider
@@ -219,6 +243,8 @@ defmodule Nous.Model do
   defp default_receive_timeout(:vllm), do: 120_000
   # 2 minutes for local SGLang
   defp default_receive_timeout(:sglang), do: 120_000
+  # 2 minutes for local LlamaCpp
+  defp default_receive_timeout(:llamacpp), do: 120_000
   # 2 minutes for custom endpoints
   defp default_receive_timeout(:custom), do: 120_000
   # 60 seconds for cloud providers

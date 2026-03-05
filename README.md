@@ -96,15 +96,17 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 | Ollama | `ollama:llama2` | ✅ |
 | OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | ✅ |
 | Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | ✅ |
+| LlamaCpp | `llamacpp:local` + `:llamacpp_model` | ✅ |
 | Custom | `openai_compatible:model` + `:base_url` | ✅ |
 
-All providers use pure Elixir HTTP clients (Req + Finch).
+All HTTP providers use pure Elixir HTTP clients (Req + Finch). LlamaCpp runs in-process via NIFs.
 
 ```elixir
 # Switch providers with one line change
 agent = Nous.new("lmstudio:qwen3")                  # Local (free)
 agent = Nous.new("openai:gpt-4")                    # OpenAI
 agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")   # Anthropic
+agent = Nous.new("llamacpp:local", llamacpp_model: llm)  # Local NIF
 ```
 
 ## Features
@@ -481,6 +483,7 @@ See [examples/advanced/liveview_integration.exs](examples/advanced/liveview_inte
 - [providers/anthropic.exs](examples/providers/anthropic.exs) - Claude, extended thinking
 - [providers/openai.exs](examples/providers/openai.exs) - GPT models
 - [providers/lmstudio.exs](examples/providers/lmstudio.exs) - Local AI
+- [providers/llamacpp.exs](examples/providers/llamacpp.exs) - Local NIF-based inference
 - [providers/switching_providers.exs](examples/providers/switching_providers.exs) - Provider comparison
 
 ### Memory Examples
@@ -638,6 +641,17 @@ agent = Nous.new("lmstudio:qwen3")
 
 # Ollama — start the server, then:
 agent = Nous.new("ollama:llama2")
+
+# LlamaCpp — load a GGUF model directly (requires llama_cpp_ex dep):
+:ok = LlamaCppEx.init()
+{:ok, llm} = LlamaCppEx.load_model("model.gguf", n_gpu_layers: -1)
+agent = Nous.new("llamacpp:local", llamacpp_model: llm)
+
+# For thinking models (Qwen3, DeepSeek, etc.), disable <think> tags:
+agent = Nous.new("llamacpp:local",
+  llamacpp_model: llm,
+  model_settings: %{enable_thinking: false}
+)
 ```
 
 ### Running Examples
