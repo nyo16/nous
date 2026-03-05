@@ -240,6 +240,9 @@ defmodule Nous.Messages do
       :mistral ->
         to_openai_format(messages)
 
+      :llamacpp ->
+        to_openai_format(messages)
+
       :custom ->
         to_openai_format(messages)
 
@@ -247,7 +250,7 @@ defmodule Nous.Messages do
         raise ArgumentError, """
         Unsupported provider: #{inspect(provider)}
 
-        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :vllm, :sglang, :anthropic, :gemini, :mistral
+        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :mistral
         """
     end
   end
@@ -351,6 +354,9 @@ defmodule Nous.Messages do
       :mistral ->
         from_openai_response(response)
 
+      :llamacpp ->
+        from_openai_response(response)
+
       :custom ->
         from_openai_response(response)
 
@@ -358,7 +364,7 @@ defmodule Nous.Messages do
         raise ArgumentError, """
         Unsupported provider: #{inspect(provider)}
 
-        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :vllm, :sglang, :anthropic, :gemini, :mistral
+        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :mistral
         """
     end
   end

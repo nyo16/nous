@@ -7,6 +7,7 @@ defmodule Nous.ModelDispatcher do
   - `:gemini` → `Nous.Providers.Gemini`
   - `:mistral` → `Nous.Providers.Mistral`
   - `:lmstudio` → `Nous.Providers.LMStudio`
+  - `:llamacpp` → `Nous.Providers.LlamaCpp`
   - `:vllm` → `Nous.Providers.VLLM`
   - `:sglang` → `Nous.Providers.SGLang`
   - `:openai` → `Nous.Providers.OpenAI`
@@ -49,6 +50,11 @@ defmodule Nous.ModelDispatcher do
   def request(%Model{provider: :sglang} = model, messages, settings) do
     Logger.debug("Routing to SGLang provider for model: #{model.model}")
     Providers.SGLang.request(model, messages, settings)
+  end
+
+  def request(%Model{provider: :llamacpp} = model, messages, settings) do
+    Logger.debug("Routing to LlamaCpp provider for model: #{model.model}")
+    Providers.LlamaCpp.request(model, messages, settings)
   end
 
   def request(%Model{provider: :openai} = model, messages, settings) do
@@ -96,6 +102,11 @@ defmodule Nous.ModelDispatcher do
     Providers.SGLang.request_stream(model, messages, settings)
   end
 
+  def request_stream(%Model{provider: :llamacpp} = model, messages, settings) do
+    Logger.debug("Routing streaming request to LlamaCpp provider for model: #{model.model}")
+    Providers.LlamaCpp.request_stream(model, messages, settings)
+  end
+
   def request_stream(%Model{provider: :openai} = model, messages, settings) do
     Logger.debug("Routing streaming request to OpenAI provider for model: #{model.model}")
     Providers.OpenAI.request_stream(model, messages, settings)
@@ -135,6 +146,10 @@ defmodule Nous.ModelDispatcher do
 
   def count_tokens(%Model{provider: :sglang}, messages) do
     Providers.SGLang.count_tokens(messages)
+  end
+
+  def count_tokens(%Model{provider: :llamacpp}, messages) do
+    Providers.LlamaCpp.count_tokens(messages)
   end
 
   def count_tokens(%Model{provider: :openai}, messages) do

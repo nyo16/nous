@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.12.2"
+  @version "0.13.0"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -57,6 +57,9 @@ defmodule Nous.MixProject do
       # {:zvec, "~> 0.2", optional: true},
       # {:exqlite, "~> 0.27", optional: true},
       # {:duckdbex, "~> 0.3", optional: true},
+
+      # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps to unlock)
+      # {:llama_cpp_ex, "~> 0.5.0", optional: true},
 
       # Memory system embedding providers (all optional — add to your app's deps to unlock)
       # {:bumblebee, "~> 0.6", optional: true},
@@ -157,7 +160,9 @@ defmodule Nous.MixProject do
           Nous.Providers.OpenAI,
           Nous.Providers.OpenAICompatible,
           Nous.Providers.Anthropic,
-          Nous.Providers.LMStudio
+          Nous.Providers.LMStudio,
+          Nous.Providers.LlamaCpp,
+          Nous.StreamNormalizer.LlamaCpp
         ],
         "Tool System": [
           Nous.Tool,
