@@ -8,7 +8,7 @@ AI agent framework for Elixir with multi-provider LLM support.
 
 [![Elixir](https://img.shields.io/badge/elixir-~%3E%201.15-purple.svg)](https://elixir-lang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/nyo16/nous/blob/master/LICENSE)
-[![Status](https://img.shields.io/badge/status-working%20mvp-brightgreen.svg)](#features)
+[![Status](https://img.shields.io/badge/status-active-brightgreen.svg)](#features)
 
 ## Installation
 
@@ -458,7 +458,7 @@ See [examples/advanced/liveview_integration.exs](examples/advanced/liveview_inte
 
 ## Examples
 
-**[Full Examples Collection](examples/README.md)** - 21 focused examples from basics to production.
+**[Full Examples Collection](examples/README.md)** - Focused examples from basics to production.
 
 ### Core Examples (01-10)
 

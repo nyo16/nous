@@ -71,52 +71,6 @@ Production patterns and advanced features:
 | [advanced/cancellation.exs](https://github.com/nyo16/nous/blob/master/examples/advanced/cancellation.exs) | Task and streaming cancellation |
 | [advanced/liveview_integration.exs](https://github.com/nyo16/nous/blob/master/examples/advanced/liveview_integration.exs) | Phoenix LiveView integration patterns |
 
-## v0.8.0 Features
-
-These examples showcase new v0.8.0 features:
-
-### Context Continuation
-```elixir
-# Pass context between runs for multi-turn conversations
-{:ok, result1} = Nous.run(agent, "My name is Alice")
-{:ok, result2} = Nous.run(agent, "What's my name?", context: result1.context)
-```
-
-### Callbacks
-```elixir
-# Map-based callbacks
-Nous.run(agent, "Hello", callbacks: %{
-  on_llm_new_delta: fn _event, delta -> IO.write(delta) end
-})
-
-# Process messages (for LiveView)
-Nous.run(agent, "Hello", notify_pid: self())
-```
-
-### Module-Based Tools
-```elixir
-defmodule MyTool do
-  @behaviour Nous.Tool.Behaviour
-
-  @impl true
-  def metadata, do: %{name: "my_tool", description: "..."}
-
-  @impl true
-  def execute(ctx, args), do: {:ok, result}
-end
-
-tool = Nous.Tool.from_module(MyTool)
-```
-
-### Prompt Templates
-```elixir
-template = Nous.PromptTemplate.from_template(
-  "You are a <%= @role %> assistant",
-  role: :system
-)
-message = Nous.PromptTemplate.to_message(template, %{role: "helpful"})
-```
-
 ## Running Examples
 
 Most examples use LM Studio by default (free, local):
