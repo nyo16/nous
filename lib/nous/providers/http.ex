@@ -95,6 +95,9 @@ defmodule Nous.Providers.HTTP do
   ## Options
     * `:timeout` - Request timeout in ms (default: 60_000)
     * `:finch_name` - Finch pool name (default: Nous.Finch)
+    * `:stream_parser` - Module for parsing the stream buffer (default: SSE parsing).
+      Must implement `parse_buffer/1` returning `{events, remaining_buffer}`.
+      See `Nous.Providers.HTTP.JSONArrayParser` for an example.
 
   ## Error Handling
   The stream will emit `{:stream_error, reason}` on errors and then halt.
@@ -106,6 +109,7 @@ defmodule Nous.Providers.HTTP do
       when is_binary(url) and is_map(body) and is_list(headers) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
+    stream_parser = Keyword.get(opts, :stream_parser)
 
     case Jason.encode(body) do
       {:ok, json_body} ->
@@ -114,7 +118,9 @@ defmodule Nous.Providers.HTTP do
 
         stream =
           Stream.resource(
-            fn -> start_streaming(url, headers, json_body, finch_name, timeout) end,
+            fn ->
+              start_streaming(url, headers, json_body, finch_name, timeout, stream_parser)
+            end,
             &next_chunk/1,
             &cleanup/1
           )
@@ -356,7 +362,7 @@ defmodule Nous.Providers.HTTP do
   end
 
   # Start streaming - spawn a process to handle Finch.stream
-  defp start_streaming(url, headers, body, finch_name, timeout) do
+  defp start_streaming(url, headers, body, finch_name, timeout, stream_parser) do
     parent = self()
 
     pid =
@@ -408,7 +414,8 @@ defmodule Nous.Providers.HTTP do
       done: false,
       status: nil,
       timeout: timeout,
-      error: nil
+      error: nil,
+      stream_parser: stream_parser
     }
   end
 
@@ -482,7 +489,7 @@ defmodule Nous.Providers.HTTP do
           Logger.error("SSE buffer overflow, terminating stream")
           {[{:stream_error, %{reason: :buffer_overflow}}], %{state | done: true}}
         else
-          {events, remaining_buffer} = parse_sse_buffer(new_buffer)
+          {events, remaining_buffer} = parse_stream_buffer(new_buffer, state.stream_parser)
 
           # Filter out parse errors if we want to be lenient
           {valid_events, errors} =
@@ -505,7 +512,7 @@ defmodule Nous.Providers.HTTP do
 
       {:sse, :done, :ok} ->
         # Flush any remaining buffer
-        {events, _} = parse_sse_buffer(state.buffer <> "\n\n")
+        {events, _} = flush_stream_buffer(state.buffer, state.stream_parser)
 
         final_events =
           Enum.reject(events, fn
@@ -529,6 +536,16 @@ defmodule Nous.Providers.HTTP do
         {[{:stream_error, %{reason: :timeout, timeout_ms: timeout}}], %{state | done: true}}
     end
   end
+
+  # Parse stream buffer using the configured parser (default: SSE)
+  defp parse_stream_buffer(buffer, nil), do: parse_sse_buffer(buffer)
+  defp parse_stream_buffer(buffer, parser_mod), do: parser_mod.parse_buffer(buffer)
+
+  # Flush remaining buffer at end of stream
+  # SSE needs a trailing \n\n to force the last event through;
+  # custom parsers just re-parse the remaining buffer as-is.
+  defp flush_stream_buffer(buffer, nil), do: parse_sse_buffer(buffer <> "\n\n")
+  defp flush_stream_buffer(buffer, parser_mod), do: parser_mod.parse_buffer(buffer)
 
   # Cleanup when stream is done
   defp cleanup(state) do
