@@ -110,7 +110,11 @@ defmodule Nous.Providers.Gemini do
     # Remove model from params (it's in the URL)
     body = params |> Map.delete("model") |> Map.delete(:model)
 
-    HTTP.stream(url, body, headers, timeout: timeout, finch_name: finch_name)
+    HTTP.stream(url, body, headers,
+      timeout: timeout,
+      finch_name: finch_name,
+      stream_parser: Nous.Providers.HTTP.JSONArrayParser
+    )
   end
 
   # Build URL with model and API key in query params
