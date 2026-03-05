@@ -11,17 +11,18 @@ if Code.ensure_loaded?(LlamaCppEx) do
     @behaviour Nous.StreamNormalizer
 
     @impl true
-    def normalize_chunk(chunk) when is_struct(chunk) do
-      choices = chunk.choices || []
+    def normalize_chunk(chunk) when is_struct(chunk) or is_map(chunk) do
+      choices = Map.get(chunk, :choices) || Map.get(chunk, "choices") || []
 
       case choices do
         [choice | _] ->
-          delta = choice.delta
-          finish_reason = choice.finish_reason
+          delta = Map.get(choice, :delta) || Map.get(choice, "delta")
+          finish_reason = Map.get(choice, :finish_reason) || Map.get(choice, "finish_reason")
+          content = delta && (Map.get(delta, :content) || Map.get(delta, "content"))
 
           cond do
-            delta && delta.content && delta.content != "" ->
-              [{:text_delta, delta.content}]
+            content && content != "" ->
+              [{:text_delta, content}]
 
             finish_reason ->
               [{:finish, finish_reason}]
@@ -35,22 +36,17 @@ if Code.ensure_loaded?(LlamaCppEx) do
       end
     end
 
-    # Fall back to OpenAI normalizer for plain map chunks
-    def normalize_chunk(chunk) when is_map(chunk) do
-      Nous.StreamNormalizer.OpenAI.normalize_chunk(chunk)
-    end
-
     def normalize_chunk(chunk) do
       [{:unknown, chunk}]
     end
 
     @impl true
-    def complete_response?(chunk) when is_struct(chunk) do
-      choices = chunk.choices || []
+    def complete_response?(chunk) when is_struct(chunk) or is_map(chunk) do
+      choices = Map.get(chunk, :choices) || Map.get(chunk, "choices") || []
 
       case choices do
         [choice | _] ->
-          message = Map.get(choice, :message)
+          message = Map.get(choice, :message) || Map.get(choice, "message")
           message != nil
 
         _ ->
@@ -58,21 +54,19 @@ if Code.ensure_loaded?(LlamaCppEx) do
       end
     end
 
-    def complete_response?(chunk) when is_map(chunk) do
-      Nous.StreamNormalizer.OpenAI.complete_response?(chunk)
-    end
-
     def complete_response?(_), do: false
 
     @impl true
-    def convert_complete_response(chunk) when is_struct(chunk) do
-      choices = chunk.choices || []
+    def convert_complete_response(chunk) when is_struct(chunk) or is_map(chunk) do
+      choices = Map.get(chunk, :choices) || Map.get(chunk, "choices") || []
 
       case choices do
         [choice | _] ->
-          message = choice.message
-          content = message && message.content
-          finish_reason = choice.finish_reason || "stop"
+          message = Map.get(choice, :message) || Map.get(choice, "message") || %{}
+          content = Map.get(message, :content) || Map.get(message, "content")
+
+          finish_reason =
+            Map.get(choice, :finish_reason) || Map.get(choice, "finish_reason") || "stop"
 
           events = []
 
@@ -83,15 +77,11 @@ if Code.ensure_loaded?(LlamaCppEx) do
           Enum.reverse(events)
 
         _ ->
-          [{:unknown, chunk}]
+          [{:finish, "stop"}]
       end
     end
 
-    def convert_complete_response(chunk) when is_map(chunk) do
-      Nous.StreamNormalizer.OpenAI.convert_complete_response(chunk)
-    end
-
-    def convert_complete_response(chunk), do: [{:unknown, chunk}]
+    def convert_complete_response(_chunk), do: [{:finish, "stop"}]
   end
 else
   defmodule Nous.StreamNormalizer.LlamaCpp do
@@ -104,12 +94,12 @@ else
     @behaviour Nous.StreamNormalizer
 
     @impl true
-    def normalize_chunk(chunk), do: [{:unknown, chunk}]
+    def normalize_chunk(_chunk), do: [{:finish, "not_available"}]
 
     @impl true
     def complete_response?(_chunk), do: false
 
     @impl true
-    def convert_complete_response(chunk), do: [{:unknown, chunk}]
+    def convert_complete_response(_chunk), do: [{:finish, "not_available"}]
   end
 end
