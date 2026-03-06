@@ -237,6 +237,9 @@ defmodule Nous.Messages do
       :gemini ->
         to_gemini_format(messages)
 
+      :vertex_ai ->
+        to_gemini_format(messages)
+
       :mistral ->
         to_openai_format(messages)
 
@@ -250,7 +253,7 @@ defmodule Nous.Messages do
         raise ArgumentError, """
         Unsupported provider: #{inspect(provider)}
 
-        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :mistral
+        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :vertex_ai, :mistral
         """
     end
   end
@@ -351,6 +354,9 @@ defmodule Nous.Messages do
       :gemini ->
         from_gemini_response(response)
 
+      :vertex_ai ->
+        from_gemini_response(response)
+
       :mistral ->
         from_openai_response(response)
 
@@ -364,7 +370,7 @@ defmodule Nous.Messages do
         raise ArgumentError, """
         Unsupported provider: #{inspect(provider)}
 
-        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :mistral
+        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :vertex_ai, :mistral
         """
     end
   end

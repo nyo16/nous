@@ -92,6 +92,8 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 | LM Studio | `lmstudio:qwen3` | ✅ |
 | OpenAI | `openai:gpt-4` | ✅ |
 | Anthropic | `anthropic:claude-sonnet-4-5-20250929` | ✅ |
+| Google Gemini | `gemini:gemini-2.0-flash` | ✅ |
+| Google Vertex AI | `vertex_ai:gemini-2.0-flash` | ✅ |
 | Groq | `groq:llama-3.1-70b-versatile` | ✅ |
 | Ollama | `ollama:llama2` | ✅ |
 | OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | ✅ |
@@ -106,6 +108,7 @@ All HTTP providers use pure Elixir HTTP clients (Req + Finch). LlamaCpp runs in-
 agent = Nous.new("lmstudio:qwen3")                  # Local (free)
 agent = Nous.new("openai:gpt-4")                    # OpenAI
 agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")   # Anthropic
+agent = Nous.new("vertex_ai:gemini-2.0-flash")      # Google Vertex AI
 agent = Nous.new("llamacpp:local", llamacpp_model: llm)  # Local NIF
 ```
 

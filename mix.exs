@@ -49,6 +49,9 @@ defmodule Nous.MixProject do
       {:finch, "~> 0.19"},
       {:req, "~> 0.5"},
 
+      # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
+      {:goth, "~> 1.4", optional: true},
+
       # HTML parsing (for web content extraction in research tools)
       {:floki, "~> 0.36", optional: true},
 
@@ -161,6 +164,7 @@ defmodule Nous.MixProject do
           Nous.Providers.OpenAICompatible,
           Nous.Providers.Anthropic,
           Nous.Providers.LMStudio,
+          Nous.Providers.VertexAI,
           Nous.Providers.LlamaCpp,
           Nous.StreamNormalizer.LlamaCpp
         ],

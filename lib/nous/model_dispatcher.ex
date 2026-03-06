@@ -32,6 +32,11 @@ defmodule Nous.ModelDispatcher do
     Providers.Gemini.request(model, messages, settings)
   end
 
+  def request(%Model{provider: :vertex_ai} = model, messages, settings) do
+    Logger.debug("Routing to Vertex AI provider for model: #{model.model}")
+    Providers.VertexAI.request(model, messages, settings)
+  end
+
   def request(%Model{provider: :mistral} = model, messages, settings) do
     Logger.debug("Routing to Mistral provider for model: #{model.model}")
     Providers.Mistral.request(model, messages, settings)
@@ -82,6 +87,11 @@ defmodule Nous.ModelDispatcher do
     Providers.Gemini.request_stream(model, messages, settings)
   end
 
+  def request_stream(%Model{provider: :vertex_ai} = model, messages, settings) do
+    Logger.debug("Routing streaming request to Vertex AI provider for model: #{model.model}")
+    Providers.VertexAI.request_stream(model, messages, settings)
+  end
+
   def request_stream(%Model{provider: :mistral} = model, messages, settings) do
     Logger.debug("Routing streaming request to Mistral provider for model: #{model.model}")
     Providers.Mistral.request_stream(model, messages, settings)
@@ -130,6 +140,10 @@ defmodule Nous.ModelDispatcher do
 
   def count_tokens(%Model{provider: :gemini}, messages) do
     Providers.Gemini.count_tokens(messages)
+  end
+
+  def count_tokens(%Model{provider: :vertex_ai}, messages) do
+    Providers.VertexAI.count_tokens(messages)
   end
 
   def count_tokens(%Model{provider: :mistral}, messages) do

@@ -400,6 +400,7 @@ defmodule Nous.ProviderTest do
         Nous.Providers.OpenAICompatible,
         Nous.Providers.Anthropic,
         Nous.Providers.Gemini,
+        Nous.Providers.VertexAI,
         Nous.Providers.Mistral,
         Nous.Providers.LMStudio,
         Nous.Providers.VLLM,

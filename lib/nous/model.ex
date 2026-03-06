@@ -18,6 +18,7 @@ defmodule Nous.Model do
           :openai
           | :anthropic
           | :gemini
+          | :vertex_ai
           | :groq
           | :ollama
           | :lmstudio
@@ -63,6 +64,7 @@ defmodule Nous.Model do
     * `"openai:gpt-4"` - OpenAI models
     * `"anthropic:claude-3-5-sonnet-20241022"` - Anthropic Claude
     * `"gemini:gemini-1.5-pro"` - Google Gemini
+    * `"vertex_ai:gemini-2.0-flash"` - Google Vertex AI
     * `"groq:llama-3.1-70b-versatile"` - Groq models
     * `"mistral:mistral-large-latest"` - Mistral models
     * `"ollama:llama2"` - Local Ollama
@@ -95,6 +97,7 @@ defmodule Nous.Model do
   def parse("openai:" <> model_name, opts), do: new(:openai, model_name, opts)
   def parse("anthropic:" <> model_name, opts), do: new(:anthropic, model_name, opts)
   def parse("gemini:" <> model_name, opts), do: new(:gemini, model_name, opts)
+  def parse("vertex_ai:" <> model_name, opts), do: new(:vertex_ai, model_name, opts)
   def parse("groq:" <> model_name, opts), do: new(:groq, model_name, opts)
   def parse("mistral:" <> model_name, opts), do: new(:mistral, model_name, opts)
   def parse("ollama:" <> model_name, opts), do: new(:ollama, model_name, opts)
@@ -147,7 +150,7 @@ defmodule Nous.Model do
     raise ArgumentError,
           "Invalid model string format: #{inspect(invalid_string)}. " <>
             "Expected format: \"provider:model-name\". " <>
-            "Supported providers: openai, anthropic, gemini, groq, mistral, ollama, lmstudio, llamacpp, openrouter, together, vllm, sglang, custom"
+            "Supported providers: openai, anthropic, gemini, vertex_ai, groq, mistral, ollama, lmstudio, llamacpp, openrouter, together, vllm, sglang, custom"
   end
 
   @doc """
@@ -202,6 +205,18 @@ defmodule Nous.Model do
   defp default_base_url(:openai), do: "https://api.openai.com/v1"
   defp default_base_url(:anthropic), do: "https://api.anthropic.com"
   defp default_base_url(:gemini), do: "https://generativelanguage.googleapis.com/v1beta"
+
+  defp default_base_url(:vertex_ai) do
+    project = System.get_env("GOOGLE_CLOUD_PROJECT") || System.get_env("GCLOUD_PROJECT")
+    region = System.get_env("GOOGLE_CLOUD_REGION") || "us-central1"
+
+    if project do
+      "https://#{region}-aiplatform.googleapis.com/v1/projects/#{project}/locations/#{region}"
+    else
+      nil
+    end
+  end
+
   defp default_base_url(:groq), do: "https://api.groq.com/openai/v1"
   defp default_base_url(:ollama), do: "http://localhost:11434/v1"
   defp default_base_url(:lmstudio), do: "http://localhost:1234/v1"
@@ -218,6 +233,7 @@ defmodule Nous.Model do
   defp default_api_key(:openai), do: Application.get_env(:nous, :openai_api_key)
   defp default_api_key(:anthropic), do: Application.get_env(:nous, :anthropic_api_key)
   defp default_api_key(:gemini), do: Application.get_env(:nous, :google_ai_api_key)
+  defp default_api_key(:vertex_ai), do: Application.get_env(:nous, :vertex_ai_api_key)
   defp default_api_key(:groq), do: Application.get_env(:nous, :groq_api_key)
   defp default_api_key(:openrouter), do: Application.get_env(:nous, :openrouter_api_key)
   defp default_api_key(:together), do: Application.get_env(:nous, :together_api_key)

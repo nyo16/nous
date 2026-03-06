@@ -44,6 +44,7 @@ Provider-specific configuration and features:
 | [providers/openai.exs](https://github.com/nyo16/nous/blob/master/examples/providers/openai.exs) | GPT models, function calling, settings |
 | [providers/lmstudio.exs](https://github.com/nyo16/nous/blob/master/examples/providers/lmstudio.exs) | Local AI with LM Studio |
 | [providers/vllm_sglang.exs](https://github.com/nyo16/nous/blob/master/examples/providers/vllm_sglang.exs) | vLLM & SGLang high-performance local inference |
+| [providers/vertex_ai.exs](https://github.com/nyo16/nous/blob/master/examples/providers/vertex_ai.exs) | Google Vertex AI with Goth auth |
 | [providers/llamacpp.exs](https://github.com/nyo16/nous/blob/master/examples/providers/llamacpp.exs) | Local NIF-based inference via llama.cpp |
 | [providers/switching_providers.exs](https://github.com/nyo16/nous/blob/master/examples/providers/switching_providers.exs) | Provider comparison and selection |
 

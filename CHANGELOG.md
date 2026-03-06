@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.1] - 2026-03-06
+
+### Added
+
+- **Vertex AI provider**: `Nous.Providers.VertexAI` for accessing Gemini models through Google Cloud Vertex AI. Supports enterprise features (VPC-SC, CMEK, regional endpoints, IAM).
+  - Bearer token auth via `api_key` option, `VERTEX_AI_ACCESS_TOKEN` env var, or Goth integration
+  - Goth integration (`{:goth, "~> 1.4", optional: true}`) for automatic service account token management — reuse existing Goth processes from PubSub, etc.
+  - URL auto-construction from `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_REGION` env vars
+  - `Nous.Providers.VertexAI.endpoint/2` helper to build endpoint URLs
+  - Reuses existing Gemini message format, response parsing, and stream normalization
+  - Model string: `"vertex_ai:gemini-2.0-flash"`
+
 ## [0.12.2] - 2026-03-04
 
 ### Fixed
