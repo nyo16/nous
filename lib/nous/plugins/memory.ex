@@ -54,6 +54,40 @@ defmodule Nous.Plugins.Memory do
   **Optional — scoring:**
     * `:scoring_weights` - `[relevance: 0.5, importance: 0.3, recency: 0.2]`
     * `:decay_lambda` - Temporal decay rate (default: 0.001)
+
+  **Optional — auto-update (after_run reflection):**
+    * `:auto_update_memory` - Automatically reflect on conversation and update memories after each run (default: `false`)
+    * `:auto_update_every` - Run reflection every N runs (default: `1`)
+    * `:reflection_model` - Model string for reflection LLM call (default: agent's own model). Use a cheaper model like `"openai:gpt-4o-mini"` to save costs.
+    * `:reflection_max_tokens` - Max tokens for reflection response (default: `1000`)
+    * `:reflection_max_messages` - Max recent messages to include in reflection context (default: `20`)
+    * `:reflection_max_memories` - Max existing memories to include in reflection context (default: `50`)
+
+  ## Auto-Update Memory
+
+  When `:auto_update_memory` is `true`, the plugin runs an `after_run/3` hook
+  after each agent run completes. It reflects on the conversation and outputs
+  a JSON array of memory operations (`remember`, `update`, `forget`) — similar
+  to Claude Code's "recalled/wrote memory" behavior.
+
+      agent = Nous.new("openai:gpt-4o",
+        plugins: [Nous.Plugins.Memory],
+        deps: %{
+          memory_config: %{
+            store: Nous.Memory.Store.ETS,
+            auto_update_memory: true,
+            reflection_model: "openai:gpt-4o-mini"
+          }
+        }
+      )
+
+      {:ok, result} = Nous.run(agent, "My favorite color is blue")
+      # Memory automatically stored after run completes
+
+      {:ok, result2} = Nous.run(agent, "I changed my mind, it's green",
+        context: result.context
+      )
+      # Memory automatically updated (not duplicated)
   """
 
   @behaviour Nous.Plugin

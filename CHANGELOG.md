@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.2] - 2026-03-07
+
+### Added
+
+- **Auto-update memory**: `Nous.Plugins.Memory` can now automatically reflect on conversations and update memories after each run — no explicit tool calls needed. Enable with `auto_update_memory: true` in `memory_config`. Configurable reflection model, frequency, and context limits.
+  - New `after_run/3` callback in `Nous.Plugin` behaviour — runs once after the entire agent run completes. Wired into both `AgentRunner.run/3` and `run_with_context/3`.
+  - `Nous.Plugin.run_after_run/4` helper for executing the hook across all plugins
+  - New config options: `:auto_update_memory`, `:auto_update_every`, `:reflection_model`, `:reflection_max_tokens`, `:reflection_max_messages`, `:reflection_max_memories`
+  - New example: `examples/memory/auto_update.exs`
+
 ## [0.13.1] - 2026-03-06
 
 ### Added

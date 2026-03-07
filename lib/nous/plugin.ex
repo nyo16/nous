@@ -36,9 +36,15 @@ defmodule Nous.Plugin do
 
   ## Callback Execution Order
 
-  Plugins are executed in list order. For `before_request`, the context
-  flows through each plugin. For `after_response`, the context is passed
-  through each plugin in order.
+  Plugins are executed in list order. The context flows through each plugin
+  sequentially for all hooks:
+
+  1. `init/2` — once at run start
+  2. `system_prompt/2` — once, fragments joined into system message
+  3. `tools/2` — once per iteration, tools collected
+  4. `before_request/3` — before each LLM call
+  5. `after_response/3` — after each LLM response
+  6. `after_run/3` — once after the entire run completes (post-loop)
 
   ## Built-in Plugins
 

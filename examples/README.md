@@ -60,6 +60,7 @@ Persistent agent memory with hybrid search:
 | [memory/duckdb_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/duckdb_full.exs) | DuckDB with FTS + vector search |
 | [memory/hybrid_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/hybrid_full.exs) | Muninn + Zvec for maximum search quality |
 | [memory/cross_agent.exs](https://github.com/nyo16/nous/blob/master/examples/memory/cross_agent.exs) | Two agents sharing memory with scoping |
+| [memory/auto_update.exs](https://github.com/nyo16/nous/blob/master/examples/memory/auto_update.exs) | Auto-update memory after each run (no explicit tool calls) |
 
 ## Advanced Examples
 
