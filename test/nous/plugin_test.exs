@@ -49,6 +49,11 @@ defmodule Nous.PluginTest do
     def after_response(_agent, _response, ctx) do
       Context.merge_deps(ctx, %{full_plugin_after: true})
     end
+
+    @impl true
+    def after_run(_agent, _result, ctx) do
+      Context.merge_deps(ctx, %{full_plugin_after_run: true})
+    end
   end
 
   # A second plugin to test threading/composition
@@ -294,6 +299,32 @@ defmodule Nous.PluginTest do
     end
   end
 
+  describe "run_after_run/4" do
+    test "threads context through all plugins", %{agent: agent, ctx: ctx} do
+      result = %{output: "test"}
+
+      result_ctx = Plugin.run_after_run([FullPlugin], agent, result, ctx)
+
+      assert result_ctx.deps[:full_plugin_after_run] == true
+    end
+
+    test "skips plugins that do not implement after_run", %{agent: agent, ctx: ctx} do
+      result = %{output: "test"}
+
+      result_ctx = Plugin.run_after_run([MinimalPlugin, FullPlugin], agent, result, ctx)
+
+      assert result_ctx.deps[:full_plugin_after_run] == true
+    end
+
+    test "returns original context with empty plugins list", %{agent: agent, ctx: ctx} do
+      result = %{output: "test"}
+
+      result_ctx = Plugin.run_after_run([], agent, result, ctx)
+
+      assert result_ctx == ctx
+    end
+  end
+
   describe "all optional callbacks safely skipped" do
     test "MinimalPlugin works as a no-op for every hook", %{agent: agent, ctx: ctx} do
       plugins = [MinimalPlugin]
@@ -319,6 +350,11 @@ defmodule Nous.PluginTest do
       response = Message.assistant("test")
       ar_ctx = Plugin.run_after_response(plugins, agent, response, ctx)
       assert ar_ctx == ctx
+
+      # run_after_run
+      result = %{output: "test"}
+      ar_run_ctx = Plugin.run_after_run(plugins, agent, result, ctx)
+      assert ar_run_ctx == ctx
     end
   end
 end

@@ -60,7 +60,7 @@ defmodule Nous.Plugins.Memory do
 
   require Logger
 
-  alias Nous.Memory.{Search, Tools}
+  alias Nous.Memory.{Embedding, Entry, Search, Tools}
 
   @impl true
   def init(_agent, ctx) do
@@ -90,6 +90,12 @@ defmodule Nous.Plugins.Memory do
             |> Map.put_new(:decay_lambda, 0.001)
             |> Map.put_new(:default_search_scope, :agent)
             |> Map.put(:_inject_done, false)
+            |> Map.put_new(:auto_update_memory, false)
+            |> Map.put_new(:auto_update_every, 1)
+            |> Map.put_new(:reflection_max_tokens, 1000)
+            |> Map.put_new(:reflection_max_messages, 20)
+            |> Map.put_new(:reflection_max_memories, 50)
+            |> Map.put_new(:_run_count, 0)
 
           %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
 
@@ -145,9 +151,288 @@ defmodule Nous.Plugins.Memory do
     end
   end
 
+  @impl true
+  def after_run(agent, _result, ctx) do
+    config = ctx.deps[:memory_config] || %{}
+
+    if config[:auto_update_memory] == true && config[:store_state] != nil do
+      run_count = (config[:_run_count] || 0) + 1
+      auto_update_every = config[:auto_update_every] || 1
+
+      ctx =
+        if rem(run_count, auto_update_every) == 0 do
+          do_memory_reflection(agent, ctx, config)
+        else
+          ctx
+        end
+
+      # Always persist the updated run count
+      updated_config = Map.put(ctx.deps[:memory_config] || config, :_run_count, run_count)
+      %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
+    else
+      ctx
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
+
+  defp do_memory_reflection(agent, ctx, config) do
+    store_mod = config[:store]
+    store_state = config[:store_state]
+    max_messages = config[:reflection_max_messages] || 20
+    max_memories = config[:reflection_max_memories] || 50
+    max_tokens = config[:reflection_max_tokens] || 1000
+
+    # Determine model for reflection: explicit config, or fall back to agent's model
+    reflection_model =
+      config[:reflection_model] ||
+        "#{agent.model.provider}:#{agent.model.model}"
+
+    if reflection_model do
+      # 1. Format recent conversation messages (skip system messages)
+      conversation_text = format_conversation(ctx.messages, max_messages)
+
+      # 2. Fetch existing memories
+      scope = build_memory_scope(config)
+
+      existing_memories =
+        case store_mod.list(store_state, scope: scope, limit: max_memories) do
+          {:ok, entries} -> entries
+          _ -> []
+        end
+
+      memories_text = format_existing_memories(existing_memories)
+
+      # 3. Build reflection prompt and call LLM
+      prompt = build_reflection_prompt(conversation_text, memories_text)
+
+      case Nous.LLM.generate_text(reflection_model, prompt,
+             system: reflection_system_prompt(),
+             max_tokens: max_tokens,
+             temperature: 0.0
+           ) do
+        {:ok, response_text} ->
+          apply_reflection_operations(ctx, config, response_text)
+
+        {:error, reason} ->
+          Logger.warning("Memory auto-update reflection failed: #{inspect(reason)}")
+          ctx
+      end
+    else
+      ctx
+    end
+  end
+
+  defp format_conversation(messages, max_messages) do
+    messages
+    |> Enum.reject(fn msg -> msg.role == :system end)
+    |> Enum.take(-max_messages)
+    |> Enum.map(fn msg ->
+      role = msg.role |> to_string() |> String.capitalize()
+      content = if is_binary(msg.content), do: msg.content, else: inspect(msg.content)
+      "#{role}: #{content}"
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp format_existing_memories([]), do: "No existing memories."
+
+  defp format_existing_memories(entries) do
+    entries
+    |> Enum.map(fn entry ->
+      "[#{entry.id}] (#{entry.type}, importance: #{entry.importance}) #{entry.content}"
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp build_memory_scope(config) do
+    case config[:default_search_scope] do
+      :global -> :global
+      :session -> scope_from_config(config, [:agent_id, :session_id, :user_id])
+      :user -> scope_from_config(config, [:user_id])
+      _ -> scope_from_config(config, [:agent_id, :user_id])
+    end
+  end
+
+  defp reflection_system_prompt do
+    """
+    You are a memory management assistant. Analyze the conversation and existing memories, \
+    then output a JSON array of memory operations. Each operation is an object with these fields:
+
+    - "action": one of "remember", "update", or "forget"
+    - "content": the memory content (required for "remember" and "update")
+    - "type": one of "semantic", "episodic", "procedural" (default: "semantic")
+    - "importance": a float 0.0–1.0 (default: 0.5)
+    - "id": the memory ID (required for "update" and "forget")
+
+    Rules:
+    - Only output the JSON array, nothing else. No markdown fences.
+    - "remember" creates a new memory.
+    - "update" modifies an existing memory's content (provide the id).
+    - "forget" deletes an outdated or incorrect memory (provide the id).
+    - Be selective. Only store information worth remembering long-term.
+    - Prefer updating existing memories over creating duplicates.
+    - If there is nothing worth remembering, output an empty array: []
+    """
+  end
+
+  defp build_reflection_prompt(conversation_text, memories_text) do
+    """
+    ## Recent Conversation
+    #{conversation_text}
+
+    ## Existing Memories
+    #{memories_text}
+
+    Based on the conversation above, what memory operations should be performed? \
+    Output a JSON array of operations.
+    """
+  end
+
+  @doc false
+  def apply_reflection_operations(ctx, config, response_text) do
+    case parse_reflection_json(response_text) do
+      {:ok, operations} when is_list(operations) ->
+        Enum.reduce(operations, ctx, fn op, acc_ctx ->
+          apply_single_operation(acc_ctx, config, op)
+        end)
+
+      _ ->
+        Logger.warning("Memory auto-update: failed to parse reflection response")
+        ctx
+    end
+  end
+
+  defp parse_reflection_json(text) do
+    # Strip potential markdown fences
+    cleaned =
+      text
+      |> String.trim()
+      |> String.replace(~r/^```(?:json)?\s*/m, "")
+      |> String.replace(~r/\s*```$/m, "")
+      |> String.trim()
+
+    case JSON.decode(cleaned) do
+      {:ok, parsed} when is_list(parsed) -> {:ok, parsed}
+      {:ok, _} -> {:error, :not_an_array}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp apply_single_operation(ctx, config, %{"action" => "remember"} = op) do
+    store_mod = config[:store]
+    store_state = (ctx.deps[:memory_config] || config)[:store_state]
+    content = op["content"]
+
+    unless content do
+      ctx
+    else
+      embedding = maybe_embed(config, content)
+
+      entry =
+        Entry.new(%{
+          content: content,
+          type: parse_memory_type(op["type"]),
+          importance: op["importance"] || 0.5,
+          embedding: embedding,
+          agent_id: config[:agent_id],
+          session_id: config[:session_id],
+          user_id: config[:user_id],
+          namespace: config[:namespace]
+        })
+
+      case store_mod.store(store_state, entry) do
+        {:ok, new_state} ->
+          Logger.debug("Memory auto-update: remembered #{entry.id} — #{content}")
+          updated_config = Map.put(ctx.deps[:memory_config] || config, :store_state, new_state)
+          %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
+
+        {:error, reason} ->
+          Logger.warning("Memory auto-update: store failed: #{inspect(reason)}")
+          ctx
+      end
+    end
+  end
+
+  defp apply_single_operation(ctx, config, %{"action" => "update", "id" => id} = op)
+       when is_binary(id) do
+    store_mod = config[:store]
+    store_state = (ctx.deps[:memory_config] || config)[:store_state]
+    content = op["content"]
+
+    updates =
+      %{}
+      |> then(fn m -> if content, do: Map.put(m, :content, content), else: m end)
+      |> then(fn m ->
+        if op["importance"], do: Map.put(m, :importance, op["importance"]), else: m
+      end)
+      |> then(fn m ->
+        if op["type"], do: Map.put(m, :type, parse_memory_type(op["type"])), else: m
+      end)
+
+    # Re-embed if content changed
+    updates =
+      if content do
+        case maybe_embed(config, content) do
+          nil -> updates
+          emb -> Map.put(updates, :embedding, emb)
+        end
+      else
+        updates
+      end
+
+    case store_mod.update(store_state, id, updates) do
+      {:ok, new_state} ->
+        Logger.debug("Memory auto-update: updated #{id}")
+        updated_config = Map.put(ctx.deps[:memory_config] || config, :store_state, new_state)
+        %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
+
+      {:error, reason} ->
+        Logger.warning("Memory auto-update: update failed for #{id}: #{inspect(reason)}")
+        ctx
+    end
+  end
+
+  defp apply_single_operation(ctx, config, %{"action" => "forget", "id" => id})
+       when is_binary(id) do
+    store_mod = config[:store]
+    store_state = (ctx.deps[:memory_config] || config)[:store_state]
+
+    case store_mod.delete(store_state, id) do
+      {:ok, new_state} ->
+        Logger.debug("Memory auto-update: forgot #{id}")
+        updated_config = Map.put(ctx.deps[:memory_config] || config, :store_state, new_state)
+        %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
+
+      {:error, reason} ->
+        Logger.warning("Memory auto-update: forget failed for #{id}: #{inspect(reason)}")
+        ctx
+    end
+  end
+
+  defp apply_single_operation(ctx, _config, op) do
+    Logger.warning("Memory auto-update: unrecognized operation: #{inspect(op)}")
+    ctx
+  end
+
+  defp maybe_embed(config, content) do
+    embedding_provider = config[:embedding]
+    embedding_opts = config[:embedding_opts] || []
+
+    if embedding_provider do
+      case Embedding.embed(embedding_provider, content, embedding_opts) do
+        {:ok, emb} -> emb
+        {:error, _} -> nil
+      end
+    end
+  end
+
+  defp parse_memory_type("semantic"), do: :semantic
+  defp parse_memory_type("episodic"), do: :episodic
+  defp parse_memory_type("procedural"), do: :procedural
+  defp parse_memory_type(_), do: :semantic
 
   defp should_inject_this_iteration?(config) do
     case config[:inject_strategy] do

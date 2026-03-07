@@ -111,6 +111,15 @@ defmodule Nous.AgentRunner do
         case behaviour.extract_output(agent, final_ctx) do
           {:ok, output} ->
             agent_result = build_result(agent, final_ctx, output)
+
+            # Run after_run plugin hooks
+            updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
+
+            agent_result =
+              if updated_ctx != final_ctx,
+                do: build_result(agent, updated_ctx, output),
+                else: agent_result
+
             duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
             Logger.info("""
@@ -195,7 +204,15 @@ defmodule Nous.AgentRunner do
       {:ok, final_ctx} ->
         case behaviour.extract_output(agent, final_ctx) do
           {:ok, output} ->
-            {:ok, build_result(agent, final_ctx, output)}
+            agent_result = build_result(agent, final_ctx, output)
+            updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
+
+            agent_result =
+              if updated_ctx != final_ctx,
+                do: build_result(agent, updated_ctx, output),
+                else: agent_result
+
+            {:ok, agent_result}
 
           {:error, %Errors.ValidationError{} = err} ->
             max_retries = Keyword.get(agent.structured_output, :max_retries, 0)
