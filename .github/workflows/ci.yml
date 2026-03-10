@@ -12,7 +12,7 @@ permissions:
 
 env:
   MIX_ENV: test
-  ELIXIR_VERSION: "1.17.3"
+  ELIXIR_VERSION: "1.18.3"
   OTP_VERSION: "27.2"
 
 jobs:
@@ -96,9 +96,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            elixir: "1.17.3"
-            otp: "27.2"
           - os: ubuntu-latest
             elixir: "1.18.3"
             otp: "27.2"
