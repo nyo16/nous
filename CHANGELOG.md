@@ -15,7 +15,7 @@ All notable changes to this project will be documented in this file.
 - `Nous.Providers.VertexAI.endpoint/3` now accepts an optional model name to select the correct API version.
 - Debug logging for Vertex AI request URLs.
 
-## [0.13.2] - 2026-03-07
+## [0.12.6] - 2026-03-07
 
 ### Added
 
@@ -25,7 +25,7 @@ All notable changes to this project will be documented in this file.
   - New config options: `:auto_update_memory`, `:auto_update_every`, `:reflection_model`, `:reflection_max_tokens`, `:reflection_max_messages`, `:reflection_max_memories`
   - New example: `examples/memory/auto_update.exs`
 
-## [0.13.1] - 2026-03-06
+## [0.12.5] - 2026-03-06
 
 ### Added
 
