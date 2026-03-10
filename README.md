@@ -160,14 +160,30 @@ children = [
 ]
 ```
 
-**4. Use it:**
+**4. Configure Nous to use Goth:**
 
 ```elixir
+# Option A: Via app config (recommended for production)
+# config/config.exs
+config :nous, :vertex_ai, goth: MyApp.Goth
+
+# Then just use it — no extra options needed:
+agent = Nous.new("vertex_ai:gemini-2.0-flash")
+{:ok, result} = Nous.run(agent, "Hello from Vertex AI!")
+```
+
+```elixir
+# Option B: Per-model (useful for multiple projects/regions)
 agent = Nous.new("vertex_ai:gemini-2.0-flash",
   default_settings: %{goth: MyApp.Goth}
 )
+```
 
-{:ok, result} = Nous.run(agent, "Hello from Vertex AI!")
+```elixir
+# Option C: Direct access token (no Goth needed, e.g. for quick testing)
+export VERTEX_AI_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+
+agent = Nous.new("vertex_ai:gemini-2.0-flash")
 ```
 
 See [`examples/providers/vertex_ai_goth_test.exs`](examples/providers/vertex_ai_goth_test.exs) for a runnable example.

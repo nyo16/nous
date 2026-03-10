@@ -17,6 +17,7 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - **Vertex AI provider**: `Nous.Providers.VertexAI` for accessing Gemini models through Google Cloud Vertex AI. Supports enterprise features (VPC-SC, CMEK, regional endpoints, IAM).
+  - Three auth modes: app config Goth (`config :nous, :vertex_ai, goth: MyApp.Goth`), per-model Goth (`default_settings: %{goth: MyApp.Goth}`), or direct access token (`api_key` / `VERTEX_AI_ACCESS_TOKEN`)
   - Bearer token auth via `api_key` option, `VERTEX_AI_ACCESS_TOKEN` env var, or Goth integration
   - Goth integration (`{:goth, "~> 1.4", optional: true}`) for automatic service account token management — reuse existing Goth processes from PubSub, etc.
   - URL auto-construction from `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_REGION` env vars
