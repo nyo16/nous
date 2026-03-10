@@ -5,7 +5,7 @@
 # Prerequisites:
 #   export GOOGLE_CREDENTIALS='{"type":"service_account","project_id":"...","private_key":"...",...}'
 #   export GOOGLE_CLOUD_PROJECT="your-project-id"
-#   export GOOGLE_CLOUD_REGION="us-central1"  # optional
+#   export GOOGLE_CLOUD_REGION="europe-west3"  # optional, defaults to europe-west3 (Frankfurt)
 #
 # Run:
 #   mix run test_vertex_ai.exs
@@ -25,7 +25,7 @@ end
 
 IO.puts("=== Vertex AI Test with Service Account ===\n")
 IO.puts("Project: #{project}")
-IO.puts("Region: #{System.get_env("GOOGLE_CLOUD_REGION", "us-central1")}\n")
+IO.puts("Region: #{System.get_env("GOOGLE_CLOUD_REGION", "europe-west3")}\n")
 
 # Start Goth with service account credentials from env var
 credentials = Jason.decode!(credentials_json)
