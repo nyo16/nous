@@ -96,7 +96,7 @@ defmodule Nous.Providers.VertexAI do
     # Reuse Gemini message format — Vertex AI uses the same content structure
     {system_prompt, contents} = Nous.Messages.to_provider_format(messages, :gemini)
 
-    params = %{"contents" => contents}
+    params = %{"model" => model.model, "contents" => contents}
 
     params =
       if system_prompt do
@@ -132,10 +132,12 @@ defmodule Nous.Providers.VertexAI do
     model = Map.get(params, "model") || Map.get(params, :model) || "gemini-2.0-flash"
 
     with {:ok, token} <- resolve_token(opts),
-         {:ok, url_base} <- resolve_base_url(opts) do
+         {:ok, url_base} <- resolve_base_url(opts, model) do
       url = build_url(url_base, model, :generate)
       headers = build_headers(token)
       timeout = Keyword.get(opts, :timeout, @default_timeout)
+
+      Logger.debug("Vertex AI chat request: url=#{url}, model=#{model}")
 
       # Remove model from params (it's in the URL)
       body = params |> Map.delete("model") |> Map.delete(:model)
@@ -149,11 +151,13 @@ defmodule Nous.Providers.VertexAI do
     model = Map.get(params, "model") || Map.get(params, :model) || "gemini-2.0-flash"
 
     with {:ok, token} <- resolve_token(opts),
-         {:ok, url_base} <- resolve_base_url(opts) do
+         {:ok, url_base} <- resolve_base_url(opts, model) do
       url = build_url(url_base, model, :stream)
       headers = build_headers(token)
       timeout = Keyword.get(opts, :timeout, @streaming_timeout)
       finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
+
+      Logger.debug("Vertex AI stream request: url=#{url}, model=#{model}")
 
       # Remove model from params (it's in the URL)
       body = params |> Map.delete("model") |> Map.delete(:model)
@@ -166,23 +170,51 @@ defmodule Nous.Providers.VertexAI do
   @doc """
   Build a Vertex AI endpoint URL from project ID and region.
 
+  Uses `v1beta1` API version for preview/experimental models and `v1` for stable models.
+  If no model name is provided, defaults to `v1`.
+
   ## Examples
 
       iex> Nous.Providers.VertexAI.endpoint("my-project", "us-central1")
       "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1"
 
+      iex> Nous.Providers.VertexAI.endpoint("my-project", "us-central1", "gemini-2.0-flash")
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1"
+
+      iex> Nous.Providers.VertexAI.endpoint("my-project", "europe-west1", "gemini-3.1-pro-preview")
+      "https://europe-west1-aiplatform.googleapis.com/v1beta1/projects/my-project/locations/europe-west1"
+
   """
-  @spec endpoint(String.t(), String.t()) :: String.t()
-  def endpoint(project_id, region \\ "us-central1") do
-    "https://#{region}-aiplatform.googleapis.com/v1/projects/#{project_id}/locations/#{region}"
+  @spec endpoint(String.t(), String.t(), String.t() | nil) :: String.t()
+  def endpoint(project_id, region \\ "us-central1", model \\ nil) do
+    api_version = api_version_for_model(model)
+
+    "https://#{region}-aiplatform.googleapis.com/#{api_version}/projects/#{project_id}/locations/#{region}"
   end
 
-  # Resolve the base URL from options, app config, or env vars
-  defp resolve_base_url(opts) do
+  @doc """
+  Returns the appropriate API version for a model name.
+
+  Preview and experimental models use `v1beta1`, stable models use `v1`.
+  """
+  @spec api_version_for_model(String.t() | nil) :: String.t()
+  def api_version_for_model(nil), do: "v1"
+
+  def api_version_for_model(model) when is_binary(model) do
+    if String.contains?(model, "preview") or String.contains?(model, "experimental") do
+      "v1beta1"
+    else
+      "v1"
+    end
+  end
+
+  # Resolve the base URL from options, app config, or env vars.
+  # When building from env vars, uses the model name to determine the API version.
+  defp resolve_base_url(opts, model) do
     url =
       Keyword.get(opts, :base_url) ||
         get_in(Application.get_env(:nous, :vertex_ai, []), [:base_url]) ||
-        build_default_base_url()
+        build_default_base_url(model)
 
     if url && url != "" do
       {:ok, url}
@@ -216,12 +248,12 @@ defmodule Nous.Providers.VertexAI do
   end
 
   # Build default base URL from environment variables
-  defp build_default_base_url do
+  defp build_default_base_url(model) do
     project = System.get_env("GOOGLE_CLOUD_PROJECT") || System.get_env("GCLOUD_PROJECT")
     region = System.get_env("GOOGLE_CLOUD_REGION") || "us-central1"
 
     if project do
-      endpoint(project, region)
+      endpoint(project, region, model)
     else
       nil
     end
