@@ -38,7 +38,7 @@ IO.puts("Goth started successfully.\n")
 IO.puts("--- Test 1: Non-streaming ---")
 
 agent =
-  Nous.new("vertex_ai:gemini-2.0-flash",
+  Nous.new("vertex_ai:gemini-3.1-pro",
     instructions: "You are a helpful assistant. Be concise.",
     default_settings: %{goth: Nous.TestGoth}
   )
