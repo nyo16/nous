@@ -8,7 +8,7 @@ defmodule Nous.MixProject do
     [
       app: :nous,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       docs: docs(),
