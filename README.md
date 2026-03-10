@@ -92,6 +92,8 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 | LM Studio | `lmstudio:qwen3` | ✅ |
 | OpenAI | `openai:gpt-4` | ✅ |
 | Anthropic | `anthropic:claude-sonnet-4-5-20250929` | ✅ |
+| Google Gemini | `gemini:gemini-2.0-flash` | ✅ |
+| Google Vertex AI | `vertex_ai:gemini-2.0-flash` | ✅ |
 | Groq | `groq:llama-3.1-70b-versatile` | ✅ |
 | Ollama | `ollama:llama2` | ✅ |
 | OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | ✅ |
@@ -106,8 +108,85 @@ All HTTP providers use pure Elixir HTTP clients (Req + Finch). LlamaCpp runs in-
 agent = Nous.new("lmstudio:qwen3")                  # Local (free)
 agent = Nous.new("openai:gpt-4")                    # OpenAI
 agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")   # Anthropic
+agent = Nous.new("vertex_ai:gemini-2.0-flash")      # Google Vertex AI
 agent = Nous.new("llamacpp:local", llamacpp_model: llm)  # Local NIF
 ```
+
+### Google Vertex AI Setup
+
+Vertex AI provides enterprise access to Gemini models. To use it with a service account:
+
+**1. Create a service account:**
+
+```bash
+export PROJECT_ID="your-project-id"
+
+# Enable Vertex AI API
+gcloud services enable aiplatform.googleapis.com --project=$PROJECT_ID
+
+# Create service account
+gcloud iam service-accounts create nous-vertex-ai \
+  --display-name="Nous Vertex AI" \
+  --project=$PROJECT_ID
+
+# Grant permission
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:nous-vertex-ai@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# Download key and store as env var
+gcloud iam service-accounts keys create /tmp/sa.json \
+  --iam-account="nous-vertex-ai@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# Set the env vars
+export GOOGLE_CREDENTIALS="$(cat /tmp/sa.json)"
+export GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
+export GOOGLE_CLOUD_REGION="us-central1"
+```
+
+**2. Add Goth to your deps** (handles token refresh from the service account):
+
+```elixir
+{:goth, "~> 1.4"}
+```
+
+**3. Start Goth in your supervision tree:**
+
+```elixir
+credentials = System.get_env("GOOGLE_CREDENTIALS") |> Jason.decode!()
+
+children = [
+  {Goth, name: MyApp.Goth, source: {:service_account, credentials}}
+]
+```
+
+**4. Configure Nous to use Goth:**
+
+```elixir
+# Option A: Via app config (recommended for production)
+# config/config.exs
+config :nous, :vertex_ai, goth: MyApp.Goth
+
+# Then just use it — no extra options needed:
+agent = Nous.new("vertex_ai:gemini-2.0-flash")
+{:ok, result} = Nous.run(agent, "Hello from Vertex AI!")
+```
+
+```elixir
+# Option B: Per-model (useful for multiple projects/regions)
+agent = Nous.new("vertex_ai:gemini-2.0-flash",
+  default_settings: %{goth: MyApp.Goth}
+)
+```
+
+```elixir
+# Option C: Direct access token (no Goth needed, e.g. for quick testing)
+export VERTEX_AI_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+
+agent = Nous.new("vertex_ai:gemini-2.0-flash")
+```
+
+See [`examples/providers/vertex_ai_goth_test.exs`](examples/providers/vertex_ai_goth_test.exs) for a runnable example.
 
 ## Features
 

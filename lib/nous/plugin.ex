@@ -36,9 +36,15 @@ defmodule Nous.Plugin do
 
   ## Callback Execution Order
 
-  Plugins are executed in list order. For `before_request`, the context
-  flows through each plugin. For `after_response`, the context is passed
-  through each plugin in order.
+  Plugins are executed in list order. The context flows through each plugin
+  sequentially for all hooks:
+
+  1. `init/2` — once at run start
+  2. `system_prompt/2` — once, fragments joined into system message
+  3. `tools/2` — once per iteration, tools collected
+  4. `before_request/3` — before each LLM call
+  5. `after_response/3` — after each LLM response
+  6. `after_run/3` — once after the entire run completes (post-loop)
 
   ## Built-in Plugins
 
@@ -96,7 +102,23 @@ defmodule Nous.Plugin do
             ) ::
               Context.t()
 
-  @optional_callbacks [init: 2, tools: 2, system_prompt: 2, before_request: 3, after_response: 3]
+  @doc """
+  Post-process after the entire agent run completes.
+
+  Receives the agent, the final result map, and the final context.
+  Return the updated context. Use this for end-of-run housekeeping
+  like auto-updating memory.
+  """
+  @callback after_run(agent :: Nous.Agent.t(), result :: map(), ctx :: Context.t()) :: Context.t()
+
+  @optional_callbacks [
+    init: 2,
+    tools: 2,
+    system_prompt: 2,
+    before_request: 3,
+    after_response: 3,
+    after_run: 3
+  ]
 
   # Plugin execution helpers
 
@@ -176,6 +198,20 @@ defmodule Nous.Plugin do
     Enum.reduce(plugins, ctx, fn plugin, acc_ctx ->
       if exports?(plugin, :after_response, 3) do
         plugin.after_response(agent, response, acc_ctx)
+      else
+        acc_ctx
+      end
+    end)
+  end
+
+  @doc """
+  Run `after_run/3` across all plugins, threading context.
+  """
+  @spec run_after_run([module()], Nous.Agent.t(), map(), Context.t()) :: Context.t()
+  def run_after_run(plugins, agent, result, ctx) do
+    Enum.reduce(plugins, ctx, fn plugin, acc_ctx ->
+      if exports?(plugin, :after_run, 3) do
+        plugin.after_run(agent, result, acc_ctx)
       else
         acc_ctx
       end

@@ -436,6 +436,7 @@ defmodule Nous.Provider do
         case @provider_id do
           :anthropic -> Nous.StreamNormalizer.Anthropic
           :gemini -> Nous.StreamNormalizer.Gemini
+          :vertex_ai -> Nous.StreamNormalizer.Gemini
           _ -> Nous.StreamNormalizer.OpenAI
         end
       end

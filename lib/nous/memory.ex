@@ -66,7 +66,9 @@ defmodule Nous.Memory do
          |> Map.put_new(:inject_min_score, 0.3)
          |> Map.put_new(:decay_lambda, 0.001)
          |> Map.put_new(:default_search_scope, :agent)
-         |> Map.put_new(:scoring_weights, relevance: 0.5, importance: 0.3, recency: 0.2)}
+         |> Map.put_new(:scoring_weights, relevance: 0.5, importance: 0.3, recency: 0.2)
+         |> Map.put_new(:auto_update_memory, false)
+         |> Map.put_new(:auto_update_every, 1)}
     end
   end
 

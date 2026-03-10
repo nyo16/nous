@@ -49,6 +49,16 @@ export ANTHROPIC_API_KEY="sk-ant-your-key"
 export OPENAI_API_KEY="sk-your-key"
 ```
 
+**Google Vertex AI:**
+```bash
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export GOOGLE_CLOUD_REGION="us-central1"  # optional, defaults to us-central1
+# Option A: Use gcloud access token
+export VERTEX_AI_ACCESS_TOKEN="$(gcloud auth print-access-token)"
+# Option B: Use Goth with service account (recommended for production)
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
+```
+
 **Test cloud setup:**
 ```bash
 mix run -e "
