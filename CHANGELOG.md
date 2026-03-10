@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.7] - 2026-03-10
+
+### Fixed
+
+- **Vertex AI model routing**: Fixed `build_request_params/3` not including the `"model"` key in the params map, causing `chat/2` and `chat_stream/2` to always fall back to `"gemini-2.0-flash"` regardless of the requested model.
+- **Vertex AI 404 on preview models**: Use `v1beta1` API version for preview and experimental models (e.g., `gemini-3.1-pro-preview`). The `v1` endpoint returns 404 for these models.
+
+### Added
+
+- `Nous.Providers.VertexAI.api_version_for_model/1` — returns `"v1beta1"` for preview/experimental models, `"v1"` for stable models.
+- `Nous.Providers.VertexAI.endpoint/3` now accepts an optional model name to select the correct API version.
+- Debug logging for Vertex AI request URLs.
+
 ## [0.13.2] - 2026-03-07
 
 ### Added
