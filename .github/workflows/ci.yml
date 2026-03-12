@@ -11,6 +11,7 @@ permissions:
   contents: read
 
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   MIX_ENV: test
   ELIXIR_VERSION: "1.18.3"
   OTP_VERSION: "27.2"
