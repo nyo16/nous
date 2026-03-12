@@ -5,7 +5,7 @@
 # Prerequisites:
 #   export GOOGLE_CREDENTIALS='{"type":"service_account","project_id":"...","private_key":"...",...}'
 #   export GOOGLE_CLOUD_PROJECT="your-project-id"
-#   export GOOGLE_CLOUD_REGION="europe-west1"  # optional, defaults to europe-west1 (Frankfurt)
+#   export GOOGLE_CLOUD_REGION="us-central1"  # optional, defaults to us-central1
 #
 # Run:
 #   mix run test_vertex_ai.exs
@@ -25,7 +25,7 @@ end
 
 IO.puts("=== Vertex AI Test with Service Account ===\n")
 IO.puts("Project: #{project}")
-IO.puts("Region: #{System.get_env("GOOGLE_CLOUD_REGION", "europe-west1")}\n")
+IO.puts("Region: #{System.get_env("GOOGLE_CLOUD_REGION", "us-central1")}\n")
 
 # Start Goth with service account credentials from env var
 credentials = Jason.decode!(credentials_json)
@@ -38,7 +38,7 @@ IO.puts("Goth started successfully.\n")
 IO.puts("--- Test 1: Non-streaming ---")
 
 agent =
-  Nous.new("vertex_ai:gemini-3.1-pro",
+  Nous.new("vertex_ai:gemini-2.0-flash",
     instructions: "You are a helpful assistant. Be concise.",
     default_settings: %{goth: Nous.TestGoth}
   )
