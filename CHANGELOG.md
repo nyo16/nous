@@ -2,7 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.13.2] - 2026-03-07
+## [0.12.8] - 2026-03-12
+
+### Fixed
+
+- **Vertex AI v1/v1beta1 bug**: `Model.parse("vertex_ai:gemini-2.5-pro-preview-06-05")` with `GOOGLE_CLOUD_PROJECT` set was storing a hardcoded `v1` URL in `model.base_url`, causing the provider's `v1beta1` selection logic to be bypassed. Preview models now correctly use `v1beta1` at request time.
+
+### Added
+
+- **Vertex AI input validation**: Project ID and region from environment variables are now validated with helpful error messages instead of producing opaque DNS/HTTP errors.
+- **`GOOGLE_CLOUD_LOCATION` support**: Added as a fallback for `GOOGLE_CLOUD_REGION`, consistent with other Google Cloud libraries and tooling.
+- Multi-region example script: `examples/providers/vertex_ai_multi_region.exs`
+
+## [0.12.7] - 2026-03-10
+
+### Fixed
+
+- **Vertex AI model routing**: Fixed `build_request_params/3` not including the `"model"` key in the params map, causing `chat/2` and `chat_stream/2` to always fall back to `"gemini-2.0-flash"` regardless of the requested model.
+- **Vertex AI 404 on preview models**: Use `v1beta1` API version for preview and experimental models (e.g., `gemini-3.1-pro-preview`). The `v1` endpoint returns 404 for these models.
+
+### Added
+
+- `Nous.Providers.VertexAI.api_version_for_model/1` — returns `"v1beta1"` for preview/experimental models, `"v1"` for stable models.
+- `Nous.Providers.VertexAI.endpoint/3` now accepts an optional model name to select the correct API version.
+- Debug logging for Vertex AI request URLs.
+
+## [0.12.6] - 2026-03-07
 
 ### Added
 
@@ -12,7 +37,7 @@ All notable changes to this project will be documented in this file.
   - New config options: `:auto_update_memory`, `:auto_update_every`, `:reflection_model`, `:reflection_max_tokens`, `:reflection_max_messages`, `:reflection_max_memories`
   - New example: `examples/memory/auto_update.exs`
 
-## [0.13.1] - 2026-03-06
+## [0.12.5] - 2026-03-06
 
 ### Added
 

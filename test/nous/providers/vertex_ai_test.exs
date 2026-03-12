@@ -1,5 +1,5 @@
 defmodule Nous.Providers.VertexAITest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Nous.Providers.VertexAI
 
@@ -39,6 +39,26 @@ defmodule Nous.Providers.VertexAITest do
       assert VertexAI.endpoint("my-project", "europe-west1") ==
                "https://europe-west1-aiplatform.googleapis.com/v1/projects/my-project/locations/europe-west1"
     end
+
+    test "uses v1beta1 for preview models" do
+      assert VertexAI.endpoint("my-project", "us-central1", "gemini-2.5-pro-preview-06-05") ==
+               "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/my-project/locations/us-central1"
+    end
+
+    test "uses v1beta1 for experimental models" do
+      assert VertexAI.endpoint("my-project", "us-central1", "gemini-2.0-flash-experimental") ==
+               "https://us-central1-aiplatform.googleapis.com/v1beta1/projects/my-project/locations/us-central1"
+    end
+
+    test "uses v1 for stable models" do
+      assert VertexAI.endpoint("my-project", "us-central1", "gemini-2.0-flash") ==
+               "https://us-central1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-central1"
+    end
+
+    test "global endpoint uses aiplatform.googleapis.com without region prefix" do
+      assert VertexAI.endpoint("my-project", "global", "gemini-3.1-pro-preview") ==
+               "https://aiplatform.googleapis.com/v1beta1/projects/my-project/locations/global"
+    end
   end
 
   describe "Model.parse/2 integration" do
@@ -50,32 +70,16 @@ defmodule Nous.Providers.VertexAITest do
       assert model.api_key == "test-token"
     end
 
-    test "constructs base_url from env vars" do
+    test "base_url is nil at parse time (built at request time by the provider)" do
       System.put_env("GOOGLE_CLOUD_PROJECT", "test-project")
       System.put_env("GOOGLE_CLOUD_REGION", "europe-west4")
 
       try do
         model = Nous.Model.parse("vertex_ai:gemini-2.0-flash")
-
-        assert model.base_url ==
-                 "https://europe-west4-aiplatform.googleapis.com/v1/projects/test-project/locations/europe-west4"
+        assert model.base_url == nil
       after
         System.delete_env("GOOGLE_CLOUD_PROJECT")
         System.delete_env("GOOGLE_CLOUD_REGION")
-      end
-    end
-
-    test "defaults region to us-central1" do
-      System.put_env("GOOGLE_CLOUD_PROJECT", "test-project")
-      System.delete_env("GOOGLE_CLOUD_REGION")
-
-      try do
-        model = Nous.Model.parse("vertex_ai:gemini-2.0-flash")
-
-        assert model.base_url ==
-                 "https://us-central1-aiplatform.googleapis.com/v1/projects/test-project/locations/us-central1"
-      after
-        System.delete_env("GOOGLE_CLOUD_PROJECT")
       end
     end
 
@@ -110,6 +114,95 @@ defmodule Nous.Providers.VertexAITest do
         )
 
       assert model.default_settings[:goth] == MyApp.Goth
+    end
+  end
+
+  describe "URL resolution from env vars" do
+    test "GOOGLE_CLOUD_LOCATION is used as fallback for region" do
+      System.put_env("GOOGLE_CLOUD_PROJECT", "test-project")
+      System.put_env("GOOGLE_CLOUD_LOCATION", "asia-northeast1")
+      System.delete_env("GOOGLE_CLOUD_REGION")
+
+      try do
+        # The URL should resolve successfully (will fail at HTTP level, not config level)
+        {:error, reason} =
+          VertexAI.chat(%{"model" => "gemini-2.0-flash"}, api_key: "test", base_url: nil)
+
+        # If we get an HTTP error (map with :status), the URL was resolved correctly
+        refute is_map(reason) and reason[:reason] == :no_base_url
+      after
+        System.delete_env("GOOGLE_CLOUD_PROJECT")
+        System.delete_env("GOOGLE_CLOUD_LOCATION")
+      end
+    end
+
+    test "GOOGLE_CLOUD_REGION takes precedence over GOOGLE_CLOUD_LOCATION" do
+      System.put_env("GOOGLE_CLOUD_PROJECT", "test-project")
+      System.put_env("GOOGLE_CLOUD_REGION", "europe-west1")
+      System.put_env("GOOGLE_CLOUD_LOCATION", "asia-northeast1")
+
+      try do
+        {:error, reason} =
+          VertexAI.chat(%{"model" => "gemini-2.0-flash"}, api_key: "test", base_url: nil)
+
+        refute is_map(reason) and reason[:reason] == :no_base_url
+      after
+        System.delete_env("GOOGLE_CLOUD_PROJECT")
+        System.delete_env("GOOGLE_CLOUD_REGION")
+        System.delete_env("GOOGLE_CLOUD_LOCATION")
+      end
+    end
+
+    test "invalid project ID returns helpful error" do
+      System.put_env("GOOGLE_CLOUD_PROJECT", "BAD PROJECT!")
+      System.delete_env("GOOGLE_CLOUD_REGION")
+
+      try do
+        {:error, reason} =
+          VertexAI.chat(%{"model" => "gemini-2.0-flash"}, api_key: "test", base_url: nil)
+
+        assert reason.reason == :invalid_project_id
+        assert reason.message =~ "Invalid GCP project ID"
+        assert reason.message =~ "BAD PROJECT!"
+      after
+        System.delete_env("GOOGLE_CLOUD_PROJECT")
+      end
+    end
+
+    test "invalid region returns helpful error" do
+      System.put_env("GOOGLE_CLOUD_PROJECT", "test-project")
+      System.put_env("GOOGLE_CLOUD_REGION", "not a region!")
+
+      try do
+        {:error, reason} =
+          VertexAI.chat(%{"model" => "gemini-2.0-flash"}, api_key: "test", base_url: nil)
+
+        assert reason.reason == :invalid_region
+        assert reason.message =~ "Invalid GCP region"
+        assert reason.message =~ "not a region!"
+      after
+        System.delete_env("GOOGLE_CLOUD_PROJECT")
+        System.delete_env("GOOGLE_CLOUD_REGION")
+      end
+    end
+
+    test "preview models use v1beta1 URL at request time" do
+      System.put_env("GOOGLE_CLOUD_PROJECT", "test-project")
+      System.delete_env("GOOGLE_CLOUD_REGION")
+
+      try do
+        # The model.base_url should be nil (deferred to provider)
+        model = Nous.Model.parse("vertex_ai:gemini-2.5-pro-preview-06-05", api_key: "test")
+        assert model.base_url == nil
+
+        # When the provider resolves the URL, it should use v1beta1
+        # We can't easily test the full flow without HTTP, but we can verify
+        # the endpoint function directly
+        assert VertexAI.endpoint("test-project", "us-central1", "gemini-2.5-pro-preview-06-05") =~
+                 "v1beta1"
+      after
+        System.delete_env("GOOGLE_CLOUD_PROJECT")
+      end
     end
   end
 

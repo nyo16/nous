@@ -206,16 +206,8 @@ defmodule Nous.Model do
   defp default_base_url(:anthropic), do: "https://api.anthropic.com"
   defp default_base_url(:gemini), do: "https://generativelanguage.googleapis.com/v1beta"
 
-  defp default_base_url(:vertex_ai) do
-    project = System.get_env("GOOGLE_CLOUD_PROJECT") || System.get_env("GCLOUD_PROJECT")
-    region = System.get_env("GOOGLE_CLOUD_REGION") || "us-central1"
-
-    if project do
-      "https://#{region}-aiplatform.googleapis.com/v1/projects/#{project}/locations/#{region}"
-    else
-      nil
-    end
-  end
+  # Vertex AI URL is built at request time by the provider (with proper v1/v1beta1 selection)
+  defp default_base_url(:vertex_ai), do: nil
 
   defp default_base_url(:groq), do: "https://api.groq.com/openai/v1"
   defp default_base_url(:ollama), do: "http://localhost:11434/v1"
