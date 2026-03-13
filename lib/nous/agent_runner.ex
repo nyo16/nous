@@ -418,102 +418,107 @@ defmodule Nous.AgentRunner do
       # Run plugin before_request hooks
       {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
 
-      # Build messages via behaviour
-      messages = behaviour.build_messages(agent, ctx)
+      # If a plugin (e.g. InputGuard) halted execution, skip the LLM call
+      if ctx.needs_response do
+        # Build messages via behaviour
+        messages = behaviour.build_messages(agent, ctx)
 
-      # Add tools to model settings if any
-      model_settings =
-        if Enum.empty?(all_tools) do
-          agent.model_settings
-        else
-          Logger.debug(
-            "Converting #{length(all_tools)} tools for provider: #{agent.model.provider}"
-          )
+        # Add tools to model settings if any
+        model_settings =
+          if Enum.empty?(all_tools) do
+            agent.model_settings
+          else
+            Logger.debug(
+              "Converting #{length(all_tools)} tools for provider: #{agent.model.provider}"
+            )
 
-          tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
-          Map.put(agent.model_settings, :tools, tool_schemas)
-        end
-
-      # Inject structured output settings
-      model_settings =
-        if agent.output_type != :string do
-          inject_structured_output_settings(agent, model_settings, all_tools)
-        else
-          model_settings
-        end
-
-      # Apply before_request callback if implemented
-      model_settings =
-        Behaviour.call(
-          behaviour,
-          :before_request,
-          [agent, ctx, Keyword.new(model_settings)],
-          Keyword.new(model_settings)
-        )
-        |> Map.new()
-
-      # Make model request
-      Logger.debug(
-        "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
-      )
-
-      case get_dispatcher().request(agent.model, messages, model_settings) do
-        {:ok, response} ->
-          # Update usage
-          usage_update = response.metadata.usage || %{}
-          ctx = Context.add_usage(ctx, usage_update)
-          ctx = Context.increment_iteration(ctx)
-
-          # Get total tokens safely from struct or map
-          tokens_added =
-            case usage_update do
-              %{total_tokens: t} when is_integer(t) -> t
-              _ -> 0
-            end
-
-          Logger.debug(
-            "Model response received (tokens: +#{tokens_added}, total: #{ctx.usage.total_tokens})"
-          )
-
-          # Execute callback
-          Callbacks.execute(ctx, :on_llm_new_message, response)
-
-          # Run plugin after_response hooks
-          ctx = Plugin.run_after_response(agent.plugins, agent, response, ctx)
-
-          # Process response via behaviour - this handles tool calls and updates needs_response
-          ctx = behaviour.process_response(agent, response, ctx)
-
-          # Check if we need to handle tool calls (behaviour may have set this up)
-          ctx =
-            if Message.has_tool_calls?(response) do
-              handle_tool_calls(agent, behaviour, ctx, response, all_tools)
-            else
-              ctx
-            end
-
-          # Continue loop
-          execute_loop(agent, behaviour, ctx)
-
-        {:error, reason} ->
-          Logger.error("""
-          Model request failed in iteration #{ctx.iteration + 1}
-            Agent: #{agent.name}
-            Model: #{agent.model.provider}:#{agent.model.model}
-            Reason: #{inspect(reason)}
-          """)
-
-          # Try error handler if implemented
-          case Behaviour.call(behaviour, :handle_error, [agent, reason, ctx], {:error, reason}) do
-            {:retry, new_ctx} ->
-              execute_loop(agent, behaviour, new_ctx)
-
-            {:continue, new_ctx} ->
-              execute_loop(agent, behaviour, new_ctx)
-
-            {:error, _} = err ->
-              err
+            tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
+            Map.put(agent.model_settings, :tools, tool_schemas)
           end
+
+        # Inject structured output settings
+        model_settings =
+          if agent.output_type != :string do
+            inject_structured_output_settings(agent, model_settings, all_tools)
+          else
+            model_settings
+          end
+
+        # Apply before_request callback if implemented
+        model_settings =
+          Behaviour.call(
+            behaviour,
+            :before_request,
+            [agent, ctx, Keyword.new(model_settings)],
+            Keyword.new(model_settings)
+          )
+          |> Map.new()
+
+        # Make model request
+        Logger.debug(
+          "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
+        )
+
+        case get_dispatcher().request(agent.model, messages, model_settings) do
+          {:ok, response} ->
+            # Update usage
+            usage_update = response.metadata.usage || %{}
+            ctx = Context.add_usage(ctx, usage_update)
+            ctx = Context.increment_iteration(ctx)
+
+            # Get total tokens safely from struct or map
+            tokens_added =
+              case usage_update do
+                %{total_tokens: t} when is_integer(t) -> t
+                _ -> 0
+              end
+
+            Logger.debug(
+              "Model response received (tokens: +#{tokens_added}, total: #{ctx.usage.total_tokens})"
+            )
+
+            # Execute callback
+            Callbacks.execute(ctx, :on_llm_new_message, response)
+
+            # Run plugin after_response hooks
+            ctx = Plugin.run_after_response(agent.plugins, agent, response, ctx)
+
+            # Process response via behaviour - this handles tool calls and updates needs_response
+            ctx = behaviour.process_response(agent, response, ctx)
+
+            # Check if we need to handle tool calls (behaviour may have set this up)
+            ctx =
+              if Message.has_tool_calls?(response) do
+                handle_tool_calls(agent, behaviour, ctx, response, all_tools)
+              else
+                ctx
+              end
+
+            # Continue loop
+            execute_loop(agent, behaviour, ctx)
+
+          {:error, reason} ->
+            Logger.error("""
+            Model request failed in iteration #{ctx.iteration + 1}
+              Agent: #{agent.name}
+              Model: #{agent.model.provider}:#{agent.model.model}
+              Reason: #{inspect(reason)}
+            """)
+
+            # Try error handler if implemented
+            case Behaviour.call(behaviour, :handle_error, [agent, reason, ctx], {:error, reason}) do
+              {:retry, new_ctx} ->
+                execute_loop(agent, behaviour, new_ctx)
+
+              {:continue, new_ctx} ->
+                execute_loop(agent, behaviour, new_ctx)
+
+              {:error, _} = err ->
+                err
+            end
+        end
+      else
+        {:ok, ctx}
       end
     end
   end
