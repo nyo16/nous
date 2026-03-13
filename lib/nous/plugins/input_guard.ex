@@ -155,10 +155,7 @@ defmodule Nous.Plugins.InputGuard do
     end
 
     # Apply policy
-    case Policy.apply(aggregated, ctx, tools, config) do
-      :log_only -> {ctx, tools}
-      {updated_ctx, updated_tools} -> {updated_ctx, updated_tools}
-    end
+    Policy.apply(aggregated, ctx, tools, config)
   end
 
   defp run_strategies(strategies, input, ctx, true = _short_circuit) do

@@ -23,7 +23,7 @@ defmodule Nous.Plugins.InputGuard.Policy do
   require Logger
 
   alias Nous.Agent.Context
-  alias Nous.{Message}
+  alias Nous.Message
   alias Nous.Plugins.InputGuard.Result
 
   @default_policy %{suspicious: :warn, blocked: :block}
@@ -67,15 +67,15 @@ defmodule Nous.Plugins.InputGuard.Policy do
     {ctx, tools}
   end
 
-  defp execute_action(:log, result, _ctx, _tools, _config) do
+  defp execute_action(:log, result, ctx, tools, _config) do
     Logger.warning(
       "InputGuard: Input flagged as #{result.severity}" <>
         if(result.reason, do: " — #{result.reason}", else: "") <>
         if(result.strategy, do: " (strategy: #{inspect(result.strategy)})", else: "")
     )
 
-    # Execution continues unchanged — caller should use original ctx/tools
-    :log_only
+    # Execution continues unchanged
+    {ctx, tools}
   end
 
   defp execute_action(:callback, result, ctx, tools, config) do

@@ -419,9 +419,7 @@ defmodule Nous.AgentRunner do
       {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
 
       # If a plugin (e.g. InputGuard) halted execution, skip the LLM call
-      if not ctx.needs_response do
-        {:ok, ctx}
-      else
+      if ctx.needs_response do
         # Build messages via behaviour
         messages = behaviour.build_messages(agent, ctx)
 
@@ -519,6 +517,8 @@ defmodule Nous.AgentRunner do
                 err
             end
         end
+      else
+        {:ok, ctx}
       end
     end
   end

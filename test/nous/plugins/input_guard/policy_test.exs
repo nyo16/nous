@@ -43,11 +43,12 @@ defmodule Nous.Plugins.InputGuard.PolicyTest do
       assert hd(system_msgs).content =~ "might be injection"
     end
 
-    test ":log action returns :log_only atom" do
+    test ":log action returns context unchanged" do
       ctx = build_ctx()
       result = %Result{severity: :blocked, reason: "test"}
 
-      assert :log_only = Policy.apply(result, ctx, [], %{policy: %{blocked: :log}})
+      {result_ctx, []} = Policy.apply(result, ctx, [], %{policy: %{blocked: :log}})
+      assert result_ctx == ctx
     end
 
     test ":callback action calls on_violation function" do
