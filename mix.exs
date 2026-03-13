@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.12.8"
+  @version "0.12.9"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -204,6 +204,13 @@ defmodule Nous.MixProject do
         "Plugin System": [
           Nous.Plugin,
           Nous.Plugins.HumanInTheLoop,
+          Nous.Plugins.InputGuard,
+          Nous.Plugins.InputGuard.Strategy,
+          Nous.Plugins.InputGuard.Result,
+          Nous.Plugins.InputGuard.Policy,
+          Nous.Plugins.InputGuard.Strategies.Pattern,
+          Nous.Plugins.InputGuard.Strategies.LLMJudge,
+          Nous.Plugins.InputGuard.Strategies.Semantic,
           Nous.Plugins.Memory,
           Nous.Plugins.SubAgent,
           Nous.Plugins.Summarization
