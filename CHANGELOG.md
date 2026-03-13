@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.9] - 2026-03-12
+
+### Added
+
+- **InputGuard plugin**: Modular malicious input classifier with pluggable strategy pattern. Detects prompt injection, jailbreak attempts, and other malicious inputs before they reach the LLM.
+  - `Nous.Plugins.InputGuard` — Main plugin with configurable aggregation (`:any`/`:majority`/`:all`), short-circuit mode, and violation callbacks
+  - `Nous.Plugins.InputGuard.Strategy` — Behaviour for custom detection strategies
+  - `Nous.Plugins.InputGuard.Strategies.Pattern` — Built-in regex patterns for instruction override, role reassignment, DAN jailbreaks, prompt extraction, and encoding evasion. Supports `:extra_patterns` (additive) and `:patterns` (full override)
+  - `Nous.Plugins.InputGuard.Strategies.LLMJudge` — Secondary LLM classification with fail-open/fail-closed modes
+  - `Nous.Plugins.InputGuard.Strategies.Semantic` — Embedding cosine similarity against pre-computed attack vectors
+  - `Nous.Plugins.InputGuard.Policy` — Severity-to-action resolution (`:block`, `:warn`, `:log`, `:callback`, custom `fun/2`)
+  - Tracks checked message index to prevent re-triggering on tool-call loop iterations
+  - New example: `examples/15_input_guard.exs`
+
+### Fixed
+
+- **AgentRunner**: `before_request` plugin hook now short-circuits the LLM call when a plugin sets `needs_response: false` (e.g., InputGuard blocking). Previously the current iteration would still call the LLM before the block took effect on the next iteration.
+
 ## [0.12.8] - 2026-03-12
 
 ### Fixed
