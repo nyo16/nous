@@ -52,6 +52,7 @@ defmodule Nous.OutputSchema do
   def to_json_schema({:regex, _}), do: nil
   def to_json_schema({:grammar, _}), do: nil
   def to_json_schema({:choice, _}), do: nil
+  def to_json_schema({:one_of, _schemas}), do: nil
 
   def to_json_schema(output_type) when is_atom(output_type) do
     # Ecto schema module
@@ -98,6 +99,9 @@ defmodule Nous.OutputSchema do
 
       {:choice, choices} ->
         guided_settings(:choice, choices, provider)
+
+      {:one_of, schemas} ->
+        one_of_provider_settings(schemas, provider)
 
       _ ->
         json_schema = to_json_schema(output_type)
@@ -164,6 +168,47 @@ defmodule Nous.OutputSchema do
   def parse_and_validate(text, {:grammar, _grammar}) do
     # Grammar-constrained output is validated by the provider; we just return as-is
     {:ok, String.trim(text)}
+  end
+
+  def parse_and_validate(text, {:one_of, schemas}) do
+    # Extract JSON from markdown if needed
+    text = extract_json_from_markdown(text)
+
+    case Jason.decode(text) do
+      {:ok, parsed} ->
+        # Try each schema in order, return first success
+        result =
+          Enum.reduce_while(schemas, nil, fn schema, _acc ->
+            case cast_and_validate(parsed, schema) do
+              {:ok, _} = success -> {:halt, success}
+              {:error, _} -> {:cont, nil}
+            end
+          end)
+
+        case result do
+          {:ok, _} = success ->
+            success
+
+          nil ->
+            schema_names =
+              schemas |> Enum.map(&schema_name/1) |> Enum.join(", ")
+
+            {:error,
+             Errors.ValidationError.exception(
+               message: "No schema matched in one_of. Tried: #{schema_names}",
+               errors: [one_of: {"no schema matched", [schemas: schema_names]}],
+               output_type: {:one_of, schemas}
+             )}
+        end
+
+      {:error, %Jason.DecodeError{} = error} ->
+        {:error,
+         Errors.ValidationError.exception(
+           message: "Failed to parse JSON: #{Exception.message(error)}",
+           errors: [json: {"parse error", [detail: Exception.message(error)]}],
+           output_type: {:one_of, schemas}
+         )}
+    end
   end
 
   def parse_and_validate(text, output_type) do
@@ -277,6 +322,33 @@ defmodule Nous.OutputSchema do
     "You must respond with exactly one of: #{Enum.join(choices, ", ")}"
   end
 
+  def system_prompt_suffix({:one_of, schemas}, _opts) do
+    schema_descriptions =
+      Enum.map_join(schemas, "\n\n", fn schema ->
+        name = schema_name(schema)
+        tool_name = tool_name_for_schema(schema)
+        json_schema = to_json_schema(schema)
+        schema_json = if json_schema, do: Jason.encode!(json_schema, pretty: true), else: "{}"
+        llm_doc = try_llm_doc(schema)
+        doc_line = if llm_doc, do: "\nDescription: #{llm_doc}", else: ""
+
+        """
+        ### #{name} (call tool: #{tool_name})#{doc_line}
+        #{schema_json}\
+        """
+      end)
+
+    """
+    You have multiple output schemas available. Choose the most appropriate one based on the user's request and call the corresponding tool.
+
+    Available schemas:
+
+    #{schema_descriptions}
+
+    Call the tool matching the schema you want to use. Provide the data as the tool's arguments.
+    """
+  end
+
   def system_prompt_suffix(output_type, opts) do
     json_schema = to_json_schema(output_type)
     mode = Keyword.get(opts, :mode, :auto)
@@ -306,6 +378,65 @@ defmodule Nous.OutputSchema do
 
       true ->
         nil
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # Synthetic tool name helpers
+  # -------------------------------------------------------------------
+
+  @doc """
+  Return `true` if `name` is a synthetic structured output tool name.
+
+  Matches both the standard `"__structured_output__"` and per-schema
+  names like `"__structured_output_sentiment_result__"`.
+  """
+  @spec synthetic_tool_name?(String.t()) :: boolean()
+  def synthetic_tool_name?(name) do
+    name == "__structured_output__" or
+      (String.starts_with?(name, "__structured_output_") and String.ends_with?(name, "__"))
+  end
+
+  @doc """
+  Build the synthetic tool name for a given schema module.
+
+  ## Example
+
+      iex> OutputSchema.tool_name_for_schema(SentimentResult)
+      "__structured_output_sentiment_result__"
+  """
+  @spec tool_name_for_schema(module()) :: String.t()
+  def tool_name_for_schema(module) when is_atom(module) do
+    "__structured_output_#{schema_name(module)}__"
+  end
+
+  @doc """
+  Find the schema module whose synthetic tool name matches `tool_name`.
+
+  Returns `nil` if no schema matches.
+  """
+  @spec find_schema_for_tool_name(String.t(), [module()]) :: module() | nil
+  def find_schema_for_tool_name(tool_name, schemas) do
+    Enum.find(schemas, fn schema -> tool_name_for_schema(schema) == tool_name end)
+  end
+
+  @doc """
+  Extract the response text and matched schema from a `{:one_of, schemas}` message.
+
+  If the message contains a synthetic tool call matching one of the schemas,
+  returns `{json_text, schema_module}`. Otherwise returns `{text, nil}`.
+  """
+  @spec extract_response_for_one_of(Nous.Message.t(), [module()]) :: {String.t(), module() | nil}
+  def extract_response_for_one_of(%Nous.Message{} = msg, schemas) do
+    case find_synthetic_tool_call(msg) do
+      nil ->
+        {Nous.Messages.extract_text(msg), nil}
+
+      tool_call ->
+        name = tool_call[:name] || tool_call["name"]
+        schema = find_schema_for_tool_name(name, schemas)
+        args = tool_call[:arguments] || tool_call["arguments"] || %{}
+        {Jason.encode!(args), schema}
     end
   end
 
@@ -588,6 +719,46 @@ defmodule Nous.OutputSchema do
     %{stop: ["```"]}
   end
 
+  # --- {:one_of, schemas} provider settings ---
+
+  defp one_of_provider_settings(schemas, _provider) do
+    # Validate uniqueness of schema names
+    names = Enum.map(schemas, &schema_name/1)
+    unique_names = Enum.uniq(names)
+
+    if length(names) != length(unique_names) do
+      duplicates = names -- unique_names
+
+      raise ArgumentError,
+            "Duplicate schema names in {:one_of, ...}: #{inspect(duplicates)}. " <>
+              "Each schema module must have a unique last segment."
+    end
+
+    tools =
+      Enum.map(schemas, fn schema ->
+        json_schema = to_json_schema(schema)
+        tool_name = tool_name_for_schema(schema)
+        llm_doc = try_llm_doc(schema)
+
+        description =
+          llm_doc || "Return structured output matching schema: #{schema_name(schema)}"
+
+        %{
+          "type" => "function",
+          "function" => %{
+            "name" => tool_name,
+            "description" => description,
+            "parameters" => json_schema
+          }
+        }
+      end)
+
+    %{
+      __structured_output_tools__: tools,
+      __structured_output_tool_choice__: "auto"
+    }
+  end
+
   # --- Guided decoding settings (vLLM/SGLang) ---
 
   defp guided_settings(:regex, pattern, :vllm), do: %{guided_regex: pattern}
@@ -602,12 +773,20 @@ defmodule Nous.OutputSchema do
 
   # --- Schema name ---
 
-  defp schema_name(module) when is_atom(module) do
+  @doc """
+  Return a snake_case name for the given output type.
+
+  For Ecto schema modules, returns the last segment of the module name
+  underscored (e.g. `MyApp.SentimentResult` → `"sentiment_result"`).
+  For maps or other types, returns `"output"`.
+  """
+  @spec schema_name(Nous.Types.output_type()) :: String.t()
+  def schema_name(module) when is_atom(module) and module not in [:string, nil, true, false] do
     module |> Module.split() |> List.last() |> Macro.underscore()
   end
 
-  defp schema_name(%{} = _map), do: "output"
-  defp schema_name(_), do: "output"
+  def schema_name(%{} = _map), do: "output"
+  def schema_name(_), do: "output"
 
   # --- Ecto schema casting ---
 
@@ -707,7 +886,7 @@ defmodule Nous.OutputSchema do
        when is_list(tool_calls) do
     Enum.find(tool_calls, fn call ->
       name = call[:name] || call["name"]
-      name == "__structured_output__"
+      synthetic_tool_name?(name || "")
     end)
   end
 

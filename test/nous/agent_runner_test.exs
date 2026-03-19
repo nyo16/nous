@@ -421,6 +421,223 @@ defmodule Nous.AgentRunnerTest do
     def count_tokens(_messages), do: 50
   end
 
+  # --- Test schemas for runtime override tests ---
+
+  defmodule OverrideTestUser do
+    use Ecto.Schema
+    use Nous.OutputSchema
+
+    @primary_key false
+    embedded_schema do
+      field(:name, :string)
+      field(:age, :integer)
+    end
+  end
+
+  defmodule OverrideTestScore do
+    use Ecto.Schema
+    use Nous.OutputSchema
+
+    @primary_key false
+    embedded_schema do
+      field(:score, :float)
+      field(:label, :string)
+    end
+
+    @impl true
+    def validate_changeset(changeset) do
+      changeset
+      |> Ecto.Changeset.validate_number(:score,
+        greater_than_or_equal_to: 0.0,
+        less_than_or_equal_to: 1.0
+      )
+      |> Ecto.Changeset.validate_required([:label])
+    end
+  end
+
+  describe "apply_runtime_overrides (via run/3)" do
+    test "applies output_type override from opts", %{model: model} do
+      # Agent defaults to :string
+      agent = Agent.new(model, output_type: :string, instructions: "Extract")
+
+      # Mock returns JSON matching OverrideTestUser
+      mock_fn = fn _model, _messages, _settings ->
+        legacy = %{
+          parts: [{:text, ~s({"name": "Alice", "age": 30})}],
+          usage: %Usage{
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            tool_calls: 0,
+            requests: 1
+          },
+          model_name: "test-model",
+          timestamp: DateTime.utc_now()
+        }
+
+        {:ok, Message.from_legacy(legacy)}
+      end
+
+      with_mock_dispatcher(mock_fn, fn ->
+        {:ok, result} = AgentRunner.run(agent, "test", output_type: OverrideTestUser)
+        assert %OverrideTestUser{name: "Alice", age: 30} = result.output
+      end)
+    end
+
+    test "preserves agent fields when no overrides in opts", %{model: model} do
+      agent = Agent.new(model, output_type: OverrideTestUser, instructions: "Extract")
+
+      mock_fn = fn _model, _messages, _settings ->
+        legacy = %{
+          parts: [{:text, ~s({"name": "Bob", "age": 25})}],
+          usage: %Usage{
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            tool_calls: 0,
+            requests: 1
+          },
+          model_name: "test-model",
+          timestamp: DateTime.utc_now()
+        }
+
+        {:ok, Message.from_legacy(legacy)}
+      end
+
+      with_mock_dispatcher(mock_fn, fn ->
+        # No override — agent's output_type is used
+        {:ok, result} = AgentRunner.run(agent, "test", deps: %{})
+        assert %OverrideTestUser{name: "Bob", age: 25} = result.output
+      end)
+    end
+
+    test "applies structured_output override from opts", %{model: model} do
+      # Agent has 0 retries
+      agent =
+        Agent.new(model,
+          output_type: OverrideTestScore,
+          structured_output: [max_retries: 0],
+          instructions: "Score"
+        )
+
+      call_count = :erlang.unique_integer([:positive])
+      counter_key = {__MODULE__, :override_counter, call_count}
+      :persistent_term.put(counter_key, 0)
+
+      mock_fn = fn _model, _messages, _settings ->
+        count = :persistent_term.get(counter_key, 0)
+        :persistent_term.put(counter_key, count + 1)
+
+        text =
+          if count == 0 do
+            # Invalid on first call
+            ~s({"score": 2.0, "label": "test"})
+          else
+            # Valid on retry
+            ~s({"score": 0.8, "label": "test"})
+          end
+
+        legacy = %{
+          parts: [{:text, text}],
+          usage: %Usage{
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            tool_calls: 0,
+            requests: 1
+          },
+          model_name: "test-model",
+          timestamp: DateTime.utc_now()
+        }
+
+        {:ok, Message.from_legacy(legacy)}
+      end
+
+      with_mock_dispatcher(mock_fn, fn ->
+        # Override to allow retries
+        {:ok, result} =
+          AgentRunner.run(agent, "test", structured_output: [max_retries: 2])
+
+        assert %OverrideTestScore{score: 0.8, label: "test"} = result.output
+      end)
+
+      :persistent_term.erase(counter_key)
+    end
+
+    test "output_type override does not mutate the agent struct", %{model: model} do
+      agent = Agent.new(model, output_type: :string, instructions: "Test")
+
+      # Verify struct is unchanged after run (structs are immutable, but verify the binding)
+      assert agent.output_type == :string
+      assert agent.structured_output == []
+
+      mock_fn = fn _model, _messages, _settings ->
+        legacy = %{
+          parts: [{:text, ~s({"name": "Eve", "age": 28})}],
+          usage: %Usage{
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            tool_calls: 0,
+            requests: 1
+          },
+          model_name: "test-model",
+          timestamp: DateTime.utc_now()
+        }
+
+        {:ok, Message.from_legacy(legacy)}
+      end
+
+      with_mock_dispatcher(mock_fn, fn ->
+        {:ok, result} = AgentRunner.run(agent, "Hello", output_type: OverrideTestUser)
+        assert %OverrideTestUser{name: "Eve"} = result.output
+      end)
+
+      # Still :string — the override only affected the run, not the agent
+      assert agent.output_type == :string
+    end
+
+    test "override output_type from schema back to :string", %{model: model} do
+      agent = Agent.new(model, output_type: OverrideTestUser, instructions: "Chat")
+
+      with_mock_dispatcher(fn ->
+        {:ok, result} = AgentRunner.run(agent, "Hello", output_type: :string)
+        assert is_binary(result.output)
+        assert result.output == "This is a test response"
+      end)
+    end
+
+    test "override to {:one_of, schemas}", %{model: model} do
+      agent = Agent.new(model, instructions: "Flexible")
+
+      mock_fn = fn _model, _messages, _settings ->
+        legacy = %{
+          parts: [{:text, ~s({"name": "Alice", "age": 30})}],
+          usage: %Usage{
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            tool_calls: 0,
+            requests: 1
+          },
+          model_name: "test-model",
+          timestamp: DateTime.utc_now()
+        }
+
+        {:ok, Message.from_legacy(legacy)}
+      end
+
+      with_mock_dispatcher(mock_fn, fn ->
+        {:ok, result} =
+          AgentRunner.run(agent, "test",
+            output_type: {:one_of, [OverrideTestUser, OverrideTestScore]}
+          )
+
+        assert %OverrideTestUser{name: "Alice", age: 30} = result.output
+      end)
+    end
+  end
+
   # Helper function to temporarily replace the model dispatcher
   defp with_mock_dispatcher(test_fn) when is_function(test_fn, 0) do
     test_fn.()

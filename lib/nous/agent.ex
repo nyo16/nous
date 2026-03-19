@@ -152,6 +152,8 @@ defmodule Nous.Agent do
     * `:callbacks` - Map of callback functions for events
     * `:notify_pid` - PID to receive event messages
     * `:context` - Existing context to continue from
+    * `:output_type` - Override the agent's `output_type` for this run
+    * `:structured_output` - Override the agent's `structured_output` options for this run
 
   ## Examples
 

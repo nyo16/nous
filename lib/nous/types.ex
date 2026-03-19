@@ -20,6 +20,7 @@ defmodule Nous.Types do
   - `{:regex, String.t()}` — regex-constrained output (vLLM/SGLang)
   - `{:grammar, String.t()}` — EBNF grammar-constrained output (vLLM)
   - `{:choice, [String.t()]}` — choice-constrained output (vLLM/SGLang)
+  - `{:one_of, [module()]}` — multi-schema selection: LLM chooses which schema to use
   """
   @type output_type ::
           :string
@@ -29,6 +30,7 @@ defmodule Nous.Types do
           | {:regex, String.t()}
           | {:grammar, String.t()}
           | {:choice, [String.t()]}
+          | {:one_of, [module()]}
 
   @typedoc """
   Message content - can be text or multi-modal.

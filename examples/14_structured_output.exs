@@ -9,6 +9,8 @@
 #   3. Custom validation with retries
 #   4. Choice mode for vLLM/SGLang
 #   5. Error handling
+#   6. Per-run output type override
+#   7. Multi-schema selection with {:one_of, [...]}
 
 IO.puts("=== Nous AI - Structured Output Demo ===\n")
 
@@ -186,6 +188,93 @@ case Nous.run(agent, "Classify this email: 'Hello, how are you?'") do
   {:error, other} ->
     IO.puts("  Other error: #{inspect(other)}")
 end
+
+IO.puts("")
+
+# ============================================================================
+# Example 6: Per-run output type override
+# ============================================================================
+#
+# The same agent can return structured or raw text depending on the run.
+# Pass output_type: in the run options to override the agent's default.
+
+IO.puts("--- Example 6: Per-run output override ---")
+
+# Agent defaults to plain text
+versatile_agent =
+  Nous.new("openai:gpt-4o-mini",
+    instructions: "You are a helpful assistant that can extract data or chat freely."
+  )
+
+# Run 1: Get structured data
+{:ok, structured} =
+  Nous.run(versatile_agent, "Extract: John is 28 years old", output_type: SpamPrediction)
+
+IO.puts("  Structured: #{inspect(structured.output)}")
+
+# Run 2: Same agent, plain text
+{:ok, plain} = Nous.run(versatile_agent, "Tell me a joke")
+IO.puts("  Plain text: #{plain.output}")
+
+IO.puts("")
+
+# ============================================================================
+# Example 7: Multi-schema selection with {:one_of, [...]}
+# ============================================================================
+#
+# Provide multiple schemas and let the LLM choose the appropriate one.
+# Nous creates a synthetic tool per schema — the LLM's tool choice
+# acts as schema selection.
+
+IO.puts("--- Example 7: Multi-schema selection ---")
+
+defmodule SentimentAnalysis do
+  use Ecto.Schema
+  use Nous.OutputSchema
+
+  @llm_doc "Use when the user asks about sentiment or emotional tone."
+  @primary_key false
+  embedded_schema do
+    field(:sentiment, Ecto.Enum, values: [:positive, :negative, :neutral])
+    field(:confidence, :float)
+    field(:reasoning, :string)
+  end
+end
+
+defmodule EntityExtraction do
+  use Ecto.Schema
+  use Nous.OutputSchema
+
+  @llm_doc "Use when the user asks to identify people, places, or organizations."
+  @primary_key false
+  embedded_schema do
+    field(:entities, {:array, :string})
+    field(:entity_types, {:array, :string})
+  end
+end
+
+agent =
+  Nous.new("openai:gpt-4o-mini",
+    output_type: {:one_of, [SentimentAnalysis, EntityExtraction]},
+    instructions:
+      "Analyze text. Choose the appropriate output format based on what the user asks.",
+    structured_output: [max_retries: 2]
+  )
+
+# The LLM will pick SentimentAnalysis
+{:ok, result1} = Nous.run(agent, "What's the sentiment of: 'I absolutely love this product!'")
+IO.puts("  Schema used: #{result1.output.__struct__}")
+IO.puts("  Result: #{inspect(result1.output)}")
+
+# The LLM will pick EntityExtraction
+{:ok, result2} =
+  Nous.run(
+    agent,
+    "Extract entities from: 'Tim Cook announced new products at Apple Park in Cupertino'"
+  )
+
+IO.puts("  Schema used: #{result2.output.__struct__}")
+IO.puts("  Result: #{inspect(result2.output)}")
 
 IO.puts("")
 IO.puts("Done!")

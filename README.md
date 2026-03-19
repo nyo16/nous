@@ -412,6 +412,47 @@ add_item = fn ctx, %{"item" => item} ->
 end
 ```
 
+### Structured Output
+
+Return validated, typed data instead of raw text:
+
+```elixir
+defmodule UserInfo do
+  use Ecto.Schema
+  use Nous.OutputSchema
+
+  @primary_key false
+  embedded_schema do
+    field(:name, :string)
+    field(:age, :integer)
+  end
+end
+
+agent = Nous.new("openai:gpt-4",
+  output_type: UserInfo,
+  structured_output: [max_retries: 2]
+)
+
+{:ok, result} = Nous.run(agent, "Extract: Alice is 30 years old")
+result.output  #=> %UserInfo{name: "Alice", age: 30}
+```
+
+Also supports schemaless types (`%{name: :string}`), raw JSON schema, choice constraints,
+and multi-schema selection where the LLM picks the format:
+
+```elixir
+agent = Nous.new("openai:gpt-4",
+  output_type: {:one_of, [SentimentResult, EntityResult]}
+)
+
+{:ok, result} = Nous.run(agent, "Analyze: 'Great product!'")
+# result.output is a %SentimentResult{} or %EntityResult{} — LLM decides
+```
+
+Override per-run: `Nous.run(agent, prompt, output_type: MySchema)`.
+
+See [Structured Output Guide](docs/guides/structured_output.md) for full documentation.
+
 ### Prompt Templates
 
 Build prompts with EEx variable substitution:

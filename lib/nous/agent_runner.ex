@@ -59,10 +59,13 @@ defmodule Nous.AgentRunner do
     * `:callbacks` - Map of callback functions
     * `:notify_pid` - PID to receive event messages
     * `:context` - Existing context to continue from
+    * `:output_type` - Override the agent's `output_type` for this run
+    * `:structured_output` - Override the agent's `structured_output` options for this run
 
   """
   @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(%Agent{} = agent, prompt, opts \\ []) do
+    agent = apply_runtime_overrides(agent, opts)
     start_time = System.monotonic_time()
 
     Logger.info(
@@ -190,6 +193,7 @@ defmodule Nous.AgentRunner do
   """
   @spec run_with_context(Agent.t(), Context.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_with_context(%Agent{} = agent, %Context{} = ctx, opts \\ []) do
+    agent = apply_runtime_overrides(agent, opts)
     # Merge any additional options into context
     ctx =
       ctx
@@ -250,6 +254,7 @@ defmodule Nous.AgentRunner do
   """
   @spec run_stream(Agent.t(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
   def run_stream(%Agent{} = agent, prompt, opts \\ []) do
+    agent = apply_runtime_overrides(agent, opts)
     # Build context
     ctx = build_context(agent, prompt, opts)
 
@@ -291,6 +296,23 @@ defmodule Nous.AgentRunner do
 
   # Private functions
 
+  # Apply per-run overrides for output_type and structured_output
+  defp apply_runtime_overrides(agent, opts) do
+    agent
+    |> then(fn a ->
+      case Keyword.fetch(opts, :output_type) do
+        {:ok, ot} -> %{a | output_type: ot}
+        :error -> a
+      end
+    end)
+    |> then(fn a ->
+      case Keyword.fetch(opts, :structured_output) do
+        {:ok, so} -> %{a | structured_output: so}
+        :error -> a
+      end
+    end)
+  end
+
   defp build_context(agent, prompt, opts) do
     # Check if continuing from existing context
     case Keyword.get(opts, :context) do
@@ -322,7 +344,12 @@ defmodule Nous.AgentRunner do
         # Inject structured output schema instructions
         system_prompt =
           if agent.output_type != :string do
-            mode = Keyword.get(agent.structured_output, :mode, :auto)
+            mode =
+              case agent.output_type do
+                {:one_of, _} -> :tool_call
+                _ -> Keyword.get(agent.structured_output, :mode, :auto)
+              end
+
             suffix = OutputSchema.system_prompt_suffix(agent.output_type, mode: mode)
 
             if suffix do
@@ -535,64 +562,77 @@ defmodule Nous.AgentRunner do
     if Enum.empty?(tool_calls) do
       ctx
     else
-      # Update usage to track tool calls
-      ctx = Context.add_usage(ctx, %{tool_calls: length(tool_calls)})
-
-      tool_names = Enum.map_join(tool_calls, ", ", &get_tool_field(&1, :name))
-      Logger.debug("Detected #{length(tool_calls)} tool call(s): #{tool_names}")
-
-      # Build run context for tool execution
-      run_ctx = Context.to_run_context(ctx)
-
-      # Execute all tool calls and collect results
-      {tool_results, ctx} =
-        Enum.reduce(tool_calls, {[], ctx}, fn call, {results, acc_ctx} ->
-          call_name = get_tool_field(call, :name)
-          call_id = get_tool_field(call, :id)
-          call_arguments = get_tool_field(call, :arguments)
-
-          # Execute callback before tool
-          Callbacks.execute(acc_ctx, :on_tool_call, %{
-            id: call_id,
-            name: call_name,
-            arguments: call_arguments
-          })
-
-          # Check approval for tools that require it
-          cleaned_name = clean_tool_name(call_name)
-          tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
-
-          case check_tool_approval(tool, call, acc_ctx) do
-            :reject ->
-              Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
-              result_msg = Message.tool(call_id, "Tool call was rejected by approval handler.")
-              {[result_msg | results], acc_ctx}
-
-            {:edit, new_args} ->
-              Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
-              edited_call = put_tool_field(call, :arguments, new_args)
-
-              {result_msg, acc_ctx} =
-                execute_and_record_tool(tools, edited_call, run_ctx, behaviour, agent, acc_ctx)
-
-              {[result_msg | results], acc_ctx}
-
-            :approve ->
-              {result_msg, acc_ctx} =
-                execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
-
-              {[result_msg | results], acc_ctx}
-          end
+      # Separate synthetic structured output calls from real tool calls
+      {_synthetic_calls, real_calls} =
+        Enum.split_with(tool_calls, fn call ->
+          name = get_tool_field(call, :name)
+          OutputSchema.synthetic_tool_name?(name || "")
         end)
 
-      # Add tool result messages
-      tool_results = Enum.reverse(tool_results)
-      ctx = Context.add_messages(ctx, tool_results)
+      if Enum.empty?(real_calls) do
+        # Only synthetic calls — structured output will be extracted by extract_output.
+        # Don't execute them as tools; just stop the loop.
+        Context.set_needs_response(ctx, false)
+      else
+        # Update usage to track tool calls
+        ctx = Context.add_usage(ctx, %{tool_calls: length(real_calls)})
 
-      # Record tool calls
-      Enum.reduce(tool_calls, ctx, fn call, acc ->
-        Context.add_tool_call(acc, call)
-      end)
+        tool_names = Enum.map_join(real_calls, ", ", &get_tool_field(&1, :name))
+        Logger.debug("Detected #{length(real_calls)} tool call(s): #{tool_names}")
+
+        # Build run context for tool execution
+        run_ctx = Context.to_run_context(ctx)
+
+        # Execute all real tool calls and collect results
+        {tool_results, ctx} =
+          Enum.reduce(real_calls, {[], ctx}, fn call, {results, acc_ctx} ->
+            call_name = get_tool_field(call, :name)
+            call_id = get_tool_field(call, :id)
+            call_arguments = get_tool_field(call, :arguments)
+
+            # Execute callback before tool
+            Callbacks.execute(acc_ctx, :on_tool_call, %{
+              id: call_id,
+              name: call_name,
+              arguments: call_arguments
+            })
+
+            # Check approval for tools that require it
+            cleaned_name = clean_tool_name(call_name)
+            tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
+
+            case check_tool_approval(tool, call, acc_ctx) do
+              :reject ->
+                Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
+                result_msg = Message.tool(call_id, "Tool call was rejected by approval handler.")
+                {[result_msg | results], acc_ctx}
+
+              {:edit, new_args} ->
+                Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
+                edited_call = put_tool_field(call, :arguments, new_args)
+
+                {result_msg, acc_ctx} =
+                  execute_and_record_tool(tools, edited_call, run_ctx, behaviour, agent, acc_ctx)
+
+                {[result_msg | results], acc_ctx}
+
+              :approve ->
+                {result_msg, acc_ctx} =
+                  execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
+
+                {[result_msg | results], acc_ctx}
+            end
+          end)
+
+        # Add tool result messages
+        tool_results = Enum.reverse(tool_results)
+        ctx = Context.add_messages(ctx, tool_results)
+
+        # Record tool calls
+        Enum.reduce(real_calls, ctx, fn call, acc ->
+          Context.add_tool_call(acc, call)
+        end)
+      end
     end
   end
 
@@ -1079,13 +1119,37 @@ defmodule Nous.AgentRunner do
   defp merge_structured_output_settings(model_settings, so_settings, provider) do
     # Handle synthetic tool injection separately
     {tool_settings, other_settings} =
-      Map.split(so_settings, [:__structured_output_tool__, :__structured_output_tool_choice__])
+      Map.split(so_settings, [
+        :__structured_output_tool__,
+        :__structured_output_tools__,
+        :__structured_output_tool_choice__
+      ])
 
     # Merge non-tool settings
     merged = Map.merge(model_settings, other_settings)
 
-    # Inject synthetic tool into existing tools list
+    # Inject synthetic tool(s) into existing tools list
     case tool_settings do
+      # Plural: multiple synthetic tools ({:one_of, schemas})
+      %{__structured_output_tools__: tools_list} when is_list(tools_list) ->
+        existing_tools = merged[:tools] || []
+
+        formatted_tools =
+          Enum.map(tools_list, fn tool ->
+            case provider do
+              :anthropic -> convert_synthetic_tool_anthropic(tool)
+              _ -> tool
+            end
+          end)
+
+        merged = Map.put(merged, :tools, existing_tools ++ formatted_tools)
+
+        case tool_settings[:__structured_output_tool_choice__] do
+          nil -> merged
+          choice -> Map.put(merged, :tool_choice, choice)
+        end
+
+      # Singular: single synthetic tool (standard :tool_call mode)
       %{__structured_output_tool__: tool} ->
         existing_tools = merged[:tools] || []
 
