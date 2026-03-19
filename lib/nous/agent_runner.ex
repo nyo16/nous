@@ -28,6 +28,7 @@ defmodule Nous.AgentRunner do
 
   alias Nous.{
     Agent,
+    Fallback,
     Message,
     Messages,
     ModelDispatcher,
@@ -276,8 +277,8 @@ defmodule Nous.AgentRunner do
         model_settings
       end
 
-    # Request stream from model
-    case get_dispatcher().request_stream(agent.model, messages, model_settings) do
+    # Request stream from model (with fallback chain if configured)
+    case stream_with_fallback(agent, messages, model_settings, tools) do
       {:ok, stream} ->
         # Wrap stream to execute callbacks
         wrapped_stream = wrap_stream_with_callbacks(stream, ctx)
@@ -454,13 +455,17 @@ defmodule Nous.AgentRunner do
           )
           |> Map.new()
 
-        # Make model request
+        # Make model request (with fallback chain if configured)
         Logger.debug(
           "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
         )
 
-        case get_dispatcher().request(agent.model, messages, model_settings) do
-          {:ok, response} ->
+        case request_with_fallback(agent, messages, model_settings, all_tools) do
+          {:ok, response, active_model} ->
+            # Swap model on agent if fallback was used (for remaining iterations)
+            agent =
+              if active_model != agent.model, do: %{agent | model: active_model}, else: agent
+
             # Update usage
             usage_update = response.metadata.usage || %{}
             ctx = Context.add_usage(ctx, usage_update)
@@ -984,6 +989,69 @@ defmodule Nous.AgentRunner do
   defp priority_icon("medium"), do: "[MED]"
   defp priority_icon("low"), do: "[LOW]"
   defp priority_icon(_), do: "-"
+
+  # Request with fallback chain support.
+  # When fallback models are configured, tries each model in order on eligible errors.
+  # Returns {:ok, response, active_model} or {:error, reason}.
+  defp request_with_fallback(agent, messages, model_settings, all_tools) do
+    model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
+
+    Fallback.with_fallback(model_chain, fn model ->
+      # Re-convert tool schemas if provider changed
+      settings = rebuild_settings_for_model(model, model_settings, all_tools, agent)
+
+      case get_dispatcher().request(model, messages, settings) do
+        {:ok, response} -> {:ok, {response, model}}
+        {:error, _} = err -> err
+      end
+    end)
+    |> case do
+      {:ok, {response, active_model}} -> {:ok, response, active_model}
+      {:error, _} = err -> err
+    end
+  end
+
+  # Stream with fallback chain support.
+  # Only retries stream initialization, not mid-stream failures.
+  defp stream_with_fallback(agent, messages, model_settings, tools) do
+    model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
+
+    Fallback.with_fallback(model_chain, fn model ->
+      settings = rebuild_settings_for_model(model, model_settings, tools, agent)
+      get_dispatcher().request_stream(model, messages, settings)
+    end)
+  end
+
+  # Rebuild model settings when falling back to a different provider.
+  # Tool schemas must be re-converted for the target provider's format.
+  defp rebuild_settings_for_model(model, model_settings, all_tools, agent) do
+    if model.provider == agent.model.provider do
+      model_settings
+    else
+      # Strip existing tool schemas and re-convert for the new provider
+      base_settings =
+        model_settings
+        |> Map.delete(:tools)
+        |> Map.delete(:tool_choice)
+        |> Map.delete(:response_format)
+
+      settings =
+        if Enum.empty?(all_tools) do
+          base_settings
+        else
+          tool_schemas = convert_tools_for_provider(model.provider, all_tools)
+          Map.put(base_settings, :tools, tool_schemas)
+        end
+
+      # Re-inject structured output settings for the new provider if needed
+      if agent.output_type != :string do
+        # Use a temporary agent with the fallback model so provider-specific settings are correct
+        inject_structured_output_settings(%{agent | model: model}, settings, all_tools)
+      else
+        settings
+      end
+    end
+  end
 
   # Get the model dispatcher, allowing dependency injection for testing
   defp get_dispatcher do

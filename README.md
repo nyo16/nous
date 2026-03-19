@@ -110,6 +110,11 @@ agent = Nous.new("openai:gpt-4")                    # OpenAI
 agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")   # Anthropic
 agent = Nous.new("vertex_ai:gemini-3.1-pro-preview")  # Google Vertex AI
 agent = Nous.new("llamacpp:local", llamacpp_model: llm)  # Local NIF
+
+# With automatic fallback on provider failure
+agent = Nous.new("openai:gpt-4",
+  fallback: ["anthropic:claude-sonnet-4-20250514", "groq:llama-3.1-70b-versatile"]
+)
 ```
 
 ### Google Vertex AI Setup
@@ -314,6 +319,32 @@ stream
   _ -> :ok
 end)
 ```
+
+### Fallback Models
+
+Automatically try alternative models when the primary fails (rate limit, server error, timeout):
+
+```elixir
+# Agent with fallback chain
+agent = Nous.new("openai:gpt-4",
+  fallback: ["anthropic:claude-sonnet-4-20250514", "groq:llama-3.1-70b-versatile"],
+  instructions: "Be helpful"
+)
+
+{:ok, result} = Nous.run(agent, "Hello")
+
+# Simple LLM API with fallback
+{:ok, text} = Nous.generate_text("openai:gpt-4", "Hello",
+  fallback: ["anthropic:claude-sonnet-4-20250514"]
+)
+
+# Also works with streaming
+{:ok, stream} = Nous.stream_text("openai:gpt-4", "Write a haiku",
+  fallback: ["groq:llama-3.1-70b-versatile"]
+)
+```
+
+Fallback triggers on `ProviderError` and `ModelError` only. Application-level errors (validation, max iterations, tool errors) are returned immediately since a different model wouldn't help.
 
 ### Callbacks
 
@@ -721,6 +752,7 @@ Nous.Telemetry.attach_default_handler()
 - `[:nous, :provider, :request, :start/stop/exception]`
 - `[:nous, :tool, :execute, :start/stop/exception]`
 - `[:nous, :tool, :timeout]`
+- `[:nous, :fallback, :activated/exhausted]`
 - `[:nous, :context, :update]`
 
 ## Evaluation Framework
@@ -882,6 +914,7 @@ lib/nous/
 ├── agent.ex              # Agent struct and builder
 ├── agent_runner.ex       # Core execution loop
 ├── agent_server.ex       # GenServer wrapper for supervised agents
+├── fallback.ex           # Fallback model chain support
 ├── decisions/            # Decision graph (goals, decisions, outcomes)
 │   ├── store/            # Store backends (ETS, DuckDB)
 │   ├── node.ex           # Node struct

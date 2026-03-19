@@ -27,10 +27,11 @@ defmodule Nous.Agent do
 
   """
 
-  alias Nous.{Model, Tool, Types}
+  alias Nous.{Fallback, Model, Tool, Types}
 
   @type t :: %__MODULE__{
           model: Model.t(),
+          fallback: [Model.t()],
           output_type: Types.output_type(),
           structured_output: keyword(),
           instructions: String.t() | function() | nil,
@@ -51,6 +52,7 @@ defmodule Nous.Agent do
     :model,
     :deps_type,
     :behaviour_module,
+    fallback: [],
     output_type: :string,
     structured_output: [],
     instructions: nil,
@@ -85,6 +87,8 @@ defmodule Nous.Agent do
     * `:plugins` - List of plugin modules implementing `Nous.Plugin` behaviour
     * `:end_strategy` - How to handle tool calls (`:early` or `:exhaustive`)
     * `:behaviour_module` - Custom agent behaviour module (default: BasicAgent)
+    * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
+      when the primary model fails with a provider/model error
 
   ## Examples
 
@@ -114,6 +118,7 @@ defmodule Nous.Agent do
 
     %__MODULE__{
       model: model,
+      fallback: Fallback.parse_fallback_models(Keyword.get(opts, :fallback, [])),
       output_type: Keyword.get(opts, :output_type, :string),
       structured_output: Keyword.get(opts, :structured_output, []),
       instructions: Keyword.get(opts, :instructions),

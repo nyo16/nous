@@ -30,7 +30,12 @@ defmodule Nous.LLM do
 
   """
 
-  alias Nous.{Model, ModelDispatcher, Message, Tool, ToolExecutor, RunContext, Messages}
+  alias Nous.{Fallback, Model, ModelDispatcher, Message, Tool, ToolExecutor, RunContext, Messages}
+
+  # Get the model dispatcher, allowing dependency injection for testing
+  defp get_dispatcher do
+    Application.get_env(:nous, :model_dispatcher, ModelDispatcher)
+  end
 
   require Logger
 
@@ -45,6 +50,7 @@ defmodule Nous.LLM do
           | {:api_key, String.t()}
           | {:tools, [function() | Tool.t()]}
           | {:deps, map()}
+          | {:fallback, [String.t() | Model.t()]}
 
   @doc """
   Generate text from a model.
@@ -71,6 +77,8 @@ defmodule Nous.LLM do
     * `:api_key` - Override API key
     * `:tools` - List of tool functions or Tool structs
     * `:deps` - Dependencies to pass to tool functions
+    * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
+      when the primary model fails with a provider/model error
 
   ## Examples
 
@@ -103,8 +111,13 @@ defmodule Nous.LLM do
     settings = build_settings(opts, tools, model.provider)
     deps = Keyword.get(opts, :deps, %{})
     ctx = RunContext.new(deps)
+    fallback_models = Fallback.parse_fallback_models(Keyword.get(opts, :fallback, []))
+    model_chain = Fallback.build_model_chain(model, fallback_models)
 
-    run_with_tools(model, messages, settings, tools, ctx, 0)
+    Fallback.with_fallback(model_chain, fn target_model ->
+      target_settings = rebuild_llm_settings(target_model, model, settings, tools)
+      run_with_tools(target_model, messages, target_settings, tools, ctx, 0)
+    end)
   end
 
   @doc """
@@ -159,8 +172,13 @@ defmodule Nous.LLM do
     messages = build_messages(prompt, opts)
     # Note: streaming with tools is not supported yet
     settings = build_settings(opts, [], model.provider)
+    fallback_models = Fallback.parse_fallback_models(Keyword.get(opts, :fallback, []))
+    model_chain = Fallback.build_model_chain(model, fallback_models)
 
-    case ModelDispatcher.request_stream(model, messages, settings) do
+    case Fallback.with_fallback(model_chain, fn target_model ->
+           target_settings = rebuild_llm_settings(target_model, model, settings, [])
+           get_dispatcher().request_stream(target_model, messages, target_settings)
+         end) do
       {:ok, stream} ->
         # Transform stream to only yield text deltas as strings
         text_stream =
@@ -183,7 +201,7 @@ defmodule Nous.LLM do
   # Tool execution loop
   defp run_with_tools(model, messages, settings, tools, ctx, iteration)
        when iteration < @max_tool_iterations do
-    case ModelDispatcher.request(model, messages, settings) do
+    case get_dispatcher().request(model, messages, settings) do
       {:ok, response} ->
         tool_calls = Messages.extract_tool_calls([response])
 
@@ -262,6 +280,22 @@ defmodule Nous.LLM do
     else
       tool_schemas = convert_tools_for_provider(provider, tools)
       Map.put(base_settings, :tools, tool_schemas)
+    end
+  end
+
+  # Rebuild settings when falling back to a model with a different provider
+  defp rebuild_llm_settings(target_model, original_model, settings, tools) do
+    if target_model.provider == original_model.provider do
+      settings
+    else
+      base_settings = Map.delete(settings, :tools)
+
+      if tools == [] do
+        base_settings
+      else
+        tool_schemas = convert_tools_for_provider(target_model.provider, tools)
+        Map.put(base_settings, :tools, tool_schemas)
+      end
     end
   end
 

@@ -177,6 +177,8 @@ defmodule Nous do
     * `:api_key` - Override API key
     * `:tools` - List of tool functions or `Nous.Tool` structs
     * `:deps` - Dependencies to pass to tool functions
+    * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
+      when the primary model fails with a provider/model error
 
   """
   @spec generate_text(String.t(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
@@ -206,7 +208,7 @@ defmodule Nous do
 
   ## Options
 
-    Same as `generate_text/3`.
+    Same as `generate_text/3` (including `:fallback`).
 
   """
   @spec stream_text(String.t(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}

@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.10] - 2026-03-19
+
+### Added
+
+- **Fallback model/provider support**: Automatic failover to alternative models when the primary model fails with a `ProviderError` or `ModelError` (rate limit, server error, timeout, auth issue).
+  - `Nous.Fallback` — core fallback logic: eligibility checks, recursive model chain traversal, model string/struct parsing
+  - `:fallback` option on `Nous.Agent.new/2` — ordered list of fallback model strings or `Model` structs
+  - `:fallback` option on `Nous.generate_text/3` and `Nous.stream_text/3`
+  - Tool schemas are automatically re-converted when falling back across providers (e.g., OpenAI → Anthropic)
+  - Structured output settings are re-injected for the target provider on cross-provider fallback
+  - Agent model is swapped on successful fallback so remaining iterations use the working model
+  - Streaming fallback retries stream initialization only, not mid-stream failures
+  - New telemetry events: `[:nous, :fallback, :activated]` and `[:nous, :fallback, :exhausted]`
+  - Only `ProviderError` and `ModelError` trigger fallback; application-level errors (`ValidationError`, `MaxIterationsExceeded`, `ExecutionCancelled`, `ToolError`) are returned immediately
+  - 52 new tests across `test/nous/fallback_test.exs` and `test/nous/agent_fallback_test.exs`
+
+### Changed
+
+- `Nous.Agent` struct gains `fallback: [Model.t()]` field (default: `[]`)
+- `Nous.LLM` now uses injectable dispatcher (`get_dispatcher/0`) for testability, consistent with `AgentRunner`
+
 ## [0.12.9] - 2026-03-12
 
 ### Added
