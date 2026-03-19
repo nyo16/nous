@@ -77,68 +77,70 @@ defmodule Nous.StructuredOutputIntegrationTest do
     end
 
     defp determine_response(content, settings, call_count) do
-      cond do
-        String.contains?(content || "", "structured_user") and
-            String.contains?(content || "", "override_test") ->
-          ~s({"name": "Alice", "age": 30})
-
-        String.contains?(content || "", "structured_user") ->
-          ~s({"name": "Alice", "age": 30})
-
-        String.contains?(content || "", "schemaless_test") ->
-          ~s({"name": "Bob", "age": 25})
-
-        String.contains?(content || "", "raw_json_test") ->
-          ~s({"answer": "hello world"})
-
-        String.contains?(content || "", "choice_test") ->
-          "positive"
-
-        String.contains?(content || "", "retry_test") and
-            String.contains?(content || "", "score_override") ->
-          # For per-run structured_output override test
-          if call_count == 0 do
-            ~s({"score": 2.0, "label": "test"})
-          else
-            ~s({"score": 0.8, "label": "test"})
-          end
-
-        String.contains?(content || "", "retry_test") ->
-          # First call returns invalid, second returns valid
-          if call_count == 0 do
-            ~s({"score": 2.0, "label": "test"})
-          else
-            ~s({"score": 0.8, "label": "test"})
-          end
-
-        String.contains?(content || "", "validation_fail") ->
-          ~s({"score": 2.0, "label": "test"})
-
-        String.contains?(content || "", "override_to_string") ->
-          "just plain text output"
-
-        String.contains?(content || "", "one_of_user_test") ->
-          ~s({"name": "Alice", "age": 30})
-
-        String.contains?(content || "", "one_of_score_test") ->
-          ~s({"score": 0.8, "label": "test"})
-
-        String.contains?(content || "", "one_of_nomatch_test") ->
-          # SchemaWithValidation: score > 1.0 fails, and if first schema is TestUser
-          # Ecto is lenient so TestUser will accept most JSON. Use strict schemas.
-          ~s({"score": 2.0})
-
-        String.contains?(content || "", "check_settings") ->
-          # Return the settings as JSON for verification
-          Jason.encode!(%{
-            has_response_format: Map.has_key?(settings, :response_format),
-            has_tools: Map.has_key?(settings, :tools)
-          })
-
-        true ->
-          "plain text response"
-      end
+      keyword = find_keyword(content || "")
+      respond(keyword, settings, call_count)
     end
+
+    defp find_keyword(content) do
+      keywords = [
+        "structured_user",
+        "schemaless_test",
+        "raw_json_test",
+        "choice_test",
+        "retry_test",
+        "validation_fail",
+        "override_to_string",
+        "one_of_user_test",
+        "one_of_score_test",
+        "one_of_nomatch_test",
+        "check_settings"
+      ]
+
+      Enum.find(keywords, :default, &String.contains?(content, &1))
+    end
+
+    defp respond("structured_user", _settings, _call_count),
+      do: ~s({"name": "Alice", "age": 30})
+
+    defp respond("schemaless_test", _settings, _call_count),
+      do: ~s({"name": "Bob", "age": 25})
+
+    defp respond("raw_json_test", _settings, _call_count),
+      do: ~s({"answer": "hello world"})
+
+    defp respond("choice_test", _settings, _call_count),
+      do: "positive"
+
+    defp respond("retry_test", _settings, 0),
+      do: ~s({"score": 2.0, "label": "test"})
+
+    defp respond("retry_test", _settings, _call_count),
+      do: ~s({"score": 0.8, "label": "test"})
+
+    defp respond("validation_fail", _settings, _call_count),
+      do: ~s({"score": 2.0, "label": "test"})
+
+    defp respond("override_to_string", _settings, _call_count),
+      do: "just plain text output"
+
+    defp respond("one_of_user_test", _settings, _call_count),
+      do: ~s({"name": "Alice", "age": 30})
+
+    defp respond("one_of_score_test", _settings, _call_count),
+      do: ~s({"score": 0.8, "label": "test"})
+
+    defp respond("one_of_nomatch_test", _settings, _call_count),
+      do: ~s({"score": 2.0})
+
+    defp respond("check_settings", settings, _call_count) do
+      Jason.encode!(%{
+        has_response_format: Map.has_key?(settings, :response_format),
+        has_tools: Map.has_key?(settings, :tools)
+      })
+    end
+
+    defp respond(:default, _settings, _call_count),
+      do: "plain text response"
 
     # Return tool call responses for one_of synthetic tool tests
     def request_with_tool_call(_model, messages, _settings, tool_name, arguments) do
