@@ -87,6 +87,16 @@ defmodule Nous.Agents.BasicAgent do
     {:ok, Messages.extract_text(msg)}
   end
 
+  defp extract_with_output_type(%{output_type: {:one_of, schemas}}, msg) do
+    case OutputSchema.extract_response_for_one_of(msg, schemas) do
+      {text, schema} when not is_nil(schema) ->
+        OutputSchema.parse_and_validate(text, schema)
+
+      {text, nil} ->
+        OutputSchema.parse_and_validate(text, {:one_of, schemas})
+    end
+  end
+
   defp extract_with_output_type(%{output_type: output_type, model: model}, msg) do
     text = OutputSchema.extract_response_text(msg, model.provider)
     OutputSchema.parse_and_validate(text, output_type)

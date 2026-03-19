@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.11] - 2026-03-19
+
+### Added
+
+- **Per-run structured output override**: Pass `output_type:` and `structured_output:` as options to `Agent.run/3`, `run_stream/3`, and `run_with_context/3` to override the agent's defaults per call. The same agent can return raw text or structured data depending on the request.
+- **Multi-schema selection (`{:one_of, [SchemaA, SchemaB]}`)**: New output_type variant where the LLM dynamically chooses which schema to use per response. Each schema becomes a synthetic tool — the LLM's tool choice acts as schema selection. Includes automatic retry and validation against the selected schema.
+  - `OutputSchema.schema_name/1` — public helper to get snake_case name for a schema module
+  - `OutputSchema.tool_name_for_schema/1` — build synthetic tool name from schema module
+  - `OutputSchema.find_schema_for_tool_name/2` — reverse-map tool name to schema module
+  - `OutputSchema.synthetic_tool_name?/1` — predicate for synthetic tool call detection
+  - `OutputSchema.extract_response_for_one_of/2` — extract text and identify matched schema from tool call
+  - New example: Example 6 (per-run override) and Example 7 (multi-schema) in `examples/14_structured_output.exs`
+  - New sections in `docs/guides/structured_output.md`
+
+### Fixed
+
+- **Synthetic tool call handling**: Structured output tool calls (`__structured_output__`) in `:tool_call` mode are now correctly filtered from the tool execution loop. Previously, these synthetic calls would produce "Tool not found" errors and cause an unnecessary extra LLM round-trip. Now they terminate the loop immediately and the structured output is extracted directly.
+
 ## [0.12.10] - 2026-03-19
 
 ### Added

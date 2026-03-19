@@ -340,6 +340,105 @@ The following Ecto types are mapped to JSON schema types:
 | `Ecto.Enum` | `"string"` with `"enum"` values |
 | `{:array, type}` | `"array"` with typed items |
 
+## Per-Run Output Override
+
+Override the agent's `output_type` or `structured_output` options on each `run()` call.
+This lets you reuse a single agent for both structured and unstructured responses.
+
+### Override output type per call
+
+```elixir
+# Agent defaults to plain text
+agent = Nous.new("openai:gpt-4", instructions: "You are helpful")
+
+# This run returns structured data
+{:ok, result} = Nous.run(agent, "Extract name and age from: Alice is 30",
+  output_type: %{name: :string, age: :integer}
+)
+result.output  #=> %{name: "Alice", age: 30}
+
+# This run returns plain text (the agent's default)
+{:ok, result} = Nous.run(agent, "Tell me a joke")
+result.output  #=> "Why did the..."
+```
+
+### Override structured output options per call
+
+```elixir
+agent = Nous.new("openai:gpt-4",
+  output_type: MySchema,
+  structured_output: [max_retries: 1]
+)
+
+# This run uses more retries
+{:ok, result} = Nous.run(agent, "Parse this complex input...",
+  structured_output: [max_retries: 5]
+)
+```
+
+Works with `run/3`, `run_stream/3`, and `run_with_context/3`.
+
+## Multi-Schema Selection
+
+Use `{:one_of, [SchemaA, SchemaB, ...]}` when the LLM should dynamically choose
+which schema to return based on context.
+
+### How it works
+
+1. Each schema becomes a synthetic tool the LLM can call
+2. The LLM picks the appropriate tool/schema based on the input
+3. Nous validates the response against the selected schema
+4. Returns a struct of the chosen schema type
+
+### Example
+
+```elixir
+defmodule SentimentResult do
+  use Ecto.Schema
+  use Nous.OutputSchema
+
+  @llm_doc "Use for sentiment analysis requests."
+  @primary_key false
+  embedded_schema do
+    field(:sentiment, Ecto.Enum, values: [:positive, :negative, :neutral])
+    field(:confidence, :float)
+  end
+end
+
+defmodule EntityResult do
+  use Ecto.Schema
+  use Nous.OutputSchema
+
+  @llm_doc "Use for entity extraction requests."
+  @primary_key false
+  embedded_schema do
+    field(:entities, {:array, :string})
+    field(:entity_types, {:array, :string})
+  end
+end
+
+agent = Nous.new("openai:gpt-4",
+  output_type: {:one_of, [SentimentResult, EntityResult]},
+  structured_output: [max_retries: 2]
+)
+
+# LLM chooses SentimentResult
+{:ok, result} = Nous.run(agent, "How positive is: 'Great product!'")
+%SentimentResult{} = result.output
+
+# LLM chooses EntityResult
+{:ok, result} = Nous.run(agent, "Extract entities from: 'Apple released iOS 18'")
+%EntityResult{} = result.output
+```
+
+### Tips
+
+- Use `@llm_doc` on each schema to guide the LLM's selection — describe *when* to use each schema
+- List more specific schemas before general ones (schemas are tried in order for text fallback)
+- All schemas must have unique module names (last segment is used as the tool name)
+- Works with validation retries — if the LLM picks the right schema but provides invalid data, it retries against the same schema
+- Combines with per-run override: `Nous.run(agent, prompt, output_type: {:one_of, [A, B]})`
+
 ## Best Practices
 
 **Choose the right output type for the job.** Use Ecto schemas when you need validation, documentation, and reusable types. Use schemaless maps for quick prototyping. Use raw JSON schema when you need features that Ecto does not express (e.g., `minLength`, `pattern`).

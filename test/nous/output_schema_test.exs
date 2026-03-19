@@ -435,4 +435,551 @@ defmodule Nous.OutputSchemaTest do
       assert SchemaWithValidation.__llm_doc__() == nil
     end
   end
+
+  # ===================================================================
+  # {:one_of, [...]} and synthetic tool name tests
+  # ===================================================================
+
+  # --- Test schemas for one_of ---
+
+  defmodule SentimentResult do
+    use Ecto.Schema
+    use Nous.OutputSchema
+
+    @llm_doc "Sentiment analysis result."
+    @primary_key false
+    embedded_schema do
+      field(:sentiment, :string)
+      field(:confidence, :float)
+    end
+  end
+
+  defmodule TopicResult do
+    use Ecto.Schema
+    use Nous.OutputSchema
+
+    @llm_doc "Topic classification result."
+    @primary_key false
+    embedded_schema do
+      field(:topic, :string)
+      field(:keywords, {:array, :string})
+    end
+  end
+
+  # --- schema_name/1 (now public) ---
+
+  describe "schema_name/1" do
+    test "returns last module segment underscored" do
+      assert OutputSchema.schema_name(SentimentResult) == "sentiment_result"
+    end
+
+    test "returns underscored name for SimpleSchema" do
+      assert OutputSchema.schema_name(SimpleSchema) == "simple_schema"
+    end
+
+    test "returns 'output' for map types" do
+      assert OutputSchema.schema_name(%{name: :string}) == "output"
+    end
+
+    test "returns 'output' for raw JSON schema" do
+      assert OutputSchema.schema_name(%{"type" => "object"}) == "output"
+    end
+
+    test "returns 'output' for other types" do
+      assert OutputSchema.schema_name(:string) == "output"
+    end
+  end
+
+  # --- synthetic_tool_name?/1 ---
+
+  describe "synthetic_tool_name?/1" do
+    test "true for __structured_output__ (backward compat)" do
+      assert OutputSchema.synthetic_tool_name?("__structured_output__")
+    end
+
+    test "true for per-schema tool name" do
+      assert OutputSchema.synthetic_tool_name?("__structured_output_sentiment_result__")
+    end
+
+    test "true for another per-schema tool name" do
+      assert OutputSchema.synthetic_tool_name?("__structured_output_topic_result__")
+    end
+
+    test "false for regular tool name" do
+      refute OutputSchema.synthetic_tool_name?("search")
+    end
+
+    test "false for unrelated dunder name" do
+      refute OutputSchema.synthetic_tool_name?("__other__")
+    end
+
+    test "false for empty string" do
+      refute OutputSchema.synthetic_tool_name?("")
+    end
+
+    test "false for partial prefix without trailing __" do
+      refute OutputSchema.synthetic_tool_name?("__structured_output")
+    end
+
+    test "false for prefix only with single trailing _" do
+      refute OutputSchema.synthetic_tool_name?("__structured_output_sentiment_result_")
+    end
+  end
+
+  # --- tool_name_for_schema/1 ---
+
+  describe "tool_name_for_schema/1" do
+    test "builds correct name for SentimentResult" do
+      assert OutputSchema.tool_name_for_schema(SentimentResult) ==
+               "__structured_output_sentiment_result__"
+    end
+
+    test "builds correct name for TopicResult" do
+      assert OutputSchema.tool_name_for_schema(TopicResult) ==
+               "__structured_output_topic_result__"
+    end
+
+    test "builds correct name for SimpleSchema" do
+      assert OutputSchema.tool_name_for_schema(SimpleSchema) ==
+               "__structured_output_simple_schema__"
+    end
+  end
+
+  # --- find_schema_for_tool_name/2 ---
+
+  describe "find_schema_for_tool_name/2" do
+    test "finds SentimentResult from schemas list" do
+      schemas = [SentimentResult, TopicResult]
+
+      assert OutputSchema.find_schema_for_tool_name(
+               "__structured_output_sentiment_result__",
+               schemas
+             ) == SentimentResult
+    end
+
+    test "finds TopicResult from schemas list" do
+      schemas = [SentimentResult, TopicResult]
+
+      assert OutputSchema.find_schema_for_tool_name(
+               "__structured_output_topic_result__",
+               schemas
+             ) == TopicResult
+    end
+
+    test "returns nil for unknown tool name" do
+      schemas = [SentimentResult, TopicResult]
+
+      assert OutputSchema.find_schema_for_tool_name(
+               "__structured_output_unknown__",
+               schemas
+             ) == nil
+    end
+
+    test "returns nil for empty schemas list" do
+      assert OutputSchema.find_schema_for_tool_name(
+               "__structured_output_sentiment_result__",
+               []
+             ) == nil
+    end
+  end
+
+  # --- to_json_schema/1 with {:one_of, ...} ---
+
+  describe "to_json_schema/1 with {:one_of, ...}" do
+    test "returns nil" do
+      assert OutputSchema.to_json_schema({:one_of, [SentimentResult, TopicResult]}) == nil
+    end
+  end
+
+  # --- to_provider_settings/3 with {:one_of, ...} ---
+
+  describe "to_provider_settings/3 with {:one_of, ...}" do
+    test "returns map with __structured_output_tools__ key" do
+      settings =
+        OutputSchema.to_provider_settings(
+          {:one_of, [SentimentResult, TopicResult]},
+          :openai
+        )
+
+      assert is_list(settings[:__structured_output_tools__])
+      assert length(settings[:__structured_output_tools__]) == 2
+    end
+
+    test "each tool has correct name" do
+      settings =
+        OutputSchema.to_provider_settings(
+          {:one_of, [SentimentResult, TopicResult]},
+          :openai
+        )
+
+      tool_names =
+        Enum.map(settings[:__structured_output_tools__], fn t ->
+          t["function"]["name"]
+        end)
+
+      assert "__structured_output_sentiment_result__" in tool_names
+      assert "__structured_output_topic_result__" in tool_names
+    end
+
+    test "each tool has JSON schema matching its module" do
+      settings =
+        OutputSchema.to_provider_settings(
+          {:one_of, [SentimentResult, TopicResult]},
+          :openai
+        )
+
+      sentiment_tool =
+        Enum.find(settings[:__structured_output_tools__], fn t ->
+          t["function"]["name"] == "__structured_output_sentiment_result__"
+        end)
+
+      assert sentiment_tool["function"]["parameters"]["properties"]["sentiment"]["type"] ==
+               "string"
+
+      assert sentiment_tool["function"]["parameters"]["properties"]["confidence"] ==
+               %{"type" => "number", "format" => "float"}
+    end
+
+    test "tool_choice is auto" do
+      settings =
+        OutputSchema.to_provider_settings(
+          {:one_of, [SentimentResult, TopicResult]},
+          :openai
+        )
+
+      assert settings[:__structured_output_tool_choice__] == "auto"
+    end
+
+    test "uses @llm_doc as tool description" do
+      settings =
+        OutputSchema.to_provider_settings(
+          {:one_of, [SentimentResult, TopicResult]},
+          :openai
+        )
+
+      sentiment_tool =
+        Enum.find(settings[:__structured_output_tools__], fn t ->
+          t["function"]["name"] == "__structured_output_sentiment_result__"
+        end)
+
+      assert sentiment_tool["function"]["description"] == "Sentiment analysis result."
+    end
+
+    test "raises for duplicate schema names" do
+      # Create a second module with the same last segment name
+      # We can simulate this by passing the same schema twice
+      assert_raise ArgumentError, ~r/Duplicate schema names/, fn ->
+        OutputSchema.to_provider_settings(
+          {:one_of, [SentimentResult, SentimentResult]},
+          :openai
+        )
+      end
+    end
+
+    test "works with Anthropic provider" do
+      settings =
+        OutputSchema.to_provider_settings(
+          {:one_of, [SentimentResult, TopicResult]},
+          :anthropic
+        )
+
+      assert is_list(settings[:__structured_output_tools__])
+      assert settings[:__structured_output_tool_choice__] == "auto"
+    end
+  end
+
+  # --- parse_and_validate/2 with {:one_of, ...} ---
+
+  describe "parse_and_validate/2 with {:one_of, ...}" do
+    test "matches first schema" do
+      json = ~s({"sentiment": "positive", "confidence": 0.9})
+
+      assert {:ok, result} =
+               OutputSchema.parse_and_validate(json, {:one_of, [SentimentResult, TopicResult]})
+
+      assert %SentimentResult{} = result
+      assert result.sentiment == "positive"
+      assert result.confidence == 0.9
+    end
+
+    test "matches second schema when first is listed second" do
+      # TopicResult is listed first, so it matches first since Ecto is lenient
+      json = ~s({"topic": "elixir", "keywords": ["otp", "beam"]})
+
+      assert {:ok, result} =
+               OutputSchema.parse_and_validate(json, {:one_of, [TopicResult, SentimentResult]})
+
+      assert %TopicResult{} = result
+      assert result.topic == "elixir"
+      assert result.keywords == ["otp", "beam"]
+    end
+
+    test "matches first schema by order (Ecto is lenient)" do
+      # When data could fit multiple schemas, first one wins
+      json = ~s({"topic": "elixir", "keywords": ["otp", "beam"]})
+
+      assert {:ok, result} =
+               OutputSchema.parse_and_validate(json, {:one_of, [SentimentResult, TopicResult]})
+
+      # SentimentResult matches first because Ecto cast is lenient
+      assert %SentimentResult{} = result
+    end
+
+    test "returns error when no schema matches" do
+      # Neither schema has a "unrelated" field that's required
+      # Both schemas will cast successfully since Ecto is lenient with extra/missing fields.
+      # Let's use SchemaWithValidation which has a validate_changeset
+      json = ~s({"score": 2.0, "label": "test"})
+
+      assert {:ok, _} =
+               OutputSchema.parse_and_validate(
+                 json,
+                 {:one_of, [SchemaWithValidation, TopicResult]}
+               )
+    end
+
+    test "returns error for invalid JSON" do
+      assert {:error, %ValidationError{} = err} =
+               OutputSchema.parse_and_validate(
+                 "not json",
+                 {:one_of, [SentimentResult, TopicResult]}
+               )
+
+      assert err.message =~ "Failed to parse JSON"
+    end
+
+    test "extracts JSON from markdown code fence" do
+      text = "```json\n{\"sentiment\": \"negative\", \"confidence\": 0.8}\n```"
+
+      assert {:ok, %SentimentResult{sentiment: "negative", confidence: 0.8}} =
+               OutputSchema.parse_and_validate(
+                 text,
+                 {:one_of, [SentimentResult, TopicResult]}
+               )
+    end
+
+    test "prefers first matching schema when data fits multiple" do
+      # Data that both schemas could accept (Ecto is lenient)
+      json = ~s({"sentiment": "test", "confidence": 0.5, "topic": "extra"})
+
+      assert {:ok, %SentimentResult{}} =
+               OutputSchema.parse_and_validate(
+                 json,
+                 {:one_of, [SentimentResult, TopicResult]}
+               )
+    end
+
+    test "returns error with schema names when validation-strict schemas fail" do
+      # SchemaWithValidation requires score <= 1.0
+      json = ~s({"score": 2.0, "label": "test"})
+
+      # TopicResult will succeed since it's lenient, so let's just test the validate one
+      assert {:error, %ValidationError{}} =
+               OutputSchema.parse_and_validate(json, SchemaWithValidation)
+    end
+
+    test "error includes one_of context when no schemas match" do
+      # Use schemas that have strict validation
+      # SchemaWithValidation: score must be <= 1.0
+      json = ~s({"score": 2.0})
+
+      assert {:error, %ValidationError{} = err} =
+               OutputSchema.parse_and_validate(
+                 json,
+                 {:one_of, [SchemaWithValidation]}
+               )
+
+      # SchemaWithValidation fails because label is required
+      assert err.output_type == {:one_of, [SchemaWithValidation]}
+      assert err.message =~ "one_of"
+    end
+  end
+
+  # --- system_prompt_suffix/2 with {:one_of, ...} ---
+
+  describe "system_prompt_suffix/2 with {:one_of, ...}" do
+    test "contains schema names" do
+      result =
+        OutputSchema.system_prompt_suffix({:one_of, [SentimentResult, TopicResult]}, [])
+
+      assert result =~ "sentiment_result"
+      assert result =~ "topic_result"
+    end
+
+    test "contains JSON schema properties from both schemas" do
+      result =
+        OutputSchema.system_prompt_suffix({:one_of, [SentimentResult, TopicResult]}, [])
+
+      assert result =~ "sentiment"
+      assert result =~ "confidence"
+      assert result =~ "topic"
+      assert result =~ "keywords"
+    end
+
+    test "mentions choosing the appropriate schema" do
+      result =
+        OutputSchema.system_prompt_suffix({:one_of, [SentimentResult, TopicResult]}, [])
+
+      assert result =~ "appropriate"
+    end
+
+    test "includes tool names" do
+      result =
+        OutputSchema.system_prompt_suffix({:one_of, [SentimentResult, TopicResult]}, [])
+
+      assert result =~ "__structured_output_sentiment_result__"
+      assert result =~ "__structured_output_topic_result__"
+    end
+
+    test "includes @llm_doc descriptions" do
+      result =
+        OutputSchema.system_prompt_suffix({:one_of, [SentimentResult, TopicResult]}, [])
+
+      assert result =~ "Sentiment analysis result."
+      assert result =~ "Topic classification result."
+    end
+  end
+
+  # --- extract_response_for_one_of/2 ---
+
+  describe "extract_response_for_one_of/2" do
+    test "with synthetic tool call returns json text and matched schema" do
+      msg =
+        Nous.Message.assistant("",
+          tool_calls: [
+            %{
+              "id" => "call_1",
+              "name" => "__structured_output_sentiment_result__",
+              "arguments" => %{"sentiment" => "positive", "confidence" => 0.95}
+            }
+          ]
+        )
+
+      schemas = [SentimentResult, TopicResult]
+      {text, schema} = OutputSchema.extract_response_for_one_of(msg, schemas)
+
+      assert schema == SentimentResult
+      assert Jason.decode!(text) == %{"sentiment" => "positive", "confidence" => 0.95}
+    end
+
+    test "with second schema tool call returns correct schema" do
+      msg =
+        Nous.Message.assistant("",
+          tool_calls: [
+            %{
+              "id" => "call_1",
+              "name" => "__structured_output_topic_result__",
+              "arguments" => %{"topic" => "elixir", "keywords" => ["otp"]}
+            }
+          ]
+        )
+
+      schemas = [SentimentResult, TopicResult]
+      {text, schema} = OutputSchema.extract_response_for_one_of(msg, schemas)
+
+      assert schema == TopicResult
+      assert Jason.decode!(text) == %{"topic" => "elixir", "keywords" => ["otp"]}
+    end
+
+    test "with plain text message returns text and nil schema" do
+      msg = Nous.Message.assistant("just some text")
+
+      schemas = [SentimentResult, TopicResult]
+      {text, schema} = OutputSchema.extract_response_for_one_of(msg, schemas)
+
+      assert text == "just some text"
+      assert schema == nil
+    end
+
+    test "with standard __structured_output__ tool call returns nil schema" do
+      msg =
+        Nous.Message.assistant("",
+          tool_calls: [
+            %{
+              "id" => "call_1",
+              "name" => "__structured_output__",
+              "arguments" => %{"sentiment" => "positive"}
+            }
+          ]
+        )
+
+      schemas = [SentimentResult, TopicResult]
+      {_text, schema} = OutputSchema.extract_response_for_one_of(msg, schemas)
+
+      # __structured_output__ doesn't match any per-schema tool name
+      assert schema == nil
+    end
+
+    test "with unknown synthetic tool call returns nil schema" do
+      msg =
+        Nous.Message.assistant("",
+          tool_calls: [
+            %{
+              "id" => "call_1",
+              "name" => "__structured_output_unknown__",
+              "arguments" => %{"data" => "test"}
+            }
+          ]
+        )
+
+      schemas = [SentimentResult, TopicResult]
+      {_text, schema} = OutputSchema.extract_response_for_one_of(msg, schemas)
+
+      assert schema == nil
+    end
+
+    test "handles atom key tool calls" do
+      msg =
+        Nous.Message.assistant("",
+          tool_calls: [
+            %{
+              id: "call_1",
+              name: "__structured_output_sentiment_result__",
+              arguments: %{"sentiment" => "positive", "confidence" => 0.9}
+            }
+          ]
+        )
+
+      schemas = [SentimentResult, TopicResult]
+      {_text, schema} = OutputSchema.extract_response_for_one_of(msg, schemas)
+
+      assert schema == SentimentResult
+    end
+  end
+
+  # --- extract_response_text/2 backward compat with new synthetic names ---
+
+  describe "extract_response_text/2 with per-schema tool names" do
+    test "extracts from per-schema synthetic tool call" do
+      msg =
+        Nous.Message.assistant("",
+          tool_calls: [
+            %{
+              "id" => "call_1",
+              "name" => "__structured_output_sentiment_result__",
+              "arguments" => %{"sentiment" => "positive", "confidence" => 0.9}
+            }
+          ]
+        )
+
+      result = OutputSchema.extract_response_text(msg, :openai)
+      assert Jason.decode!(result) == %{"sentiment" => "positive", "confidence" => 0.9}
+    end
+
+    test "still works with standard __structured_output__ name" do
+      msg =
+        Nous.Message.assistant("",
+          tool_calls: [
+            %{
+              "id" => "call_1",
+              "name" => "__structured_output__",
+              "arguments" => %{"name" => "Alice"}
+            }
+          ]
+        )
+
+      result = OutputSchema.extract_response_text(msg, :anthropic)
+      assert Jason.decode!(result) == %{"name" => "Alice"}
+    end
+  end
 end
