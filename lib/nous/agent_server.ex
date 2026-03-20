@@ -63,6 +63,41 @@ defmodule Nous.AgentServer do
         end
       end
 
+  ## Message Interruption
+
+  Calling `send_message/2` while the agent is already processing a request
+  automatically cancels the in-flight execution and starts a new one. The
+  server uses an `:atomics`-based flag so the running task can detect
+  cancellation without message-passing overhead. Both the interrupted
+  user message and the new one are preserved in the conversation context,
+  so no input is lost.
+
+  ## PubSub Events
+
+  Subscribers on the `"agent:<session_id>"` topic receive the following
+  messages:
+
+  | Message                          | Description                             |
+  |----------------------------------|-----------------------------------------|
+  | `{:agent_status, :thinking}`     | A new run is about to start             |
+  | `{:agent_status, :started}`      | The LLM provider acknowledged the call  |
+  | `{:agent_delta, text}`           | A streaming text chunk                  |
+  | `{:tool_call, call}`             | A tool invocation is in progress        |
+  | `{:tool_result, result}`         | A tool returned its result              |
+  | `{:agent_response, output}`      | The final text output of the run        |
+  | `{:agent_complete, result}`      | The full result struct (output + context + usage) |
+  | `{:agent_error, message}`        | An error occurred during execution      |
+  | `{:agent_cancelled, reason}`     | The execution was cancelled             |
+
+  ## Lifecycle
+
+  Each server starts an inactivity timer (default 5 minutes, configurable
+  via `:inactivity_timeout`). The timer resets on every `send_message/2`
+  call. When the timer fires, the server terminates with `:normal`.
+
+  If a `:persistence` backend is configured, the conversation context is
+  automatically saved after each successful agent run and restored on
+  `start_link/1`.
   """
 
   use GenServer
@@ -131,6 +166,11 @@ defmodule Nous.AgentServer do
 
   @doc """
   Send a message to the agent.
+
+  If a previous execution is still running, it is automatically cancelled
+  before the new message is processed. The interrupted message and the new
+  one both remain in the conversation context. Returns immediately — the
+  agent run happens asynchronously and results are broadcast via PubSub.
   """
   @spec send_message(pid(), String.t()) :: :ok
   def send_message(pid, message) do
@@ -155,6 +195,9 @@ defmodule Nous.AgentServer do
 
   @doc """
   Clear conversation context and start fresh.
+
+  Resets messages and tool-call history but preserves the configured
+  dependencies (`:deps`) and system prompt.
   """
   @spec clear_history(pid()) :: :ok
   def clear_history(pid) do
@@ -164,12 +207,16 @@ defmodule Nous.AgentServer do
   @doc """
   Cancel the current agent execution.
 
-  This will:
-  - Shutdown the running task gracefully
-  - Broadcast a cancellation message
-  - Reset the cancelled flag for future executions
+  Returns `{:ok, :cancelled}` when an execution was running and has been
+  stopped, or `{:ok, :no_execution}` when there was nothing to cancel.
+
+  The server will:
+  - Set the atomics cancellation flag so the task exits at the next check
+  - Shut down the running task gracefully (5 s timeout)
+  - Broadcast `{:agent_cancelled, reason}` to PubSub subscribers
+  - Reset the flag for future executions
   """
-  @spec cancel_execution(pid()) :: :ok
+  @spec cancel_execution(pid()) :: {:ok, :cancelled} | {:ok, :no_execution}
   def cancel_execution(pid) do
     GenServer.call(pid, :cancel_execution)
   end
