@@ -74,7 +74,10 @@ defmodule Nous.Model do
     * `"sglang:meta-llama/Llama-3-8B"` - SGLang server
     * `"openrouter:anthropic/claude-3.5-sonnet"` - OpenRouter
     * `"together:meta-llama/Llama-3-70b-chat-hf"` - Together AI
-    * `"custom:my-model"` - Custom endpoint (requires `:base_url` option)
+    * `"custom:my-model"` - Custom OpenAI-compatible endpoint (requires `:base_url` option)
+
+  > **Note**: The `"custom:"` prefix is the recommended approach for any OpenAI-compatible
+  > endpoint. The legacy `"openai_compatible:"` prefix still works for backward compatibility.
 
   ## Examples
 
@@ -89,6 +92,28 @@ defmodule Nous.Model do
       iex> model = Model.parse("custom:my-model", base_url: "http://localhost:8080/v1")
       iex> {model.provider, model.model, model.base_url}
       {:custom, "my-model", "http://localhost:8080/v1"}
+
+  ## Custom Providers with base_url
+
+  The `custom:` prefix works with any OpenAI-compatible endpoint:
+
+      # Groq
+      Model.parse("custom:llama-3.1-70b",
+        base_url: "https://api.groq.com/openai/v1",
+        api_key: System.get_env("GROQ_API_KEY")
+      )
+
+      # Together AI
+      Model.parse("custom:meta-llama/Llama-3-70b",
+        base_url: "https://api.together.xyz/v1",
+        api_key: System.get_env("TOGETHER_API_KEY")
+      )
+
+      # Local server (LM Studio, Ollama, etc.)
+      Model.parse("custom:qwen3", base_url: "http://localhost:1234/v1")
+
+  Also supports `CUSTOM_API_KEY` and `CUSTOM_BASE_URL` environment variables
+  as defaults (can be overridden per-call).
 
   """
   @spec parse(String.t(), keyword()) :: t()
@@ -137,10 +162,34 @@ defmodule Nous.Model do
   end
 
   def parse("custom:" <> model_name, opts) do
-    unless Keyword.has_key?(opts, :base_url) do
+    # Check for base_url in opts, env var, or application config
+    base_url =
+      Keyword.get(opts, :base_url) ||
+        System.get_env("CUSTOM_BASE_URL") ||
+        get_in(Application.get_env(:nous, :custom, []), [:base_url])
+
+    unless base_url do
       raise ArgumentError,
             "custom provider requires :base_url option. " <>
               "Example: parse(\"custom:my-model\", base_url: \"http://localhost:8080/v1\")"
+    end
+
+    new(:custom, model_name, opts)
+  end
+
+  # Backward compatibility: openai_compatible: is now custom:
+  # Note: The `custom:` prefix is the recommended approach going forward.
+  def parse("openai_compatible:" <> model_name, opts) do
+    # Check for base_url in opts, env var, or application config
+    base_url =
+      Keyword.get(opts, :base_url) ||
+        System.get_env("CUSTOM_BASE_URL") ||
+        get_in(Application.get_env(:nous, :custom, []), [:base_url])
+
+    unless base_url do
+      raise ArgumentError,
+            "openai_compatible provider requires :base_url option. " <>
+              "Example: parse(\"openai_compatible:my-model\", base_url: \"http://localhost:8080/v1\")"
     end
 
     new(:custom, model_name, opts)
@@ -219,7 +268,8 @@ defmodule Nous.Model do
   defp default_base_url(:vllm), do: nil
   defp default_base_url(:sglang), do: "http://localhost:30000/v1"
   defp default_base_url(:llamacpp), do: "local"
-  defp default_base_url(:custom), do: nil
+  # CUSTOM_BASE_URL env var takes precedence; explicit opts override this
+  defp default_base_url(:custom), do: System.get_env("CUSTOM_BASE_URL")
 
   @spec default_api_key(provider()) :: String.t() | nil
   defp default_api_key(:openai), do: Application.get_env(:nous, :openai_api_key)
@@ -238,7 +288,8 @@ defmodule Nous.Model do
   defp default_api_key(:sglang), do: nil
   # LlamaCpp runs locally via NIFs, no API key needed
   defp default_api_key(:llamacpp), do: nil
-  defp default_api_key(:custom), do: nil
+  # CUSTOM_API_KEY env var takes precedence; explicit opts override this
+  defp default_api_key(:custom), do: System.get_env("CUSTOM_API_KEY")
 
   # Default receive timeouts per provider
   # Local providers get longer timeouts since they're typically slower

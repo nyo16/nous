@@ -11,6 +11,7 @@ defmodule Nous.ModelDispatcher do
   - `:vllm` → `Nous.Providers.VLLM`
   - `:sglang` → `Nous.Providers.SGLang`
   - `:openai` → `Nous.Providers.OpenAI`
+  - `:custom` → `Nous.Providers.Custom`
   - Others → `Nous.Providers.OpenAICompatible`
   """
 
@@ -65,6 +66,11 @@ defmodule Nous.ModelDispatcher do
   def request(%Model{provider: :openai} = model, messages, settings) do
     Logger.debug("Routing to OpenAI provider for model: #{model.model}")
     Providers.OpenAI.request(model, messages, settings)
+  end
+
+  def request(%Model{provider: :custom} = model, messages, settings) do
+    Logger.debug("Routing to Custom provider for model: #{model.model}")
+    Providers.Custom.request(model, messages, settings)
   end
 
   def request(%Model{} = model, messages, settings) do
@@ -122,6 +128,11 @@ defmodule Nous.ModelDispatcher do
     Providers.OpenAI.request_stream(model, messages, settings)
   end
 
+  def request_stream(%Model{provider: :custom} = model, messages, settings) do
+    Logger.debug("Routing streaming request to Custom provider for model: #{model.model}")
+    Providers.Custom.request_stream(model, messages, settings)
+  end
+
   def request_stream(%Model{} = model, messages, settings) do
     Logger.debug(
       "Routing streaming request to OpenAI-compatible provider for: #{model.provider}:#{model.model}"
@@ -168,6 +179,10 @@ defmodule Nous.ModelDispatcher do
 
   def count_tokens(%Model{provider: :openai}, messages) do
     Providers.OpenAI.count_tokens(messages)
+  end
+
+  def count_tokens(%Model{provider: :custom}, messages) do
+    Providers.Custom.count_tokens(messages)
   end
 
   def count_tokens(%Model{}, messages) do

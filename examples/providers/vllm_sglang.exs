@@ -318,6 +318,13 @@ Both vLLM and SGLang can serve behind a reverse proxy or on a remote host:
   )
 
   # Any OpenAI-compatible server (Together, Anyscale, etc.)
+  # Using the recommended custom: prefix
+  agent = Nous.new("custom:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: "https://api.together.xyz/v1",
+    api_key: System.get_env("TOGETHER_API_KEY")
+  )
+
+  # Legacy openai_compatible: prefix still works (backward compatible)
   agent = Nous.new("openai_compatible:meta-llama/Llama-3.1-8B-Instruct",
     base_url: "https://api.together.xyz/v1",
     api_key: System.get_env("TOGETHER_API_KEY")
@@ -354,5 +361,6 @@ Both:
 Model name format:
   vllm:<org>/<model>       → http://localhost:8000/v1
   sglang:<org>/<model>     → http://localhost:30000/v1
-  openai_compatible:<model> → any OpenAI-compatible endpoint
+  custom:<model>           → any OpenAI-compatible endpoint (recommended)
+  openai_compatible:<model> → any OpenAI-compatible endpoint (legacy, still works)
 """)
