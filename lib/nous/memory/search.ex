@@ -34,7 +34,7 @@ defmodule Nous.Memory.Search do
     * `:decay_lambda` - Temporal decay rate (default: 0.001)
   """
   @spec search(module(), term(), String.t(), module() | nil, keyword()) ::
-          {:ok, [{Entry.t(), float()}]}
+          {:ok, [{Entry.t(), float()}]} | {:error, term()}
   def search(store_mod, store_state, query, embedding_provider \\ nil, opts \\ []) do
     scope = Keyword.get(opts, :scope, %{})
     limit = Keyword.get(opts, :limit, 10)
@@ -50,7 +50,29 @@ defmodule Nous.Memory.Search do
       |> maybe_add_type(type)
 
     # Step 1: Text search
-    {:ok, text_results} = store_mod.search_text(store_state, query, store_opts)
+    with {:ok, text_results} <- store_mod.search_text(store_state, query, store_opts) do
+      do_search(text_results, store_mod, store_state, query, embedding_provider,
+        store_opts: store_opts,
+        embedding_opts: embedding_opts,
+        limit: limit,
+        min_score: min_score,
+        type: type,
+        scoring_weights: scoring_weights,
+        decay_lambda: decay_lambda,
+        now: now
+      )
+    end
+  end
+
+  defp do_search(text_results, store_mod, store_state, query, embedding_provider, opts) do
+    store_opts = Keyword.fetch!(opts, :store_opts)
+    embedding_opts = Keyword.fetch!(opts, :embedding_opts)
+    limit = Keyword.fetch!(opts, :limit)
+    min_score = Keyword.fetch!(opts, :min_score)
+    type = Keyword.fetch!(opts, :type)
+    scoring_weights = Keyword.fetch!(opts, :scoring_weights)
+    decay_lambda = Keyword.fetch!(opts, :decay_lambda)
+    now = Keyword.fetch!(opts, :now)
 
     # Step 2: Vector search (if embedding provider configured and store supports it)
     vector_results =
@@ -75,12 +97,22 @@ defmodule Nous.Memory.Search do
         Scoring.rrf_merge(text_results, vector_results)
       end
 
-    # Step 4 & 5: Apply temporal decay and composite scoring
+    # Step 4: Apply temporal decay to relevance, then composite scoring
+    # Note: temporal_decay penalizes old entries on the relevance score.
+    # composite_score has its own recency weight, so we set recency weight to 0
+    # when temporal decay is active to avoid double-penalizing old entries.
+    effective_weights =
+      if decay_lambda > 0 && scoring_weights[:recency] == nil do
+        Keyword.put(scoring_weights, :recency, 0.0)
+      else
+        scoring_weights
+      end
+
     scored =
       merged
       |> Enum.map(fn {entry, relevance} ->
         decayed = Scoring.temporal_decay(relevance, entry, decay_lambda: decay_lambda, now: now)
-        composite = Scoring.composite_score(decayed, entry, weights: scoring_weights, now: now)
+        composite = Scoring.composite_score(decayed, entry, weights: effective_weights, now: now)
         {entry, composite}
       end)
 

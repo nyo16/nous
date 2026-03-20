@@ -56,7 +56,13 @@ defmodule Nous.Persistence.ETS do
   defp ensure_table do
     case :ets.whereis(@table) do
       :undefined ->
-        :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
+        try do
+          :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
+        rescue
+          ArgumentError ->
+            # Another process created the table between whereis and new
+            :ok
+        end
 
       _ref ->
         :ok

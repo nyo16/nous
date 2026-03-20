@@ -392,7 +392,12 @@ defmodule Nous.AgentServer do
         agent_name: state.context.agent_name
       )
 
-    {:noreply, %{state | context: new_context}}
+    state = %{state | context: new_context}
+
+    # Sync with persistence so stale context isn't restored on restart
+    do_save_context(state)
+
+    {:noreply, state}
   end
 
   @impl true

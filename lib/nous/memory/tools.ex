@@ -6,7 +6,7 @@ defmodule Nous.Memory.Tools do
   via `takes_ctx: true` and returns `{:ok, result, ContextUpdate.new()}`.
   """
 
-  alias Nous.Memory.{Embedding, Entry, Search}
+  alias Nous.Memory.{Embedding, Entry, Scope, Search}
   alias Nous.Tool
   alias Nous.Tool.ContextUpdate
 
@@ -230,6 +230,10 @@ defmodule Nous.Memory.Tools do
 
           {:ok, %{status: "found", count: length(formatted), memories: formatted},
            ContextUpdate.new() |> ContextUpdate.set(:memory_config, updated_config)}
+
+        {:error, reason} ->
+          {:ok, %{status: "error", message: "Memory search failed: #{inspect(reason)}"},
+           ContextUpdate.new()}
       end
     end
   end
@@ -270,34 +274,5 @@ defmodule Nous.Memory.Tools do
   defp parse_type_opt(nil), do: nil
   defp parse_type_opt(type), do: parse_type(type)
 
-  defp build_search_scope(config) do
-    case config[:default_search_scope] do
-      :global ->
-        :global
-
-      :session ->
-        scope_from_fields(config, [:agent_id, :session_id, :user_id])
-
-      :user ->
-        scope_from_fields(config, [:user_id])
-
-      # :agent or default
-      _ ->
-        scope_from_fields(config, [:agent_id, :user_id])
-    end
-  end
-
-  defp scope_from_fields(config, fields) do
-    fields
-    |> Enum.reduce(%{}, fn field, acc ->
-      case Map.get(config, field) do
-        nil -> acc
-        value -> Map.put(acc, field, value)
-      end
-    end)
-    |> case do
-      empty when map_size(empty) == 0 -> :global
-      scope -> scope
-    end
-  end
+  defp build_search_scope(config), do: Scope.build(config)
 end

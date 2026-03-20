@@ -622,11 +622,30 @@ defmodule Nous.Agent.Context do
     }
   end
 
+  @atomize_allowed_keys ~w(
+    role content tool_calls tool_call_id name metadata
+    requests input_tokens output_tokens total_tokens
+    version messages system_prompt deps usage needs_response
+    iteration max_iterations started_at agent_name
+    id arguments type function
+  )a
+
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {String.to_atom(k), v}
       {k, v} when is_atom(k) -> {k, v}
+      {k, v} when is_binary(k) -> {safe_to_atom(k), v}
     end)
+  end
+
+  defp safe_to_atom(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError ->
+      if String.to_atom(key) in @atomize_allowed_keys do
+        String.to_atom(key)
+      else
+        key
+      end
   end
 
   defp update_needs_response(ctx, %Message{role: :assistant} = message) do

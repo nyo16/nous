@@ -94,7 +94,7 @@ defmodule Nous.Plugins.Memory do
 
   require Logger
 
-  alias Nous.Memory.{Embedding, Entry, Search, Tools}
+  alias Nous.Memory.{Embedding, Entry, Scope, Search, Tools}
 
   @impl true
   def init(_agent, ctx) do
@@ -224,38 +224,34 @@ defmodule Nous.Plugins.Memory do
       config[:reflection_model] ||
         "#{agent.model.provider}:#{agent.model.model}"
 
-    if reflection_model do
-      # 1. Format recent conversation messages (skip system messages)
-      conversation_text = format_conversation(ctx.messages, max_messages)
+    # 1. Format recent conversation messages (skip system messages)
+    conversation_text = format_conversation(ctx.messages, max_messages)
 
-      # 2. Fetch existing memories
-      scope = build_memory_scope(config)
+    # 2. Fetch existing memories
+    scope = build_memory_scope(config)
 
-      existing_memories =
-        case store_mod.list(store_state, scope: scope, limit: max_memories) do
-          {:ok, entries} -> entries
-          _ -> []
-        end
-
-      memories_text = format_existing_memories(existing_memories)
-
-      # 3. Build reflection prompt and call LLM
-      prompt = build_reflection_prompt(conversation_text, memories_text)
-
-      case Nous.LLM.generate_text(reflection_model, prompt,
-             system: reflection_system_prompt(),
-             max_tokens: max_tokens,
-             temperature: 0.0
-           ) do
-        {:ok, response_text} ->
-          apply_reflection_operations(ctx, config, response_text)
-
-        {:error, reason} ->
-          Logger.warning("Memory auto-update reflection failed: #{inspect(reason)}")
-          ctx
+    existing_memories =
+      case store_mod.list(store_state, scope: scope, limit: max_memories) do
+        {:ok, entries} -> entries
+        _ -> []
       end
-    else
-      ctx
+
+    memories_text = format_existing_memories(existing_memories)
+
+    # 3. Build reflection prompt and call LLM
+    prompt = build_reflection_prompt(conversation_text, memories_text)
+
+    case Nous.LLM.generate_text(reflection_model, prompt,
+           system: reflection_system_prompt(),
+           max_tokens: max_tokens,
+           temperature: 0.0
+         ) do
+      {:ok, response_text} ->
+        apply_reflection_operations(ctx, config, response_text)
+
+      {:error, reason} ->
+        Logger.warning("Memory auto-update reflection failed: #{inspect(reason)}")
+        ctx
     end
   end
 
@@ -281,14 +277,7 @@ defmodule Nous.Plugins.Memory do
     |> Enum.join("\n")
   end
 
-  defp build_memory_scope(config) do
-    case config[:default_search_scope] do
-      :global -> :global
-      :session -> scope_from_config(config, [:agent_id, :session_id, :user_id])
-      :user -> scope_from_config(config, [:user_id])
-      _ -> scope_from_config(config, [:agent_id, :user_id])
-    end
-  end
+  defp build_memory_scope(config), do: Scope.build(config)
 
   defp reflection_system_prompt do
     """
@@ -492,13 +481,7 @@ defmodule Nous.Plugins.Memory do
       limit = config[:inject_limit] || 5
       min_score = config[:inject_min_score] || 0.3
 
-      scope =
-        case config[:default_search_scope] do
-          :global -> :global
-          :session -> scope_from_config(config, [:agent_id, :session_id, :user_id])
-          :user -> scope_from_config(config, [:user_id])
-          _ -> scope_from_config(config, [:agent_id, :user_id])
-        end
+      scope = Scope.build(config)
 
       search_opts = [
         scope: scope,
@@ -538,19 +521,5 @@ defmodule Nous.Plugins.Memory do
       %{role: :user, content: content} when is_binary(content) -> content
       _ -> nil
     end)
-  end
-
-  defp scope_from_config(config, fields) do
-    fields
-    |> Enum.reduce(%{}, fn field, acc ->
-      case Map.get(config, field) do
-        nil -> acc
-        value -> Map.put(acc, field, value)
-      end
-    end)
-    |> case do
-      empty when map_size(empty) == 0 -> :global
-      scope -> scope
-    end
   end
 end
