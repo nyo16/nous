@@ -99,9 +99,99 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 | OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | ✅ |
 | Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | ✅ |
 | LlamaCpp | `llamacpp:local` + `:llamacpp_model` | ✅ |
-| Custom | `openai_compatible:model` + `:base_url` | ✅ |
+| **Custom** | `custom:model` + `:base_url` | ✅ |
 
 All HTTP providers use pure Elixir HTTP clients (Req + Finch). LlamaCpp runs in-process via NIFs.
+
+> **Tip**: The `custom:` prefix works with **any** OpenAI-compatible endpoint—Groq, Together,
+> OpenRouter, local servers (vLLM, SGLang, LM Studio), or self-hosted endpoints. See
+> [Custom Providers](#custom-providers) for details.
+
+### Custom Providers
+
+Use the `custom:` prefix to connect to any OpenAI-compatible API endpoint:
+
+```elixir
+# Quick example with explicit options
+agent = Nous.new("custom:llama-3.1-70b",
+  base_url: "https://api.groq.com/openai/v1",
+  api_key: System.get_env("GROQ_API_KEY")
+)
+{:ok, result} = Nous.run(agent, "Hello!")
+```
+
+#### Configuration Methods
+
+Configuration is loaded in this precedence (higher overrides lower):
+
+1. **Direct options** (per-request):
+   ```elixir
+   Nous.new("custom:my-model",
+     base_url: "https://api.example.com/v1",
+     api_key: "sk-..."
+   )
+   ```
+
+2. **Environment variables**:
+   ```bash
+   export CUSTOM_BASE_URL="https://api.example.com/v1"
+   export CUSTOM_API_KEY="sk-..."
+   ```
+
+3. **Application config**:
+   ```elixir
+   config :nous, :custom,
+     base_url: "https://api.example.com/v1",
+     api_key: "sk-..."
+   ```
+
+#### Examples by Service
+
+**Groq** (fast inference):
+```elixir
+agent = Nous.new("custom:llama-3.1-70b",
+  base_url: "https://api.groq.com/openai/v1",
+  api_key: System.get_env("GROQ_API_KEY")
+)
+```
+
+**Together AI** (model variety):
+```elixir
+agent = Nous.new("custom:meta-llama/Llama-3-70b",
+  base_url: "https://api.together.xyz/v1",
+  api_key: System.get_env("TOGETHER_API_KEY")
+)
+```
+
+**OpenRouter** (unified API):
+```elixir
+agent = Nous.new("custom:anthropic/claude-3.5-sonnet",
+  base_url: "https://openrouter.ai/api/v1",
+  api_key: System.get_env("OPENROUTER_API_KEY")
+)
+```
+
+**Local Servers** (LM Studio, Ollama, vLLM, SGLang):
+```elixir
+# LM Studio (default: localhost:1234)
+agent = Nous.new("custom:qwen3", base_url: "http://localhost:1234/v1")
+
+# Ollama (default: localhost:11434)
+agent = Nous.new("custom:llama2", base_url: "http://localhost:11434/v1")
+
+# vLLM (default: localhost:8000)
+agent = Nous.new("custom:my-model", base_url: "http://localhost:8000/v1")
+
+# SGLang (default: localhost:30000)
+agent = Nous.new("custom:my-model", base_url: "http://localhost:30000/v1")
+
+# Or use environment variables
+# export CUSTOM_BASE_URL="http://localhost:1234/v1"
+agent = Nous.new("custom:qwen3")  # base_url read from env
+```
+
+> **Note**: The legacy `openai_compatible:` prefix still works for backward compatibility
+> but `custom:` is the recommended approach going forward.
 
 ```elixir
 # Switch providers with one line change
