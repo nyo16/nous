@@ -5,7 +5,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
 
     Converts NIF-produced chunk structs into normalized Nous stream events.
 
-    Requires optional dep: `{:llama_cpp_ex, "~> 0.5.0"}`
+    Requires optional dep: `{:llama_cpp_ex, "~> 0.6.5"}`
     """
 
     @behaviour Nous.StreamNormalizer
@@ -88,7 +88,7 @@ else
     @moduledoc """
     Stream normalizer for LlamaCppEx `%ChatCompletionChunk{}` structs.
 
-    **Not available** - add `{:llama_cpp_ex, "~> 0.5.0"}` to your mix.exs deps.
+    **Not available** - add `{:llama_cpp_ex, "~> 0.6.5"}` to your mix.exs deps.
     """
 
     @behaviour Nous.StreamNormalizer

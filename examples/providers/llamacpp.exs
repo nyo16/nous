@@ -12,7 +12,7 @@ IO.puts("=== Nous AI - LlamaCpp (Local NIF) ===\n")
 IO.puts("""
 --- Setup ---
 
-1. Add {:llama_cpp_ex, "~> 0.5.0"} to your mix.exs deps
+1. Add {:llama_cpp_ex, "~> 0.6.5"} to your mix.exs deps
 2. Download a GGUF model (e.g., from HuggingFace)
 3. Set LLAMACPP_MODEL_PATH or edit the path below
 4. Run: mix run examples/providers/llamacpp.exs
