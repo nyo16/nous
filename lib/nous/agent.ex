@@ -27,7 +27,7 @@ defmodule Nous.Agent do
 
   """
 
-  alias Nous.{Fallback, Model, Tool, Types}
+  alias Nous.{Fallback, Hook, Model, Tool, Types}
 
   @type t :: %__MODULE__{
           model: Model.t(),
@@ -42,6 +42,8 @@ defmodule Nous.Agent do
           retries: non_neg_integer(),
           tools: [Tool.t()],
           plugins: [module()],
+          hooks: [Hook.t()],
+          skills: [module() | String.t() | Nous.Skill.t() | {:group, atom()}],
           end_strategy: :early | :exhaustive,
           enable_todos: boolean(),
           behaviour_module: module() | nil
@@ -62,6 +64,8 @@ defmodule Nous.Agent do
     retries: 1,
     tools: [],
     plugins: [],
+    hooks: [],
+    skills: [],
     end_strategy: :early,
     enable_todos: false
   ]
@@ -85,6 +89,8 @@ defmodule Nous.Agent do
     * `:enable_todos` - Enable automatic todo tracking (default: false)
     * `:tools` - List of tool functions or Tool structs
     * `:plugins` - List of plugin modules implementing `Nous.Plugin` behaviour
+    * `:hooks` - List of `Nous.Hook` structs for lifecycle interception
+    * `:skills` - List of skill modules, directory paths, `Nous.Skill` structs, or `{:group, atom()}`
     * `:end_strategy` - How to handle tool calls (`:early` or `:exhaustive`)
     * `:behaviour_module` - Custom agent behaviour module (default: BasicAgent)
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
@@ -128,7 +134,10 @@ defmodule Nous.Agent do
       model_settings: Keyword.get(opts, :model_settings, %{}),
       retries: Keyword.get(opts, :retries, 1),
       tools: parse_tools(Keyword.get(opts, :tools, [])),
-      plugins: Keyword.get(opts, :plugins, []),
+      plugins:
+        ensure_skills_plugin(Keyword.get(opts, :plugins, []), Keyword.get(opts, :skills, [])),
+      hooks: Keyword.get(opts, :hooks, []),
+      skills: Keyword.get(opts, :skills, []),
       end_strategy: Keyword.get(opts, :end_strategy, :early),
       behaviour_module: Keyword.get(opts, :behaviour_module)
     }
@@ -318,5 +327,16 @@ defmodule Nous.Agent do
   @spec generate_name() :: String.t()
   defp generate_name do
     "agent_#{:erlang.unique_integer([:positive])}"
+  end
+
+  # Auto-include Skills plugin when skills are configured
+  defp ensure_skills_plugin(plugins, []), do: plugins
+
+  defp ensure_skills_plugin(plugins, _skills) do
+    if Nous.Plugins.Skills in plugins do
+      plugins
+    else
+      plugins ++ [Nous.Plugins.Skills]
+    end
   end
 end

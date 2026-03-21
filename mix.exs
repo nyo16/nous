@@ -68,6 +68,9 @@ defmodule Nous.MixProject do
       # {:bumblebee, "~> 0.6", optional: true},
       # {:exla, "~> 0.9", optional: true},
 
+      # Process execution for command hooks
+      {:net_runner, "~> 1.0.4"},
+
       # Telemetry
       {:telemetry, "~> 1.2"},
 
