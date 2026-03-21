@@ -91,6 +91,7 @@ defmodule Nous.Agent do
     * `:plugins` - List of plugin modules implementing `Nous.Plugin` behaviour
     * `:hooks` - List of `Nous.Hook` structs for lifecycle interception
     * `:skills` - List of skill modules, directory paths, `Nous.Skill` structs, or `{:group, atom()}`
+    * `:skill_dirs` - List of directory paths to scan for `.md` skill files (convenience for `:skills`)
     * `:end_strategy` - How to handle tool calls (`:early` or `:exhaustive`)
     * `:behaviour_module` - Custom agent behaviour module (default: BasicAgent)
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
@@ -135,9 +136,13 @@ defmodule Nous.Agent do
       retries: Keyword.get(opts, :retries, 1),
       tools: parse_tools(Keyword.get(opts, :tools, [])),
       plugins:
-        ensure_skills_plugin(Keyword.get(opts, :plugins, []), Keyword.get(opts, :skills, [])),
+        ensure_skills_plugin(
+          Keyword.get(opts, :plugins, []),
+          merge_skill_dirs(Keyword.get(opts, :skills, []), Keyword.get(opts, :skill_dirs, []))
+        ),
       hooks: Keyword.get(opts, :hooks, []),
-      skills: Keyword.get(opts, :skills, []),
+      skills:
+        merge_skill_dirs(Keyword.get(opts, :skills, []), Keyword.get(opts, :skill_dirs, [])),
       end_strategy: Keyword.get(opts, :end_strategy, :early),
       behaviour_module: Keyword.get(opts, :behaviour_module)
     }
@@ -339,4 +344,8 @@ defmodule Nous.Agent do
       plugins ++ [Nous.Plugins.Skills]
     end
   end
+
+  # Merge skill_dirs into skills list (directories become string entries)
+  defp merge_skill_dirs(skills, []), do: skills
+  defp merge_skill_dirs(skills, dirs), do: skills ++ dirs
 end

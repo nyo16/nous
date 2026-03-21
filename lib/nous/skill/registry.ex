@@ -63,14 +63,60 @@ defmodule Nous.Skill.Registry do
   end
 
   @doc """
+  Register all skills found in a directory (recursively scans for `.md` files).
+
+  This is the primary API for loading file-based skills from a folder.
+
+  ## Example
+
+      registry = Registry.new()
+      |> Registry.register_directory("priv/skills/")
+      |> Registry.register_directory("~/.nous/skills/")
+
+  """
+  @spec register_directory(t(), String.t()) :: t()
+  def register_directory(%__MODULE__{} = registry, path) when is_binary(path) do
+    skills = Loader.load_directory(path)
+
+    Logger.debug("Loaded #{length(skills)} skill(s) from directory: #{path}")
+
+    register_all(registry, skills)
+  end
+
+  @doc """
+  Register all skills from multiple directories.
+
+  ## Example
+
+      registry = Registry.new()
+      |> Registry.register_directories(["priv/skills/", "~/.nous/skills/", ".nous/skills/"])
+
+  """
+  @spec register_directories(t(), [String.t()]) :: t()
+  def register_directories(%__MODULE__{} = registry, paths) when is_list(paths) do
+    Enum.reduce(paths, registry, &register_directory(&2, &1))
+  end
+
+  @doc """
   Resolve a mixed list of skill specs into a populated registry.
 
   Accepts:
   - Modules implementing `Nous.Skill` behaviour
-  - Directory paths (strings ending with `/`)
+  - Directory paths (strings ending with `/` or existing dirs)
   - File paths (strings ending with `.md`)
   - `Skill.t()` structs
   - `{:group, atom()}` tuples (registers all built-in skills for that group)
+
+  ## Example
+
+      registry = Registry.resolve([
+        MyApp.Skills.CodeReview,         # module
+        "priv/skills/",                  # directory
+        "priv/skills/custom.md",         # single file
+        {:group, :testing},              # built-in group
+        %Skill{name: "inline", ...}      # inline struct
+      ])
+
   """
   @spec resolve([module() | String.t() | Skill.t() | {:group, atom()}]) :: t()
   def resolve(specs) when is_list(specs) do
