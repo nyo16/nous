@@ -590,6 +590,45 @@ agent = Nous.new("openai:gpt-4",
 )
 ```
 
+#### File-Based Skills
+
+Define skills as markdown files with YAML frontmatter — no Elixir code needed:
+
+```markdown
+<!-- priv/skills/api_design.md -->
+---
+name: api_design
+description: RESTful API design best practices
+tags: [api, rest, design]
+group: planning
+activation: auto
+priority: 50
+---
+
+When designing APIs:
+1. Use nouns for resources, verbs for actions
+2. Version your API (v1, v2)
+3. Use proper HTTP status codes
+4. Paginate list endpoints
+```
+
+Load from files, directories, or parse inline:
+
+```elixir
+alias Nous.Skill.Loader
+
+# Load a single file
+{:ok, skill} = Loader.load_file("priv/skills/api_design.md")
+
+# Load all .md files from a directory (recursive)
+skills = Loader.load_directory("priv/skills/")
+
+# Or let the agent scan directories automatically
+agent = Nous.new("openai:gpt-4",
+  skill_dirs: ["priv/skills/", "~/.nous/skills/"]
+)
+```
+
 **21 built-in skills** across 7 groups:
 
 | Group | Skills |
