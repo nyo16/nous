@@ -53,36 +53,50 @@ IO.puts("\nMatches 'write elixir code': #{ElixirExpert.match?("write elixir code
 IO.puts("Matches 'write python code': #{ElixirExpert.match?("write python code")}")
 
 # =============================================================================
-# Example 2: File-based skill (inline parsing)
+# Example 2: File-based skill — loading from markdown files
 # =============================================================================
 
 IO.puts("\n=== Example 2: File-Based Skill ===\n")
 
-markdown_content = """
----
-name: api_design
-description: RESTful API design best practices
-tags: [api, rest, design]
-group: planning
-activation: auto
-priority: 50
----
+# --- 2a: Load a single skill from a .md file ---
+IO.puts("--- 2a: Load a single file ---\n")
 
-When designing APIs:
-1. Use nouns for resources, verbs for actions
-2. Version your API (v1, v2)
-3. Use proper HTTP status codes
-4. Paginate list endpoints
-5. Include HATEOAS links where appropriate
-"""
-
-{:ok, file_skill} = Loader.parse_skill(markdown_content, "api_design.md")
+{:ok, file_skill} = Loader.load_file("examples/skills/api_design.md")
 IO.puts("Loaded skill: #{file_skill.name}")
 IO.puts("Description: #{file_skill.description}")
+IO.puts("Tags: #{inspect(file_skill.tags)}")
 IO.puts("Group: #{file_skill.group}")
 IO.puts("Activation: #{file_skill.activation}")
 IO.puts("Priority: #{file_skill.priority}")
+IO.puts("Source: #{file_skill.source}")
 IO.puts("Instructions preview: #{String.slice(file_skill.instructions, 0..60)}...")
+
+# --- 2b: Load all skills from a directory ---
+IO.puts("\n--- 2b: Load a directory ---\n")
+
+dir_skills = Loader.load_directory("examples/skills/")
+IO.puts("Loaded #{length(dir_skills)} skills from examples/skills/:")
+
+for s <- dir_skills do
+  IO.puts("  #{s.name} (group: #{s.group}, activation: #{s.activation})")
+end
+
+# --- 2c: Parse a skill from an inline markdown string ---
+IO.puts("\n--- 2c: Parse from inline string ---\n")
+
+markdown_content = """
+---
+name: quick_tips
+description: Quick coding tips
+tags: [tips]
+group: coding
+---
+
+Always write tests before shipping.
+"""
+
+{:ok, inline_skill} = Loader.parse_skill(markdown_content, "quick_tips.md")
+IO.puts("Parsed skill: #{inline_skill.name} — #{inline_skill.description}")
 
 # =============================================================================
 # Example 3: Skill Registry — groups, activation, matching
@@ -113,14 +127,16 @@ test_skill = %Skill{
   status: :loaded
 }
 
-# Build registry
+# Build registry — mix module, file-based, and inline skills
 registry =
   Registry.new()
-  # ElixirExpert from above
   |> Registry.register(skill)
   |> Registry.register(file_skill)
   |> Registry.register(review_skill)
   |> Registry.register(test_skill)
+
+# You can also register an entire directory at once:
+# |> Registry.register_directory("priv/skills/")
 
 IO.puts("Registry has #{length(Registry.list(registry))} skills:")
 
@@ -182,6 +198,7 @@ end
 
 IO.puts("\n=== Example 5: Agent with Skills ===\n")
 
+# Mix all skill sources: modules, inline structs, groups, and file directories
 agent =
   Agent.new("openai:gpt-4o-mini",
     instructions: "You are a helpful coding assistant.",
@@ -189,10 +206,13 @@ agent =
       ElixirExpert,
       review_skill,
       {:group, :testing}
-    ]
+    ],
+    # Load .md skill files from directories (scanned recursively)
+    skill_dirs: ["examples/skills/"]
   )
 
 IO.puts("Agent created with #{length(agent.skills)} skill spec(s)")
+IO.puts("Skills list: #{inspect(agent.skills, pretty: true)}")
 IO.puts("Plugins auto-included: #{inspect(agent.plugins)}")
 
 IO.puts("\n=== Done ===")
