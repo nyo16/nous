@@ -115,7 +115,7 @@ defmodule Nous.Plugins.Skills do
 
         registry =
           Enum.reduce(matched, registry, fn skill, reg ->
-            if not Registry.active?(reg, skill.name) do
+            unless Registry.active?(reg, skill.name) do
               Logger.debug("Auto-activating skill: #{skill.name}")
               {_instructions, _tools, reg} = Registry.activate(reg, skill.name, agent, ctx)
               reg

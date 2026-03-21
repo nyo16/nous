@@ -66,13 +66,17 @@ defmodule Nous.Hook.RunnerTest do
           fn _, _ ->
             send(test_pid, :hook_1_ran)
             :deny
-          end, priority: 1),
+          end,
+          priority: 1
+        ),
         make_hook(
           :pre_tool_use,
           fn _, _ ->
             send(test_pid, :hook_2_ran)
             :allow
-          end, priority: 2)
+          end,
+          priority: 2
+        )
       ]
 
       registry = Registry.from_hooks(hooks)
@@ -88,7 +92,9 @@ defmodule Nous.Hook.RunnerTest do
           :pre_tool_use,
           fn _, _ ->
             {:modify, %{arguments: %{"modified" => true}}}
-          end, priority: 1),
+          end,
+          priority: 1
+        ),
         make_hook(
           :pre_tool_use,
           fn _, payload ->
@@ -97,7 +103,9 @@ defmodule Nous.Hook.RunnerTest do
             else
               :deny
             end
-          end, priority: 2)
+          end,
+          priority: 2
+        )
       ]
 
       registry = Registry.from_hooks(hooks)
@@ -146,7 +154,9 @@ defmodule Nous.Hook.RunnerTest do
           fn _, _ ->
             send(test_pid, :hook_2_ran)
             :allow
-          end, priority: 2)
+          end,
+          priority: 2
+        )
       ]
 
       registry = Registry.from_hooks(hooks)
@@ -194,13 +204,17 @@ defmodule Nous.Hook.RunnerTest do
           fn _, _ ->
             send(test_pid, :delete_hook_ran)
             :deny
-          end, matcher: "delete_file"),
+          end,
+          matcher: "delete_file"
+        ),
         make_hook(
           :pre_tool_use,
           fn _, _ ->
             send(test_pid, :read_hook_ran)
             :allow
-          end, matcher: "read_file")
+          end,
+          matcher: "read_file"
+        )
       ]
 
       registry = Registry.from_hooks(hooks)

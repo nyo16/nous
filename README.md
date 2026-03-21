@@ -573,6 +573,59 @@ agent = Nous.ReActAgent.new("openai:gpt-4",
 )
 ```
 
+### Skills
+
+Inject domain knowledge and capabilities into agents with reusable skills:
+
+```elixir
+# Use built-in skills by group
+agent = Nous.new("openai:gpt-4",
+  skills: [{:group, :review}]  # Activates CodeReview + SecurityScan
+)
+
+# Mix module skills, file-based skills, and groups
+agent = Nous.new("openai:gpt-4",
+  skills: [MyApp.Skills.Custom, {:group, :testing}],
+  skill_dirs: ["priv/skills/"]  # Scan directories for .md skill files
+)
+```
+
+**21 built-in skills** across 7 groups:
+
+| Group | Skills |
+|-------|--------|
+| `:coding` | Refactor, ExplainCode, ElixirIdioms, EctoPatterns, OtpPatterns, PhoenixLiveView, PythonFastAPI, PythonTyping, PythonDataScience, PythonUv |
+| `:review` | CodeReview, SecurityScan, PythonSecurity |
+| `:testing` | TestGen, ElixirTesting, PythonTesting |
+| `:debug` | Debug |
+| `:git` | CommitMessage |
+| `:docs` | DocGen |
+| `:planning` | Architect, TaskBreakdown |
+
+Create custom skills as modules or markdown files — see the [Skills Guide](docs/guides/skills.md).
+
+### Hooks
+
+Intercept and control agent behavior at specific lifecycle events:
+
+```elixir
+agent = Nous.new("openai:gpt-4",
+  tools: [&MyTools.delete_file/2],
+  hooks: [
+    %Nous.Hook{
+      event: :pre_tool_use,
+      matcher: "delete_file",
+      type: :function,
+      handler: fn _event, %{arguments: %{"path" => path}} ->
+        if String.starts_with?(path, "/etc"), do: :deny, else: :allow
+      end
+    }
+  ]
+)
+```
+
+6 lifecycle events: `pre_tool_use`, `post_tool_use`, `pre_request`, `post_response`, `session_start`, `session_end`. Three handler types: function, module, command (via NetRunner). See the [Hooks Guide](docs/guides/hooks.md).
+
 ### Plugin System
 
 Extend agents with composable plugins for cross-cutting concerns:

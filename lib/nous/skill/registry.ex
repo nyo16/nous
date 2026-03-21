@@ -21,11 +21,11 @@ defmodule Nous.Skill.Registry do
   require Logger
 
   @type t :: %__MODULE__{
-          skills: %{String.t() => Skill.t()},
-          groups: %{atom() => [String.t()]},
-          tags: %{atom() => [String.t()]},
-          scopes: %{Skill.scope() => [String.t()]},
-          active: MapSet.t(String.t())
+          skills: %{optional(String.t()) => Skill.t()},
+          groups: %{optional(atom()) => [String.t()]},
+          tags: %{optional(atom()) => [String.t()]},
+          scopes: %{optional(Skill.scope()) => [String.t()]},
+          active: term()
         }
 
   defstruct skills: %{},
@@ -404,7 +404,8 @@ defmodule Nous.Skill.Registry do
       Nous.Skills.PythonTesting,
       Nous.Skills.PythonTyping,
       Nous.Skills.PythonDataScience,
-      Nous.Skills.PythonSecurity
+      Nous.Skills.PythonSecurity,
+      Nous.Skills.PythonUv
     ]
     |> Enum.filter(&Code.ensure_loaded?/1)
   end

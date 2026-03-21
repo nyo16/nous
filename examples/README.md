@@ -33,6 +33,10 @@ Progressive learning path from basics to advanced features:
 | [11_human_in_the_loop.exs](https://github.com/nyo16/nous/blob/master/examples/11_human_in_the_loop.exs) | HITL approval workflows (sync + async PubSub) |
 | [12_pubsub_agent.exs](https://github.com/nyo16/nous/blob/master/examples/12_pubsub_agent.exs) | PubSub agent lifecycle, registry, persistence |
 | [13_sub_agents.exs](https://github.com/nyo16/nous/blob/master/examples/13_sub_agents.exs) | Sub-agents (single + parallel) with fan-out/fan-in |
+| [14_structured_output.exs](https://github.com/nyo16/nous/blob/master/examples/14_structured_output.exs) | Ecto schemas, JSON schema, multi-schema selection |
+| [15_input_guard.exs](https://github.com/nyo16/nous/blob/master/examples/15_input_guard.exs) | Prompt injection detection and blocking |
+| [16_hooks.exs](https://github.com/nyo16/nous/blob/master/examples/16_hooks.exs) | Lifecycle hooks: blocking, modification, priority ordering |
+| [17_skills.exs](https://github.com/nyo16/nous/blob/master/examples/17_skills.exs) | Skills: modules, file-based, groups, matching, built-in catalog |
 
 ## Provider Examples
 

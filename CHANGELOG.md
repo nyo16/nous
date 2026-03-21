@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] - 2026-03-21
+
+### Added
+
+- **Hooks system**: Granular lifecycle interceptors for tool execution and request/response flow.
+  - 6 lifecycle events: `pre_tool_use`, `post_tool_use`, `pre_request`, `post_response`, `session_start`, `session_end`
+  - 3 handler types: `:function` (inline), `:module` (behaviour), `:command` (shell via NetRunner)
+  - Matcher-based dispatch: string (exact tool name), regex, or predicate function
+  - Blocking semantics for `pre_tool_use` and `pre_request` — hooks can deny or modify tool calls
+  - Priority-based execution ordering (lower = earlier)
+  - Telemetry events: `[:nous, :hook, :execute, :start | :stop]`, `[:nous, :hook, :denied]`
+  - `Nous.Hook`, `Nous.Hook.Registry`, `Nous.Hook.Runner`
+  - New option on `Agent.new/2`: `:hooks`
+  - New example: `examples/16_hooks.exs`
+
+- **Skills system**: Reusable instruction/capability packages for agents.
+  - Module-based skills with `use Nous.Skill` macro and behaviour callbacks
+  - File-based skills: markdown files with YAML frontmatter, loaded from directories
+  - 5 activation modes: `:manual`, `:auto`, `{:on_match, fn}`, `{:on_tag, tags}`, `{:on_glob, patterns}`
+  - Skill groups: `:coding`, `:review`, `:testing`, `:debug`, `:git`, `:docs`, `:planning`
+  - Registry with load/unload, activate/deactivate, group operations, and input matching
+  - `Nous.Plugins.Skills` — auto-included plugin bridging skills into the agent lifecycle
+  - Directory scanning: `skill_dirs:` option and `Registry.register_directory/2`
+  - Telemetry events: `[:nous, :skill, :activate | :deactivate | :load | :match]`
+  - New options on `Agent.new/2`: `:skills`, `:skill_dirs`
+  - New example: `examples/17_skills.exs`
+  - New guides: `docs/guides/skills.md`, `docs/guides/hooks.md`
+
+- **21 built-in skills**:
+  - Language-agnostic (10): CodeReview, TestGen, Debug, Refactor, ExplainCode, CommitMessage, DocGen, SecurityScan, Architect, TaskBreakdown
+  - Elixir-specific (5): PhoenixLiveView, EctoPatterns, OtpPatterns, ElixirTesting, ElixirIdioms
+  - Python-specific (6): PythonFastAPI, PythonTesting, PythonTyping, PythonDataScience, PythonSecurity, PythonUv
+
+- **NetRunner dependency** (`~> 1.0.4`): Zero-zombie-process OS command execution for command hooks with SIGTERM→SIGKILL timeout escalation.
+
+- 76 new tests for hooks and skills systems.
+
 ## [0.12.11] - 2026-03-19
 
 ### Added
