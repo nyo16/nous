@@ -68,6 +68,9 @@ defmodule Nous.MixProject do
       # {:bumblebee, "~> 0.6", optional: true},
       # {:exla, "~> 0.9", optional: true},
 
+      # Process execution for command hooks
+      {:net_runner, "~> 1.0.4"},
+
       # Telemetry
       {:telemetry, "~> 1.2"},
 
@@ -97,6 +100,8 @@ defmodule Nous.MixProject do
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
 
         # Production Guides
+        {"docs/guides/skills.md", filename: "skills", title: "Skills Guide"},
+        {"docs/guides/hooks.md", filename: "hooks", title: "Hooks Guide"},
         {"docs/guides/liveview-integration.md",
          filename: "liveview_integration", title: "Phoenix LiveView Integration"},
         {"docs/guides/best_practices.md",
@@ -124,6 +129,8 @@ defmodule Nous.MixProject do
           "examples_overview.html"
         ],
         "Production Guides": [
+          "skills.html",
+          "hooks.html",
           "liveview_integration.html",
           "best_practices.html",
           "tool_development.html",
@@ -200,6 +207,38 @@ defmodule Nous.MixProject do
           Nous.Eval.Metrics,
           Nous.Eval.Reporter,
           Nous.Eval.Config
+        ],
+        "Hooks System": [
+          Nous.Hook,
+          Nous.Hook.Registry,
+          Nous.Hook.Runner
+        ],
+        "Skills System": [
+          Nous.Skill,
+          Nous.Skill.Loader,
+          Nous.Skill.Registry,
+          Nous.Plugins.Skills,
+          Nous.Skills.CodeReview,
+          Nous.Skills.TestGen,
+          Nous.Skills.Debug,
+          Nous.Skills.Refactor,
+          Nous.Skills.ExplainCode,
+          Nous.Skills.CommitMessage,
+          Nous.Skills.DocGen,
+          Nous.Skills.SecurityScan,
+          Nous.Skills.Architect,
+          Nous.Skills.TaskBreakdown,
+          Nous.Skills.PhoenixLiveView,
+          Nous.Skills.EctoPatterns,
+          Nous.Skills.OtpPatterns,
+          Nous.Skills.ElixirTesting,
+          Nous.Skills.ElixirIdioms,
+          Nous.Skills.PythonFastAPI,
+          Nous.Skills.PythonTesting,
+          Nous.Skills.PythonTyping,
+          Nous.Skills.PythonDataScience,
+          Nous.Skills.PythonSecurity,
+          Nous.Skills.PythonUv
         ],
         "Plugin System": [
           Nous.Plugin,

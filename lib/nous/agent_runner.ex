@@ -29,6 +29,7 @@ defmodule Nous.AgentRunner do
   alias Nous.{
     Agent,
     Fallback,
+    Hook,
     Message,
     Messages,
     ModelDispatcher,
@@ -102,6 +103,17 @@ defmodule Nous.AgentRunner do
     # Initialize context via plugins
     ctx = Plugin.run_init(agent.plugins, agent, ctx)
 
+    # Initialize hooks registry
+    ctx =
+      if agent.hooks != [] do
+        %{ctx | hook_registry: Hook.Registry.from_hooks(agent.hooks)}
+      else
+        ctx
+      end
+
+    # Fire session_start hooks
+    Hook.Runner.run(ctx.hook_registry, :session_start, %{agent_name: agent.name})
+
     # Patch dangling tool calls when continuing from existing context
     ctx = Context.patch_dangling_tool_calls(ctx)
 
@@ -118,6 +130,12 @@ defmodule Nous.AgentRunner do
 
             # Run after_run plugin hooks
             updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
+
+            # Fire session_end hooks
+            Hook.Runner.run(updated_ctx.hook_registry, :session_end, %{
+              agent_name: agent.name,
+              output: output
+            })
 
             agent_result =
               if updated_ctx != final_ctx,
@@ -446,8 +464,16 @@ defmodule Nous.AgentRunner do
       # Run plugin before_request hooks
       {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
 
-      # If a plugin (e.g. InputGuard) halted execution, skip the LLM call
-      if ctx.needs_response do
+      # Run pre_request hooks (can block the LLM call)
+      pre_request_result =
+        Hook.Runner.run(ctx.hook_registry, :pre_request, %{
+          agent_name: agent.name,
+          tool_count: length(all_tools),
+          iteration: ctx.iteration
+        })
+
+      # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the LLM call
+      if ctx.needs_response and pre_request_result != :deny do
         # Build messages via behaviour
         messages = behaviour.build_messages(agent, ctx)
 
@@ -514,6 +540,12 @@ defmodule Nous.AgentRunner do
 
             # Run plugin after_response hooks
             ctx = Plugin.run_after_response(agent.plugins, agent, response, ctx)
+
+            # Run post_response hooks
+            Hook.Runner.run(ctx.hook_registry, :post_response, %{
+              agent_name: agent.name,
+              iteration: ctx.iteration
+            })
 
             # Process response via behaviour - this handles tool calls and updates needs_response
             ctx = behaviour.process_response(agent, response, ctx)
@@ -597,30 +629,102 @@ defmodule Nous.AgentRunner do
               arguments: call_arguments
             })
 
-            # Check approval for tools that require it
             cleaned_name = clean_tool_name(call_name)
-            tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
 
-            case check_tool_approval(tool, call, acc_ctx) do
-              :reject ->
-                Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
-                result_msg = Message.tool(call_id, "Tool call was rejected by approval handler.")
+            # Run pre_tool_use hooks first (can block or modify args)
+            hook_payload = %{
+              tool_name: cleaned_name,
+              tool_id: call_id,
+              arguments: call_arguments
+            }
+
+            case Hook.Runner.run(acc_ctx.hook_registry, :pre_tool_use, hook_payload) do
+              :deny ->
+                Logger.info("Tool '#{cleaned_name}' denied by hook")
+                result_msg = Message.tool(call_id, "Tool call was denied by hook.")
                 {[result_msg | results], acc_ctx}
 
-              {:edit, new_args} ->
-                Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
-                edited_call = put_tool_field(call, :arguments, new_args)
-
-                {result_msg, acc_ctx} =
-                  execute_and_record_tool(tools, edited_call, run_ctx, behaviour, agent, acc_ctx)
-
+              {:deny, reason} ->
+                Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
+                result_msg = Message.tool(call_id, "Tool call was denied by hook: #{reason}")
                 {[result_msg | results], acc_ctx}
 
-              :approve ->
-                {result_msg, acc_ctx} =
-                  execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
+              {:modify, %{arguments: new_args}} ->
+                # Hook modified the arguments — continue with modified call
+                modified_call = put_tool_field(call, :arguments, new_args)
+                tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
 
-                {[result_msg | results], acc_ctx}
+                case check_tool_approval(tool, modified_call, acc_ctx) do
+                  :reject ->
+                    result_msg =
+                      Message.tool(call_id, "Tool call was rejected by approval handler.")
+
+                    {[result_msg | results], acc_ctx}
+
+                  {:edit, edited_args} ->
+                    edited_call = put_tool_field(modified_call, :arguments, edited_args)
+
+                    {result_msg, acc_ctx} =
+                      execute_and_record_tool(
+                        tools,
+                        edited_call,
+                        run_ctx,
+                        behaviour,
+                        agent,
+                        acc_ctx
+                      )
+
+                    {[result_msg | results], acc_ctx}
+
+                  :approve ->
+                    {result_msg, acc_ctx} =
+                      execute_and_record_tool(
+                        tools,
+                        modified_call,
+                        run_ctx,
+                        behaviour,
+                        agent,
+                        acc_ctx
+                      )
+
+                    {[result_msg | results], acc_ctx}
+                end
+
+              _ ->
+                # :allow or other — proceed to approval check
+                tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
+
+                case check_tool_approval(tool, call, acc_ctx) do
+                  :reject ->
+                    Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
+
+                    result_msg =
+                      Message.tool(call_id, "Tool call was rejected by approval handler.")
+
+                    {[result_msg | results], acc_ctx}
+
+                  {:edit, new_args} ->
+                    Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
+                    edited_call = put_tool_field(call, :arguments, new_args)
+
+                    {result_msg, acc_ctx} =
+                      execute_and_record_tool(
+                        tools,
+                        edited_call,
+                        run_ctx,
+                        behaviour,
+                        agent,
+                        acc_ctx
+                      )
+
+                    {[result_msg | results], acc_ctx}
+
+                  :approve ->
+                    {result_msg, acc_ctx} =
+                      execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
+
+                    {[result_msg | results], acc_ctx}
+                end
             end
           end)
 
@@ -640,7 +744,24 @@ defmodule Nous.AgentRunner do
   defp execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx) do
     call_name = get_tool_field(call, :name)
     call_id = get_tool_field(call, :id)
+    call_arguments = get_tool_field(call, :arguments)
+    cleaned_name = clean_tool_name(call_name)
     {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
+
+    # Run post_tool_use hooks (can modify result)
+    result_msg =
+      case Hook.Runner.run(acc_ctx.hook_registry, :post_tool_use, %{
+             tool_name: cleaned_name,
+             tool_id: call_id,
+             arguments: call_arguments,
+             result: result_msg.content
+           }) do
+        {:modify, %{result: new_result}} ->
+          Message.tool(call_id, new_result)
+
+        _ ->
+          result_msg
+      end
 
     Callbacks.execute(acc_ctx, :on_tool_response, %{
       id: call_id,

@@ -81,7 +81,13 @@ defmodule Nous.Agent.Context do
 
           # PubSub (runtime-only, never serialized)
           pubsub: module() | nil,
-          pubsub_topic: String.t() | nil
+          pubsub_topic: String.t() | nil,
+
+          # Hooks (runtime-only, never serialized)
+          hook_registry: Nous.Hook.Registry.t() | nil,
+
+          # Skills (runtime-only, never serialized)
+          active_skills: [Nous.Skill.t()]
         }
 
   defstruct messages: [],
@@ -99,7 +105,9 @@ defmodule Nous.Agent.Context do
             cancellation_check: nil,
             approval_handler: nil,
             pubsub: nil,
-            pubsub_topic: nil
+            pubsub_topic: nil,
+            hook_registry: nil,
+            active_skills: []
 
   @doc """
   Create a new context with options.
