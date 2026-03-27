@@ -48,6 +48,7 @@ defmodule Nous.LLM do
           | {:top_p, float()}
           | {:base_url, String.t()}
           | {:api_key, String.t()}
+          | {:receive_timeout, non_neg_integer()}
           | {:tools, [function() | Tool.t()]}
           | {:deps, map()}
           | {:fallback, [String.t() | Model.t()]}
@@ -75,6 +76,7 @@ defmodule Nous.LLM do
     * `:top_p` - Nucleus sampling parameter
     * `:base_url` - Override API base URL
     * `:api_key` - Override API key
+    * `:receive_timeout` - HTTP receive timeout in milliseconds (default varies by provider)
     * `:tools` - List of tool functions or Tool structs
     * `:deps` - Dependencies to pass to tool functions
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
@@ -101,7 +103,12 @@ defmodule Nous.LLM do
   def generate_text(model, prompt, opts \\ [])
 
   def generate_text(model_string, prompt, opts) when is_binary(model_string) do
-    model = Model.parse(model_string, Keyword.take(opts, [:base_url, :api_key, :llamacpp_model]))
+    model =
+      Model.parse(
+        model_string,
+        Keyword.take(opts, [:base_url, :api_key, :llamacpp_model, :receive_timeout])
+      )
+
     generate_text(model, prompt, opts)
   end
 
@@ -164,7 +171,12 @@ defmodule Nous.LLM do
   def stream_text(model, prompt, opts \\ [])
 
   def stream_text(model_string, prompt, opts) when is_binary(model_string) do
-    model = Model.parse(model_string, Keyword.take(opts, [:base_url, :api_key, :llamacpp_model]))
+    model =
+      Model.parse(
+        model_string,
+        Keyword.take(opts, [:base_url, :api_key, :llamacpp_model, :receive_timeout])
+      )
+
     stream_text(model, prompt, opts)
   end
 

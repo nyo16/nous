@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.5] - 2026-03-26
+
+### Fixed
+
+- **`receive_timeout` silently dropped in `Nous.LLM`**: `generate_text/3` and `stream_text/3` with a string model only passed `[:base_url, :api_key, :llamacpp_model]` to `Model.parse`, so `receive_timeout` was silently ignored. Now correctly forwarded.
+
+### Removed
+
+- **Dead timeout config**: Removed unused `default_timeout` and `stream_timeout` from `config/config.exs`. Timeouts are determined by per-provider defaults in `Model.default_receive_timeout/1` and each provider module's `@default_timeout`/`@streaming_timeout` constants.
+
+### Documentation
+
+- Added "Timeouts" section to README documenting `receive_timeout` option and default timeouts per provider.
+
 ## [0.13.0] - 2026-03-21
 
 ### Added
