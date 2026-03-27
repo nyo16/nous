@@ -207,6 +207,29 @@ agent = Nous.new("openai:gpt-4",
 )
 ```
 
+### Timeouts
+
+Each provider has sensible default timeouts (60s for cloud APIs, 120s for local models). Override per-model with `receive_timeout`:
+
+```elixir
+# Increase timeout for slow models or large responses
+agent = Nous.new("lmstudio:qwen3",
+  receive_timeout: 300_000  # 5 minutes
+)
+
+# Works with any provider
+agent = Nous.new("openai:gpt-4",
+  receive_timeout: 180_000  # 3 minutes
+)
+```
+
+Default timeouts by provider:
+
+| Provider | Default |
+|----------|---------|
+| OpenAI, Anthropic, Gemini, Groq, Mistral, OpenRouter, Together | 60s |
+| LM Studio, Ollama, vLLM, SGLang, LlamaCpp, Custom | 120s |
+
 ### Google Vertex AI Setup
 
 Vertex AI provides enterprise access to Gemini models via Google Cloud. It supports

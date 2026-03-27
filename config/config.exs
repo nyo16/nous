@@ -12,9 +12,6 @@ config :nous,
   brave_api_key: System.get_env("BRAVE_API_KEY"),
   # Finch pool name
   finch: Nous.Finch,
-  # Timeouts
-  default_timeout: 60_000,
-  stream_timeout: 120_000,
   # Telemetry
   enable_telemetry: true
 
