@@ -8,7 +8,7 @@ defmodule Nous.Plugins.Skills do
 
   ## Automatic Inclusion
 
-  When `skills: [...]` is provided to `Agent.new/2`, this plugin is
+  When `skills: [...]` is provided to `Nous.Agent.new/2`, this plugin is
   automatically added to the plugins list.
 
   ## Lifecycle

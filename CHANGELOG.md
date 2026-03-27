@@ -28,7 +28,7 @@ All notable changes to this project will be documented in this file.
   - Priority-based execution ordering (lower = earlier)
   - Telemetry events: `[:nous, :hook, :execute, :start | :stop]`, `[:nous, :hook, :denied]`
   - `Nous.Hook`, `Nous.Hook.Registry`, `Nous.Hook.Runner`
-  - New option on `Agent.new/2`: `:hooks`
+  - New option on `Nous.Agent.new/2`: `:hooks`
   - New example: `examples/16_hooks.exs`
 
 - **Skills system**: Reusable instruction/capability packages for agents.
@@ -38,9 +38,9 @@ All notable changes to this project will be documented in this file.
   - Skill groups: `:coding`, `:review`, `:testing`, `:debug`, `:git`, `:docs`, `:planning`
   - Registry with load/unload, activate/deactivate, group operations, and input matching
   - `Nous.Plugins.Skills` — auto-included plugin bridging skills into the agent lifecycle
-  - Directory scanning: `skill_dirs:` option and `Registry.register_directory/2`
+  - Directory scanning: `skill_dirs:` option and `Nous.Skill.Registry.register_directory/2`
   - Telemetry events: `[:nous, :skill, :activate | :deactivate | :load | :match]`
-  - New options on `Agent.new/2`: `:skills`, `:skill_dirs`
+  - New options on `Nous.Agent.new/2`: `:skills`, `:skill_dirs`
   - New example: `examples/17_skills.exs`
   - New guides: `docs/guides/skills.md`, `docs/guides/hooks.md`
 
@@ -57,7 +57,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- **Per-run structured output override**: Pass `output_type:` and `structured_output:` as options to `Agent.run/3`, `run_stream/3`, and `run_with_context/3` to override the agent's defaults per call. The same agent can return raw text or structured data depending on the request.
+- **Per-run structured output override**: Pass `output_type:` and `structured_output:` as options to `Nous.Agent.run/3` and `Nous.Agent.run_stream/3` to override the agent's defaults per call. The same agent can return raw text or structured data depending on the request.
 - **Multi-schema selection (`{:one_of, [SchemaA, SchemaB]}`)**: New output_type variant where the LLM dynamically chooses which schema to use per response. Each schema becomes a synthetic tool — the LLM's tool choice acts as schema selection. Includes automatic retry and validation against the selected schema.
   - `OutputSchema.schema_name/1` — public helper to get snake_case name for a schema module
   - `OutputSchema.tool_name_for_schema/1` — build synthetic tool name from schema module
