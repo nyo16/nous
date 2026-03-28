@@ -12,7 +12,7 @@ defmodule Nous.Eval.Reporter.Json do
   def to_json(%SuiteResult{} = result) do
     result
     |> to_map()
-    |> Jason.encode!(pretty: true)
+    |> Nous.JSON.pretty_encode!()
   end
 
   @doc """

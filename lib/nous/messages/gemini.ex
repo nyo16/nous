@@ -158,7 +158,7 @@ defmodule Nous.Messages.Gemini do
   defp message_to_gemini(%Message{role: :tool, content: content, tool_call_id: tool_call_id}) do
     # Gemini handles tool results as user messages with functionResponse
     response =
-      case Jason.decode(content) do
+      case JSON.decode(content) do
         {:ok, decoded} -> decoded
         # Treat as plain text
         {:error, _} -> %{"result" => content}

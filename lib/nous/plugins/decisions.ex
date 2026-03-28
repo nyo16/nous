@@ -28,7 +28,7 @@ defmodule Nous.Plugins.Decisions do
 
   require Logger
 
-  alias Nous.Decisions.{ContextBuilder, Tools}
+  alias Nous.Decisions.ContextBuilder
 
   @impl true
   def init(_agent, ctx) do
@@ -67,7 +67,7 @@ defmodule Nous.Plugins.Decisions do
 
   @impl true
   def tools(_agent, _ctx) do
-    Tools.all_tools()
+    []
   end
 
   @impl true

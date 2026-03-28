@@ -153,7 +153,7 @@ defmodule Nous.Eval.Agents.BasicTest do
 
       is_valid_json =
         if output != "" do
-          case Jason.decode(output) do
+          case JSON.decode(output) do
             {:ok, _} -> true
             _ -> false
           end

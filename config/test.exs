@@ -1,8 +1,6 @@
 import Config
 
-config :nous,
-  log_level: :warning,
-  enable_telemetry: false
+config :nous, []
 
 config :logger, :console,
   format: "$message\n",

@@ -12,7 +12,7 @@ defmodule Nous.Persistence do
 
         @impl true
         def save(session_id, data) do
-          Redix.command(:redix, ["SET", "nous:#{session_id}", Jason.encode!(data)])
+          Redix.command(:redix, ["SET", "nous:#{session_id}", JSON.encode!(data)])
           :ok
         end
 
@@ -20,7 +20,7 @@ defmodule Nous.Persistence do
         def load(session_id) do
           case Redix.command(:redix, ["GET", "nous:#{session_id}"]) do
             {:ok, nil} -> {:error, :not_found}
-            {:ok, json} -> {:ok, Jason.decode!(json, keys: :atoms)}
+            {:ok, json} -> {:ok, json |> JSON.decode!() |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)}
           end
         end
 

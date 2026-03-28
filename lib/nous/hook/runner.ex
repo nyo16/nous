@@ -198,7 +198,7 @@ defmodule Nous.Hook.Runner do
   # Execute a shell command hook via NetRunner
   defp execute_command_hook(command, event, payload, timeout) do
     json_input =
-      Jason.encode!(%{
+      JSON.encode!(%{
         event: event,
         payload: sanitize_payload(payload)
       })
@@ -234,7 +234,7 @@ defmodule Nous.Hook.Runner do
   defp parse_command_output(output) do
     output = String.trim(output)
 
-    case Jason.decode(output) do
+    case JSON.decode(output) do
       {:ok, %{"result" => "deny", "reason" => reason}} ->
         {:deny, reason}
 

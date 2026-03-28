@@ -200,7 +200,7 @@ defmodule Nous.Messages.OpenAI do
       "function" => %{
         "name" => Map.get(tool_call, "name") || Map.get(tool_call, :name),
         "arguments" =>
-          Jason.encode!(Map.get(tool_call, "arguments") || Map.get(tool_call, :arguments, %{}))
+          JSON.encode!(Map.get(tool_call, "arguments") || Map.get(tool_call, :arguments, %{}))
       }
     }
   end
@@ -212,7 +212,7 @@ defmodule Nous.Messages.OpenAI do
     arguments = Map.get(func, "arguments") || Map.get(func, :arguments)
 
     parsed_args =
-      case Jason.decode(arguments) do
+      case JSON.decode(arguments) do
         {:ok, decoded_args} ->
           decoded_args
 

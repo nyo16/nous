@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.12.12"
+  @version "0.13.1"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -36,9 +36,6 @@ defmodule Nous.MixProject do
 
   defp deps do
     [
-      # JSON
-      {:jason, "~> 1.4"},
-
       # YAML (for evaluation framework)
       {:yaml_elixir, "~> 2.9"},
 

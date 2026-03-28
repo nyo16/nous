@@ -1,7 +1,6 @@
 import Config
 
-config :nous,
-  log_level: :debug
+config :nous, []
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",

@@ -44,7 +44,7 @@ defmodule Nous.Providers.HTTP do
   ## Error Reasons
     * `%{status: integer(), body: term()}` - HTTP error response
     * `%Mint.TransportError{}` - Network error
-    * `%Jason.DecodeError{}` - JSON decode error
+    * `%JSON.DecodeError{}` - JSON decode error
   """
   @spec post(String.t(), map(), list(), keyword()) :: {:ok, map()} | {:error, term()}
   def post(url, body, headers, opts \\ [])
@@ -111,23 +111,24 @@ defmodule Nous.Providers.HTTP do
     finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
     stream_parser = Keyword.get(opts, :stream_parser)
 
-    case Jason.encode(body) do
-      {:ok, json_body} ->
-        # Add streaming headers if not present
-        headers = ensure_streaming_headers(headers)
+    try do
+      json_body = JSON.encode!(body)
 
-        stream =
-          Stream.resource(
-            fn ->
-              start_streaming(url, headers, json_body, finch_name, timeout, stream_parser)
-            end,
-            &next_chunk/1,
-            &cleanup/1
-          )
+      # Add streaming headers if not present
+      headers = ensure_streaming_headers(headers)
 
-        {:ok, stream}
+      stream =
+        Stream.resource(
+          fn ->
+            start_streaming(url, headers, json_body, finch_name, timeout, stream_parser)
+          end,
+          &next_chunk/1,
+          &cleanup/1
+        )
 
-      {:error, error} ->
+      {:ok, stream}
+    catch
+      _, error ->
         Logger.error("Failed to encode request body: #{inspect(error)}")
         {:error, %{reason: :json_encode_error, details: error}}
     end
@@ -347,7 +348,7 @@ defmodule Nous.Providers.HTTP do
   defp parse_data_content(""), do: nil
 
   defp parse_data_content(data) do
-    case Jason.decode(data) do
+    case JSON.decode(data) do
       {:ok, parsed} ->
         parsed
 
