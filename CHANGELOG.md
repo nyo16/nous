@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.12.16] - 2026-03-28
+
+### Fixed
+
+- **Anthropic multimodal messages silently lost image data**: `message_to_anthropic/1` matched on `content` being a list, but `Message.user/2` stores content parts in `metadata.content_parts` as a string. Multimodal messages were sent as plain text, losing all image data. Now reads from metadata like the OpenAI formatter.
+- **Gemini multimodal messages had the same issue**: Same pattern match bug caused all image content to be dropped.
+- **Anthropic image format incorrect**: The `data` field contained the full data URL prefix (`data:image/jpeg;base64,...`) instead of raw base64; `media_type` was hardcoded to `"image/jpeg"` regardless of actual format; HTTP URLs were incorrectly wrapped as base64 source instead of `"type": "url"`.
+- **Gemini had no image support**: All non-text content parts fell through to a `[Image: ...]` text representation. Now uses `inlineData` for base64 images and `fileData` for HTTP URLs.
+- **Anthropic duplicate thinking block**: Assistant messages with reasoning content emitted the `thinking` block twice.
+
+### Added
+
+- `ContentPart.parse_data_url/1` — extract MIME type and raw base64 data from a data URL string.
+- `ContentPart.data_url?/1` and `ContentPart.http_url?/1` — URL type predicates.
+- OpenAI formatter: `:image` content type support (converts to data URL) and `detail` option passthrough for `image_url` parts.
+- Comprehensive vision test pipeline (`test/nous/vision_pipeline_test.exs`) with 19 unit tests covering format conversion across all providers and 4 LLM integration tests.
+- Test fixture images: `test_square.png` (100x100 red), `test_tiny.webp` (minimal WebP).
+
 ## [0.12.15] - 2026-03-26
 
 ### Fixed
