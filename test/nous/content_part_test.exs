@@ -139,6 +139,59 @@ defmodule Nous.Message.ContentPartTest do
     end
   end
 
+  describe "parse_data_url/1" do
+    test "parses JPEG data URL" do
+      data_url = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
+      assert {:ok, "image/jpeg", "/9j/4AAQSkZJRg=="} = ContentPart.parse_data_url(data_url)
+    end
+
+    test "parses PNG data URL" do
+      data_url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
+      assert {:ok, "image/png", "iVBORw0KGgoAAAANSUhEUg=="} = ContentPart.parse_data_url(data_url)
+    end
+
+    test "parses WebP data URL" do
+      data_url = "data:image/webp;base64,UklGRlYAAABXRUJQ"
+      assert {:ok, "image/webp", "UklGRlYAAABXRUJQ"} = ContentPart.parse_data_url(data_url)
+    end
+
+    test "returns error for HTTP URL" do
+      assert {:error, :not_data_url} = ContentPart.parse_data_url("https://example.com/img.jpg")
+    end
+
+    test "returns error for plain string" do
+      assert {:error, :not_data_url} = ContentPart.parse_data_url("not a data url")
+    end
+
+    test "returns error for malformed data URL" do
+      assert {:error, :invalid_data_url} = ContentPart.parse_data_url("data:badformat")
+    end
+  end
+
+  describe "data_url?/1" do
+    test "returns true for data URLs" do
+      assert ContentPart.data_url?("data:image/jpeg;base64,abc")
+    end
+
+    test "returns false for HTTP URLs" do
+      refute ContentPart.data_url?("https://example.com/img.jpg")
+    end
+  end
+
+  describe "http_url?/1" do
+    test "returns true for HTTPS URLs" do
+      assert ContentPart.http_url?("https://example.com/img.jpg")
+    end
+
+    test "returns true for HTTP URLs" do
+      assert ContentPart.http_url?("http://example.com/img.jpg")
+    end
+
+    test "returns false for data URLs" do
+      refute ContentPart.http_url?("data:image/jpeg;base64,abc")
+    end
+  end
+
   describe "constructors" do
     test "text/1 creates text content part" do
       part = ContentPart.text("Hello world")

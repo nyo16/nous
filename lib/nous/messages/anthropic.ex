@@ -117,13 +117,14 @@ defmodule Nous.Messages.Anthropic do
 
   # Private helpers
 
-  defp message_to_anthropic(%Message{role: :user, content: content}) when is_binary(content) do
-    %{"role" => "user", "content" => content}
+  defp message_to_anthropic(%Message{role: :user, metadata: %{content_parts: content_parts}})
+       when is_list(content_parts) do
+    anthropic_content = Enum.map(content_parts, &content_part_to_anthropic/1)
+    %{"role" => "user", "content" => anthropic_content}
   end
 
-  defp message_to_anthropic(%Message{role: :user, content: content}) when is_list(content) do
-    anthropic_content = Enum.map(content, &content_part_to_anthropic/1)
-    %{"role" => "user", "content" => anthropic_content}
+  defp message_to_anthropic(%Message{role: :user, content: content}) when is_binary(content) do
+    %{"role" => "user", "content" => content}
   end
 
   defp message_to_anthropic(%Message{
@@ -142,11 +143,6 @@ defmodule Nous.Messages.Anthropic do
     parts =
       if content && content != "",
         do: [%{"type" => "text", "text" => content} | parts],
-        else: parts
-
-    parts =
-      if reasoning && reasoning != "",
-        do: [%{"type" => "thinking", "thinking" => reasoning} | parts],
         else: parts
 
     parts =
@@ -187,12 +183,44 @@ defmodule Nous.Messages.Anthropic do
   end
 
   defp content_part_to_anthropic(%ContentPart{type: :image_url, content: url}) do
+    cond do
+      ContentPart.data_url?(url) ->
+        case ContentPart.parse_data_url(url) do
+          {:ok, media_type, base64_data} ->
+            %{
+              "type" => "image",
+              "source" => %{
+                "type" => "base64",
+                "media_type" => media_type,
+                "data" => base64_data
+              }
+            }
+
+          {:error, _} ->
+            %{"type" => "text", "text" => "[Image: invalid data URL]"}
+        end
+
+      ContentPart.http_url?(url) ->
+        %{
+          "type" => "image",
+          "source" => %{
+            "type" => "url",
+            "url" => url
+          }
+        }
+
+      true ->
+        %{"type" => "text", "text" => "[Image: #{url}]"}
+    end
+  end
+
+  defp content_part_to_anthropic(%ContentPart{type: :image, content: data, options: opts}) do
     %{
       "type" => "image",
       "source" => %{
         "type" => "base64",
-        "media_type" => "image/jpeg",
-        "data" => url
+        "media_type" => Map.get(opts, :media_type, "image/png"),
+        "data" => data
       }
     }
   end

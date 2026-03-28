@@ -110,13 +110,14 @@ defmodule Nous.Messages.Gemini do
 
   # Private helpers
 
-  defp message_to_gemini(%Message{role: :user, content: content}) when is_binary(content) do
-    %{"role" => "user", "parts" => [%{"text" => content}]}
+  defp message_to_gemini(%Message{role: :user, metadata: %{content_parts: content_parts}})
+       when is_list(content_parts) do
+    gemini_parts = Enum.map(content_parts, &content_part_to_gemini/1)
+    %{"role" => "user", "parts" => gemini_parts}
   end
 
-  defp message_to_gemini(%Message{role: :user, content: content}) when is_list(content) do
-    gemini_parts = Enum.map(content, &content_part_to_gemini/1)
-    %{"role" => "user", "parts" => gemini_parts}
+  defp message_to_gemini(%Message{role: :user, content: content}) when is_binary(content) do
+    %{"role" => "user", "parts" => [%{"text" => content}]}
   end
 
   defp message_to_gemini(%Message{
@@ -180,8 +181,46 @@ defmodule Nous.Messages.Gemini do
     %{"text" => text}
   end
 
+  defp content_part_to_gemini(%ContentPart{type: :image_url, content: url}) do
+    cond do
+      ContentPart.data_url?(url) ->
+        case ContentPart.parse_data_url(url) do
+          {:ok, mime_type, base64_data} ->
+            %{"inlineData" => %{"mimeType" => mime_type, "data" => base64_data}}
+
+          {:error, _} ->
+            %{"text" => "[Image: invalid data URL]"}
+        end
+
+      ContentPart.http_url?(url) ->
+        mime_type =
+          url
+          |> URI.parse()
+          |> Map.get(:path, "")
+          |> ContentPart.detect_mime_type()
+          |> then(fn
+            "application/octet-stream" -> "image/jpeg"
+            type -> type
+          end)
+
+        %{"fileData" => %{"mimeType" => mime_type, "fileUri" => url}}
+
+      true ->
+        %{"text" => "[Image: #{url}]"}
+    end
+  end
+
+  defp content_part_to_gemini(%ContentPart{type: :image, content: data, options: opts}) do
+    %{
+      "inlineData" => %{
+        "mimeType" => Map.get(opts, :media_type, "image/png"),
+        "data" => data
+      }
+    }
+  end
+
   defp content_part_to_gemini(%ContentPart{} = part) do
-    # Convert to text representation for Gemini
+    # Fallback: convert to text representation
     %{"text" => ContentPart.to_text([part])}
   end
 
