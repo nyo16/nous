@@ -313,4 +313,104 @@ defmodule Nous.MessagesGeminiTest do
       assert [{:thinking_delta, "Thinking step"}] = events
     end
   end
+
+  describe "multimodal message formatting" do
+    alias Nous.Message.ContentPart
+
+    test "formats user message with data URL image as inlineData" do
+      msg =
+        Message.user([
+          ContentPart.text("Describe this image"),
+          ContentPart.image_url("data:image/jpeg;base64,/9j/4AAQSkZJRg==")
+        ])
+
+      {_sys, [formatted]} = Gemini.to_format([msg])
+      assert formatted["role"] == "user"
+
+      [text_part, image_part] = formatted["parts"]
+      assert text_part == %{"text" => "Describe this image"}
+      assert image_part["inlineData"]["mimeType"] == "image/jpeg"
+      assert image_part["inlineData"]["data"] == "/9j/4AAQSkZJRg=="
+    end
+
+    test "extracts correct mimeType from PNG data URL" do
+      msg =
+        Message.user([
+          ContentPart.text("What is this?"),
+          ContentPart.image_url("data:image/png;base64,iVBORw0KGgo=")
+        ])
+
+      {_sys, [formatted]} = Gemini.to_format([msg])
+
+      image_part =
+        Enum.find(formatted["parts"], &Map.has_key?(&1, "inlineData"))
+
+      assert image_part["inlineData"]["mimeType"] == "image/png"
+      assert image_part["inlineData"]["data"] == "iVBORw0KGgo="
+    end
+
+    test "formats HTTP URL as fileData" do
+      msg =
+        Message.user([
+          ContentPart.text("Describe"),
+          ContentPart.image_url("https://example.com/photo.jpg")
+        ])
+
+      {_sys, [formatted]} = Gemini.to_format([msg])
+
+      file_part =
+        Enum.find(formatted["parts"], &Map.has_key?(&1, "fileData"))
+
+      assert file_part["fileData"]["fileUri"] == "https://example.com/photo.jpg"
+      assert file_part["fileData"]["mimeType"] == "image/jpeg"
+    end
+
+    test "formats :image content part as inlineData" do
+      msg =
+        Message.user([
+          ContentPart.text("Describe"),
+          ContentPart.image("raw_base64_data", media_type: "image/webp")
+        ])
+
+      {_sys, [formatted]} = Gemini.to_format([msg])
+
+      image_part =
+        Enum.find(formatted["parts"], &Map.has_key?(&1, "inlineData"))
+
+      assert image_part["inlineData"]["mimeType"] == "image/webp"
+      assert image_part["inlineData"]["data"] == "raw_base64_data"
+    end
+
+    test "formats multiple images in one message" do
+      msg =
+        Message.user([
+          ContentPart.text("Compare"),
+          ContentPart.image_url("data:image/jpeg;base64,abc123"),
+          ContentPart.image_url("data:image/png;base64,def456")
+        ])
+
+      {_sys, [formatted]} = Gemini.to_format([msg])
+
+      image_parts =
+        Enum.filter(formatted["parts"], &Map.has_key?(&1, "inlineData"))
+
+      assert length(image_parts) == 2
+      assert Enum.at(image_parts, 0)["inlineData"]["mimeType"] == "image/jpeg"
+      assert Enum.at(image_parts, 1)["inlineData"]["mimeType"] == "image/png"
+    end
+
+    test "detects MIME type from HTTP URL extension" do
+      msg =
+        Message.user([
+          ContentPart.image_url("https://example.com/image.png")
+        ])
+
+      {_sys, [formatted]} = Gemini.to_format([msg])
+
+      file_part =
+        Enum.find(formatted["parts"], &Map.has_key?(&1, "fileData"))
+
+      assert file_part["fileData"]["mimeType"] == "image/png"
+    end
+  end
 end

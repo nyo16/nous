@@ -262,6 +262,64 @@ defmodule Nous.Message.ContentPart do
     {:error, :incompatible_types}
   end
 
+  # URL utilities
+
+  @doc """
+  Parse a data URL into its MIME type and base64 data components.
+
+  ## Examples
+
+      iex> ContentPart.parse_data_url("data:image/jpeg;base64,/9j/4AAQ...")
+      {:ok, "image/jpeg", "/9j/4AAQ..."}
+
+      iex> ContentPart.parse_data_url("https://example.com/image.jpg")
+      {:error, :not_data_url}
+
+  """
+  @spec parse_data_url(String.t()) :: {:ok, String.t(), String.t()} | {:error, atom()}
+  def parse_data_url("data:" <> rest) do
+    case String.split(rest, ";base64,", parts: 2) do
+      [media_type, base64_data] when media_type != "" and base64_data != "" ->
+        {:ok, media_type, base64_data}
+
+      _ ->
+        {:error, :invalid_data_url}
+    end
+  end
+
+  def parse_data_url(_), do: {:error, :not_data_url}
+
+  @doc """
+  Check if a string is a data URL.
+
+  ## Examples
+
+      iex> ContentPart.data_url?("data:image/png;base64,abc")
+      true
+
+      iex> ContentPart.data_url?("https://example.com/img.jpg")
+      false
+
+  """
+  @spec data_url?(String.t()) :: boolean()
+  def data_url?(url) when is_binary(url), do: String.starts_with?(url, "data:")
+
+  @doc """
+  Check if a string is an HTTP(S) URL.
+
+  ## Examples
+
+      iex> ContentPart.http_url?("https://example.com/img.jpg")
+      true
+
+      iex> ContentPart.http_url?("data:image/png;base64,abc")
+      false
+
+  """
+  @spec http_url?(String.t()) :: boolean()
+  def http_url?(url) when is_binary(url),
+    do: String.starts_with?(url, "http://") or String.starts_with?(url, "https://")
+
   # Image conversion utilities
 
   @doc """

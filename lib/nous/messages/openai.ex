@@ -170,8 +170,22 @@ defmodule Nous.Messages.OpenAI do
     %{"type" => "text", "text" => text}
   end
 
-  defp content_part_to_openai(%ContentPart{type: :image_url, content: url}) do
-    %{"type" => "image_url", "image_url" => %{"url" => url}}
+  defp content_part_to_openai(%ContentPart{type: :image_url, content: url, options: opts}) do
+    image_url_map = %{"url" => url}
+
+    image_url_map =
+      case Map.get(opts, :detail) do
+        nil -> image_url_map
+        detail -> Map.put(image_url_map, "detail", detail)
+      end
+
+    %{"type" => "image_url", "image_url" => image_url_map}
+  end
+
+  defp content_part_to_openai(%ContentPart{type: :image, content: data, options: opts}) do
+    media_type = Map.get(opts, :media_type, "image/png")
+    data_url = "data:#{media_type};base64,#{data}"
+    %{"type" => "image_url", "image_url" => %{"url" => data_url}}
   end
 
   defp content_part_to_openai(%ContentPart{} = part) do

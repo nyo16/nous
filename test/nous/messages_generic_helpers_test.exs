@@ -81,11 +81,11 @@ defmodule Nous.MessagesGenericHelpersTest do
       assert user_msg["role"] == "user"
       assert user_msg["parts"] == [%{"text" => "Hello, world!"}]
 
-      # Check multi-modal user message (flattened to single text part)
+      # Check multi-modal user message (content parts preserved)
       multimodal_msg = Enum.at(gemini_messages, 1)
       assert multimodal_msg["role"] == "user"
-      # Flattened to single text part
-      assert length(multimodal_msg["parts"]) == 1
+      # Content parts are now properly preserved (text + image)
+      assert length(multimodal_msg["parts"]) == 2
     end
 
     test "handles OpenAI-compatible providers (Groq, LMStudio, Mistral)", %{messages: messages} do
@@ -599,24 +599,24 @@ defmodule Nous.MessagesGenericHelpersTest do
         ])
       ]
 
-      # Test Anthropic format conversion
+      # Test Anthropic format conversion - content parts are now properly preserved
       {_system, anthropic_messages} = Messages.to_provider_format(messages, :anthropic)
       user_msg = List.first(anthropic_messages)
 
       assert user_msg["role"] == "user"
-      # Multi-modal content is converted to a flattened text representation
-      assert is_binary(user_msg["content"])
-      assert user_msg["content"] =~ "Analyze this"
-      assert user_msg["content"] =~ "and this"
+      assert is_list(user_msg["content"])
+      assert length(user_msg["content"]) == 4
 
-      # Test Gemini format conversion
+      types = Enum.map(user_msg["content"], & &1["type"])
+      assert types == ["text", "image", "text", "image"]
+
+      # Test Gemini format conversion - content parts are now properly preserved
       {_system, gemini_messages} = Messages.to_provider_format(messages, :gemini)
       user_msg = List.first(gemini_messages)
 
       assert user_msg["role"] == "user"
       assert is_list(user_msg["parts"])
-      # Flattened to single text part
-      assert length(user_msg["parts"]) == 1
+      assert length(user_msg["parts"]) == 4
     end
 
     test "handles empty and nil values gracefully" do
