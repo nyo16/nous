@@ -11,9 +11,7 @@ config :nous,
   mistral_api_key: System.get_env("MISTRAL_API_KEY"),
   brave_api_key: System.get_env("BRAVE_API_KEY"),
   # Finch pool name
-  finch: Nous.Finch,
-  # Telemetry
-  enable_telemetry: true
+  finch: Nous.Finch
 
 # Note: gemini_ex configuration commented out as it's not actively used yet
 # Uncomment when you need to use Google Gemini models:

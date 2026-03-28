@@ -124,19 +124,4 @@ defmodule Nous.Fallback do
       }
     )
   end
-
-  @doc false
-  def emit_fallback_exhausted(last_model, reason, opts) do
-    prefix = Keyword.get(opts, :telemetry_prefix, [:nous, :fallback])
-
-    :telemetry.execute(
-      prefix ++ [:exhausted],
-      %{system_time: System.system_time()},
-      %{
-        last_provider: last_model.provider,
-        last_model: last_model.model,
-        reason: reason
-      }
-    )
-  end
 end

@@ -43,7 +43,7 @@ defmodule Nous.Providers.VertexAI do
       {:goth, "~> 1.4"}
 
       # application.ex — start Goth in your supervision tree
-      credentials = System.get_env("GOOGLE_CREDENTIALS") |> Jason.decode!()
+      credentials = System.get_env("GOOGLE_CREDENTIALS") |> JSON.decode!()
 
       children = [
         {Goth, name: MyApp.Goth, source: {:service_account, credentials}}

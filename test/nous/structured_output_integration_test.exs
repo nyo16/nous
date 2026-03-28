@@ -133,7 +133,7 @@ defmodule Nous.StructuredOutputIntegrationTest do
       do: ~s({"score": 2.0})
 
     defp respond("check_settings", settings, _call_count) do
-      Jason.encode!(%{
+      JSON.encode!(%{
         has_response_format: Map.has_key?(settings, :response_format),
         has_tools: Map.has_key?(settings, :tools)
       })

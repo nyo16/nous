@@ -214,7 +214,7 @@ defmodule Nous.Providers.HTTPTest do
         "special_chars" => "line1\nline2\ttab"
       }
 
-      event = "data: #{Jason.encode!(json)}"
+      event = "data: #{JSON.encode!(json)}"
       result = HTTP.parse_sse_event(event)
 
       assert result == json
@@ -458,7 +458,7 @@ defmodule Nous.Providers.HTTPTest do
         }
       }
 
-      event = "data: #{Jason.encode!(nested)}"
+      event = "data: #{JSON.encode!(nested)}"
       result = HTTP.parse_sse_event(event)
 
       assert get_in(result, ["l1", "l2", "l3", "l4", "l5"]) == "deep"

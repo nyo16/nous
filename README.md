@@ -6,9 +6,15 @@
 
 AI agent framework for Elixir with multi-provider LLM support.
 
-[![Elixir](https://img.shields.io/badge/elixir-~%3E%201.15-purple.svg)](https://elixir-lang.org)
+[![Elixir](https://img.shields.io/badge/elixir-1.18%2B-purple.svg)](https://elixir-lang.org)
+[![OTP](https://img.shields.io/badge/OTP-27%2B-blue.svg)](https://www.erlang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/nyo16/nous/blob/master/LICENSE)
 [![Status](https://img.shields.io/badge/status-active-brightgreen.svg)](#features)
+
+## Requirements
+
+- **Elixir** 1.18+ (uses built-in `JSON` module)
+- **OTP** 27+
 
 ## Installation
 

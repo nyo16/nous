@@ -81,7 +81,7 @@ if Code.ensure_loaded?(Exqlite) do
         entry.session_id,
         entry.user_id,
         entry.namespace,
-        Jason.encode!(entry.metadata || %{}),
+        JSON.encode!(entry.metadata || %{}),
         entry.access_count,
         datetime_to_iso(entry.created_at),
         datetime_to_iso(entry.updated_at),
@@ -357,7 +357,7 @@ if Code.ensure_loaded?(Exqlite) do
     defp field_to_column(field), do: to_string(field)
 
     defp encode_field(:embedding, val), do: encode_embedding(val)
-    defp encode_field(:metadata, val), do: Jason.encode!(val || %{})
+    defp encode_field(:metadata, val), do: JSON.encode!(val || %{})
     defp encode_field(:evergreen, val), do: bool_to_int(val)
     defp encode_field(:type, val), do: to_string(val)
 
@@ -368,13 +368,18 @@ if Code.ensure_loaded?(Exqlite) do
     defp encode_field(_key, val), do: val
 
     defp encode_embedding(nil), do: nil
-    defp encode_embedding(list) when is_list(list), do: Jason.encode!(list)
+    defp encode_embedding(list) when is_list(list), do: JSON.encode!(list)
 
     defp decode_embedding(nil), do: nil
-    defp decode_embedding(blob) when is_binary(blob), do: Jason.decode!(blob)
+    defp decode_embedding(blob) when is_binary(blob), do: JSON.decode!(blob)
 
     defp decode_json(nil), do: %{}
-    defp decode_json(str) when is_binary(str), do: Jason.decode!(str, keys: :atoms)
+    defp decode_json(str) when is_binary(str), do: decode_json_atoms(str)
+
+    defp decode_json_atoms(str) when is_binary(str), do: str |> JSON.decode!() |> atomize_keys()
+
+    defp atomize_keys(map) when is_map(map),
+      do: Map.new(map, fn {k, v} -> {String.to_existing_atom(k), v} end)
 
     defp bool_to_int(true), do: 1
     defp bool_to_int(false), do: 0

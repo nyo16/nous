@@ -368,7 +368,7 @@ defmodule Nous.OutputSchemaTest do
         )
 
       result = OutputSchema.extract_response_text(msg, :anthropic)
-      assert Jason.decode!(result) == %{"name" => "Alice", "age" => 30}
+      assert JSON.decode!(result) == %{"name" => "Alice", "age" => 30}
     end
   end
 
@@ -859,7 +859,7 @@ defmodule Nous.OutputSchemaTest do
       {text, schema} = OutputSchema.extract_response_for_one_of(msg, schemas)
 
       assert schema == SentimentResult
-      assert Jason.decode!(text) == %{"sentiment" => "positive", "confidence" => 0.95}
+      assert JSON.decode!(text) == %{"sentiment" => "positive", "confidence" => 0.95}
     end
 
     test "with second schema tool call returns correct schema" do
@@ -878,7 +878,7 @@ defmodule Nous.OutputSchemaTest do
       {text, schema} = OutputSchema.extract_response_for_one_of(msg, schemas)
 
       assert schema == TopicResult
-      assert Jason.decode!(text) == %{"topic" => "elixir", "keywords" => ["otp"]}
+      assert JSON.decode!(text) == %{"topic" => "elixir", "keywords" => ["otp"]}
     end
 
     test "with plain text message returns text and nil schema" do
@@ -963,7 +963,7 @@ defmodule Nous.OutputSchemaTest do
         )
 
       result = OutputSchema.extract_response_text(msg, :openai)
-      assert Jason.decode!(result) == %{"sentiment" => "positive", "confidence" => 0.9}
+      assert JSON.decode!(result) == %{"sentiment" => "positive", "confidence" => 0.9}
     end
 
     test "still works with standard __structured_output__ name" do
@@ -979,7 +979,7 @@ defmodule Nous.OutputSchemaTest do
         )
 
       result = OutputSchema.extract_response_text(msg, :anthropic)
-      assert Jason.decode!(result) == %{"name" => "Alice"}
+      assert JSON.decode!(result) == %{"name" => "Alice"}
     end
   end
 end

@@ -70,7 +70,7 @@ if Code.ensure_loaded?(Duckdbex) do
         entry.session_id,
         entry.user_id,
         entry.namespace,
-        Jason.encode!(entry.metadata || %{}),
+        JSON.encode!(entry.metadata || %{}),
         entry.access_count,
         datetime_to_iso(entry.created_at),
         datetime_to_iso(entry.updated_at),
@@ -290,7 +290,7 @@ if Code.ensure_loaded?(Duckdbex) do
     defp field_to_column(field), do: to_string(field)
 
     defp encode_field(:embedding, val), do: val
-    defp encode_field(:metadata, val), do: Jason.encode!(val || %{})
+    defp encode_field(:metadata, val), do: JSON.encode!(val || %{})
     defp encode_field(:evergreen, val), do: val
     defp encode_field(:type, val), do: to_string(val)
 
@@ -301,7 +301,12 @@ if Code.ensure_loaded?(Duckdbex) do
     defp encode_field(_key, val), do: val
 
     defp decode_json(nil), do: %{}
-    defp decode_json(str) when is_binary(str), do: Jason.decode!(str, keys: :atoms)
+    defp decode_json(str) when is_binary(str), do: decode_json_atoms(str)
+
+    defp decode_json_atoms(str) when is_binary(str), do: str |> JSON.decode!() |> atomize_keys()
+
+    defp atomize_keys(map) when is_map(map),
+      do: Map.new(map, fn {k, v} -> {String.to_existing_atom(k), v} end)
 
     defp to_bool(true), do: true
     defp to_bool(false), do: false

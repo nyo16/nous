@@ -174,7 +174,7 @@ defmodule Nous.OutputSchema do
     # Extract JSON from markdown if needed
     text = extract_json_from_markdown(text)
 
-    case Jason.decode(text) do
+    case JSON.decode(text) do
       {:ok, parsed} ->
         # Try each schema in order, return first success
         result =
@@ -201,11 +201,11 @@ defmodule Nous.OutputSchema do
              )}
         end
 
-      {:error, %Jason.DecodeError{} = error} ->
+      {:error, error} ->
         {:error,
          Errors.ValidationError.exception(
-           message: "Failed to parse JSON: #{Exception.message(error)}",
-           errors: [json: {"parse error", [detail: Exception.message(error)]}],
+           message: "Failed to parse JSON: #{inspect(error)}",
+           errors: [json: {"parse error", [detail: inspect(error)]}],
            output_type: {:one_of, schemas}
          )}
     end
@@ -215,15 +215,15 @@ defmodule Nous.OutputSchema do
     # For md_json mode, extract JSON from markdown code fence
     text = extract_json_from_markdown(text)
 
-    case Jason.decode(text) do
+    case JSON.decode(text) do
       {:ok, parsed} ->
         cast_and_validate(parsed, output_type)
 
-      {:error, %Jason.DecodeError{} = error} ->
+      {:error, error} ->
         {:error,
          Errors.ValidationError.exception(
-           message: "Failed to parse JSON: #{Exception.message(error)}",
-           errors: [json: {"parse error", [detail: Exception.message(error)]}],
+           message: "Failed to parse JSON: #{inspect(error)}",
+           errors: [json: {"parse error", [detail: inspect(error)]}],
            output_type: output_type
          )}
     end
@@ -273,7 +273,7 @@ defmodule Nous.OutputSchema do
 
       tool_call ->
         args = tool_call[:arguments] || tool_call["arguments"] || %{}
-        Jason.encode!(args)
+        JSON.encode!(args)
     end
   end
 
@@ -328,7 +328,7 @@ defmodule Nous.OutputSchema do
         name = schema_name(schema)
         tool_name = tool_name_for_schema(schema)
         json_schema = to_json_schema(schema)
-        schema_json = if json_schema, do: Jason.encode!(json_schema, pretty: true), else: "{}"
+        schema_json = if json_schema, do: Nous.JSON.pretty_encode!(json_schema), else: "{}"
         llm_doc = try_llm_doc(schema)
         doc_line = if llm_doc, do: "\nDescription: #{llm_doc}", else: ""
 
@@ -353,7 +353,7 @@ defmodule Nous.OutputSchema do
     json_schema = to_json_schema(output_type)
     mode = Keyword.get(opts, :mode, :auto)
 
-    schema_json = if json_schema, do: Jason.encode!(json_schema, pretty: true), else: nil
+    schema_json = Nous.JSON.pretty_encode!(json_schema)
 
     cond do
       mode == :md_json && schema_json ->
@@ -436,7 +436,7 @@ defmodule Nous.OutputSchema do
         name = tool_call[:name] || tool_call["name"]
         schema = find_schema_for_tool_name(name, schemas)
         args = tool_call[:arguments] || tool_call["arguments"] || %{}
-        {Jason.encode!(args), schema}
+        {JSON.encode!(args), schema}
     end
   end
 

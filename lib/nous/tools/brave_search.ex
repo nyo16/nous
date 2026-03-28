@@ -168,7 +168,7 @@ defmodule Nous.Tools.BraveSearch do
 
     case :httpc.request(:get, {String.to_charlist(full_url), headers}, [], []) do
       {:ok, {{_, 200, _}, _headers, body}} ->
-        case Jason.decode(to_string(body)) do
+        case JSON.decode(to_string(body)) do
           {:ok, response} ->
             results = parse_web_results(response)
             {:ok, results}
@@ -208,7 +208,7 @@ defmodule Nous.Tools.BraveSearch do
 
     case :httpc.request(:get, {String.to_charlist(full_url), headers}, [], []) do
       {:ok, {{_, 200, _}, _headers, body}} ->
-        case Jason.decode(to_string(body)) do
+        case JSON.decode(to_string(body)) do
           {:ok, response} ->
             results = parse_news_results(response)
             {:ok, results}

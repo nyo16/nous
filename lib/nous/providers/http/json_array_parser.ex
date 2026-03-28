@@ -51,7 +51,7 @@ defmodule Nous.Providers.HTTP.JSONArrayParser do
 
     case extract_next_object(trimmed) do
       {:ok, json_str, rest} ->
-        case Jason.decode(json_str) do
+        case JSON.decode(json_str) do
           {:ok, parsed} ->
             extract_objects(rest, [parsed | acc])
 

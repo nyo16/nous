@@ -389,6 +389,6 @@ defmodule Mix.Tasks.Nous.Optimize do
         end),
       generated_at: DateTime.to_iso8601(DateTime.utc_now())
     }
-    |> Jason.encode!(pretty: true)
+    |> Nous.JSON.pretty_encode!()
   end
 end

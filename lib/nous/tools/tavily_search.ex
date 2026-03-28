@@ -75,7 +75,7 @@ defmodule Nous.Tools.TavilySearch do
 
   defp perform_search(query, api_key, search_depth, max_results, include_answer) do
     body =
-      Jason.encode!(%{
+      JSON.encode!(%{
         api_key: api_key,
         query: query,
         search_depth: search_depth,

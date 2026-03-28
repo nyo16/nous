@@ -208,7 +208,7 @@ defmodule Nous.Message do
   """
   @spec tool(String.t(), String.t() | map(), keyword()) :: t()
   def tool(tool_call_id, result, opts \\ []) do
-    content = if is_binary(result), do: result, else: Jason.encode!(result)
+    content = if is_binary(result), do: result, else: JSON.encode!(result)
 
     attrs =
       %{role: :tool, content: content, tool_call_id: tool_call_id}

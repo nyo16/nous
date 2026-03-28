@@ -233,7 +233,7 @@ defmodule Mix.Tasks.Nous.Eval do
           |> Enum.map(fn {name, result} -> {name, Nous.Eval.Reporter.Json.to_map(result)} end)
           |> Enum.into(%{})
           |> Map.put(:generated_at, DateTime.to_iso8601(DateTime.utc_now()))
-          |> Jason.encode!(pretty: true)
+          |> Nous.JSON.pretty_encode!()
 
         if output_path do
           File.write!(output_path, json_output)
