@@ -2,11 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.13.1] - 2026-03-28
-
-### Breaking
-
-- **Minimum Elixir 1.18+ / OTP 27+ required**: Migrated from `Jason` to Elixir's built-in `JSON` module. Jason is no longer a direct dependency (remains as transitive dep via ecto/req/goth).
+## [0.12.17] - 2026-03-28
 
 ### Removed
 
@@ -23,7 +19,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- All JSON encoding/decoding uses built-in `JSON` module instead of `Jason`.
+- All JSON encoding/decoding uses built-in `JSON` module instead of `Jason`. Jason removed from direct dependencies.
 - Added `Nous.JSON.pretty_encode!/1` helper for pretty-printed JSON output (used in LLM prompts and eval reports).
 - Updated README with Elixir 1.18+ / OTP 27+ requirements.
 
