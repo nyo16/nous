@@ -37,6 +37,7 @@ Progressive learning path from basics to advanced features:
 | [15_input_guard.exs](https://github.com/nyo16/nous/blob/master/examples/15_input_guard.exs) | Prompt injection detection and blocking |
 | [16_hooks.exs](https://github.com/nyo16/nous/blob/master/examples/16_hooks.exs) | Lifecycle hooks: blocking, modification, priority ordering |
 | [17_skills.exs](https://github.com/nyo16/nous/blob/master/examples/17_skills.exs) | Skills: modules, file-based (load from .md files/dirs), groups, matching, built-in catalog |
+| [18_workflow.exs](https://github.com/nyo16/nous/blob/master/examples/18_workflow.exs) | DAG workflow engine: pipelines, branching, parallel, cycles, HITL, hooks, LLM agents |
 
 ## Provider Examples
 
