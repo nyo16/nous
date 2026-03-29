@@ -281,7 +281,9 @@ defmodule Nous.Workflow.Compiler do
   and the graph does not allow them.
   """
   @spec topological_sort(Graph.t()) ::
-          {:ok, [Graph.node_id()], [[Graph.node_id()]]} | {:error, [term()]}
+          {:ok, [Graph.node_id()], [[Graph.node_id()]]}
+          | {:ok, [Graph.node_id()], [[Graph.node_id()]], map()}
+          | {:error, [term()]}
   def topological_sort(%Graph{} = graph) do
     # Compute in-degrees
     in_degrees =
