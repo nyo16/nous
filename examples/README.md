@@ -39,6 +39,17 @@ Progressive learning path from basics to advanced features:
 | [17_skills.exs](https://github.com/nyo16/nous/blob/master/examples/17_skills.exs) | Skills: modules, file-based (load from .md files/dirs), groups, matching, built-in catalog |
 | [18_workflow.exs](https://github.com/nyo16/nous/blob/master/examples/18_workflow.exs) | DAG workflow engine: pipelines, branching, parallel, cycles, HITL, hooks, LLM agents |
 
+## Workflow Examples
+
+End-to-end workflows with real LLM agent steps:
+
+| File | Description |
+|------|-------------|
+| [workflow/research_pipeline.exs](https://github.com/nyo16/nous/blob/master/examples/workflow/research_pipeline.exs) | Multi-agent research: plan → parallel search → synthesize report |
+| [workflow/quality_loop.exs](https://github.com/nyo16/nous/blob/master/examples/workflow/quality_loop.exs) | LLM generates content, loops until quality gate passes |
+| [workflow/human_review.exs](https://github.com/nyo16/nous/blob/master/examples/workflow/human_review.exs) | Human-in-the-loop: approve, edit, and suspend patterns |
+| [workflow/parallel_analysis.exs](https://github.com/nyo16/nous/blob/master/examples/workflow/parallel_analysis.exs) | Batch sentiment analysis + multi-specialist parallel branches |
+
 ## Provider Examples
 
 Provider-specific configuration and features:

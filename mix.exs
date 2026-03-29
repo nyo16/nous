@@ -112,6 +112,7 @@ defmodule Nous.MixProject do
          filename: "evaluation", title: "Evaluation Framework Guide"},
         {"docs/guides/structured_output.md",
          filename: "structured_output", title: "Structured Output Guide"},
+        {"docs/guides/workflows.md", filename: "workflows", title: "Workflow Engine Guide"},
 
         # Design Documents
         {"docs/design/llm_council_design.md",
@@ -134,7 +135,8 @@ defmodule Nous.MixProject do
           "troubleshooting.html",
           "migration_guide.html",
           "evaluation.html",
-          "structured_output.html"
+          "structured_output.html",
+          "workflows.html"
         ],
         Design: [
           "council_design.html"
@@ -297,6 +299,25 @@ defmodule Nous.MixProject do
           Nous.Tools.SearchScrape,
           Nous.Tools.TavilySearch,
           Nous.Tools.ResearchNotes
+        ],
+        "Workflow Engine": [
+          Nous.Workflow,
+          Nous.Workflow.Graph,
+          Nous.Workflow.Node,
+          Nous.Workflow.Edge,
+          Nous.Workflow.State,
+          Nous.Workflow.Compiler,
+          Nous.Workflow.Engine,
+          Nous.Workflow.Engine.Executor,
+          Nous.Workflow.Engine.ParallelExecutor,
+          Nous.Workflow.Engine.StateMerger,
+          Nous.Workflow.Mermaid,
+          Nous.Workflow.Trace,
+          Nous.Workflow.Checkpoint,
+          Nous.Workflow.Checkpoint.Store,
+          Nous.Workflow.Checkpoint.ETS,
+          Nous.Workflow.Scratch,
+          Nous.Workflow.Telemetry
         ]
       ]
     ]
