@@ -23,7 +23,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.12.0"}
+    {:nous, "~> 0.13.0"}
   ]
 end
 ```
@@ -883,6 +883,36 @@ agent = Nous.new("openai:gpt-4",
 
 See the [Memory Examples](#memory-examples) section below for complete examples.
 
+### Workflow Engine
+
+Compose agents, tools, and control flow as executable DAGs:
+
+```elixir
+alias Nous.Workflow
+
+# Build a workflow graph
+graph =
+  Workflow.new("research_pipeline")
+  |> Workflow.add_node(:plan, :agent_step, %{agent: planner, prompt: "Plan research on: ..."})
+  |> Workflow.add_node(:search, :parallel_map, %{
+    items: fn state -> state.data.queries end,
+    handler: fn query, _state -> search(query) end,
+    max_concurrency: 5,
+    result_key: :findings
+  })
+  |> Workflow.add_node(:synthesize, :agent_step, %{agent: writer, prompt: "Synthesize findings."})
+  |> Workflow.add_node(:review, :human_checkpoint, %{prompt: "Approve report?"})
+  |> Workflow.chain([:plan, :search, :synthesize, :review])
+
+# Run it
+{:ok, state} = Workflow.run(graph, %{topic: "AI agents"}, trace: true)
+
+# Visualize
+IO.puts(Workflow.to_mermaid(graph))
+```
+
+**Supports:** branching, cycles with max-iteration guards, static + dynamic parallelism, pause/resume, hooks, subworkflows, error strategies (retry/skip/fallback), telemetry, tracing, checkpointing. See [examples/18_workflow.exs](examples/18_workflow.exs).
+
 ### Deep Research
 
 Autonomous multi-step research with citations:
@@ -964,6 +994,7 @@ See [examples/advanced/liveview_integration.exs](examples/advanced/liveview_inte
 | [09_agent_server.exs](examples/09_agent_server.exs) | GenServer agent |
 | [10_react_agent.exs](examples/10_react_agent.exs) | ReAct pattern |
 | [13_sub_agents.exs](examples/13_sub_agents.exs) | Sub-agents (single + parallel) |
+| [18_workflow.exs](examples/18_workflow.exs) | DAG workflow engine |
 
 ### Provider Examples
 
@@ -1006,6 +1037,8 @@ Nous.Telemetry.attach_default_handler()
 - `[:nous, :tool, :timeout]`
 - `[:nous, :fallback, :activated/exhausted]`
 - `[:nous, :context, :update]`
+- `[:nous, :workflow, :run, :start/stop/exception]`
+- `[:nous, :workflow, :node, :start/stop/exception]`
 
 ## Evaluation Framework
 

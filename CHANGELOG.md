@@ -2,13 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] - 2026-03-28
+
+### Added
+
+- **`Nous.Workflow` — DAG/graph-based workflow engine** for orchestrating agents, tools, and control flow as executable directed graphs. Complements Decisions (reasoning tracking) and Teams (persistent agent groups).
+  - **Builder API**: `Ecto.Multi`-style pipes — `Workflow.new/1 |> add_node/4 |> connect/3 |> chain/2 |> run/2`
+  - **8 node types**: `:agent_step`, `:tool_step`, `:transform`, `:branch`, `:parallel`, `:parallel_map`, `:human_checkpoint`, `:subworkflow`
+  - **Hand-rolled graph**: dual adjacency maps, Kahn's algorithm for topological sort + cycle detection + parallel execution levels in one O(V+E) pass
+  - **Static parallel**: named branches fan-out concurrently via `Task.Supervisor`
+  - **Dynamic `parallel_map`**: runtime fan-out over data lists with `max_concurrency` throttling — the scatter-gather pattern
+  - **Cycle support**: edge-following execution with per-node max-iteration guards for retry/quality-gate loops
+  - **Workflow hooks**: `:pre_node`, `:post_node`, `:workflow_start`, `:workflow_end` — integrates with existing `Nous.Hook` struct
+  - **Pause/resume**: via hook (`{:pause, reason}`), `:atomics` external signal, or `:human_checkpoint` auto-suspend
+  - **Error strategies**: `:fail_fast`, `:skip`, `{:retry, max, delay}`, `{:fallback, node_id}` per node
+  - **Telemetry**: `[:nous, :workflow, :run|:node, :start|:stop|:exception]` events
+  - **Execution tracing**: opt-in per-node timing and status recording (`trace: true`)
+  - **Checkpointing**: `Checkpoint` struct + `Store` behaviour + ETS backend
+  - **Subworkflows**: nested workflow invocation with `input_mapper`/`output_mapper` for data isolation
+  - **Runtime graph mutation**: `on_node_complete` callback, `Graph.insert_after/6`, `Graph.remove_node/2`
+  - **Mermaid visualization**: `Workflow.to_mermaid/1` generates flowchart diagrams with type-specific node shapes
+  - **Scratch ETS**: optional per-workflow ETS table for large/binary data exchange between steps
+  - **113 new tests** covering all workflow features
+
 ## [0.12.17] - 2026-03-28
 
 ### Removed
 
 - **Dead module `Nous.Decisions.Tools`**: 4 tool functions never used by any plugin or code path.
 - **Dead module `Nous.StreamNormalizer.Mistral`**: Mistral provider uses the default OpenAI-compatible normalizer.
-- **Dead function `Nous.Fallback.emit_fallback_exhausted/3`**: Defined but never called.
+- **Dead function** `emit_fallback_exhausted/3` in Fallback module: Defined but never called.
 - **Dead config `enable_telemetry`**: Set in config files but never read — telemetry is always on.
 - **Dead config `log_level`**: Set in dev/test configs but never read by Nous.
 - **Unused test fixtures**: `NousTest.Fixtures.LLMResponses` and its generator script (generated Oct 2025, never imported).
@@ -20,7 +43,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - All JSON encoding/decoding uses built-in `JSON` module instead of `Jason`. Jason removed from direct dependencies.
-- Added `Nous.JSON.pretty_encode!/1` helper for pretty-printed JSON output (used in LLM prompts and eval reports).
+- Added `pretty_encode!/1` helper to internal JSON module for pretty-printed JSON output (used in LLM prompts and eval reports).
 - Updated README with Elixir 1.18+ / OTP 27+ requirements.
 
 ## [0.12.16] - 2026-03-28
