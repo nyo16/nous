@@ -326,7 +326,7 @@ Goth handles OAuth2 token fetching and auto-refresh from the service account cre
 
 ```elixir
 # application.ex — start Goth in your supervision tree
-credentials = System.get_env("GOOGLE_CREDENTIALS") |> Jason.decode!()
+credentials = System.get_env("GOOGLE_CREDENTIALS") |> JSON.decode!()
 
 children = [
   {Goth, name: MyApp.Goth, source: {:service_account, credentials}}

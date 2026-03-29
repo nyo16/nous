@@ -480,7 +480,7 @@ defmodule ConfigMigrator do
   def migrate_agent_configs do
     # Read old configuration
     old_config = File.read!("config/agents.json")
-    |> Jason.decode!()
+    |> JSON.decode!()
 
     # Convert to new format
     new_config = Enum.map(old_config, fn agent_config ->
@@ -497,7 +497,7 @@ defmodule ConfigMigrator do
     end)
 
     # Save new configuration
-    File.write!("config/agents_v2.json", Jason.encode!(new_config, pretty: true))
+    File.write!("config/agents_v2.json", JSON.encode!(new_config, pretty: true))
   end
 
   defp migrate_model_string(old_model) do

@@ -28,7 +28,7 @@ IO.puts("Project: #{project}")
 IO.puts("Region: #{System.get_env("GOOGLE_CLOUD_REGION", "us-central1")}\n")
 
 # Start Goth with service account credentials from env var
-credentials = Jason.decode!(credentials_json)
+credentials = JSON.decode!(credentials_json)
 
 {:ok, _} = Goth.start_link(name: Nous.TestGoth, source: {:service_account, credentials})
 

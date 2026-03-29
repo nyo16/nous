@@ -607,11 +607,11 @@ def call_external_api(ctx, %{"endpoint" => endpoint, "data" => data}) do
   api_key = ctx.deps[:api_key]
   base_url = ctx.deps[:base_url]
 
-  case HTTPoison.post("#{base_url}/#{endpoint}", Jason.encode!(data), [
+  case HTTPoison.post("#{base_url}/#{endpoint}", JSON.encode!(data), [
     {"Authorization", "Bearer #{api_key}"},
     {"Content-Type", "application/json"}
   ]) do
-    {:ok, %{status_code: 200, body: body}} -> Jason.decode!(body)
+    {:ok, %{status_code: 200, body: body}} -> JSON.decode!(body)
     {:ok, %{status_code: status}} -> {:error, "API returned #{status}"}
     {:error, reason} -> {:error, "Network error: #{inspect(reason)}"}
   end

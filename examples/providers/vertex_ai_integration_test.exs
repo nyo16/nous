@@ -46,7 +46,7 @@ end
 {auth_method, agent_opts} =
   cond do
     json = System.get_env("GOOGLE_CREDENTIALS") ->
-      credentials = Jason.decode!(json)
+      credentials = JSON.decode!(json)
 
       {:ok, _} =
         Goth.start_link(name: Nous.IntegrationGoth, source: {:service_account, credentials})
@@ -54,7 +54,7 @@ end
       {"Goth (GOOGLE_CREDENTIALS)", %{goth: Nous.IntegrationGoth}}
 
     path = System.get_env("GOOGLE_APPLICATION_CREDENTIALS") ->
-      credentials = path |> File.read!() |> Jason.decode!()
+      credentials = path |> File.read!() |> JSON.decode!()
 
       {:ok, _} =
         Goth.start_link(name: Nous.IntegrationGoth, source: {:service_account, credentials})

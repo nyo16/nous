@@ -498,7 +498,7 @@ def check_model_availability(model_string) do
       # Check if LM Studio has the model loaded
       case HTTPoison.get("http://localhost:1234/v1/models") do
         {:ok, %{body: body}} ->
-          models = Jason.decode!(body)["data"]
+          models = JSON.decode!(body)["data"]
           if Enum.any?(models, &String.contains?(&1["id"], model_name)) do
             :ok
           else
@@ -811,7 +811,7 @@ defmodule HealthCheck do
   defp check_lm_studio do
     case HTTPoison.get("http://localhost:1234/v1/models") do
       {:ok, %{status_code: 200, body: body}} ->
-        models = Jason.decode!(body)["data"]
+        models = JSON.decode!(body)["data"]
         IO.puts("  ✅ LM Studio running with #{length(models)} models")
 
       {:error, %{reason: :econnrefused}} ->

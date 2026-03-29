@@ -138,7 +138,7 @@ defmodule MyApp.DataProtection do
   def encrypt_conversation(conversation_data) do
     key = get_encryption_key()
     :crypto.crypto_one_time(:aes_256_gcm, key, generate_iv(),
-                           Jason.encode!(conversation_data), true)
+                           JSON.encode!(conversation_data), true)
   end
 end
 ```
