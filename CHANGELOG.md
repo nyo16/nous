@@ -31,7 +31,7 @@ All notable changes to this project will be documented in this file.
 
 - **Dead module `Nous.Decisions.Tools`**: 4 tool functions never used by any plugin or code path.
 - **Dead module `Nous.StreamNormalizer.Mistral`**: Mistral provider uses the default OpenAI-compatible normalizer.
-- **Dead function `Nous.Fallback.emit_fallback_exhausted/3`**: Defined but never called.
+- **Dead function** `emit_fallback_exhausted/3` in Fallback module: Defined but never called.
 - **Dead config `enable_telemetry`**: Set in config files but never read — telemetry is always on.
 - **Dead config `log_level`**: Set in dev/test configs but never read by Nous.
 - **Unused test fixtures**: `NousTest.Fixtures.LLMResponses` and its generator script (generated Oct 2025, never imported).
@@ -43,7 +43,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 
 - All JSON encoding/decoding uses built-in `JSON` module instead of `Jason`. Jason removed from direct dependencies.
-- Added `Nous.JSON.pretty_encode!/1` helper for pretty-printed JSON output (used in LLM prompts and eval reports).
+- Added `pretty_encode!/1` helper to internal JSON module for pretty-printed JSON output (used in LLM prompts and eval reports).
 - Updated README with Elixir 1.18+ / OTP 27+ requirements.
 
 ## [0.12.16] - 2026-03-28
