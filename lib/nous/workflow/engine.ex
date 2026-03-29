@@ -71,8 +71,11 @@ defmodule Nous.Workflow.Engine do
     hooks = Keyword.get(opts, :hooks, [])
     pause_ref = Keyword.get(opts, :pause_ref)
     trace_enabled = Keyword.get(opts, :trace, false)
+    on_node_complete = Keyword.get(opts, :on_node_complete)
+    scratch_enabled = Keyword.get(opts, :scratch, false)
 
     trace = if trace_enabled, do: Trace.new(), else: nil
+    scratch = if scratch_enabled, do: Nous.Workflow.Scratch.new(), else: nil
 
     run_ctx = %{
       graph: graph,
@@ -81,7 +84,9 @@ defmodule Nous.Workflow.Engine do
       visit_counts: %{},
       hooks: hooks,
       pause_ref: pause_ref,
-      trace: trace
+      trace: trace,
+      on_node_complete: on_node_complete,
+      scratch: scratch
     }
 
     start_time = System.monotonic_time()
@@ -111,6 +116,7 @@ defmodule Nous.Workflow.Engine do
           status: :completed
         })
 
+        maybe_cleanup_scratch(final_ctx)
         final_state = maybe_attach_trace(final_state, final_ctx.trace)
         {:ok, final_state}
 
@@ -332,6 +338,9 @@ defmodule Nous.Workflow.Engine do
 
         # Run post_node hooks
         updated_state = run_post_node_hooks(run_ctx.hooks, node.id, result, updated_state)
+
+        # Run on_node_complete callback (may mutate graph)
+        run_ctx = run_on_node_complete(run_ctx, node, updated_state)
 
         # Determine next path
         next_nodes =
@@ -623,5 +632,30 @@ defmodule Nous.Workflow.Engine do
 
   defp maybe_attach_trace(state, trace) do
     %{state | metadata: Map.put(state.metadata, :trace, trace)}
+  end
+
+  defp maybe_cleanup_scratch(%{scratch: nil}), do: :ok
+
+  defp maybe_cleanup_scratch(%{scratch: scratch}) do
+    Nous.Workflow.Scratch.cleanup(scratch)
+  end
+
+  defp run_on_node_complete(%{on_node_complete: nil} = run_ctx, _node, _state), do: run_ctx
+
+  defp run_on_node_complete(%{on_node_complete: callback} = run_ctx, node, state) do
+    try do
+      case callback.(node, state, run_ctx.graph) do
+        :continue ->
+          run_ctx
+
+        {:modify, new_graph} ->
+          Logger.info("Graph modified by on_node_complete after node #{node.id}")
+          %{run_ctx | graph: new_graph}
+      end
+    rescue
+      e ->
+        Logger.warning("on_node_complete callback failed: #{inspect(e)}")
+        run_ctx
+    end
   end
 end

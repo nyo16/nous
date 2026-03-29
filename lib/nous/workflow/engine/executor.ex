@@ -116,6 +116,31 @@ defmodule Nous.Workflow.Engine.Executor do
     Nous.Workflow.Engine.ParallelExecutor.execute_parallel_map(node, state)
   end
 
+  def execute(%Node{type: :subworkflow} = node, %State{} = state) do
+    workflow_graph = Map.fetch!(node.config, :workflow)
+    input_mapper = Map.get(node.config, :input_mapper, & &1)
+    output_mapper = Map.get(node.config, :output_mapper, & &1)
+
+    # Map parent state data to sub-workflow input
+    sub_input = input_mapper.(state.data)
+
+    case Nous.Workflow.run(workflow_graph, sub_input) do
+      {:ok, sub_state} ->
+        # Map sub-workflow output back to parent state
+        mapped_output = output_mapper.(sub_state.data)
+
+        updated_state =
+          state
+          |> State.put_result(node.id, mapped_output)
+          |> State.update_data(fn data -> Map.merge(data, mapped_output) end)
+
+        {:ok, mapped_output, updated_state}
+
+      {:error, reason} ->
+        {:error, {:subworkflow_failed, node.id, reason}}
+    end
+  end
+
   def execute(%Node{type: type}, _state) do
     {:error, {:not_implemented, "node type #{inspect(type)} is not yet implemented"}}
   end

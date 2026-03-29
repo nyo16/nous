@@ -46,7 +46,7 @@ defmodule Nous.Workflow do
   - `run/2,3` — compile and execute in one step
   """
 
-  alias Nous.Workflow.{Graph, Compiler, Engine}
+  alias Nous.Workflow.{Graph, Compiler, Engine, Mermaid}
 
   # ---------------------------------------------------------------------------
   # Graph builder (delegated to Graph)
@@ -75,6 +75,23 @@ defmodule Nous.Workflow do
   """
   @spec validate(Graph.t()) :: :ok | {:error, [term()]}
   defdelegate validate(graph), to: Compiler
+
+  # ---------------------------------------------------------------------------
+  # Visualization
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Generate a Mermaid flowchart diagram string from the graph.
+  """
+  @spec to_mermaid(Graph.t(), keyword()) :: String.t()
+  defdelegate to_mermaid(graph, opts \\ []), to: Mermaid
+
+  # ---------------------------------------------------------------------------
+  # Graph mutation
+  # ---------------------------------------------------------------------------
+
+  defdelegate insert_after(graph, after_id, new_id, type, config \\ %{}, opts \\ []), to: Graph
+  defdelegate remove_node(graph, node_id), to: Graph
 
   # ---------------------------------------------------------------------------
   # Execution

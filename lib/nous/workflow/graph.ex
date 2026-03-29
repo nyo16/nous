@@ -243,6 +243,111 @@ defmodule Nous.Workflow.Graph do
     end)
   end
 
+  @doc """
+  Insert a new node after an existing node.
+
+  Splits all outgoing edges of `after_id`: removes `after_id → X` edges
+  and creates `after_id → new_node` + `new_node → X` edges.
+  Used for runtime graph mutation.
+  """
+  @spec insert_after(
+          t(),
+          atom() | String.t(),
+          atom() | String.t(),
+          Node.node_type(),
+          map(),
+          keyword()
+        ) :: t()
+  def insert_after(%__MODULE__{} = graph, after_id, new_id, type, config \\ %{}, opts \\ []) do
+    after_str = to_string(after_id)
+    validate_node_exists!(graph, after_str, "insert_after")
+
+    # Add the new node
+    graph = add_node(graph, new_id, type, config, opts)
+    new_str = to_string(new_id)
+
+    # Get current successors of after_id
+    current_out = Map.get(graph.out_edges, after_str, [])
+
+    # Remove old edges from after_id, add after→new edge
+    graph = %{graph | out_edges: Map.put(graph.out_edges, after_str, [])}
+
+    # Remove old in_edges pointing from after_str
+    graph =
+      Enum.reduce(current_out, graph, fn edge, g ->
+        %{
+          g
+          | in_edges:
+              Map.update!(g.in_edges, edge.to_id, fn edges ->
+                Enum.reject(edges, &(&1.from_id == after_str))
+              end)
+        }
+      end)
+
+    # Connect after → new
+    graph = connect(graph, after_str, new_str)
+
+    # Connect new → each old successor
+    Enum.reduce(current_out, graph, fn edge, g ->
+      connect(g, new_str, edge.to_id,
+        condition: edge.condition,
+        label: edge.label,
+        default: edge.type == :default
+      )
+    end)
+  end
+
+  @doc """
+  Remove a node and reconnect its predecessors to its successors.
+  """
+  @spec remove_node(t(), atom() | String.t()) :: t()
+  def remove_node(%__MODULE__{} = graph, node_id) do
+    id = to_string(node_id)
+    validate_node_exists!(graph, id, "remove_node")
+
+    pred_edges = Map.get(graph.in_edges, id, [])
+    succ_edges = Map.get(graph.out_edges, id, [])
+
+    # Remove the node
+    graph = %{
+      graph
+      | nodes: Map.delete(graph.nodes, id),
+        out_edges: Map.delete(graph.out_edges, id),
+        in_edges: Map.delete(graph.in_edges, id)
+    }
+
+    # Clean references from predecessors' out_edges
+    graph =
+      Enum.reduce(pred_edges, graph, fn edge, g ->
+        %{
+          g
+          | out_edges:
+              Map.update!(g.out_edges, edge.from_id, fn edges ->
+                Enum.reject(edges, &(&1.to_id == id))
+              end)
+        }
+      end)
+
+    # Clean references from successors' in_edges
+    graph =
+      Enum.reduce(succ_edges, graph, fn edge, g ->
+        %{
+          g
+          | in_edges:
+              Map.update!(g.in_edges, edge.to_id, fn edges ->
+                Enum.reject(edges, &(&1.from_id == id))
+              end)
+        }
+      end)
+
+    # Reconnect: each predecessor → each successor
+    Enum.reduce(pred_edges, graph, fn pred_edge, g ->
+      Enum.reduce(succ_edges, g, fn succ_edge, g2 ->
+        connect(g2, pred_edge.from_id, succ_edge.to_id)
+      end)
+    end)
+  end
+
   defp validate_node_exists!(graph, node_id, context) do
     unless Map.has_key?(graph.nodes, node_id) do
       raise ArgumentError,
