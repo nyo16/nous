@@ -121,13 +121,16 @@ defmodule Nous.Types do
   @typedoc """
   Stream event types emitted by `run_stream/3`.
 
-  Events arrive in order:
+  On successful streams, events typically arrive in this order:
   - `{:text_delta, text}` — incremental text content
   - `{:thinking_delta, text}` — incremental reasoning/thinking content
   - `{:tool_call_delta, calls}` — tool call information (list for OpenAI, map/string for others)
   - `{:finish, reason}` — stream finished, reason is a string like `"stop"` or `"length"`
   - `{:complete, result}` — final aggregated result with `%{output: text, finish_reason: reason}`
-  - `{:error, reason}` — stream error (HTTP error, timeout, etc.)
+
+  `{:error, reason}` indicates a stream error (HTTP error, timeout, etc.) and may be
+  emitted at any point in the stream. When an error occurs, `{:finish, _}` and
+  `{:complete, _}` may not be emitted.
   """
   @type stream_event ::
           {:text_delta, String.t()}

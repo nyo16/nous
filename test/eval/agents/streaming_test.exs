@@ -184,10 +184,14 @@ defmodule Nous.Eval.Agents.StreamingTest do
     end
 
     test "3.7 stream to unreachable host produces error", _context do
-      # This test doesn't need LMStudio — it tests error propagation
+      # Bind port 0 to get an OS-assigned unused port, then close it immediately
+      {:ok, socket} = :gen_tcp.listen(0, [])
+      {:ok, port} = :inet.port(socket)
+      :gen_tcp.close(socket)
+
       agent =
         Nous.new("custom:fake-model",
-          base_url: "http://localhost:19999/v1",
+          base_url: "http://127.0.0.1:#{port}/v1",
           api_key: "not-needed"
         )
 

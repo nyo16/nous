@@ -1040,28 +1040,33 @@ defmodule Nous.AgentRunner do
   # {:complete, result} event after {:finish, reason}.
   # If the stream ends without {:finish}, emits {:complete} anyway.
   # This gives consumers a final aggregated result similar to run/3.
+  #
+  # Uses iodata accumulation (list of chunks) for O(n) performance,
+  # converting to binary only once at the end.
   defp wrap_stream_with_result(stream) do
-    # Append a sentinel so we can detect stream end even without {:finish}
+    # Use a unique ref as sentinel — cannot collide with provider events
+    sentinel = make_ref()
+
     stream
-    |> Stream.concat([:__stream_end__])
+    |> Stream.concat([sentinel])
     |> Stream.transform(
-      %{text: "", thinking: "", completed: false},
+      %{text: [], thinking: [], completed: false, sentinel: sentinel},
       fn
         {:text_delta, text} = event, acc ->
-          {[event], %{acc | text: acc.text <> text}}
+          {[event], %{acc | text: [acc.text | text]}}
 
         {:thinking_delta, text} = event, acc ->
-          {[event], %{acc | thinking: acc.thinking <> text}}
+          {[event], %{acc | thinking: [acc.thinking | text]}}
 
         {:finish, reason} = event, acc ->
           result = build_stream_result(acc, reason)
-          {[event, {:complete, result}], %{acc | text: "", thinking: "", completed: true}}
+          {[event, {:complete, result}], %{acc | text: [], thinking: [], completed: true}}
 
-        :__stream_end__, %{completed: true} = acc ->
+        event, %{completed: true, sentinel: sentinel} = acc when event == sentinel ->
           # Already emitted :complete via {:finish}, nothing to do
           {[], acc}
 
-        :__stream_end__, acc ->
+        event, %{sentinel: sentinel} = acc when event == sentinel ->
           # Stream ended without {:finish} — emit :complete with accumulated data
           result = build_stream_result(acc, "stop")
           {[{:complete, result}], %{acc | completed: true}}
@@ -1074,12 +1079,14 @@ defmodule Nous.AgentRunner do
 
   defp build_stream_result(acc, reason) do
     result = %{
-      output: acc.text,
+      output: IO.iodata_to_binary(acc.text),
       finish_reason: reason
     }
 
-    if acc.thinking != "",
-      do: Map.put(result, :thinking, acc.thinking),
+    thinking = IO.iodata_to_binary(acc.thinking)
+
+    if thinking != "",
+      do: Map.put(result, :thinking, thinking),
       else: result
   end
 

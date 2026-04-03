@@ -460,14 +460,13 @@ defmodule Nous.AgentRunnerTest do
         def count_tokens(_messages), do: 50
       end
 
-      Application.put_env(:nous, :model_dispatcher, ListToolCallDispatcher)
-      agent = Agent.new(model, instructions: "Be helpful")
+      with_stream_dispatcher(ListToolCallDispatcher, fn ->
+        agent = Agent.new(model, instructions: "Be helpful")
+        {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+        events = Enum.to_list(stream)
 
-      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
-      events = Enum.to_list(stream)
-
-      assert Enum.any?(events, &match?({:tool_call_delta, _}, &1))
-      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+        assert Enum.any?(events, &match?({:tool_call_delta, _}, &1))
+      end)
     end
 
     test "handles tool_call_delta with map value (Anthropic/Gemini)", %{model: model} do
@@ -484,15 +483,13 @@ defmodule Nous.AgentRunnerTest do
         def count_tokens(_messages), do: 50
       end
 
-      Application.put_env(:nous, :model_dispatcher, MapToolCallDispatcher)
-      agent = Agent.new(model, instructions: "Be helpful")
+      with_stream_dispatcher(MapToolCallDispatcher, fn ->
+        agent = Agent.new(model, instructions: "Be helpful")
+        {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+        events = Enum.to_list(stream)
 
-      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
-      # Should not crash when consuming
-      events = Enum.to_list(stream)
-
-      assert Enum.any?(events, &match?({:tool_call_delta, _}, &1))
-      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+        assert Enum.any?(events, &match?({:tool_call_delta, _}, &1))
+      end)
     end
 
     test "handles tool_call_delta with string value (Anthropic partial JSON)", %{model: model} do
@@ -510,16 +507,14 @@ defmodule Nous.AgentRunnerTest do
         def count_tokens(_messages), do: 50
       end
 
-      Application.put_env(:nous, :model_dispatcher, StringToolCallDispatcher)
-      agent = Agent.new(model, instructions: "Be helpful")
+      with_stream_dispatcher(StringToolCallDispatcher, fn ->
+        agent = Agent.new(model, instructions: "Be helpful")
+        {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+        events = Enum.to_list(stream)
 
-      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
-      # Should not crash when consuming
-      events = Enum.to_list(stream)
-
-      tool_deltas = Enum.filter(events, &match?({:tool_call_delta, _}, &1))
-      assert length(tool_deltas) == 2
-      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+        tool_deltas = Enum.filter(events, &match?({:tool_call_delta, _}, &1))
+        assert length(tool_deltas) == 2
+      end)
     end
 
     test "error events pass through without crash", %{model: model} do
@@ -537,15 +532,14 @@ defmodule Nous.AgentRunnerTest do
         def count_tokens(_messages), do: 50
       end
 
-      Application.put_env(:nous, :model_dispatcher, ErrorStreamDispatcher)
-      agent = Agent.new(model, instructions: "Be helpful")
+      with_stream_dispatcher(ErrorStreamDispatcher, fn ->
+        agent = Agent.new(model, instructions: "Be helpful")
+        {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+        events = Enum.to_list(stream)
 
-      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
-      events = Enum.to_list(stream)
-
-      assert {:error, %{status: 500}} in events
-      assert {:text_delta, "Hello"} in events
-      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+        assert {:error, %{status: 500}} in events
+        assert {:text_delta, "Hello"} in events
+      end)
     end
 
     test "thinking deltas are accumulated in :complete result", %{model: model} do
@@ -564,21 +558,20 @@ defmodule Nous.AgentRunnerTest do
         def count_tokens(_messages), do: 50
       end
 
-      Application.put_env(:nous, :model_dispatcher, ThinkingDispatcher)
-      agent = Agent.new(model, instructions: "Be helpful")
+      with_stream_dispatcher(ThinkingDispatcher, fn ->
+        agent = Agent.new(model, instructions: "Be helpful")
+        {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+        events = Enum.to_list(stream)
 
-      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
-      events = Enum.to_list(stream)
+        complete =
+          Enum.find_value(events, fn
+            {:complete, result} -> result
+            _ -> nil
+          end)
 
-      complete =
-        Enum.find_value(events, fn
-          {:complete, result} -> result
-          _ -> nil
-        end)
-
-      assert complete.output == "Answer"
-      assert complete.thinking == "Let me think..."
-      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+        assert complete.output == "Answer"
+        assert complete.thinking == "Let me think..."
+      end)
     end
   end
 
@@ -829,6 +822,18 @@ defmodule Nous.AgentRunnerTest do
     after
       Application.put_env(:nous, :model_dispatcher, original_dispatcher)
       :persistent_term.erase({__MODULE__, :mock_fn})
+    end
+  end
+
+  # Swap dispatcher to a specific module with guaranteed cleanup
+  defp with_stream_dispatcher(dispatcher_mod, test_fn) when is_function(test_fn, 0) do
+    original = Application.get_env(:nous, :model_dispatcher, MockModelDispatcher)
+    Application.put_env(:nous, :model_dispatcher, dispatcher_mod)
+
+    try do
+      test_fn.()
+    after
+      Application.put_env(:nous, :model_dispatcher, original)
     end
   end
 end
