@@ -138,9 +138,21 @@ defmodule Nous.Skill.Loader do
   defp parse_tags(tags) when is_list(tags), do: Enum.map(tags, &parse_atom/1)
   defp parse_tags(_), do: []
 
+  # Common tag atoms (auto, manual, elixir, python, etc.) are already known;
+  # String.to_existing_atom/1 will resolve them without creating new atoms.
+  # Unknown tags fall through to String.to_atom/1 with a debug log.
+
   defp parse_atom(nil), do: nil
   defp parse_atom(val) when is_atom(val), do: val
-  defp parse_atom(val) when is_binary(val), do: String.to_atom(val)
+
+  defp parse_atom(val) when is_binary(val) do
+    String.to_existing_atom(val)
+  rescue
+    ArgumentError ->
+      Logger.debug("Creating new atom for skill tag: #{val}")
+      String.to_atom(val)
+  end
+
   defp parse_atom(_), do: nil
 
   defp parse_activation("auto"), do: :auto

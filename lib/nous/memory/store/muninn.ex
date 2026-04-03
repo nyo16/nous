@@ -15,6 +15,8 @@ if Code.ensure_loaded?(Muninn) do
 
     @behaviour Nous.Memory.Store
 
+    require Logger
+
     alias Nous.Memory.Entry
 
     @impl true
@@ -31,7 +33,11 @@ if Code.ensure_loaded?(Muninn) do
         {:ok, %{index: index, entries: table}}
       end
     rescue
-      _ ->
+      e in [MatchError, File.Error, ErlangError, RuntimeError] ->
+        Logger.debug(
+          "Muninn index create failed (#{Exception.message(e)}), attempting to open existing index"
+        )
+
         case Muninn.open_index(index_path) do
           {:ok, index} ->
             table = :ets.new(:muninn_store, [:set, :public])

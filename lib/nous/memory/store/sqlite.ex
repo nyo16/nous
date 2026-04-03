@@ -13,6 +13,8 @@ if Code.ensure_loaded?(Exqlite) do
 
     @behaviour Nous.Memory.Store
 
+    require Logger
+
     alias Nous.Memory.Entry
 
     @create_memories """
@@ -371,7 +373,14 @@ if Code.ensure_loaded?(Exqlite) do
     defp encode_embedding(list) when is_list(list), do: JSON.encode!(list)
 
     defp decode_embedding(nil), do: nil
-    defp decode_embedding(blob) when is_binary(blob), do: JSON.decode!(blob)
+
+    defp decode_embedding(blob) when is_binary(blob) do
+      JSON.decode!(blob)
+    rescue
+      e ->
+        Logger.warning("Failed to decode embedding: #{Exception.message(e)}")
+        nil
+    end
 
     defp decode_json(nil), do: %{}
     defp decode_json(str) when is_binary(str), do: decode_json_atoms(str)

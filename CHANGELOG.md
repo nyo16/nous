@@ -2,6 +2,56 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.1] - 2026-04-03
+
+### Added
+
+- **`Nous.Transcript` — Lightweight conversation compaction** without LLM calls.
+  - `compact/2` — keep last N messages, summarize older ones into a system message
+  - `maybe_compact/2` — auto-compact based on message count (`:every`), token budget (`:token_budget`), or percentage threshold (`:threshold`)
+  - `compact_async/2` and `compact_async/3` — background compaction via `Nous.TaskSupervisor`
+  - `maybe_compact_async/3` — background auto-compact with `{:compacted, msgs}` / `{:unchanged, msgs}` callbacks
+  - `estimate_tokens/1` and `estimate_messages_tokens/1` — word-count-based token estimation
+
+- **Built-in Coding Tools** — 6 tools implementing `Nous.Tool.Behaviour` for coding agents:
+  - `Nous.Tools.Bash` — shell execution via NetRunner with timeout and output limits
+  - `Nous.Tools.FileRead` — file reading with line numbers, offset, and limit
+  - `Nous.Tools.FileWrite` — file writing with auto parent directory creation
+  - `Nous.Tools.FileEdit` — string replacement with uniqueness check and `replace_all`
+  - `Nous.Tools.FileGlob` — file pattern matching sorted by modification time
+  - `Nous.Tools.FileGrep` — content search with ripgrep fallback to pure Elixir regex
+
+- **`Nous.Permissions` — Tool-level permission policy engine** complementing InputGuard:
+  - Three presets: `default_policy/0`, `permissive_policy/0`, `strict_policy/0`
+  - `build_policy/1` — custom policies with `:deny`, `:deny_prefixes`, `:approval_required`
+  - `blocked?/2`, `requires_approval?/2` — case-insensitive tool name checking
+  - `filter_tools/2`, `partition_tools/2` — filter tool lists through policies
+
+- **`Nous.Session.Config` and `Nous.Session.Guardrails`** — session-level turn limits and token budgets:
+  - `Config` struct with `max_turns`, `max_budget_tokens`, `compact_after_turns`
+  - `Guardrails.check_limits/4` — returns `:ok` or `{:error, :max_turns_reached | :max_budget_reached}`
+  - `Guardrails.remaining/4`, `Guardrails.summary/4` — budget tracking and reporting
+
+### Fixed
+
+- **Empty stream silent failure**: `run_stream` now emits `{:error, :empty_stream}` + warning when a provider returns zero events (e.g. minimax), instead of silently yielding `{:complete, %{output: ""}}`.
+- **`Memory.Search` crash on vector search error**: `{:ok, results} = store_mod.search_vector(...)` pattern match replaced with `case` — logs warning and returns empty list on error.
+- **Atom table exhaustion in skill loader**: `String.to_atom/1` replaced with `String.to_existing_atom/1` + rescue fallback with debug logging.
+- **Context deserialization crash on unknown roles**: `String.to_existing_atom/1` replaced with explicit role whitelist (`:system`, `:user`, `:assistant`, `:tool`), defaults to `:user` with warning.
+- **Unbounded inspect in stream normalizer**: `inspect(chunk, limit: :infinity)` capped to `limit: 500, printable_limit: 1000`.
+- **SQLite embedding decode crash**: `JSON.decode!/1` wrapped in rescue, returns `nil` with warning on malformed data.
+- **Muninn bare rescue**: `rescue _ ->` replaced with specific exception types (`MatchError`, `File.Error`, `ErlangError`, `RuntimeError`).
+
+### Documentation
+
+- **Memory System Guide** (`docs/guides/memory.md`) — 630+ line walkthrough covering all 6 store backends, search/scoring, BM25, agent integration, and cross-agent memory sharing.
+- **Context & Dependencies Guide** (`docs/guides/context.md`) — RunContext, ContextUpdate operations, stateful agent walkthrough, multi-user patterns.
+- **Skills Guide enhanced** — added 400+ lines: module-based and file-based skill walkthroughs, skill groups, activation modes, plugin configuration.
+- **LiveView examples** — chat interface (`liveview_chat.exs`) and multi-agent dashboard (`liveview_multi_agent.exs`) reference implementations.
+- **PostgreSQL memory example** (`postgresql_full.exs`) — end-to-end Store implementation with tsvector + pgvector, BM25 search, hybrid RRF search.
+- **Coding agent example** (`19_coding_agent.exs`) — permissions, tools, guardrails, and transcript compaction.
+- **Tool permissions example** (`tool_permissions.exs`) — policy presets, custom deny lists, tool filtering.
+
 ## [0.13.0] - 2026-03-28
 
 ### Added

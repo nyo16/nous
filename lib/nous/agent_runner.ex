@@ -1069,7 +1069,17 @@ defmodule Nous.AgentRunner do
         event, %{sentinel: sentinel} = acc when event == sentinel ->
           # Stream ended without {:finish} — emit :complete with accumulated data
           result = build_stream_result(acc, "stop")
-          {[{:complete, result}], %{acc | completed: true}}
+
+          if acc.text == [] and acc.thinking == [] do
+            # Completely empty stream — likely a provider issue (e.g. minimax)
+            Logger.warning(
+              "Stream ended with no events — possible provider issue (empty response)"
+            )
+
+            {[{:error, :empty_stream}, {:complete, result}], %{acc | completed: true}}
+          else
+            {[{:complete, result}], %{acc | completed: true}}
+          end
 
         event, acc ->
           {[event], acc}

@@ -2835,3 +2835,10 @@ Key takeaways:
 7. **Optimize for scale** with resource management
 
 The patterns shown here provide a solid foundation for building production AI applications with Phoenix LiveView.
+
+## More Examples
+
+For complete reference implementations, see:
+
+- **Chat Interface** — `examples/advanced/liveview_chat.exs`: Full chat UI with streaming, tool visualization, and session persistence.
+- **Multi-Agent Dashboard** — `examples/advanced/liveview_multi_agent.exs`: Running multiple agents with real-time status updates via PubSub.

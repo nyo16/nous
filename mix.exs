@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.13.0"
+  @version "0.13.1"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -113,6 +113,8 @@ defmodule Nous.MixProject do
         {"docs/guides/structured_output.md",
          filename: "structured_output", title: "Structured Output Guide"},
         {"docs/guides/workflows.md", filename: "workflows", title: "Workflow Engine Guide"},
+        {"docs/guides/memory.md", filename: "memory", title: "Memory System Guide"},
+        {"docs/guides/context.md", filename: "context", title: "Context & Dependencies Guide"},
 
         # Design Documents
         {"docs/design/llm_council_design.md",
@@ -136,7 +138,9 @@ defmodule Nous.MixProject do
           "migration_guide.html",
           "evaluation.html",
           "structured_output.html",
-          "workflows.html"
+          "workflows.html",
+          "memory.html",
+          "context.html"
         ],
         Design: [
           "council_design.html"
@@ -149,7 +153,8 @@ defmodule Nous.MixProject do
           Nous.Agent.Context,
           Nous.Agent.Behaviour,
           Nous.Agent.Callbacks,
-          Nous.ReActAgent
+          Nous.ReActAgent,
+          Nous.Transcript
         ],
         "Agent Implementations": [
           Nous.Agents.BasicAgent,
@@ -299,6 +304,22 @@ defmodule Nous.MixProject do
           Nous.Tools.SearchScrape,
           Nous.Tools.TavilySearch,
           Nous.Tools.ResearchNotes
+        ],
+        "Coding Tools": [
+          Nous.Tools.Bash,
+          Nous.Tools.FileRead,
+          Nous.Tools.FileWrite,
+          Nous.Tools.FileEdit,
+          Nous.Tools.FileGlob,
+          Nous.Tools.FileGrep
+        ],
+        Session: [
+          Nous.Session.Config,
+          Nous.Session.Guardrails
+        ],
+        Permissions: [
+          Nous.Permissions,
+          Nous.Permissions.Policy
         ],
         "Workflow Engine": [
           Nous.Workflow,

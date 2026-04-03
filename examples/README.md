@@ -38,6 +38,7 @@ Progressive learning path from basics to advanced features:
 | [16_hooks.exs](https://github.com/nyo16/nous/blob/master/examples/16_hooks.exs) | Lifecycle hooks: blocking, modification, priority ordering |
 | [17_skills.exs](https://github.com/nyo16/nous/blob/master/examples/17_skills.exs) | Skills: modules, file-based (load from .md files/dirs), groups, matching, built-in catalog |
 | [18_workflow.exs](https://github.com/nyo16/nous/blob/master/examples/18_workflow.exs) | DAG workflow engine: pipelines, branching, parallel, cycles, HITL, hooks, LLM agents |
+| [19_coding_agent.exs](https://github.com/nyo16/nous/blob/master/examples/19_coding_agent.exs) | Coding agent: file/shell tools, permissions, session guardrails, transcript compaction |
 
 ## Workflow Examples
 
@@ -74,6 +75,7 @@ Persistent agent memory with hybrid search:
 | [memory/local_bumblebee.exs](https://github.com/nyo16/nous/blob/master/examples/memory/local_bumblebee.exs) | Local semantic search via Bumblebee, no API keys |
 | [memory/sqlite_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/sqlite_full.exs) | SQLite + FTS5, single-file production setup |
 | [memory/duckdb_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/duckdb_full.exs) | DuckDB with FTS + vector search |
+| [memory/postgresql_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/postgresql_full.exs) | PostgreSQL + tsvector + pgvector, full Store implementation |
 | [memory/hybrid_full.exs](https://github.com/nyo16/nous/blob/master/examples/memory/hybrid_full.exs) | Muninn + Zvec for maximum search quality |
 | [memory/cross_agent.exs](https://github.com/nyo16/nous/blob/master/examples/memory/cross_agent.exs) | Two agents sharing memory with scoping |
 | [memory/auto_update.exs](https://github.com/nyo16/nous/blob/master/examples/memory/auto_update.exs) | Auto-update memory after each run (no explicit tool calls) |
@@ -89,6 +91,9 @@ Production patterns and advanced features:
 | [advanced/telemetry.exs](https://github.com/nyo16/nous/blob/master/examples/advanced/telemetry.exs) | Custom metrics and cost tracking |
 | [advanced/cancellation.exs](https://github.com/nyo16/nous/blob/master/examples/advanced/cancellation.exs) | Task and streaming cancellation |
 | [advanced/liveview_integration.exs](https://github.com/nyo16/nous/blob/master/examples/advanced/liveview_integration.exs) | Phoenix LiveView integration patterns |
+| [advanced/liveview_chat.exs](https://github.com/nyo16/nous/blob/master/examples/advanced/liveview_chat.exs) | Full chat UI: streaming, tools, sessions, auto-scroll |
+| [advanced/liveview_multi_agent.exs](https://github.com/nyo16/nous/blob/master/examples/advanced/liveview_multi_agent.exs) | Multi-agent dashboard with real-time PubSub status |
+| [advanced/tool_permissions.exs](https://github.com/nyo16/nous/blob/master/examples/advanced/tool_permissions.exs) | Permission policies: presets, custom deny/approve, tool filtering |
 
 ## Running Examples
 

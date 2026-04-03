@@ -9,6 +9,8 @@ defmodule Nous.Memory.Search do
   When no embedding provider is configured, falls back to text-only search.
   """
 
+  require Logger
+
   alias Nous.Memory.{Embedding, Entry, Scoring}
 
   @type search_opts :: [
@@ -79,8 +81,14 @@ defmodule Nous.Memory.Search do
       if embedding_provider && supports_vector?(store_mod) do
         case Embedding.embed(embedding_provider, query, embedding_opts) do
           {:ok, query_embedding} ->
-            {:ok, results} = store_mod.search_vector(store_state, query_embedding, store_opts)
-            results
+            case store_mod.search_vector(store_state, query_embedding, store_opts) do
+              {:ok, results} ->
+                results
+
+              {:error, reason} ->
+                Logger.warning("Vector search failed: #{inspect(reason)}")
+                []
+            end
 
           {:error, _reason} ->
             []

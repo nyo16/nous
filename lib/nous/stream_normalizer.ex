@@ -92,7 +92,7 @@ defmodule Nous.StreamNormalizer do
     |> Stream.reject(fn
       {:unknown, chunk} ->
         Logger.debug(
-          "Stream normalizer filtered unknown chunk: #{inspect(chunk, limit: :infinity)}"
+          "Stream normalizer filtered unknown chunk: #{inspect(chunk, limit: 500, printable_limit: 1000)}"
         )
 
         true

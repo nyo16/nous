@@ -46,6 +46,8 @@ defmodule Nous.Agent.Context do
 
   """
 
+  require Logger
+
   alias Nous.{Message, Usage}
 
   @type callback_fn :: (atom(), any() -> any())
@@ -584,8 +586,27 @@ defmodule Nous.Agent.Context do
 
     role =
       case data[:role] do
-        r when is_atom(r) -> r
-        r when is_binary(r) -> String.to_existing_atom(r)
+        r when r in [:system, :user, :assistant, :tool] ->
+          r
+
+        "system" ->
+          :system
+
+        "user" ->
+          :user
+
+        "assistant" ->
+          :assistant
+
+        "tool" ->
+          :tool
+
+        other ->
+          Logger.warning(
+            "Unknown message role during deserialization: #{inspect(other)}, defaulting to :user"
+          )
+
+          :user
       end
 
     attrs = %{
