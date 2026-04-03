@@ -317,11 +317,11 @@ defmodule Nous.Providers.HTTP do
 
           # Data field with space
           String.starts_with?(line, "data: ") ->
-            [String.trim_leading(line, "data: ") | acc]
+            [String.replace_prefix(line, "data: ", "") | acc]
 
           # Data field without space (valid per spec)
           String.starts_with?(line, "data:") ->
-            [String.trim_leading(line, "data:") | acc]
+            [String.replace_prefix(line, "data:", "") | acc]
 
           # Other fields (event:, id:, retry:) - ignore for now
           String.contains?(line, ":") ->

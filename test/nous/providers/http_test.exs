@@ -478,4 +478,45 @@ defmodule Nous.Providers.HTTPTest do
       assert result == %{"bool" => true, "null" => nil, "num" => 42.5}
     end
   end
+
+  # ============================================================================
+  # SSE Prefix Stripping Correctness Tests
+  # ============================================================================
+
+  describe "parse_sse_event/1 - prefix stripping" do
+    test "data: prefix with JSON is correctly stripped" do
+      result = HTTP.parse_sse_event("data: {\"key\": \"value\"}")
+      assert result == %{"key" => "value"}
+    end
+
+    test "data: with data as payload value is correctly parsed" do
+      # This was a latent bug with String.trim_leading - it strips characters
+      # from the set, not the prefix. "data" starts with chars in "data: " set.
+      # With String.replace_prefix this should work correctly.
+      result = HTTP.parse_sse_event("data: {\"content\": \"data\"}")
+      assert result == %{"content" => "data"}
+    end
+
+    test "data: with double data: prefix in payload preserves inner data:" do
+      buffer = "data: {\"val\": \"data: test\"}\n\n"
+      {events, _} = HTTP.parse_sse_buffer(buffer)
+
+      assert [%{"val" => "data: test"}] = events
+    end
+
+    test "data: without space is correctly handled" do
+      result = HTTP.parse_sse_event("data:{\"key\": \"value\"}")
+      assert result == %{"key" => "value"}
+    end
+
+    test "data: with [DONE] marker" do
+      result = HTTP.parse_sse_event("data: [DONE]")
+      assert {:stream_done, "stop"} = result
+    end
+
+    test "data: without space with [DONE] marker" do
+      result = HTTP.parse_sse_event("data:[DONE]")
+      assert {:stream_done, "stop"} = result
+    end
+  end
 end
