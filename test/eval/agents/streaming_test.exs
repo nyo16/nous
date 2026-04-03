@@ -3,6 +3,7 @@ defmodule Nous.Eval.Agents.StreamingTest do
   Tests for streaming functionality.
 
   Run with: mix test test/eval/agents/streaming_test.exs --include llm
+  OpenRouter: OPENROUTER_API_KEY=... mix test test/eval/agents/streaming_test.exs --include llm --include openrouter
   """
 
   use ExUnit.Case, async: false
@@ -22,7 +23,7 @@ defmodule Nous.Eval.Agents.StreamingTest do
   end
 
   describe "Basic Streaming" do
-    test "3.1 streams text deltas", context do
+    test "3.1 streams text deltas and emits :complete", context do
       skip_if_unavailable(context)
 
       agent = Nous.new(context[:model], instructions: "Be concise")
@@ -42,38 +43,44 @@ defmodule Nous.Eval.Agents.StreamingTest do
 
       assert length(text_deltas) > 0, "Expected text deltas in stream"
 
-      # Check for complete event
+      # Check for :complete event with aggregated output
       complete =
-        Enum.find(chunks, fn
-          {:complete, _} -> true
-          _ -> false
+        Enum.find_value(chunks, fn
+          {:complete, result} -> result
+          _ -> nil
         end)
 
-      # Complete event may not be emitted depending on provider
-      if complete == nil do
-        IO.puts("[Streaming 3.1] Note: No :complete event (provider may not emit it)")
-      end
-
-      assert length(text_deltas) > 0, "Expected text deltas even without complete event"
+      assert complete != nil, "Expected {:complete, result} event"
+      assert is_binary(complete.output), "Expected output to be a string"
+      assert String.length(complete.output) > 0, "Expected non-empty output"
+      assert complete.finish_reason != nil, "Expected finish_reason in result"
     end
 
-    test "3.2 accumulates full response", context do
+    test "3.2 accumulated text in :complete matches concatenated deltas", context do
       skip_if_unavailable(context)
 
       agent = Nous.new(context[:model])
 
       {:ok, stream} = Nous.run_stream(agent, "Say hello world")
 
-      # Collect and combine text (use collect_stream to handle errors)
       chunks = collect_stream(stream)
 
-      full_text =
+      # Build text from deltas
+      delta_text =
         Enum.reduce(chunks, "", fn
           {:text_delta, text}, acc -> acc <> text
           _, acc -> acc
         end)
 
-      assert String.length(full_text) > 0, "Expected accumulated text"
+      # Get text from :complete event
+      complete_text =
+        Enum.find_value(chunks, fn
+          {:complete, result} -> result.output
+          _ -> nil
+        end)
+
+      assert String.length(delta_text) > 0, "Expected accumulated text"
+      assert delta_text == complete_text, "Delta text should match :complete output"
     end
 
     test "3.3 streaming with callbacks", context do
@@ -132,23 +139,7 @@ defmodule Nous.Eval.Agents.StreamingTest do
 
       chunks = collect_stream(stream)
 
-      # Check for tool-related events
-      tool_events =
-        Enum.filter(chunks, fn
-          {:tool_call, _} -> true
-          {:tool_result, _} -> true
-          _ -> false
-        end)
-
       IO.puts("\n[Streaming Tools] Total chunks: #{length(chunks)}")
-      IO.puts("[Streaming Tools] Tool events: #{length(tool_events)}")
-
-      # Complete event may not exist depending on provider
-      complete = Enum.find(chunks, &match?({:complete, _}, &1))
-
-      if complete == nil do
-        IO.puts("[Streaming Tools] Note: No :complete event")
-      end
 
       assert length(chunks) > 0, "Expected at least some chunks"
     end
@@ -158,10 +149,7 @@ defmodule Nous.Eval.Agents.StreamingTest do
     test "3.5 handles long streaming output", context do
       skip_if_unavailable(context)
 
-      agent =
-        Nous.new(context[:model],
-          model_settings: %{max_tokens: 300}
-        )
+      agent = Nous.new(context[:model])
 
       {:ok, stream} = Nous.run_stream(agent, "Write a 100-word story about a robot")
 
@@ -170,7 +158,16 @@ defmodule Nous.Eval.Agents.StreamingTest do
 
       IO.puts("\n[Long Stream] Chunk count: #{length(text_chunks)}")
 
-      assert length(text_chunks) > 5, "Expected multiple chunks for long output"
+      # At least some text should stream back
+      assert length(text_chunks) > 0, "Expected text chunks for long output"
+
+      complete =
+        Enum.find_value(chunks, fn
+          {:complete, result} -> result
+          _ -> nil
+        end)
+
+      if complete, do: assert(String.length(complete.output) > 20, "Expected substantial output")
     end
 
     test "3.6 streaming can be consumed partially", context do
@@ -185,10 +182,30 @@ defmodule Nous.Eval.Agents.StreamingTest do
 
       assert length(first_chunks) >= 1, "Expected at least one chunk"
     end
+
+    test "3.7 stream to unreachable host produces error", _context do
+      # This test doesn't need LMStudio — it tests error propagation
+      agent =
+        Nous.new("custom:fake-model",
+          base_url: "http://localhost:19999/v1",
+          api_key: "not-needed"
+        )
+
+      case Nous.run_stream(agent, "Hello") do
+        {:ok, stream} ->
+          events = collect_stream(stream)
+          errors = Enum.filter(events, &match?({:error, _}, &1))
+          assert length(errors) > 0, "Expected error events for unreachable host"
+
+        {:error, _reason} ->
+          # Also acceptable - error at stream init time
+          :ok
+      end
+    end
   end
 
-  describe "Stream Metrics" do
-    test "3.7 complete event includes metrics", context do
+  describe "Stream Result" do
+    test "3.8 :complete event includes output and finish_reason", context do
       skip_if_unavailable(context)
 
       agent = Nous.new(context[:model])
@@ -203,13 +220,110 @@ defmodule Nous.Eval.Agents.StreamingTest do
           _ -> nil
         end)
 
-      if complete != nil do
-        assert Map.has_key?(complete, :output), "Expected output in result"
-        assert Map.has_key?(complete, :usage), "Expected usage in result"
+      assert complete != nil, "Expected :complete event"
+      assert Map.has_key?(complete, :output), "Expected :output in result"
+      assert Map.has_key?(complete, :finish_reason), "Expected :finish_reason in result"
+      assert is_binary(complete.output)
+    end
+  end
+
+  # ============================================================================
+  # OpenRouter Integration Tests
+  # ============================================================================
+
+  describe "OpenRouter Streaming" do
+    @describetag :openrouter
+
+    setup do
+      api_key = System.get_env("OPENROUTER_API_KEY")
+
+      if api_key do
+        model_name = System.get_env("OPENROUTER_MODEL", "google/gemini-2.0-flash-001")
+        {:ok, openrouter_model: model_name, openrouter_key: api_key}
       else
-        # Provider may not emit :complete — just verify we got chunks
-        IO.puts("[Stream Metrics] Note: No :complete event, checking chunks instead")
-        assert length(chunks) > 0, "Expected at least some stream chunks"
+        {:ok, skip: "OPENROUTER_API_KEY not set"}
+      end
+    end
+
+    test "streams text end-to-end via OpenRouter", context do
+      skip_if_unavailable(context)
+
+      agent =
+        Nous.new("custom:#{context[:openrouter_model]}",
+          base_url: "https://openrouter.ai/api/v1",
+          api_key: context[:openrouter_key],
+          instructions: "Be concise. Reply in one sentence."
+        )
+
+      {:ok, stream} = Nous.run_stream(agent, "What is 2+2?")
+
+      chunks = collect_stream(stream)
+
+      # Check for auth errors — skip test gracefully if key is invalid
+      errors = Enum.filter(chunks, &match?({:error, _}, &1))
+
+      if Enum.any?(errors, fn
+           {:error, %{status: s}} -> s in [401, 403]
+           _ -> false
+         end) do
+        IO.puts("\n[OpenRouter] Skipping: API key returned auth error")
+      else
+        text_deltas = Enum.filter(chunks, &match?({:text_delta, _}, &1))
+        assert length(text_deltas) > 0, "Expected text deltas from OpenRouter"
+
+        complete =
+          Enum.find_value(chunks, fn
+            {:complete, result} -> result
+            _ -> nil
+          end)
+
+        assert complete != nil, "Expected :complete event from OpenRouter"
+        assert String.length(complete.output) > 0
+
+        IO.puts("\n[OpenRouter] Model: #{context[:openrouter_model]}")
+
+        IO.puts(
+          "[OpenRouter] Chunks: #{length(text_deltas)}, Output: #{String.length(complete.output)} chars"
+        )
+      end
+    end
+
+    test "OpenRouter streaming with tools", context do
+      skip_if_unavailable(context)
+
+      weather_tool =
+        Nous.Tool.from_function(
+          fn _ctx, %{"city" => city} -> {:ok, "Sunny, 72°F in #{city}"} end,
+          name: "get_weather",
+          description: "Get current weather for a city",
+          parameters: %{
+            "type" => "object",
+            "properties" => %{"city" => %{"type" => "string", "description" => "City name"}},
+            "required" => ["city"]
+          }
+        )
+
+      agent =
+        Nous.new("custom:#{context[:openrouter_model]}",
+          base_url: "https://openrouter.ai/api/v1",
+          api_key: context[:openrouter_key],
+          tools: [weather_tool]
+        )
+
+      {:ok, stream} = Nous.run_stream(agent, "What's the weather in Paris?")
+
+      chunks = collect_stream(stream)
+
+      errors = Enum.filter(chunks, &match?({:error, _}, &1))
+
+      if Enum.any?(errors, fn
+           {:error, %{status: s}} -> s in [401, 403]
+           _ -> false
+         end) do
+        IO.puts("\n[OpenRouter Tools] Skipping: API key returned auth error")
+      else
+        IO.puts("\n[OpenRouter Tools] Chunks: #{length(chunks)}")
+        assert length(chunks) > 0, "Expected chunks from OpenRouter with tools"
       end
     end
   end

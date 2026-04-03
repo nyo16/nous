@@ -80,7 +80,15 @@ defmodule Nous.StreamNormalizer do
     require Logger
 
     stream
-    |> Stream.flat_map(&normalizer_mod.normalize_chunk/1)
+    |> Stream.flat_map(fn
+      {:stream_error, reason} ->
+        # Convert HTTP transport errors to normalized {:error, ...} events
+        # before they reach the provider-specific normalizer
+        [{:error, reason}]
+
+      chunk ->
+        normalizer_mod.normalize_chunk(chunk)
+    end)
     |> Stream.reject(fn
       {:unknown, chunk} ->
         Logger.debug(

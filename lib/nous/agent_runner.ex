@@ -303,8 +303,12 @@ defmodule Nous.AgentRunner do
     # Request stream from model (with fallback chain if configured)
     case stream_with_fallback(agent, messages, model_settings, tools) do
       {:ok, stream} ->
-        # Wrap stream to execute callbacks
-        wrapped_stream = wrap_stream_with_callbacks(stream, ctx)
+        # Wrap stream to execute callbacks, then accumulate result
+        wrapped_stream =
+          stream
+          |> wrap_stream_with_callbacks(ctx)
+          |> wrap_stream_with_result()
+
         {:ok, wrapped_stream}
 
       error ->
@@ -1016,10 +1020,13 @@ defmodule Nous.AgentRunner do
         {:thinking_delta, text} ->
           Callbacks.execute(ctx, :on_llm_new_delta, "[thinking] #{text}")
 
-        {:tool_call_delta, calls} ->
+        {:tool_call_delta, calls} when is_list(calls) ->
           Enum.each(calls, fn call ->
             Callbacks.execute(ctx, :on_tool_call, call)
           end)
+
+        {:tool_call_delta, call} ->
+          Callbacks.execute(ctx, :on_tool_call, call)
 
         _ ->
           :ok
@@ -1027,6 +1034,53 @@ defmodule Nous.AgentRunner do
 
       event
     end)
+  end
+
+  # Wraps a stream to accumulate text/thinking content and emit a
+  # {:complete, result} event after {:finish, reason}.
+  # If the stream ends without {:finish}, emits {:complete} anyway.
+  # This gives consumers a final aggregated result similar to run/3.
+  defp wrap_stream_with_result(stream) do
+    # Append a sentinel so we can detect stream end even without {:finish}
+    stream
+    |> Stream.concat([:__stream_end__])
+    |> Stream.transform(
+      %{text: "", thinking: "", completed: false},
+      fn
+        {:text_delta, text} = event, acc ->
+          {[event], %{acc | text: acc.text <> text}}
+
+        {:thinking_delta, text} = event, acc ->
+          {[event], %{acc | thinking: acc.thinking <> text}}
+
+        {:finish, reason} = event, acc ->
+          result = build_stream_result(acc, reason)
+          {[event, {:complete, result}], %{acc | text: "", thinking: "", completed: true}}
+
+        :__stream_end__, %{completed: true} = acc ->
+          # Already emitted :complete via {:finish}, nothing to do
+          {[], acc}
+
+        :__stream_end__, acc ->
+          # Stream ended without {:finish} — emit :complete with accumulated data
+          result = build_stream_result(acc, "stop")
+          {[{:complete, result}], %{acc | completed: true}}
+
+        event, acc ->
+          {[event], acc}
+      end
+    )
+  end
+
+  defp build_stream_result(acc, reason) do
+    result = %{
+      output: acc.text,
+      finish_reason: reason
+    }
+
+    if acc.thinking != "",
+      do: Map.put(result, :thinking, acc.thinking),
+      else: result
   end
 
   # Convert tools to provider-specific format

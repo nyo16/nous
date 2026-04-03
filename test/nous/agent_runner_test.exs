@@ -407,6 +407,179 @@ defmodule Nous.AgentRunnerTest do
 
       Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
     end
+
+    test "emits {:complete, result} with accumulated text", %{model: model} do
+      agent = Agent.new(model, instructions: "Be helpful")
+
+      with_mock_dispatcher(fn ->
+        assert {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+
+        events = Enum.to_list(stream)
+
+        # Should have a :complete event with aggregated output
+        complete =
+          Enum.find_value(events, fn
+            {:complete, result} -> result
+            _ -> nil
+          end)
+
+        assert complete != nil, "Expected {:complete, result} event"
+        assert complete.output == "This is streaming"
+        assert complete.finish_reason == "stop"
+      end)
+    end
+
+    test "stream preserves all event types (identity)", %{model: model} do
+      agent = Agent.new(model, instructions: "Be helpful")
+
+      with_mock_dispatcher(fn ->
+        {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+        events = Enum.to_list(stream)
+
+        # Original events should still be there
+        assert {:text_delta, "This "} in events
+        assert {:text_delta, "is "} in events
+        assert {:text_delta, "streaming"} in events
+        assert {:finish, "stop"} in events
+        # Plus the new complete event
+        assert Enum.any?(events, &match?({:complete, _}, &1))
+      end)
+    end
+
+    test "handles tool_call_delta with list values", %{model: model} do
+      defmodule ListToolCallDispatcher do
+        def request_stream(_model, _messages, _settings) do
+          {:ok,
+           [
+             {:tool_call_delta, [%{"id" => "call_1", "function" => %{"name" => "test"}}]},
+             {:finish, "stop"}
+           ]}
+        end
+
+        def request(_model, _messages, _settings), do: {:error, "Not used"}
+        def count_tokens(_messages), do: 50
+      end
+
+      Application.put_env(:nous, :model_dispatcher, ListToolCallDispatcher)
+      agent = Agent.new(model, instructions: "Be helpful")
+
+      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+      events = Enum.to_list(stream)
+
+      assert Enum.any?(events, &match?({:tool_call_delta, _}, &1))
+      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+    end
+
+    test "handles tool_call_delta with map value (Anthropic/Gemini)", %{model: model} do
+      defmodule MapToolCallDispatcher do
+        def request_stream(_model, _messages, _settings) do
+          {:ok,
+           [
+             {:tool_call_delta, %{"id" => "call_1", "name" => "get_weather"}},
+             {:finish, "stop"}
+           ]}
+        end
+
+        def request(_model, _messages, _settings), do: {:error, "Not used"}
+        def count_tokens(_messages), do: 50
+      end
+
+      Application.put_env(:nous, :model_dispatcher, MapToolCallDispatcher)
+      agent = Agent.new(model, instructions: "Be helpful")
+
+      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+      # Should not crash when consuming
+      events = Enum.to_list(stream)
+
+      assert Enum.any?(events, &match?({:tool_call_delta, _}, &1))
+      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+    end
+
+    test "handles tool_call_delta with string value (Anthropic partial JSON)", %{model: model} do
+      defmodule StringToolCallDispatcher do
+        def request_stream(_model, _messages, _settings) do
+          {:ok,
+           [
+             {:tool_call_delta, "{\"city\":"},
+             {:tool_call_delta, "\"Tokyo\"}"},
+             {:finish, "stop"}
+           ]}
+        end
+
+        def request(_model, _messages, _settings), do: {:error, "Not used"}
+        def count_tokens(_messages), do: 50
+      end
+
+      Application.put_env(:nous, :model_dispatcher, StringToolCallDispatcher)
+      agent = Agent.new(model, instructions: "Be helpful")
+
+      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+      # Should not crash when consuming
+      events = Enum.to_list(stream)
+
+      tool_deltas = Enum.filter(events, &match?({:tool_call_delta, _}, &1))
+      assert length(tool_deltas) == 2
+      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+    end
+
+    test "error events pass through without crash", %{model: model} do
+      defmodule ErrorStreamDispatcher do
+        def request_stream(_model, _messages, _settings) do
+          {:ok,
+           [
+             {:text_delta, "Hello"},
+             {:error, %{status: 500}},
+             {:finish, "stop"}
+           ]}
+        end
+
+        def request(_model, _messages, _settings), do: {:error, "Not used"}
+        def count_tokens(_messages), do: 50
+      end
+
+      Application.put_env(:nous, :model_dispatcher, ErrorStreamDispatcher)
+      agent = Agent.new(model, instructions: "Be helpful")
+
+      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+      events = Enum.to_list(stream)
+
+      assert {:error, %{status: 500}} in events
+      assert {:text_delta, "Hello"} in events
+      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+    end
+
+    test "thinking deltas are accumulated in :complete result", %{model: model} do
+      defmodule ThinkingDispatcher do
+        def request_stream(_model, _messages, _settings) do
+          {:ok,
+           [
+             {:thinking_delta, "Let me "},
+             {:thinking_delta, "think..."},
+             {:text_delta, "Answer"},
+             {:finish, "stop"}
+           ]}
+        end
+
+        def request(_model, _messages, _settings), do: {:error, "Not used"}
+        def count_tokens(_messages), do: 50
+      end
+
+      Application.put_env(:nous, :model_dispatcher, ThinkingDispatcher)
+      agent = Agent.new(model, instructions: "Be helpful")
+
+      {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+      events = Enum.to_list(stream)
+
+      complete =
+        Enum.find_value(events, fn
+          {:complete, result} -> result
+          _ -> nil
+        end)
+
+      assert complete.output == "Answer"
+      assert complete.thinking == "Let me think..."
+      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+    end
   end
 
   defmodule CustomMockDispatcher do

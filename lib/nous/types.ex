@@ -118,12 +118,22 @@ defmodule Nous.Types do
   @typedoc "Any message type"
   @type message :: model_request() | model_response()
 
-  @typedoc "Stream event types"
+  @typedoc """
+  Stream event types emitted by `run_stream/3`.
+
+  Events arrive in order:
+  - `{:text_delta, text}` — incremental text content
+  - `{:thinking_delta, text}` — incremental reasoning/thinking content
+  - `{:tool_call_delta, calls}` — tool call information (list for OpenAI, map/string for others)
+  - `{:finish, reason}` — stream finished, reason is a string like `"stop"` or `"length"`
+  - `{:complete, result}` — final aggregated result with `%{output: text, finish_reason: reason}`
+  - `{:error, reason}` — stream error (HTTP error, timeout, etc.)
+  """
   @type stream_event ::
           {:text_delta, String.t()}
           | {:thinking_delta, String.t()}
           | {:tool_call_delta, any()}
           | {:finish, String.t()}
-          | {:complete, any()}
+          | {:complete, map()}
           | {:error, term()}
 end
