@@ -108,11 +108,7 @@ defmodule Nous.Tool.Behaviour do
       }
 
   """
-  @callback metadata() :: %{
-              name: String.t(),
-              description: String.t(),
-              parameters: map()
-            }
+  @callback metadata() :: map()
 
   @doc """
   Return the tool's schema definition for introspection.

@@ -30,9 +30,9 @@ defmodule Nous.Permissions.Policy do
   @type mode :: :default | :permissive | :strict
 
   @type t :: %__MODULE__{
-          deny_names: MapSet.t(String.t()),
+          deny_names: MapSet.t(),
           deny_prefixes: [String.t()],
-          approval_required: MapSet.t(String.t()),
+          approval_required: MapSet.t(),
           mode: mode()
         }
 end

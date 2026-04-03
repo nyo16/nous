@@ -299,7 +299,7 @@ defmodule Nous.Transcript do
       messages
       |> Enum.map(fn msg ->
         role = msg.role || :unknown
-        text = Message.extract_text(msg) || ""
+        text = Message.extract_text(msg)
         preview = text |> String.slice(0..100) |> String.replace("\n", " ")
         "  [#{role}] #{preview}"
       end)
