@@ -85,7 +85,7 @@ defmodule Nous.Agents.KnowledgeBaseAgent do
     ctx = Context.add_message(ctx, response)
 
     # Track KB operations for reporting
-    tool_calls = response.tool_calls || []
+    tool_calls = response.tool_calls
 
     kb_calls =
       Enum.filter(tool_calls, fn call ->

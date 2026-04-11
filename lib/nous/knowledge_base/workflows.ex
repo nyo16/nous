@@ -261,7 +261,7 @@ defmodule Nous.KnowledgeBase.Workflows do
 
   defp build_health_report(state) do
     audit_output = state.data.audit_entries
-    issues = parse_json_output(audit_output) || []
+    issues = parse_json_output(audit_output)
     stats = state.data.stats
 
     report =
