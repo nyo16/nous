@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.13.1"
+  @version "0.14.0"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -115,6 +115,8 @@ defmodule Nous.MixProject do
         {"docs/guides/workflows.md", filename: "workflows", title: "Workflow Engine Guide"},
         {"docs/guides/memory.md", filename: "memory", title: "Memory System Guide"},
         {"docs/guides/context.md", filename: "context", title: "Context & Dependencies Guide"},
+        {"docs/guides/knowledge_base.md",
+         filename: "knowledge_base", title: "Knowledge Base Guide"},
 
         # Design Documents
         {"docs/design/llm_council_design.md",
@@ -140,7 +142,8 @@ defmodule Nous.MixProject do
           "structured_output.html",
           "workflows.html",
           "memory.html",
-          "context.html"
+          "context.html",
+          "knowledge_base.html"
         ],
         Design: [
           "council_design.html"
@@ -320,6 +323,20 @@ defmodule Nous.MixProject do
         Permissions: [
           Nous.Permissions,
           Nous.Permissions.Policy
+        ],
+        "Knowledge Base": [
+          Nous.KnowledgeBase,
+          Nous.KnowledgeBase.Entry,
+          Nous.KnowledgeBase.Document,
+          Nous.KnowledgeBase.Link,
+          Nous.KnowledgeBase.Store,
+          Nous.KnowledgeBase.Store.ETS,
+          Nous.KnowledgeBase.Tools,
+          Nous.KnowledgeBase.Workflows,
+          Nous.KnowledgeBase.HealthReport,
+          Nous.KnowledgeBase.Prompts,
+          Nous.Plugins.KnowledgeBase,
+          Nous.Agents.KnowledgeBaseAgent
         ],
         "Workflow Engine": [
           Nous.Workflow,
