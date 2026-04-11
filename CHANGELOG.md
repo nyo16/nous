@@ -2,6 +2,38 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.0] - 2026-04-11
+
+### Added
+
+- **`Nous.KnowledgeBase` — LLM-compiled personal knowledge base system** inspired by Karpathy's vision. Raw documents are ingested and compiled by an LLM into a structured markdown wiki with summaries, backlinks, cross-references, and semantic search.
+
+  - **Core data types**:
+    - `Nous.KnowledgeBase.Document` — raw ingested source material (markdown, text, URL, PDF, HTML) with status tracking and checksums
+    - `Nous.KnowledgeBase.Entry` — compiled wiki entries with titles, slugs, `[[wiki-links]]`, summaries, concepts, tags, confidence scores, and optional embeddings
+    - `Nous.KnowledgeBase.Link` — typed directional links between entries (related, subtopic, prerequisite, contradicts, extends, references)
+    - `Nous.KnowledgeBase.HealthReport` — audit results with statistics, coverage/freshness/coherence scores, and categorized issues
+
+  - **Storage**:
+    - `Nous.KnowledgeBase.Store` — behaviour with 15 callbacks for document, entry, and link CRUD plus search and graph traversal
+    - `Nous.KnowledgeBase.Store.ETS` — zero-dependency in-memory backend with Jaro-distance text search and optional embedding vector search
+
+  - **9 agent tools** via `Nous.KnowledgeBase.Tools`: `kb_search`, `kb_read`, `kb_list`, `kb_ingest`, `kb_add_entry`, `kb_link`, `kb_backlinks`, `kb_health_check`, `kb_generate`
+
+  - **`Nous.Plugins.KnowledgeBase`** — plugin that auto-injects KB tools and system prompt guidance. Composes with `Nous.Plugins.Memory`. Configurable via `deps[:kb_config]` with optional embedding support for semantic search.
+
+  - **`Nous.Agents.KnowledgeBaseAgent`** — specialized agent behaviour for KB curation. Adds 4 reasoning tools on top of standard KB tools: `kb_plan_compilation`, `kb_verify_entry`, `kb_suggest_links`, `kb_summarize_topic`. Tracks KB operations for reporting.
+
+  - **`Nous.KnowledgeBase.Workflows`** — pre-built DAG pipelines using the workflow engine:
+    - Ingest pipeline: raw documents → concept extraction → entry compilation → link generation → embedding → persistence
+    - Incremental update: detect changes via checksums and recompile affected entries
+    - Health check: audit for stale, orphan, inconsistent, and duplicate entries
+    - Output generation: produce reports, summaries, or slides from KB content
+
+  - **`Nous.KnowledgeBase.Prompts`** — LLM prompt templates for extraction, compilation, linking, auditing, and output generation
+
+  - 1,159 lines of test coverage across 6 test files (document, entry, link, ETS store, tools, plugin)
+
 ## [0.13.1] - 2026-04-03
 
 ### Added

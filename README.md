@@ -23,7 +23,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.13.0"}
+    {:nous, "~> 0.14.0"}
   ]
 end
 ```
@@ -913,6 +913,51 @@ IO.puts(Workflow.to_mermaid(graph))
 
 **Supports:** branching, cycles with max-iteration guards, static + dynamic parallelism, pause/resume, hooks, subworkflows, error strategies (retry/skip/fallback), telemetry, tracing, checkpointing. See [examples/18_workflow.exs](examples/18_workflow.exs).
 
+### Knowledge Base
+
+LLM-compiled personal knowledge base — raw documents get ingested, compiled by an LLM into a structured markdown wiki with summaries, backlinks, and cross-references:
+
+```elixir
+# Plugin mode — add KB tools to any agent
+agent = Nous.new("openai:gpt-4",
+  plugins: [Nous.Plugins.KnowledgeBase],
+  deps: %{
+    kb_config: %{
+      store: Nous.KnowledgeBase.Store.ETS,
+      kb_id: "my_kb"
+    }
+  }
+)
+
+{:ok, r1} = Nous.run(agent, "Ingest this article about GenServers: ...")
+{:ok, r2} = Nous.run(agent, "What do we know about OTP?", context: r1.context)
+```
+
+For KB-specialized agents with reasoning tools:
+
+```elixir
+agent = Nous.new("openai:gpt-4",
+  behaviour_module: Nous.Agents.KnowledgeBaseAgent,
+  plugins: [Nous.Plugins.KnowledgeBase],
+  deps: %{kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}}
+)
+```
+
+For batch operations, use the workflow API:
+
+```elixir
+# Batch ingest documents
+{:ok, state} = Nous.KnowledgeBase.ingest(
+  [%{title: "Article 1", content: "..."}],
+  kb_config: config
+)
+
+# Run a health check
+{:ok, state} = Nous.KnowledgeBase.health_check(kb_config: config)
+```
+
+**9 tools:** `kb_search`, `kb_read`, `kb_list`, `kb_ingest`, `kb_add_entry`, `kb_link`, `kb_backlinks`, `kb_health_check`, `kb_generate`. Composes with the Memory plugin. See the [Knowledge Base Guide](docs/guides/knowledge_base.md).
+
 ### Deep Research
 
 Autonomous multi-step research with citations:
@@ -1206,6 +1251,11 @@ lib/nous/
 │   ├── edge.ex           # Edge struct
 │   ├── tools.ex          # LLM-callable decision tools
 │   └── context_builder.ex
+├── knowledge_base/       # LLM-compiled wiki knowledge base
+│   ├── store/            # Store backends (ETS)
+│   ├── tools.ex          # 9 KB agent tools
+│   ├── workflows.ex      # DAG pipelines (ingest, update, health, generate)
+│   └── prompts.ex        # LLM prompt templates
 ├── memory/               # Persistent memory with hybrid search
 │   ├── store/            # Store backends (ETS, SQLite, DuckDB, etc.)
 │   ├── embedding/        # Embedding providers
