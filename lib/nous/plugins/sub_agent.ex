@@ -319,8 +319,15 @@ defmodule Nous.Plugins.SubAgent do
   @doc false
   def compute_sub_deps(parent_deps) do
     case parent_deps[:sub_agent_shared_deps] do
-      keys when is_list(keys) -> Map.take(parent_deps, keys)
-      nil -> Map.drop(parent_deps, @plugin_internal_keys)
+      keys when is_list(keys) ->
+        Map.take(parent_deps, keys)
+
+      nil ->
+        Map.drop(parent_deps, @plugin_internal_keys)
+
+      invalid ->
+        raise ArgumentError,
+              ":sub_agent_shared_deps must be a list of keys or nil, got: #{inspect(invalid)}"
     end
   end
 
