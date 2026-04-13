@@ -831,14 +831,17 @@ The `SubAgent` plugin provides two tools:
 - `delegate_task` — run a single sub-agent for sequential delegation
 - `spawn_agents` — run multiple sub-agents concurrently via `Task.Supervisor`
 
-Each sub-agent runs in its own isolated context. Configure concurrency
-limits and timeouts via deps:
+Each sub-agent runs in its own context but inherits parent deps automatically
+(excluding plugin-internal keys). Configure concurrency, timeouts, and
+optionally restrict which deps are shared:
 
 ```elixir
 deps: %{
   sub_agent_templates: templates,
-  parallel_max_concurrency: 3,  # Max concurrent sub-agents (default: 5)
-  parallel_timeout: 60_000      # Per-task timeout in ms (default: 120_000)
+  database: MyApp.Repo,              # shared with sub-agents automatically
+  parallel_max_concurrency: 3,       # max concurrent sub-agents (default: 5)
+  parallel_timeout: 60_000,          # per-task timeout in ms (default: 120_000)
+  sub_agent_shared_deps: [:database] # optional: restrict to specific keys
 }
 ```
 

@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.14.2] - 2026-04-13
+
+### Fixed
+
+- **SubAgent deps propagation** — parent deps now flow to sub-agents by default (excluding plugin-internal keys like templates, PubSub, concurrency config). Use `sub_agent_shared_deps: [:key1, :key2]` in deps to restrict which keys are shared.
+
 ## [0.14.0] - 2026-04-11
 
 ### Added

@@ -603,6 +603,54 @@ defmodule Nous.Plugins.SubAgentTest do
   end
 
   # ===========================================================================
+  # Deps propagation
+  # ===========================================================================
+
+  describe "compute_sub_deps/1" do
+    test "forwards user deps and excludes plugin-internal keys" do
+      parent_deps = %{
+        workspace_id: 42,
+        database: :fake_db,
+        sub_agent_templates: %{"t" => %{}},
+        sub_agent_shared_deps: nil,
+        parallel_max_concurrency: 3,
+        parallel_timeout: 60_000,
+        __sub_agent_pubsub__: SomePubSub,
+        __sub_agent_pubsub_topic__: "topic:1"
+      }
+
+      result = SubAgent.compute_sub_deps(parent_deps)
+
+      assert result == %{workspace_id: 42, database: :fake_db}
+    end
+
+    test "explicit allowlist restricts to specified keys" do
+      parent_deps = %{
+        workspace_id: 42,
+        database: :fake_db,
+        api_key: "secret",
+        sub_agent_shared_deps: [:workspace_id]
+      }
+
+      result = SubAgent.compute_sub_deps(parent_deps)
+
+      assert result == %{workspace_id: 42}
+    end
+
+    test "empty allowlist returns empty map" do
+      parent_deps = %{
+        workspace_id: 42,
+        database: :fake_db,
+        sub_agent_shared_deps: []
+      }
+
+      result = SubAgent.compute_sub_deps(parent_deps)
+
+      assert result == %{}
+    end
+  end
+
+  # ===========================================================================
   # Integration with Plugin system
   # ===========================================================================
 
