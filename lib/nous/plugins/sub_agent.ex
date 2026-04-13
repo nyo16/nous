@@ -43,6 +43,19 @@ defmodule Nous.Plugins.SubAgent do
 
     - `:parallel_max_concurrency` — max concurrent sub-agents (default: 5)
     - `:parallel_timeout` — per-task timeout in ms (default: 120_000)
+
+  ## Deps Propagation
+
+  Parent deps are automatically shared with sub-agents, excluding plugin-internal
+  keys (templates, PubSub config, concurrency settings). To restrict which deps
+  are shared, set `:sub_agent_shared_deps`:
+
+      deps: %{
+        sub_agent_templates: %{...},
+        database: MyApp.Repo,
+        api_key: "sk-...",
+        sub_agent_shared_deps: [:database]  # only :database is forwarded
+      }
   """
 
   @behaviour Nous.Plugin
@@ -53,6 +66,15 @@ defmodule Nous.Plugins.SubAgent do
 
   @default_max_concurrency 5
   @default_timeout 120_000
+
+  @plugin_internal_keys [
+    :sub_agent_templates,
+    :sub_agent_shared_deps,
+    :parallel_max_concurrency,
+    :parallel_timeout,
+    :__sub_agent_pubsub__,
+    :__sub_agent_pubsub_topic__
+  ]
 
   # ===========================================================================
   # Plugin callbacks
@@ -294,6 +316,14 @@ defmodule Nous.Plugins.SubAgent do
   # Shared internals
   # ===========================================================================
 
+  @doc false
+  def compute_sub_deps(parent_deps) do
+    case parent_deps[:sub_agent_shared_deps] do
+      keys when is_list(keys) -> Map.take(parent_deps, keys)
+      nil -> Map.drop(parent_deps, @plugin_internal_keys)
+    end
+  end
+
   defp resolve_agent(ctx, template_name, _args) when is_binary(template_name) do
     templates = ctx.deps[:sub_agent_templates] || %{}
 
@@ -340,9 +370,7 @@ defmodule Nous.Plugins.SubAgent do
     label = if index, do: "[sub-agent #{index}]", else: "[sub-agent]"
     Logger.info("#{label} Starting: #{String.slice(task, 0, 80)}")
 
-    # Isolated deps — only pass through explicitly shared keys
-    shared_keys = []
-    sub_deps = Map.take(parent_ctx.deps, shared_keys)
+    sub_deps = compute_sub_deps(parent_ctx.deps)
 
     # Propagate PubSub with scoped topic
     parent_pubsub = parent_ctx.deps[:__sub_agent_pubsub__]
