@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-04-25
+
+### Added
+
+- **`:extra_body` setting for arbitrary request body params** — pass vendor-specific top-level JSON keys (e.g. `top_k`, `chat_template_kwargs`, `repetition_penalty`, `min_p`, `best_of`, `ignore_eos`) to OpenAI-compatible providers (`vllm:`, `sglang:`, `custom:`, `lmstudio:`, `ollama:`). Mirrors the OpenAI Python SDK's `extra_body=` argument. Works in `default_settings`, `Nous.LLM` calls, and `Agent.run/3` `model_settings`. Atom keys are stringified at request build time; nested values pass through verbatim. `extra_body` wins on collision with whitelisted keys (escape-hatch semantics). Also forwarded by Gemini and Vertex AI overrides.
+
+  Example — disable Qwen3 thinking and tune sampling on a vLLM endpoint:
+
+      Nous.new("custom:qwen3-vl",
+        base_url: "http://localhost:8000/v1",
+        default_settings: %{
+          extra_body: %{
+            top_k: 20,
+            chat_template_kwargs: %{enable_thinking: false}
+          }
+        })
+
+  Example — interleaved thinking (preserve thinking blocks across turns):
+
+      Nous.new("custom:qwen3-vl",
+        base_url: "http://localhost:8000/v1",
+        default_settings: %{
+          extra_body: %{
+            chat_template_kwargs: %{preserve_thinking: true}
+          }
+        })
+
 ## [0.14.2] - 2026-04-13
 
 ### Fixed

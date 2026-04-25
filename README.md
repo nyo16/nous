@@ -199,6 +199,46 @@ agent = Nous.new("custom:qwen3")  # base_url read from env
 > **Note**: The legacy `openai_compatible:` prefix still works for backward compatibility
 > but `custom:` is the recommended approach going forward.
 
+#### Vendor-specific body params (`:extra_body`)
+
+Some OpenAI-compatible servers (vLLM, SGLang, LM Studio, llama.cpp) accept top-level
+JSON keys that aren't part of OpenAI's official schema — `top_k`, `chat_template_kwargs`,
+`repetition_penalty`, `min_p`, `best_of`, `ignore_eos`, etc. Pass them through `:extra_body`,
+which mirrors the OpenAI Python SDK's `extra_body=` argument:
+
+```elixir
+# Disable Qwen3 thinking + tune sampling
+agent = Nous.new("custom:qwen3-vl",
+  base_url: "http://localhost:8000/v1",
+  default_settings: %{
+    temperature: 0.7,
+    extra_body: %{
+      top_k: 20,
+      chat_template_kwargs: %{enable_thinking: false}
+    }
+  })
+
+# Interleaved thinking — preserve thinking blocks across turns
+agent = Nous.new("custom:qwen3-vl",
+  base_url: "http://localhost:8000/v1",
+  default_settings: %{
+    extra_body: %{
+      chat_template_kwargs: %{preserve_thinking: true}
+    }
+  })
+```
+
+Per-call override:
+
+```elixir
+Nous.LLM.complete(model, "hi", extra_body: %{top_k: 20})
+Agent.run(agent, prompt, model_settings: %{extra_body: %{top_k: 20}})
+```
+
+`extra_body` keys are merged at the top level of the request body and override any
+whitelisted keys on collision (escape-hatch semantics). Atom keys are stringified;
+nested map values pass through verbatim.
+
 ```elixir
 # Switch providers with one line change
 agent = Nous.new("lmstudio:qwen3")                  # Local (free)

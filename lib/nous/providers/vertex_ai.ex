@@ -187,11 +187,14 @@ defmodule Nous.Providers.VertexAI do
     generation_config =
       Map.merge(generation_config, merged_settings[:generationConfig] || %{})
 
-    if map_size(generation_config) > 0 do
-      Map.put(params, "generationConfig", generation_config)
-    else
-      params
-    end
+    params =
+      if map_size(generation_config) > 0 do
+        Map.put(params, "generationConfig", generation_config)
+      else
+        params
+      end
+
+    maybe_merge_extra_body(params, merged_settings[:extra_body])
   end
 
   # Use Gemini stream normalizer — same response format
