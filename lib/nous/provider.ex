@@ -426,10 +426,21 @@ defmodule Nous.Provider do
         |> maybe_put("regex", merged_settings[:regex])
         # Gemini
         |> maybe_put("generationConfig", merged_settings[:generationConfig])
+        # Vendor-specific top-level body keys (vLLM/SGLang `top_k`,
+        # `chat_template_kwargs`, etc.) — mirrors OpenAI Python SDK's `extra_body=`.
+        |> maybe_merge_extra_body(merged_settings[:extra_body])
       end
 
       defp maybe_put(params, _key, nil), do: params
       defp maybe_put(params, key, value), do: Map.put(params, key, value)
+
+      defp maybe_merge_extra_body(params, nil), do: params
+      defp maybe_merge_extra_body(params, extra) when extra == %{}, do: params
+
+      defp maybe_merge_extra_body(params, extra) when is_map(extra) do
+        stringified = Map.new(extra, fn {k, v} -> {to_string(k), v} end)
+        Map.merge(params, stringified)
+      end
 
       # Default stream normalizer - providers can override
       defp default_stream_normalizer do

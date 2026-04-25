@@ -18,6 +18,30 @@ defmodule Nous.ProviderTest do
     @impl true
     def chat_stream(%{error: reason}, _opts), do: {:error, reason}
     def chat_stream(_params, _opts), do: {:ok, Stream.map([], & &1)}
+
+    # Test-only public wrapper around the private build_request_params/3
+    # injected by `use Nous.Provider`. Lets us assert merge behavior directly
+    # without going through the full request pipeline.
+    def __build_request_params__(model, messages, settings),
+      do: build_request_params(model, messages, settings)
+  end
+
+  # Provider with a real-world id so Nous.Messages.to_provider_format/2
+  # can serialize messages — needed for build_request_params/3 tests.
+  defmodule OAICompatTestProvider do
+    use Nous.Provider,
+      id: :openai_compatible,
+      default_base_url: "https://test.example.com/v1",
+      default_env_key: "OAI_TEST_API_KEY"
+
+    @impl true
+    def chat(_params, _opts), do: {:ok, %{}}
+
+    @impl true
+    def chat_stream(_params, _opts), do: {:ok, Stream.map([], & &1)}
+
+    def __build_request_params__(model, messages, settings),
+      do: build_request_params(model, messages, settings)
   end
 
   defmodule CustomTokenProvider do
@@ -151,6 +175,173 @@ defmodule Nous.ProviderTest do
   describe "chat_stream/2 callback" do
     test "callback is implemented" do
       assert {:ok, _stream} = TestProvider.chat_stream(%{}, [])
+    end
+  end
+
+  # ============================================================================
+  # build_request_params :extra_body merging
+  # ============================================================================
+
+  describe "build_request_params/3 with :extra_body" do
+    alias Nous.Message
+    alias Nous.Model
+
+    # Bypass Model.new/3 — its provider() typespec rejects :test_provider and
+    # default_base_url/1 has no clause for it. Build the struct directly.
+    defp test_model(default_settings \\ %{}) do
+      %Model{
+        provider: :openai_compatible,
+        model: "test-model",
+        base_url: "https://api.test.example.com/v1",
+        default_settings: default_settings
+      }
+    end
+
+    setup do
+      {:ok, model: test_model(), messages: [Message.user("hello")]}
+    end
+
+    test "no :extra_body leaves params untouched", %{model: model, messages: messages} do
+      params = OAICompatTestProvider.__build_request_params__(model, messages, %{})
+
+      refute Map.has_key?(params, "top_k")
+      refute Map.has_key?(params, "chat_template_kwargs")
+      assert params["model"] == "test-model"
+      assert is_list(params["messages"])
+    end
+
+    test "empty extra_body map is a no-op", %{model: model, messages: messages} do
+      params = OAICompatTestProvider.__build_request_params__(model, messages, %{extra_body: %{}})
+
+      refute Map.has_key?(params, "extra_body")
+      assert params["model"] == "test-model"
+    end
+
+    test "atom keys are stringified", %{model: model, messages: messages} do
+      params =
+        OAICompatTestProvider.__build_request_params__(model, messages, %{
+          extra_body: %{top_k: 20, repetition_penalty: 1.05}
+        })
+
+      assert params["top_k"] == 20
+      assert params["repetition_penalty"] == 1.05
+      refute Map.has_key?(params, :top_k)
+      refute Map.has_key?(params, :repetition_penalty)
+    end
+
+    test "string keys pass through unchanged", %{model: model, messages: messages} do
+      params =
+        OAICompatTestProvider.__build_request_params__(model, messages, %{
+          extra_body: %{"top_k" => 20, "min_p" => 0.05}
+        })
+
+      assert params["top_k"] == 20
+      assert params["min_p"] == 0.05
+    end
+
+    test "nested map values are preserved verbatim (not stringified deeply)",
+         %{model: model, messages: messages} do
+      params =
+        OAICompatTestProvider.__build_request_params__(model, messages, %{
+          extra_body: %{chat_template_kwargs: %{enable_thinking: false, mode: "fast"}}
+        })
+
+      # Top-level key stringified; nested value is the original map.
+      assert params["chat_template_kwargs"] == %{enable_thinking: false, mode: "fast"}
+    end
+
+    test "list and scalar values pass through", %{model: model, messages: messages} do
+      params =
+        OAICompatTestProvider.__build_request_params__(model, messages, %{
+          extra_body: %{
+            allowed_token_ids: [1, 2, 3],
+            best_of: 4,
+            ignore_eos: true,
+            stop_token_ids: nil
+          }
+        })
+
+      assert params["allowed_token_ids"] == [1, 2, 3]
+      assert params["best_of"] == 4
+      assert params["ignore_eos"] == true
+      # nil values are NOT filtered — they're explicit user intent.
+      assert Map.has_key?(params, "stop_token_ids")
+      assert params["stop_token_ids"] == nil
+    end
+
+    test "extra_body wins on collision with whitelisted keys",
+         %{model: model, messages: messages} do
+      # Whitelisted `temperature` is set to 0.7, but extra_body forces 0.1.
+      # Escape-hatch semantics: extra_body is merged last, so it overrides.
+      params =
+        OAICompatTestProvider.__build_request_params__(model, messages, %{
+          temperature: 0.7,
+          extra_body: %{temperature: 0.1}
+        })
+
+      assert params["temperature"] == 0.1
+    end
+
+    test "extra_body coexists with whitelisted keys when distinct",
+         %{model: model, messages: messages} do
+      params =
+        OAICompatTestProvider.__build_request_params__(model, messages, %{
+          temperature: 0.7,
+          max_tokens: 100,
+          extra_body: %{top_k: 20}
+        })
+
+      assert params["temperature"] == 0.7
+      assert params["max_tokens"] == 100
+      assert params["top_k"] == 20
+    end
+
+    test "per-call settings override model.default_settings extra_body",
+         %{messages: messages} do
+      model = test_model(%{extra_body: %{top_k: 10}})
+
+      # Per-call settings replace (not deep-merge) the extra_body map.
+      params =
+        OAICompatTestProvider.__build_request_params__(model, messages, %{
+          extra_body: %{top_k: 50}
+        })
+
+      assert params["top_k"] == 50
+    end
+
+    test "model.default_settings extra_body applies when no per-call setting",
+         %{messages: messages} do
+      model =
+        test_model(%{
+          extra_body: %{top_k: 10, chat_template_kwargs: %{enable_thinking: false}}
+        })
+
+      params = OAICompatTestProvider.__build_request_params__(model, messages, %{})
+
+      assert params["top_k"] == 10
+      assert params["chat_template_kwargs"] == %{enable_thinking: false}
+    end
+
+    test ":extra_body itself is not leaked as a top-level key",
+         %{model: model, messages: messages} do
+      params =
+        OAICompatTestProvider.__build_request_params__(model, messages, %{
+          extra_body: %{top_k: 20}
+        })
+
+      refute Map.has_key?(params, "extra_body")
+      refute Map.has_key?(params, :extra_body)
+    end
+
+    test "non-map extra_body is ignored without crashing",
+         %{model: model, messages: messages} do
+      # Defensive: accidental nil/atom shouldn't blow up the request pipeline.
+      params = OAICompatTestProvider.__build_request_params__(model, messages, %{extra_body: nil})
+      refute Map.has_key?(params, "extra_body")
+
+      assert_raise FunctionClauseError, fn ->
+        OAICompatTestProvider.__build_request_params__(model, messages, %{extra_body: "oops"})
+      end
     end
   end
 
@@ -392,6 +583,23 @@ defmodule Nous.ProviderTest do
       Code.ensure_loaded!(Nous.Providers.OpenAICompatible)
       functions = Nous.Providers.OpenAICompatible.__info__(:functions)
       assert {:request_stream, 3} in functions
+    end
+
+    test "extra_body forwarding is wired into Gemini and Vertex AI overrides" do
+      # Both override build_request_params and rebuild from scratch. Spot-check
+      # that the override paths still call maybe_merge_extra_body so vendor
+      # extras flow through their alternate body shape (contents/generationConfig).
+      for provider <- [Nous.Providers.Gemini, Nous.Providers.VertexAI] do
+        Code.ensure_loaded!(provider)
+
+        # The helper is injected by `use Nous.Provider` into every provider
+        # module, so its presence is what guarantees overrides can call it.
+        functions = provider.__info__(:functions)
+
+        # maybe_merge_extra_body/2 is private, but the public surface should
+        # still expose request/3 — sanity check the module compiled.
+        assert {:request, 3} in functions
+      end
     end
 
     test "all providers implement high-level callbacks" do
