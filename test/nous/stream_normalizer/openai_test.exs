@@ -203,22 +203,64 @@ defmodule Nous.StreamNormalizer.OpenAITest do
     end
   end
 
-  describe "normalize_chunk/1 - reasoning priority" do
-    test "reasoning takes priority over content when both present in delta" do
+  describe "normalize_chunk/1 - multi-event chunks" do
+    test "emits both reasoning and content when present in same delta" do
+      # Some providers (e.g. vLLM/DeepSeek) interleave thinking and content
+      # in a single chunk during the transition. Both must be emitted.
       chunk = %{
         "choices" => [
           %{"delta" => %{"reasoning" => "thinking...", "content" => "answer"}}
         ]
       }
 
-      # Reasoning has priority in the cond chain
-      assert [{:thinking_delta, "thinking..."}] = Normalizer.normalize_chunk(chunk)
+      assert [{:thinking_delta, "thinking..."}, {:text_delta, "answer"}] =
+               Normalizer.normalize_chunk(chunk)
     end
 
     test "content emitted when no reasoning" do
       chunk = %{"choices" => [%{"delta" => %{"content" => "just text"}}]}
 
       assert [{:text_delta, "just text"}] = Normalizer.normalize_chunk(chunk)
+    end
+
+    test "emits tool_call_delta and finish in the same chunk" do
+      # OpenAI sends the final tool_calls delta together with finish_reason.
+      # Both must be emitted; previously finish_reason was silently dropped
+      # (the cond chain returned only the tool_call event).
+      chunk = %{
+        "choices" => [
+          %{
+            "delta" => %{
+              "tool_calls" => [%{"id" => "call_1", "function" => %{"name" => "x"}}]
+            },
+            "finish_reason" => "tool_calls"
+          }
+        ]
+      }
+
+      events = Normalizer.normalize_chunk(chunk)
+      assert [{:tool_call_delta, [_]}, {:finish, "tool_calls"}] = events
+    end
+
+    test "complete_response emits tool_calls before finish" do
+      # Non-streaming responses (LM Studio / vLLM / Ollama / llamacpp when
+      # stream:true degenerates) carry tool_calls in `message.tool_calls`.
+      # Previously these were silently dropped and finish_reason "stop" was
+      # returned instead of "tool_calls".
+      chunk = %{
+        "choices" => [
+          %{
+            "message" => %{
+              "content" => nil,
+              "tool_calls" => [%{"id" => "call_1", "function" => %{"name" => "x"}}]
+            },
+            "finish_reason" => "tool_calls"
+          }
+        ]
+      }
+
+      assert [{:tool_call_delta, [_]}, {:finish, "tool_calls"}] =
+               Normalizer.convert_complete_response(chunk)
     end
   end
 end
