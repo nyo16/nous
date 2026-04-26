@@ -114,14 +114,16 @@ defmodule Nous.Plugins.MemoryTest do
       # Run before_request
       {ctx, _tools} = MemoryPlugin.before_request(agent, ctx, [])
 
-      # Should have injected a memory message
+      # Should have injected a memory message tagged as USER-SUPPLIED DATA
+      # (the new H-10 untrusted-content marker; was: "Relevant Memories" header).
       system_msgs =
         ctx.messages
-        |> Enum.filter(fn m -> m.role == :system && m.content =~ "Relevant Memories" end)
+        |> Enum.filter(fn m -> m.role == :system && m.content =~ "<retrieved_memory" end)
 
       assert length(system_msgs) > 0
       memory_msg = hd(system_msgs)
       assert memory_msg.content =~ "dark mode"
+      assert memory_msg.content =~ "USER-SUPPLIED DATA"
     end
 
     test "does not inject on second call with :first_only strategy", %{agent: agent, ctx: ctx} do
