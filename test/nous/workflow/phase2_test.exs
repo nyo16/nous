@@ -316,4 +316,55 @@ defmodule Nous.Workflow.Phase2Test do
       assert checkpoint.node_id == "review"
     end
   end
+
+  # =========================================================================
+  # Error strategies
+  # =========================================================================
+
+  describe "error_strategy: {:fallback, _}" do
+    test "executes the fallback node when the primary node fails" do
+      # primary crashes; backup writes :recovered to data.
+      # Asserts the fallback ACTUALLY RUNS - previously the engine just
+      # logged the fallback id and returned {:fallback, id} as if it had
+      # succeeded, so the side-effect never happened.
+      graph =
+        Workflow.new("fallback_test")
+        |> Workflow.add_node(
+          :primary,
+          :transform,
+          tf(fn _ -> raise "boom" end),
+          error_strategy: {:fallback, :backup}
+        )
+        |> Workflow.add_node(
+          :backup,
+          :transform,
+          tf(fn data -> Map.put(data, :recovered, true) end)
+        )
+
+      assert {:ok, state} = Workflow.run(graph, %{})
+      assert state.data.recovered == true
+      # The original failure should still be recorded for observability.
+      assert Enum.any?(state.errors, fn {id, _} -> id == "primary" end)
+    end
+
+    test "fallback chain: backup also fails - propagates structured error" do
+      # Use set_entry so :primary is the deterministic entry point and :backup
+      # is reached only as the fallback target (not in topo order).
+      graph =
+        Nous.Workflow.Graph.new("double_fail")
+        |> Nous.Workflow.Graph.add_node(
+          :primary,
+          :transform,
+          tf(fn _ -> raise "primary boom" end), error_strategy: {:fallback, :backup})
+        |> Nous.Workflow.Graph.add_node(
+          :backup,
+          :transform,
+          tf(fn _ -> raise "backup boom too" end)
+        )
+        |> Nous.Workflow.Graph.set_entry(:primary)
+
+      assert {:error, {"primary", {:fallback_failed, "backup", _reason}}} =
+               Workflow.run(graph, %{})
+    end
+  end
 end

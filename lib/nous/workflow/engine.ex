@@ -432,9 +432,40 @@ defmodule Nous.Workflow.Engine do
       {:ok, result, updated_state} ->
         {:ok, result, updated_state}
 
-      {:error, _reason} ->
-        Logger.warning("Node #{node.id} failed, falling back to #{fallback_id}")
-        {:ok, {:fallback, fallback_id}, state}
+      {:error, reason} ->
+        # Graph node ids are stringified internally (Graph.add_node), so the
+        # atom referenced from error_strategy must be normalized before lookup.
+        fallback_key = to_string(fallback_id)
+
+        Logger.warning(
+          "Node #{node.id} failed (#{inspect(reason)}), executing fallback: #{fallback_key}"
+        )
+
+        case Map.get(graph_nodes, fallback_key) do
+          nil ->
+            Logger.error(
+              "Fallback node #{fallback_key} not found in graph for failed node #{node.id}"
+            )
+
+            {:error, {:fallback_not_found, fallback_key, node.id}}
+
+          fallback_node ->
+            # Run the fallback node and substitute its result for the failed node's.
+            # Record the original failure on state so observability sees both events.
+            state_with_err = State.put_error(state, node.id, reason)
+
+            case run_executor(fallback_node, state_with_err, graph_nodes) do
+              {:ok, fallback_result, updated_state} ->
+                {:ok, fallback_result, updated_state}
+
+              {:error, fallback_reason} ->
+                Logger.error(
+                  "Fallback node #{fallback_key} also failed: #{inspect(fallback_reason)}"
+                )
+
+                {:error, {:fallback_failed, fallback_key, fallback_reason}}
+            end
+        end
     end
   end
 
