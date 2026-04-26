@@ -49,12 +49,34 @@ if Code.ensure_loaded?(Bumblebee) do
     @impl true
     def dimension, do: @default_dimension
 
+    # M-7: cache lookup is double-checked under a global lock so two
+    # concurrent first-time callers don't both load a ~1.5GB model and
+    # leak the loser's serving. :persistent_term writes still GC the
+    # whole node once per new model_name (unavoidable with this storage
+    # mechanism); a deeper rework using a Registry-backed singleton
+    # GenServer per model_name + DynamicSupervisor would eliminate the
+    # GC cost entirely - left for follow-up.
     defp get_or_start_serving(model_name, opts) do
       key = {__MODULE__, model_name}
 
       case :persistent_term.get(key, nil) do
-        nil -> start_serving(model_name, opts, key)
-        serving -> {:ok, serving}
+        nil ->
+          # Serialize loaders for this specific model via :global.set_lock.
+          lock_id = {{__MODULE__, model_name}, self()}
+          :global.set_lock(lock_id, [node()], :infinity)
+
+          try do
+            # Re-check under the lock - someone else may have populated.
+            case :persistent_term.get(key, nil) do
+              nil -> start_serving(model_name, opts, key)
+              serving -> {:ok, serving}
+            end
+          after
+            :global.del_lock(lock_id)
+          end
+
+        serving ->
+          {:ok, serving}
       end
     end
 

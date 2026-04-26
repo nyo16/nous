@@ -219,6 +219,16 @@ defmodule Nous.KnowledgeBase.Store.ETS do
   end
 
   @impl true
+  def link_counts_by_source(state) do
+    counts =
+      state.links
+      |> all_records()
+      |> Enum.frequencies_by(& &1.from_entry_id)
+
+    {:ok, counts}
+  end
+
+  @impl true
   def related_entries(state, entry_id, opts) do
     limit = Keyword.get(opts, :limit, 10)
 

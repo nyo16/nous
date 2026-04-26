@@ -2,10 +2,14 @@ defmodule Nous.Persistence.ETS do
   @moduledoc """
   ETS-based persistence backend.
 
-  Stores serialized context data in a named ETS table. The table is created
-  lazily on first use. Data does not survive process restarts.
+  Stores serialized context data in a named ETS table. The table is owned
+  by a dedicated GenServer (`Nous.Persistence.ETS.TableOwner`) started
+  under the Nous application supervisor, so the table outlives transient
+  callers - previously the table died with whichever process happened to
+  call save/load first.
 
-  This is useful for development, testing, and short-lived sessions.
+  Data does not survive node restarts. Useful for development, testing,
+  and short-lived sessions.
 
   ## Usage
 
@@ -22,11 +26,46 @@ defmodule Nous.Persistence.ETS do
 
   @table :nous_persistence
 
+  defmodule TableOwner do
+    @moduledoc false
+    use GenServer
+
+    def start_link(_opts) do
+      GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
+    end
+
+    @impl true
+    def init(:ok) do
+      table_name = :nous_persistence
+
+      table =
+        case :ets.whereis(table_name) do
+          :undefined ->
+            :ets.new(table_name, [:named_table, :set, :public, read_concurrency: true])
+
+          _ref ->
+            table_name
+        end
+
+      {:ok, %{table: table}}
+    end
+  end
+
+  @doc false
+  def child_spec(_opts) do
+    %{id: __MODULE__, start: {TableOwner, :start_link, [[]]}, type: :worker}
+  end
+
   @impl true
   def save(session_id, data) when is_binary(session_id) and is_map(data) do
     ensure_table()
-    :ets.insert(@table, {session_id, data})
-    :ok
+
+    try do
+      true = :ets.insert(@table, {session_id, data})
+      :ok
+    rescue
+      e -> {:error, {:ets_insert_failed, Exception.message(e)}}
+    end
   end
 
   @impl true
@@ -53,6 +92,8 @@ defmodule Nous.Persistence.ETS do
     {:ok, keys}
   end
 
+  # Fallback for callers used before the supervisor started the owner
+  # (mainly ad-hoc tests). Production code goes through TableOwner.
   defp ensure_table do
     case :ets.whereis(@table) do
       :undefined ->

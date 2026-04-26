@@ -11,7 +11,11 @@ defmodule Nous.Application do
       {Task.Supervisor, name: Nous.TaskSupervisor},
       # Agent process registry and dynamic supervisor
       Nous.AgentRegistry,
-      Nous.AgentDynamicSupervisor
+      Nous.AgentDynamicSupervisor,
+      # ETS persistence table owner - keeps the :nous_persistence table
+      # alive across transient agent processes. Without this the table
+      # dies with whichever process happens to call save/load first.
+      Nous.Persistence.ETS
     ]
 
     # Tuned restart limits to match AgentDynamicSupervisor - default 3-in-5
