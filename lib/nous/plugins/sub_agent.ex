@@ -46,16 +46,26 @@ defmodule Nous.Plugins.SubAgent do
 
   ## Deps Propagation
 
-  Parent deps are automatically shared with sub-agents, excluding plugin-internal
-  keys (templates, PubSub config, concurrency settings). To restrict which deps
-  are shared, set `:sub_agent_shared_deps`:
+  By default, **no parent deps** are forwarded to sub-agents. Sub-agent
+  prompts are LLM-controlled and any tool the sub-agent can call has access
+  to its `ctx.deps` — so secrets, repos, signed URLs, and tokens placed in
+  the parent's deps would otherwise be one prompt-injected sub-agent task
+  away from exfiltration. Opt in explicitly by listing the keys to share, or
+  request "everything except plugin internals" via the `:all` shortcut:
 
       deps: %{
         sub_agent_templates: %{...},
         database: MyApp.Repo,
         api_key: "sk-...",
-        sub_agent_shared_deps: [:database]  # only :database is forwarded
+        # Pick one:
+        sub_agent_shared_deps: [:database]   # share only :database
+        # sub_agent_shared_deps: :all        # share everything except internals
       }
+
+  > **Security note:** prior to v0.14.4 (this fix) the default was the
+  > equivalent of `:all`. Upgrading is a behaviour change: if your existing
+  > sub-agent flows relied on inheriting parent deps, set
+  > `sub_agent_shared_deps: :all` to restore the old behaviour.
   """
 
   @behaviour Nous.Plugin
@@ -322,12 +332,22 @@ defmodule Nous.Plugins.SubAgent do
       keys when is_list(keys) ->
         Map.take(parent_deps, keys)
 
-      nil ->
+      :all ->
+        # Explicit opt-in to "everything except plugin internals" - the prior
+        # default. Use only when the parent deps contain no secrets, no Repo
+        # handles, no signed URLs, and no tool grants you wouldn't want every
+        # LLM-driven sub-agent prompt to be able to invoke.
         Map.drop(parent_deps, @plugin_internal_keys)
+
+      nil ->
+        # Default: forward nothing. Sub-agents are LLM-controlled and their
+        # tools can read ctx.deps; secrets in the parent's deps must not
+        # leak to a sub-agent unless the developer opts in explicitly.
+        %{}
 
       invalid ->
         raise ArgumentError,
-              ":sub_agent_shared_deps must be a list of keys or nil, got: #{inspect(invalid)}"
+              ":sub_agent_shared_deps must be a list of keys, :all, or nil, got: #{inspect(invalid)}"
     end
   end
 
