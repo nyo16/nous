@@ -1,9 +1,13 @@
 defmodule Nous.PromptTemplate do
   @moduledoc """
-  EEx-based prompt templates for building messages.
+  Safe prompt templates for building messages.
 
-  Supports variable substitution, role assignment, and composition
-  of messages for agent interactions.
+  Templates use a tightly-constrained `<%= @var %>` substitution syntax;
+  the template body is **not** passed through `EEx.eval_string/2`, so
+  template content from LLM output, tool results, or other untrusted
+  sources cannot trigger arbitrary Elixir evaluation. Templates that
+  contain `<%` markers other than the simple variable form are rejected
+  by `from_template/2`.
 
   ## Simple Usage
 
@@ -38,14 +42,9 @@ defmodule Nous.PromptTemplate do
 
   ## Conditional Content
 
-  Since templates use EEx, you can use conditionals:
-
-      template = PromptTemplate.from_template(\"""
-      You are a helpful assistant.
-      <%= if @include_tools do %>
-      You have access to these tools: <%= @tools %>
-      <% end %>
-      \""")
+  This module deliberately does not support `<%= if ... do %>` blocks or
+  arbitrary Elixir expressions. Build conditional structure by composing
+  multiple smaller templates with `compose/2` or `to_messages/2`.
 
   ## String Templates
 
@@ -89,11 +88,38 @@ defmodule Nous.PromptTemplate do
   """
   @spec from_template(String.t(), keyword()) :: t()
   def from_template(text, opts \\ []) when is_binary(text) do
-    %__MODULE__{
-      text: text,
-      role: Keyword.get(opts, :role, :user),
-      inputs: Keyword.get(opts, :inputs, %{})
-    }
+    case validate_template_safety(text) do
+      :ok ->
+        %__MODULE__{
+          text: text,
+          role: Keyword.get(opts, :role, :user),
+          inputs: Keyword.get(opts, :inputs, %{})
+        }
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "PromptTemplate: " <>
+                reason <>
+                ". This module only supports `<%= @var %>` substitution; arbitrary " <>
+                "EEx expressions are rejected because template bodies that flow " <>
+                "from LLM output / tool results / untrusted strings could otherwise " <>
+                "execute arbitrary Elixir."
+    end
+  end
+
+  # Reject any `<%` marker that isn't a simple `<%= @ident %>` substitution.
+  # Compose multiple templates if you need conditional structure.
+  defp validate_template_safety(text) do
+    # Strip every valid `<%= @var %>` (with optional whitespace) and check
+    # that no other `<%` remains. This rejects `<% if ... do %>`, `<% end %>`,
+    # `<%= System.cmd(...) %>`, and any other expression form.
+    stripped = String.replace(text, ~r/<%=\s*@\w+\s*%>/, "")
+
+    if String.contains?(stripped, "<%") do
+      {:error, "template contains unsupported <% ... %> expression"}
+    else
+      :ok
+    end
   end
 
   @doc """
@@ -360,8 +386,36 @@ defmodule Nous.PromptTemplate do
 
   # Private functions
 
-  defp do_format(text, bindings) do
-    assigns = Map.to_list(bindings)
-    EEx.eval_string(text, assigns: assigns)
+  # Substitute `<%= @var %>` with the value from `bindings`. Missing keys
+  # are left as the original placeholder so callers see clearly which var
+  # wasn't bound. Values are converted via `to_string/1`. The bindings map
+  # may key on either atom or string; both are tried (atoms preferred).
+  defp do_format(text, bindings) when is_map(bindings) do
+    Regex.replace(~r/<%=\s*@(\w+)\s*%>/, text, fn full_match, var_name ->
+      case lookup_binding(bindings, var_name) do
+        {:ok, value} -> to_string(value)
+        :error -> full_match
+      end
+    end)
+  end
+
+  defp lookup_binding(bindings, var_name) do
+    atom_key =
+      try do
+        String.to_existing_atom(var_name)
+      rescue
+        ArgumentError -> nil
+      end
+
+    cond do
+      not is_nil(atom_key) and Map.has_key?(bindings, atom_key) ->
+        Map.fetch(bindings, atom_key)
+
+      Map.has_key?(bindings, var_name) ->
+        Map.fetch(bindings, var_name)
+
+      true ->
+        :error
+    end
   end
 end
