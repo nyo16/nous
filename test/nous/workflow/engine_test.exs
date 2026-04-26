@@ -2,7 +2,7 @@ defmodule Nous.Workflow.EngineTest do
   use ExUnit.Case, async: true
 
   alias Nous.Workflow
-  alias Nous.Workflow.{Graph, Compiler, Engine, State}
+  alias Nous.Workflow.{Graph, Compiler, Engine}
 
   # Helper to build transform config
   defp tf(fun), do: %{transform_fn: fun}

@@ -34,11 +34,18 @@ defmodule Nous.ProviderTest do
       default_base_url: "https://test.example.com/v1",
       default_env_key: "OAI_TEST_API_KEY"
 
+    # The chat / chat_stream return values are wrapped through
+    # `maybe_error/1` so that the macro-generated request/3 sees BOTH
+    # {:ok, _} and {:error, _} as possible static return types - otherwise
+    # dialyzer flags the macro's {:error, _} clause as unreachable.
+    # `maybe_error` always returns {:ok, _} at runtime in tests.
     @impl true
-    def chat(_params, _opts), do: {:ok, %{}}
+    def chat(_params, _opts), do: maybe_error({:ok, %{}})
 
     @impl true
-    def chat_stream(_params, _opts), do: {:ok, Stream.map([], & &1)}
+    def chat_stream(_params, _opts), do: maybe_error({:ok, Stream.map([], & &1)})
+
+    defp maybe_error(ok), do: if(:rand.uniform(1) == 1, do: ok, else: {:error, :unreachable})
 
     def __build_request_params__(model, messages, settings),
       do: build_request_params(model, messages, settings)

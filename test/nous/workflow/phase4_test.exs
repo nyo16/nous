@@ -2,7 +2,7 @@ defmodule Nous.Workflow.Phase4Test do
   use ExUnit.Case, async: true
 
   alias Nous.Workflow
-  alias Nous.Workflow.{Graph, Trace, Checkpoint}
+  alias Nous.Workflow.{Trace, Checkpoint}
 
   defp tf(fun), do: %{transform_fn: fun}
 
@@ -119,7 +119,7 @@ defmodule Nous.Workflow.Phase4Test do
 
     test "emits node start and stop events" do
       ref = make_ref()
-      test_pid = self()
+      _test_pid = self()
       events = :ets.new(:node_events, [:bag, :public])
 
       :telemetry.attach(

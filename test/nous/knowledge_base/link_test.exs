@@ -57,14 +57,15 @@ defmodule Nous.KnowledgeBase.LinkTest do
     end
 
     test "raises on missing from_entry_id" do
+      # apply/3 hides the literal struct from dialyzer's incompatible-types check.
       assert_raise KeyError, fn ->
-        Link.new(%{to_entry_id: "b"})
+        apply(Link, :new, [%{to_entry_id: "b"}])
       end
     end
 
     test "raises on missing to_entry_id" do
       assert_raise KeyError, fn ->
-        Link.new(%{from_entry_id: "a"})
+        apply(Link, :new, [%{from_entry_id: "a"}])
       end
     end
   end
