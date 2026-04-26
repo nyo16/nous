@@ -44,15 +44,21 @@ defmodule Nous.Tools.FileGrep do
   end
 
   @impl true
-  def execute(_ctx, %{"pattern" => pattern} = args) do
+  def execute(ctx, %{"pattern" => pattern} = args) do
     path = Map.get(args, "path", ".")
     glob = Map.get(args, "glob")
     output_mode = Map.get(args, "output_mode", "files_with_matches")
 
-    if rg_available?() do
-      run_rg(pattern, path, glob, output_mode)
-    else
-      run_elixir_grep(pattern, path, glob, output_mode)
+    case Nous.Tools.PathGuard.validate(path, ctx) do
+      {:ok, safe_path} ->
+        if rg_available?() do
+          run_rg(pattern, safe_path, glob, output_mode)
+        else
+          run_elixir_grep(pattern, safe_path, glob, output_mode)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

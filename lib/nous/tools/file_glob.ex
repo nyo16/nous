@@ -35,22 +35,35 @@ defmodule Nous.Tools.FileGlob do
   end
 
   @impl true
-  def execute(_ctx, %{"pattern" => pattern} = args) do
+  def execute(ctx, %{"pattern" => pattern} = args) do
     base = Map.get(args, "path", ".")
-    full_pattern = Path.join(base, pattern)
 
-    files =
-      full_pattern
-      |> Path.wildcard(match_dot: false)
-      |> Enum.filter(&File.regular?/1)
-      |> sort_by_mtime()
-      |> Enum.take(@default_limit)
+    case Nous.Tools.PathGuard.validate(base, ctx) do
+      {:ok, safe_base} ->
+        full_pattern = Path.join(safe_base, pattern)
 
-    if files == [] do
-      {:ok, "No files matched pattern: #{pattern}"}
-    else
-      result = Enum.join(files, "\n")
-      {:ok, result}
+        files =
+          full_pattern
+          |> Path.wildcard(match_dot: false)
+          |> Enum.filter(&File.regular?/1)
+          # Drop any matches that escaped the workspace via symlink etc.
+          |> Enum.filter(fn f ->
+            case Nous.Tools.PathGuard.validate(f, ctx) do
+              {:ok, _} -> true
+              _ -> false
+            end
+          end)
+          |> sort_by_mtime()
+          |> Enum.take(@default_limit)
+
+        if files == [] do
+          {:ok, "No files matched pattern: #{pattern}"}
+        else
+          {:ok, Enum.join(files, "\n")}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

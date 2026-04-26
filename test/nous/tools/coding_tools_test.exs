@@ -27,7 +27,9 @@ defmodule Nous.Tools.CodingToolsTest do
     :ok
   end
 
-  defp ctx, do: Nous.RunContext.new(%{})
+  # All file tools now require an in-workspace path; tests scope the workspace
+  # to the same tmp dir they create fixtures under.
+  defp ctx, do: Nous.RunContext.new(%{workspace_root: @test_dir})
 
   # -- Bash --
 
@@ -82,8 +84,15 @@ defmodule Nous.Tools.CodingToolsTest do
     end
 
     test "returns error for missing file" do
-      assert {:error, msg} = FileRead.execute(ctx(), %{"file_path" => "/nonexistent"})
+      # Use an in-workspace nonexistent path so PathGuard accepts it and we
+      # fall through to File.read's error.
+      assert {:error, msg} = FileRead.execute(ctx(), %{"file_path" => "no_such_file.txt"})
       assert msg =~ "Failed to read"
+    end
+
+    test "rejects path outside workspace root" do
+      assert {:error, msg} = FileRead.execute(ctx(), %{"file_path" => "/etc/passwd"})
+      assert msg =~ "escapes the workspace"
     end
   end
 

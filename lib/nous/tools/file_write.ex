@@ -33,13 +33,16 @@ defmodule Nous.Tools.FileWrite do
   end
 
   @impl true
-  def execute(_ctx, %{"file_path" => file_path, "content" => content}) do
-    dir = Path.dirname(file_path)
-
-    with :ok <- File.mkdir_p(dir),
-         :ok <- File.write(file_path, content) do
-      {:ok, "Wrote #{byte_size(content)} bytes to #{file_path}"}
+  def execute(ctx, %{"file_path" => file_path, "content" => content}) do
+    with {:ok, safe_path} <- Nous.Tools.PathGuard.validate(file_path, ctx),
+         dir = Path.dirname(safe_path),
+         :ok <- File.mkdir_p(dir),
+         :ok <- File.write(safe_path, content) do
+      {:ok, "Wrote #{byte_size(content)} bytes to #{safe_path}"}
     else
+      {:error, reason} when is_binary(reason) ->
+        {:error, reason}
+
       {:error, reason} ->
         {:error, "Failed to write #{file_path}: #{inspect(reason)}"}
     end

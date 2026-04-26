@@ -909,25 +909,42 @@ defmodule Nous.AgentRunner do
     end)
   end
 
-  # Check if a tool call requires approval and invoke the handler
+  # Check if a tool call requires approval and invoke the handler.
+  #
+  # Default-deny: a tool with `requires_approval: true` but no
+  # `ctx.approval_handler` is REJECTED, not approved. The previous behaviour
+  # auto-approved in this case, which made the requires_approval flag a
+  # silent no-op for the default Agent setup - one prompt-injected document
+  # away from RCE on tools like Bash/FileWrite.
   defp check_tool_approval(nil, _call, _ctx), do: :approve
 
-  defp check_tool_approval(%Tool{requires_approval: true}, call, %Context{
+  defp check_tool_approval(%Tool{requires_approval: true} = tool, call, %Context{
          approval_handler: handler
        })
        when is_function(handler) do
     tool_call_info = %{
       name: get_tool_field(call, :name),
       id: get_tool_field(call, :id),
-      arguments: get_tool_field(call, :arguments)
+      arguments: get_tool_field(call, :arguments),
+      tool: tool
     }
 
     case handler.(tool_call_info) do
       :approve -> :approve
       :reject -> :reject
       {:edit, new_args} when is_map(new_args) -> {:edit, new_args}
-      _ -> :approve
+      _ -> :reject
     end
+  end
+
+  defp check_tool_approval(%Tool{requires_approval: true} = tool, call, _ctx) do
+    Logger.warning(
+      "Tool '#{tool.name}' has requires_approval: true but no :approval_handler is configured " <>
+        "in ctx. Rejecting call (id=#{inspect(get_tool_field(call, :id))}). " <>
+        "Wire an approval_handler to allow these tools."
+    )
+
+    :reject
   end
 
   defp check_tool_approval(_tool, _call, _ctx), do: :approve

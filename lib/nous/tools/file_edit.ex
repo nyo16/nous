@@ -45,47 +45,47 @@ defmodule Nous.Tools.FileEdit do
 
   @impl true
   def execute(
-        _ctx,
+        ctx,
         %{"file_path" => file_path, "old_string" => old_string, "new_string" => new_string} =
           args
       ) do
     replace_all = Map.get(args, "replace_all", false)
 
-    case File.read(file_path) do
-      {:ok, content} ->
-        occurrences = count_occurrences(content, old_string)
+    with {:ok, safe_path} <- Nous.Tools.PathGuard.validate(file_path, ctx),
+         {:ok, content} <- File.read(safe_path) do
+      occurrences = count_occurrences(content, old_string)
 
-        cond do
-          occurrences == 0 ->
-            {:error, "old_string not found in #{file_path}"}
+      cond do
+        occurrences == 0 ->
+          {:error, "old_string not found in #{safe_path}"}
 
-          occurrences > 1 and not replace_all ->
-            {:error,
-             "old_string found #{occurrences} times in #{file_path}. " <>
-               "Use replace_all: true to replace all occurrences."}
+        occurrences > 1 and not replace_all ->
+          {:error,
+           "old_string found #{occurrences} times in #{safe_path}. " <>
+             "Use replace_all: true to replace all occurrences."}
 
-          true ->
-            new_content =
-              if replace_all do
-                String.replace(content, old_string, new_string)
-              else
-                replace_first(content, old_string, new_string)
-              end
-
-            case File.write(file_path, new_content) do
-              :ok ->
-                replaced = if replace_all, do: occurrences, else: 1
-
-                {:ok,
-                 "Edited #{file_path} (#{replaced} replacement#{if replaced > 1, do: "s", else: ""})"}
-
-              {:error, reason} ->
-                {:error, "Failed to write #{file_path}: #{inspect(reason)}"}
+        true ->
+          new_content =
+            if replace_all do
+              String.replace(content, old_string, new_string)
+            else
+              replace_first(content, old_string, new_string)
             end
-        end
 
-      {:error, reason} ->
-        {:error, "Failed to read #{file_path}: #{inspect(reason)}"}
+          case File.write(safe_path, new_content) do
+            :ok ->
+              replaced = if replace_all, do: occurrences, else: 1
+
+              {:ok,
+               "Edited #{safe_path} (#{replaced} replacement#{if replaced > 1, do: "s", else: ""})"}
+
+            {:error, reason} ->
+              {:error, "Failed to write #{safe_path}: #{inspect(reason)}"}
+          end
+      end
+    else
+      {:error, reason} when is_binary(reason) -> {:error, reason}
+      {:error, reason} -> {:error, "Failed to access #{file_path}: #{inspect(reason)}"}
     end
   end
 
