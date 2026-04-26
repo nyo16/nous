@@ -231,10 +231,25 @@ if Code.ensure_loaded?(LlamaCppEx) do
     defp default_stream_normalizer, do: Nous.StreamNormalizer.LlamaCpp
     defp build_request_params(_model, _messages, _settings), do: %{}
 
-    # Convert string-keyed maps from to_openai_format to atom-keyed maps for LlamaCppEx
+    # Convert string-keyed maps from to_openai_format to atom-keyed maps for LlamaCppEx.
+    # NEVER call String.to_atom/1 on data flowing from to_openai_format - if the keyset
+    # ever expands to include user-controlled fields, that becomes an atom-table DoS.
+    # Whitelist the known message-shape keys; unknown keys stay as binaries.
+    @llamacpp_message_keys %{
+      "role" => :role,
+      "content" => :content,
+      "name" => :name,
+      "tool_calls" => :tool_calls,
+      "tool_call_id" => :tool_call_id,
+      "id" => :id,
+      "type" => :type,
+      "function" => :function,
+      "arguments" => :arguments
+    }
+
     defp to_atom_keys(map) when is_map(map) do
       Map.new(map, fn
-        {k, v} when is_binary(k) -> {String.to_atom(k), v}
+        {k, v} when is_binary(k) -> {Map.get(@llamacpp_message_keys, k, k), v}
         {k, v} -> {k, v}
       end)
     end

@@ -150,7 +150,7 @@ defmodule Nous.Eval.TestCase do
       expected: Keyword.get(opts, :expected),
       eval_type: Keyword.get(opts, :eval_type, :contains),
       eval_config: Keyword.get(opts, :eval_config, %{}),
-      tags: Keyword.get(opts, :tags, []) |> Enum.map(&to_atom/1),
+      tags: Keyword.get(opts, :tags, []) |> Enum.map(&safe_to_atom/1) |> Enum.reject(&is_nil/1),
       deps: Keyword.get(opts, :deps, %{}),
       tools: Keyword.get(opts, :tools),
       agent_config: Keyword.get(opts, :agent_config, []),
@@ -172,9 +172,10 @@ defmodule Nous.Eval.TestCase do
         description: get_any(map, [:description, "description"]),
         input: input,
         expected: get_any(map, [:expected, "expected"]),
-        eval_type: get_any(map, [:eval_type, "eval_type"], :contains) |> to_atom(),
+        eval_type: get_any(map, [:eval_type, "eval_type"], :contains) |> parse_eval_type(),
         eval_config: get_any(map, [:eval_config, "eval_config"], %{}) |> atomize_keys(),
-        tags: get_any(map, [:tags, "tags"], []) |> Enum.map(&to_atom/1),
+        tags:
+          get_any(map, [:tags, "tags"], []) |> Enum.map(&safe_to_atom/1) |> Enum.reject(&is_nil/1),
         deps: get_any(map, [:deps, "deps"], %{}),
         tools: nil,
         agent_config: get_any(map, [:agent_config, "agent_config"], %{}) |> atomize_keys(),
@@ -185,6 +186,36 @@ defmodule Nous.Eval.TestCase do
       {:ok, test_case}
     end
   end
+
+  # YAML files come from arbitrary user paths (--suite). Whitelist eval_type so
+  # untrusted suite files cannot inject arbitrary atoms into the global table.
+  @valid_eval_types ~w(exact_match fuzzy_match contains tool_usage schema llm_judge custom)a
+
+  defp parse_eval_type(value) when is_atom(value) do
+    if value in @valid_eval_types, do: value, else: :contains
+  end
+
+  defp parse_eval_type(value) when is_binary(value) do
+    case Enum.find(@valid_eval_types, fn a -> Atom.to_string(a) == value end) do
+      nil -> value
+      atom -> atom
+    end
+  end
+
+  defp parse_eval_type(_), do: :contains
+
+  # Convert a YAML scalar to an existing atom; unknown values are dropped.
+  # NEVER use String.to_atom/1 here - YAML files are user-controllable input.
+  defp safe_to_atom(nil), do: nil
+  defp safe_to_atom(value) when is_atom(value), do: value
+
+  defp safe_to_atom(value) when is_binary(value) do
+    String.to_existing_atom(value)
+  rescue
+    ArgumentError -> nil
+  end
+
+  defp safe_to_atom(_), do: nil
 
   @doc """
   Validate a test case.
@@ -238,16 +269,22 @@ defmodule Nous.Eval.TestCase do
     Enum.find_value(keys, default, fn k -> Map.get(map, k) end)
   end
 
-  defp to_atom(value) when is_atom(value), do: value
-  defp to_atom(value) when is_binary(value), do: String.to_atom(value)
-
+  # eval_config / agent_config maps come from arbitrary YAML. Convert to atoms
+  # ONLY if the atom already exists in the BEAM; unknown keys remain as
+  # binaries. This prevents YAML files from exhausting the global atom table.
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {String.to_atom(k), atomize_keys(v)}
+      {k, v} when is_binary(k) -> {atom_key_or_binary(k), atomize_keys(v)}
       {k, v} -> {k, atomize_keys(v)}
     end)
   end
 
   defp atomize_keys(list) when is_list(list), do: Enum.map(list, &atomize_keys/1)
   defp atomize_keys(other), do: other
+
+  defp atom_key_or_binary(binary) do
+    String.to_existing_atom(binary)
+  rescue
+    ArgumentError -> binary
+  end
 end

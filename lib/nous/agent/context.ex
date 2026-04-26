@@ -651,14 +651,6 @@ defmodule Nous.Agent.Context do
     }
   end
 
-  @atomize_allowed_keys ~w(
-    role content tool_calls tool_call_id name metadata
-    requests input_tokens output_tokens total_tokens
-    version messages system_prompt deps usage needs_response
-    iteration max_iterations started_at agent_name
-    id arguments type function
-  )a
-
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
       {k, v} when is_atom(k) -> {k, v}
@@ -666,15 +658,14 @@ defmodule Nous.Agent.Context do
     end)
   end
 
+  # Safe atom resolution for keys read from persisted state.
+  # NEVER calls String.to_atom/1 - that would let attacker-controlled persisted blobs
+  # exhaust the global atom table (atoms are not GC'd; node-wide DoS).
+  # Unknown keys stay as binaries; downstream Ecto.cast simply ignores them.
   defp safe_to_atom(key) do
     String.to_existing_atom(key)
   rescue
-    ArgumentError ->
-      if String.to_atom(key) in @atomize_allowed_keys do
-        String.to_atom(key)
-      else
-        key
-      end
+    ArgumentError -> key
   end
 
   defp update_needs_response(ctx, %Message{role: :assistant} = message) do

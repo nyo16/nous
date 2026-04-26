@@ -135,13 +135,16 @@ defmodule Nous.Skill.Loader do
     |> Path.rootname()
   end
 
-  defp parse_tags(tags) when is_list(tags), do: Enum.map(tags, &parse_atom/1)
+  defp parse_tags(tags) when is_list(tags) do
+    tags |> Enum.map(&parse_atom/1) |> Enum.reject(&is_nil/1)
+  end
+
   defp parse_tags(_), do: []
 
-  # Common tag atoms (auto, manual, elixir, python, etc.) are already known;
-  # String.to_existing_atom/1 will resolve them without creating new atoms.
-  # Unknown tags fall through to String.to_atom/1 with a debug log.
-
+  # Skill files come from disk and may be authored by anyone. NEVER call
+  # String.to_atom/1 on their frontmatter - atoms are not GC'd and the table
+  # is bounded; one malicious or generated skill file can exhaust it and
+  # crash the BEAM. Unknown tags are dropped (with a debug log).
   defp parse_atom(nil), do: nil
   defp parse_atom(val) when is_atom(val), do: val
 
@@ -149,8 +152,8 @@ defmodule Nous.Skill.Loader do
     String.to_existing_atom(val)
   rescue
     ArgumentError ->
-      Logger.debug("Creating new atom for skill tag: #{val}")
-      String.to_atom(val)
+      Logger.debug("Skipping unknown skill tag: #{val}")
+      nil
   end
 
   defp parse_atom(_), do: nil

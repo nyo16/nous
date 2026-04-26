@@ -265,12 +265,22 @@ defmodule Nous.PromptTemplate do
       PromptTemplate.extract_variables("Hello <%= @name %>!")
       # => [:name]
 
+  Variables that match an existing atom are returned as atoms (matching what
+  callers pass in `bindings`). Unknown variables are returned as strings to
+  avoid uncontrolled atom-table growth from attacker-controlled template bodies.
+
   """
-  @spec extract_variables(String.t()) :: [atom()]
+  @spec extract_variables(String.t()) :: [atom() | String.t()]
   def extract_variables(text) when is_binary(text) do
     Regex.scan(~r/@(\w+)/, text)
-    |> Enum.map(fn [_, var] -> String.to_atom(var) end)
+    |> Enum.map(fn [_, var] -> safe_to_existing_atom(var) end)
     |> Enum.uniq()
+  end
+
+  defp safe_to_existing_atom(binary) do
+    String.to_existing_atom(binary)
+  rescue
+    ArgumentError -> binary
   end
 
   @doc """

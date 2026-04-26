@@ -146,16 +146,14 @@ defmodule Mix.Tasks.Nous.Eval do
 
     run_opts =
       if opts[:tags] do
-        tags = opts[:tags] |> String.split(",") |> Enum.map(&String.to_atom/1)
-        Keyword.put(run_opts, :tags, tags)
+        Keyword.put(run_opts, :tags, parse_tags(opts[:tags]))
       else
         run_opts
       end
 
     run_opts =
       if opts[:exclude] do
-        tags = opts[:exclude] |> String.split(",") |> Enum.map(&String.to_atom/1)
-        Keyword.put(run_opts, :exclude_tags, tags)
+        Keyword.put(run_opts, :exclude_tags, parse_tags(opts[:exclude]))
       else
         run_opts
       end
@@ -189,6 +187,27 @@ defmodule Mix.Tasks.Nous.Eval do
       end
 
     run_opts
+  end
+
+  # Parse a comma-separated tag list from CLI input.
+  # NEVER use String.to_atom/1 on CLI args - a CI invocation that takes
+  # repo-supplied filenames or env vars could exhaust the BEAM atom table.
+  # Tags that don't already exist as atoms can't match any registered test
+  # case anyway, so skipping them is safe.
+  defp parse_tags(arg) when is_binary(arg) do
+    arg
+    |> String.split(",", trim: true)
+    |> Enum.map(&String.trim/1)
+    |> Enum.map(fn tag ->
+      try do
+        String.to_existing_atom(tag)
+      rescue
+        ArgumentError ->
+          Mix.shell().info("Skipping unknown tag: #{tag}")
+          nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
   end
 
   defp run_suites(suites, run_opts, opts) do
