@@ -394,6 +394,12 @@ defmodule Nous.AgentServer do
   end
 
   @impl true
+  def handle_cast({:_apply_loaded_context, ctx}, state) do
+    # Internal cast posted by the async load task in :load_context.
+    {:noreply, %{state | context: ctx}}
+  end
+
+  @impl true
   def handle_cast(:clear_history, state) do
     Logger.info("Clearing conversation context for session: #{state.session_id}")
 
@@ -492,30 +498,44 @@ defmodule Nous.AgentServer do
   end
 
   @impl true
-  def handle_call({:load_context, session_id}, _from, state) do
+  def handle_call({:load_context, session_id}, from, state) do
     case state.persistence do
       nil ->
         {:reply, {:error, :no_persistence}, state}
 
       backend ->
-        case backend.load(session_id) do
-          {:ok, data} ->
-            case Context.deserialize(data) do
-              {:ok, ctx} ->
-                ctx =
-                  ctx
-                  |> Context.merge_deps(state.context.deps)
-                  |> Context.patch_dangling_tool_calls()
+        # Run the load + deserialize + patch in a supervised task so a
+        # slow persistence backend (S3, Postgres under load) doesn't wedge
+        # the GenServer and time out concurrent get_context / cancel calls.
+        # Reply asynchronously via GenServer.reply/2 when the task is done.
+        merge_deps = state.context.deps
+        server = self()
 
-                {:reply, :ok, %{state | context: ctx}}
+        Task.Supervisor.start_child(Nous.TaskSupervisor, fn ->
+          result =
+            with {:ok, data} <- backend.load(session_id),
+                 {:ok, ctx} <- Context.deserialize(data) do
+              ctx =
+                ctx
+                |> Context.merge_deps(merge_deps)
+                |> Context.patch_dangling_tool_calls()
 
-              {:error, reason} ->
-                {:reply, {:error, reason}, state}
+              {:ok, ctx}
             end
 
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
+          case result do
+            {:ok, ctx} ->
+              # Hand the context back to the server before replying so the
+              # next call sees the new state.
+              :ok = GenServer.cast(server, {:_apply_loaded_context, ctx})
+              GenServer.reply(from, :ok)
+
+            {:error, reason} ->
+              GenServer.reply(from, {:error, reason})
+          end
+        end)
+
+        {:noreply, state}
     end
   end
 

@@ -143,9 +143,18 @@ defmodule Nous.Workflow.Engine do
           susp_state = maybe_attach_trace(susp_state, susp_ctx.trace)
           {:suspended, susp_state, checkpoint}
 
-        {:error, reason, _err_ctx} ->
+        {:error, reason, err_ctx} ->
           WTelemetry.workflow_exception(graph.id, start_time, reason)
-          run_hooks(hooks, :workflow_end, %{workflow_id: graph.id, state: state, status: :failed})
+          # M-11: pass the failure-time state to the :workflow_end hook
+          # rather than the initial state. Falls back to initial state if
+          # the error was raised before any node ran.
+          end_state = Map.get(err_ctx || %{}, :failure_state, state)
+
+          run_hooks(hooks, :workflow_end, %{
+            workflow_id: graph.id,
+            state: end_state,
+            status: :failed
+          })
 
           {:error, reason}
 
@@ -421,6 +430,12 @@ defmodule Nous.Workflow.Engine do
           end
 
         Logger.error("Workflow failed at node #{node.id}: #{inspect(reason)}")
+        # Capture failure-time state on run_ctx so the outer execute/3 case
+        # can pass it to the :workflow_end hook payload instead of the
+        # initial state (M-11). Operators inspecting why a workflow failed
+        # need to see what was in state at the moment of failure, not what
+        # was passed in.
+        run_ctx = Map.put(run_ctx, :failure_state, state)
         {:error, {node.id, reason}, run_ctx}
     end
   end

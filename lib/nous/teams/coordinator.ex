@@ -334,11 +334,18 @@ defmodule Nous.Teams.Coordinator do
   defp remove_agent(state, agent_name) do
     {removed, agents} = Map.pop(state.agents, agent_name)
 
-    # Remove monitor by finding the ref for this agent
-    monitors =
+    # Find the monitor ref for this agent and explicitly demonitor.
+    # Previously the entry was just dropped from the map but the BEAM
+    # monitor stayed attached - a delayed :DOWN for the OLD pid could
+    # then fire a spurious {:agent_crashed, name, reason} broadcast for
+    # a perfectly healthy agent if a new agent had taken the same name.
+    {agent_refs, other_refs} =
       state.monitors
-      |> Enum.reject(fn {_ref, name} -> name == agent_name end)
-      |> Map.new()
+      |> Enum.split_with(fn {_ref, name} -> name == agent_name end)
+
+    Enum.each(agent_refs, fn {ref, _name} -> Process.demonitor(ref, [:flush]) end)
+
+    monitors = Map.new(other_refs)
 
     {%{state | agents: agents, monitors: monitors}, removed}
   end
