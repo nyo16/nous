@@ -581,7 +581,14 @@ defmodule Nous.Agent.Context do
     }
   end
 
+  # Known message fields - any other key in the persisted map is logged as
+  # a warning so a forward-compatibility issue (a future Message field that
+  # the current code doesn't know about, OR a typo in a persisted blob)
+  # surfaces loudly rather than silently dropping data.
+  @known_message_keys ~w(role content tool_calls tool_call_id name metadata)
+
   defp deserialize_message(data) when is_map(data) do
+    warn_unknown_keys(data, @known_message_keys, "Nous.Message")
     data = atomize_keys(data)
 
     role =
@@ -619,6 +626,20 @@ defmodule Nous.Agent.Context do
     }
 
     Message.new!(attrs)
+  end
+
+  defp warn_unknown_keys(map, known_string_keys, module_label) when is_map(map) do
+    map
+    |> Map.keys()
+    |> Enum.each(fn key ->
+      str = if is_atom(key), do: Atom.to_string(key), else: to_string(key)
+
+      unless str in known_string_keys do
+        Logger.debug(
+          "#{module_label} deserialize: ignoring unknown key #{inspect(key)} from persisted data"
+        )
+      end
+    end)
   end
 
   defp serialize_usage(%Usage{} = usage) do

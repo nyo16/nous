@@ -14,7 +14,16 @@ defmodule Nous.Application do
       Nous.AgentDynamicSupervisor
     ]
 
-    opts = [strategy: :one_for_one, name: Nous.Supervisor]
+    # Tuned restart limits to match AgentDynamicSupervisor - default 3-in-5
+    # would cascade to take Nous.AgentRegistry + the dynamic supervisor down
+    # together if a Finch / Task.Supervisor restart trips the limit.
+    opts = [
+      strategy: :one_for_one,
+      name: Nous.Supervisor,
+      max_restarts: 100,
+      max_seconds: 10
+    ]
+
     Supervisor.start_link(children, opts)
   end
 end

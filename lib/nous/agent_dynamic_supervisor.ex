@@ -9,7 +9,16 @@ defmodule Nous.AgentDynamicSupervisor do
 
   @impl true
   def init(_opts) do
-    DynamicSupervisor.init(strategy: :one_for_one)
+    # Tuned for multi-tenant blast radius: defaults are max_restarts: 3,
+    # max_seconds: 5 - 3 crashes in 5s in any one child collapses the
+    # whole DynamicSupervisor and takes down every other user's agent.
+    # 100 in 10s is more than generous for a per-user crash loop while
+    # still tripping if the entire layer is misbehaving.
+    DynamicSupervisor.init(
+      strategy: :one_for_one,
+      max_restarts: 100,
+      max_seconds: 10
+    )
   end
 
   @doc """
