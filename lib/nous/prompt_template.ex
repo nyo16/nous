@@ -1,4 +1,11 @@
 defmodule Nous.PromptTemplate do
+  # validate_bindings/2 uses MapSet.difference/2 on MapSets built from
+  # heterogeneous keys (`bindings` may key on atoms or strings, and
+  # `extract_variables/1` returns `[atom() | String.t()]` per C-2). That
+  # heterogeneity confuses dialyzer's opaque tracking even though the
+  # operation is well-typed.
+  @dialyzer :no_opaque
+
   @moduledoc """
   Safe prompt templates for building messages.
 

@@ -1,4 +1,8 @@
 defmodule Nous.Plugins.HumanInTheLoop do
+  # MapSet.member? on the downcased-tool-name lookup uses capture syntax
+  # inside Enum.map; same dialyzer opaque-capture false positive.
+  @dialyzer :no_opaque
+
   @moduledoc """
   Plugin for human-in-the-loop approval of tool calls.
 

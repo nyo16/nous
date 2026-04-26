@@ -1,4 +1,8 @@
 defmodule Nous.Agent.Context do
+  # MapSet.difference/2 in update_needs_response triggers dialyzer's
+  # opaque-tracking false positive (same pattern as Workflow.Engine).
+  @dialyzer :no_opaque
+
   @moduledoc """
   Unified context for agent execution.
 

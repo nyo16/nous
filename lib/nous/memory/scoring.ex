@@ -1,4 +1,8 @@
 defmodule Nous.Memory.Scoring do
+  # MapSet.union with a literal-built MapSet triggers dialyzer's opaque-
+  # capture false positive (same pattern as Workflow.Engine).
+  @dialyzer :no_opaque
+
   @moduledoc """
   Pure scoring functions for memory retrieval ranking.
   """

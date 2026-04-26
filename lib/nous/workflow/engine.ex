@@ -1,4 +1,12 @@
 defmodule Nous.Workflow.Engine do
+  # `MapSet.t()` is dialyzer-opaque. `bfs_loop/3`, `bfs_order_loop/5`, and
+  # `resolve_branch/4` use `&MapSet.member?(set, &1)` capture syntax inside
+  # `Enum.reject/2` / `Enum.filter/2`; dialyzer can't propagate opacity
+  # through capture closures, so it reports false-positive
+  # `call_without_opaque` warnings even though the calls are well-typed.
+  # Specs on the BFS functions don't help (verified). Suppress just here.
+  @dialyzer :no_opaque
+
   @moduledoc """
   Core workflow execution engine.
 
@@ -388,7 +396,7 @@ defmodule Nous.Workflow.Engine do
               resolve_branch(run_ctx.graph, node.id, updated_state, rest)
 
             :parallel ->
-              branch_ids = node.config.branches |> Enum.map(&to_string/1) |> MapSet.new()
+              branch_ids = MapSet.new(node.config.branches, &to_string/1)
               Enum.reject(rest, &MapSet.member?(branch_ids, &1))
 
             _ ->
@@ -578,10 +586,18 @@ defmodule Nous.Workflow.Engine do
     bfs_order(graph, target_id, reachable)
   end
 
+  @spec bfs_order(Graph.t(), Graph.node_id(), MapSet.t(Graph.node_id())) :: [Graph.node_id()]
   defp bfs_order(graph, start_id, allowed_set) do
     bfs_order_loop(graph, [start_id], [], MapSet.new([start_id]), allowed_set)
   end
 
+  @spec bfs_order_loop(
+          Graph.t(),
+          [Graph.node_id()],
+          [Graph.node_id()],
+          MapSet.t(Graph.node_id()),
+          MapSet.t(Graph.node_id())
+        ) :: [Graph.node_id()]
   defp bfs_order_loop(_graph, [], order, _visited, _allowed), do: Enum.reverse(order)
 
   defp bfs_order_loop(graph, queue, order, visited, allowed) do
@@ -601,10 +617,13 @@ defmodule Nous.Workflow.Engine do
     )
   end
 
+  @spec bfs_reachable(Graph.t(), Graph.node_id()) :: MapSet.t(Graph.node_id())
   defp bfs_reachable(graph, start_id) do
     bfs_loop(graph, [start_id], MapSet.new([start_id]))
   end
 
+  @spec bfs_loop(Graph.t(), [Graph.node_id()], MapSet.t(Graph.node_id())) ::
+          MapSet.t(Graph.node_id())
   defp bfs_loop(_graph, [], visited), do: visited
 
   defp bfs_loop(graph, queue, visited) do

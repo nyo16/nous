@@ -1,4 +1,9 @@
 defmodule Nous.Workflow.Compiler do
+  # See Nous.Workflow.Engine for the same MapSet-capture-opacity rationale.
+  # bfs_loop/3 and the reachability/parallel-branch unions exhibit the
+  # same false-positive pattern; specs don't fix it (verified).
+  @dialyzer :no_opaque
+
   @moduledoc """
   Validates and compiles workflow graphs for execution.
 
@@ -180,6 +185,7 @@ defmodule Nous.Workflow.Compiler do
   end
 
   # Nodes referenced as fallbacks via error_strategy: {:fallback, id}.
+  @spec collect_fallback_targets(Graph.t()) :: MapSet.t(Graph.node_id())
   defp collect_fallback_targets(%Graph{} = graph) do
     Enum.reduce(graph.nodes, MapSet.new(), fn
       {_id, %{error_strategy: {:fallback, fallback_id}}}, acc ->
@@ -194,12 +200,12 @@ defmodule Nous.Workflow.Compiler do
   # exist solely to be invoked via the fallback path. These are excluded
   # from the topo order so they don't double-execute. (A node that is both
   # a downstream consumer AND a fallback target stays in topo order.)
+  @spec collect_fallback_only_targets(Graph.t()) :: MapSet.t(Graph.node_id())
   defp collect_fallback_only_targets(%Graph{} = graph) do
     fallback_ids = collect_fallback_targets(graph)
 
-    Enum.filter(fallback_ids, fn id ->
-      Map.get(graph.in_edges, id, []) == []
-    end)
+    fallback_ids
+    |> Enum.filter(fn id -> Map.get(graph.in_edges, id, []) == [] end)
     |> MapSet.new()
   end
 
@@ -402,10 +408,13 @@ defmodule Nous.Workflow.Compiler do
   # Graph traversal helpers
   # ---------------------------------------------------------------------------
 
+  @spec bfs_reachable(Graph.t(), Graph.node_id()) :: MapSet.t(Graph.node_id())
   defp bfs_reachable(%Graph{} = graph, start_id) do
     bfs_loop(graph, [start_id], MapSet.new([start_id]))
   end
 
+  @spec bfs_loop(Graph.t(), [Graph.node_id()], MapSet.t(Graph.node_id())) ::
+          MapSet.t(Graph.node_id())
   defp bfs_loop(_graph, [], visited), do: visited
 
   defp bfs_loop(graph, queue, visited) do
@@ -439,10 +448,11 @@ defmodule Nous.Workflow.Compiler do
     |> List.flatten()
   end
 
+  @spec collect_parallel_branches(Graph.t()) :: MapSet.t(Graph.node_id())
   defp collect_parallel_branches(%Graph{} = graph) do
     Enum.reduce(graph.nodes, MapSet.new(), fn
       {_id, %{type: :parallel, config: %{branches: branches}}}, acc ->
-        branches |> Enum.map(&to_string/1) |> MapSet.new() |> MapSet.union(acc)
+        MapSet.union(acc, MapSet.new(branches, &to_string/1))
 
       _, acc ->
         acc

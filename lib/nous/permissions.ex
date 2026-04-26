@@ -1,6 +1,7 @@
 defmodule Nous.Permissions do
-  # MapSet is opaque — suppress contract_with_opaque for functions returning Policy structs
-  @dialyzer [:no_opaque]
+  # blocked?/2 / requires_approval?/2 use MapSet.member? on the deny/allow
+  # set fields of %Policy{}; capture-syntax false positive for opacity.
+  @dialyzer :no_opaque
 
   @moduledoc """
   Tool-level permission policy engine.
