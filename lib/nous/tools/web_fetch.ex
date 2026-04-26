@@ -64,30 +64,77 @@ if Code.ensure_loaded?(Floki) do
     end
 
     defp fetch_url(url) do
-      try do
-        case Req.get(url,
-               connect_options: [timeout: 10_000],
-               receive_timeout: 15_000,
-               max_redirects: 5,
-               headers: [
-                 {"user-agent",
-                  "Mozilla/5.0 (compatible; NousBot/1.0; +https://github.com/nyo16/nous)"},
-                 {"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
-               ]
-             ) do
-          {:ok, %{status: status, body: body}} when status in 200..299 ->
-            {:ok, body}
-
-          {:ok, %{status: status}} ->
-            {:error, "HTTP #{status}"}
-
-          {:error, reason} ->
-            {:error, "Request failed: #{inspect(reason)}"}
+      with {:ok, _uri} <- Nous.Tools.UrlGuard.validate(url) do
+        try do
+          # max_redirects: 0 - we follow manually because Req's automatic
+          # follow does NOT re-validate the redirect target, leaving an
+          # SSRF-via-public-bounce hole (a public host that 302s to an
+          # internal IP).
+          do_get(url, 0)
+        rescue
+          e -> {:error, "Request error: #{Exception.message(e)}"}
         end
-      rescue
-        e -> {:error, "Request error: #{Exception.message(e)}"}
       end
     end
+
+    @max_redirects 5
+
+    defp do_get(_url, depth) when depth > @max_redirects do
+      {:error, "Too many redirects"}
+    end
+
+    defp do_get(url, depth) do
+      case Req.get(url,
+             connect_options: [timeout: 10_000],
+             receive_timeout: 15_000,
+             max_redirects: 0,
+             redirect: false,
+             headers: [
+               {"user-agent",
+                "Mozilla/5.0 (compatible; NousBot/1.0; +https://github.com/nyo16/nous)"},
+               {"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+             ]
+           ) do
+        {:ok, %{status: status, body: body}} when status in 200..299 ->
+          {:ok, body}
+
+        {:ok, %{status: status, headers: headers}} when status in 300..399 ->
+          # Re-validate the redirect target via UrlGuard before following.
+          location = location_header(headers)
+
+          case location do
+            nil ->
+              {:error, "HTTP #{status} but no Location header"}
+
+            target ->
+              absolute = URI.merge(URI.parse(url), URI.parse(target)) |> URI.to_string()
+
+              with {:ok, _} <- Nous.Tools.UrlGuard.validate(absolute) do
+                do_get(absolute, depth + 1)
+              end
+          end
+
+        {:ok, %{status: status}} ->
+          {:error, "HTTP #{status}"}
+
+        {:error, reason} ->
+          {:error, "Request failed: #{inspect(reason)}"}
+      end
+    end
+
+    defp location_header(headers) when is_list(headers) do
+      Enum.find_value(headers, fn
+        {"location", v} -> v
+        {"Location", v} -> v
+        _ -> nil
+      end)
+    end
+
+    defp location_header(headers) when is_map(headers) do
+      headers["location"] || headers["Location"]
+    end
+
+    defp location_header(_), do: nil
 
     defp parse_html(body) when is_binary(body) do
       case Floki.parse_document(body) do

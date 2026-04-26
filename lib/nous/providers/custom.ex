@@ -161,7 +161,11 @@ defmodule Nous.Providers.Custom do
     HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
   end
 
-  # Get base URL from opts, env var, or config (required for custom provider)
+  # Get base URL from opts, env var, or config (required for custom provider).
+  # The custom provider accepts user-supplied base_url, so the URL is
+  # validated through UrlGuard for SSRF protection. Set
+  # `allow_private_hosts: true` in opts (or :allow_private_hosts in app
+  # config) for local development against private services.
   defp get_base_url(opts) do
     base =
       Keyword.get(opts, :base_url) ||
@@ -179,7 +183,20 @@ defmodule Nous.Providers.Custom do
       """
     end
 
-    base
+    allow_private =
+      Keyword.get(opts, :allow_private_hosts) ||
+        get_in(Application.get_env(:nous, :custom, []), [:allow_private_hosts]) ||
+        false
+
+    case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: allow_private) do
+      {:ok, _uri} ->
+        base
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "Custom provider base_url failed SSRF validation: #{reason}. " <>
+                "Set `allow_private_hosts: true` for local dev if intentional."
+    end
   end
 
   # Build headers for the request
