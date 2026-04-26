@@ -29,12 +29,22 @@ defmodule Nous.Skill.Loader do
 
   Returns skills with only frontmatter parsed (status: :discovered).
   """
+  # L-1: cap how many files we glob and how big each file may be.
+  # Symlinks are now skipped (lstat); a malicious symlink under the
+  # skills directory could otherwise cause this to read /etc/passwd
+  # or any other file the BEAM has permission to open.
+  @max_skill_files 1_000
+  @max_skill_file_bytes 5 * 1024 * 1024
+
   @spec load_directory(String.t()) :: [Skill.t()]
   def load_directory(path) do
     path = Path.expand(path)
 
     if File.dir?(path) do
-      Path.wildcard(Path.join(path, "**/*.md"))
+      Path.join(path, "**/*.md")
+      |> Path.wildcard()
+      |> Enum.take(@max_skill_files)
+      |> Enum.reject(&symlink_or_oversized?/1)
       |> Enum.map(&load_file/1)
       |> Enum.filter(fn
         {:ok, _} ->
@@ -48,6 +58,24 @@ defmodule Nous.Skill.Loader do
     else
       Logger.warning("Skills directory not found: #{path}")
       []
+    end
+  end
+
+  defp symlink_or_oversized?(path) do
+    case File.lstat(path) do
+      {:ok, %{type: :symlink}} ->
+        Logger.debug("Skipping symlink in skills directory: #{path}")
+        true
+
+      {:ok, %{size: size}} when size > @max_skill_file_bytes ->
+        Logger.warning(
+          "Skipping oversized skill file (#{size} bytes > #{@max_skill_file_bytes}): #{path}"
+        )
+
+        true
+
+      _ ->
+        false
     end
   end
 
@@ -107,6 +135,18 @@ defmodule Nous.Skill.Loader do
   """
   @spec parse_frontmatter(String.t()) :: {:ok, map(), String.t()} | {:error, term()}
   def parse_frontmatter(content) do
+    # L-2: only treat the leading `---\n...\n---` as frontmatter; if the
+    # file doesn't START with `---` then it has no frontmatter (markdown
+    # horizontal rules using `---` later in the body shouldn't get treated
+    # as a frontmatter delimiter).
+    if String.starts_with?(content, "---\n") or String.starts_with?(content, "---\r\n") do
+      do_parse_frontmatter(content)
+    else
+      {:ok, %{}, content}
+    end
+  end
+
+  defp do_parse_frontmatter(content) do
     case String.split(content, ~r/^---\s*$/m, parts: 3) do
       [_, yaml, body] ->
         case YamlElixir.read_from_string(yaml) do

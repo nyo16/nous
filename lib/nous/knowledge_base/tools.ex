@@ -624,10 +624,27 @@ defmodule Nous.KnowledgeBase.Tools do
           issues: issues,
           coverage_score: coverage_score,
           freshness_score: freshness_score,
+          # L-4: weight by severity so a single high-severity issue isn't
+          # treated like a single low-severity nit. Clamps before rounding
+          # so very-bad KBs saturate at 0.0 cleanly.
           coherence_score:
             if(issues == [],
               do: 1.0,
-              else: Float.round(1.0 - length(issues) * 0.1, 3) |> max(0.0)
+              else:
+                issues
+                |> Enum.reduce(1.0, fn issue, acc ->
+                  weight =
+                    case issue.severity do
+                      :high -> 0.2
+                      :medium -> 0.1
+                      :low -> 0.05
+                      _ -> 0.05
+                    end
+
+                  acc - weight
+                end)
+                |> max(0.0)
+                |> Float.round(3)
             )
         })
 

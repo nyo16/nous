@@ -197,6 +197,16 @@ defmodule Nous.ToolExecutor do
           Process.demonitor(monitor_ref, [:flush])
           Process.exit(pid, :kill)
 
+          # L-6: drain any straggler {ref, _} message the tool process may
+          # have sent in the milliseconds before the timeout fired. Without
+          # this drain, a heavily-reused calling process accumulates one
+          # mailbox entry per timeout that nothing ever selectively-receives.
+          receive do
+            {^ref, _} -> :ok
+          after
+            0 -> :ok
+          end
+
           # Emit timeout event
           :telemetry.execute(
             [:nous, :tool, :timeout],

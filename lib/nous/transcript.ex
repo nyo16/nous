@@ -322,14 +322,27 @@ defmodule Nous.Transcript do
 
     content =
       messages
-      |> Enum.map(fn msg ->
-        role = msg.role || :unknown
-        text = Message.extract_text(msg)
-        preview = text |> String.slice(0..100) |> String.replace("\n", " ")
-        "  [#{role}] #{preview}"
-      end)
+      |> Enum.map(&summarize_one/1)
       |> Enum.join("\n")
 
     Message.system("[Compacted #{count} earlier messages]\n#{content}")
+  end
+
+  # L-12: never echo tool_result content verbatim into the summary - tool
+  # results frequently carry API keys, PII pulled from MCP, or other data
+  # that scanning/redaction policies would otherwise scrub. The compacted
+  # summary becomes a permanent system message that survives further
+  # compactions, so any leak here is durable. Show a structural marker
+  # instead. Other roles still get a short preview for context.
+  defp summarize_one(%{role: :tool} = msg) do
+    name = Map.get(msg, :name) || "unknown"
+    "  [tool] <result for #{inspect(name)} omitted from summary>"
+  end
+
+  defp summarize_one(msg) do
+    role = msg.role || :unknown
+    text = Message.extract_text(msg)
+    preview = text |> String.slice(0..100) |> String.replace("\n", " ")
+    "  [#{role}] #{preview}"
   end
 end

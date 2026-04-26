@@ -86,9 +86,16 @@ defmodule Nous.KnowledgeBase.Entry do
       "elixir-genserver-patterns"
   """
   def slugify(title) when is_binary(title) do
+    # L-3: normalise unicode to NFD and strip combining marks so accented
+    # characters are preserved as their base ASCII form ("Café" -> "cafe")
+    # rather than entirely stripped (the previous \w-only filter dropped
+    # them). Multilingual titles still collide on slug; the Store layer
+    # is responsible for slug uniqueness (see Store moduledoc).
     title
+    |> :unicode.characters_to_nfd_binary()
+    |> String.replace(~r/[\x{0300}-\x{036F}]/u, "")
     |> String.downcase()
-    |> String.replace(~r/[^\w\s-]/u, "")
+    |> String.replace(~r/[^a-z0-9_\s-]/u, "")
     |> String.replace(~r/[\s_]+/, "-")
     |> String.replace(~r/-+/, "-")
     |> String.trim("-")

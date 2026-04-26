@@ -54,8 +54,13 @@ defmodule Nous.Providers.OpenAI do
   @default_timeout 60_000
   @streaming_timeout 120_000
 
-  # Reasoning models have different requirements
-  @reasoning_models ~w(o1 o1-mini o1-preview o3 o3-mini)
+  # Reasoning models have different requirements.
+  # L-10: matched via a regex covering the full o-series digit family
+  # rather than a hard-coded list, so new models like o4 / o3-pro /
+  # o5-mini are detected without code changes. Also rejects ambiguous
+  # patterns like "o1.5" (which the old String.starts_with?(model, "o1")
+  # would have matched as :reasoning).
+  @reasoning_pattern ~r/^(?:azure\/)?o[1-9](?:-[a-z]+(?:-[a-z0-9-]+)?|-\d{4,}-\d{2}-\d{2})?$/
 
   @impl Nous.Provider
   def chat(params, opts \\ []) do
@@ -102,12 +107,15 @@ defmodule Nous.Providers.OpenAI do
   """
   @spec reasoning_model?(String.t()) :: boolean()
   def reasoning_model?(model) when is_binary(model) do
-    Enum.any?(@reasoning_models, &String.starts_with?(model, &1))
+    Regex.match?(@reasoning_pattern, model)
   end
 
   def reasoning_model?(_), do: false
 
-  # Adjust parameters for reasoning models
+  # Adjust parameters for reasoning models. L-10: also drops the
+  # frequency/presence penalties which o-series models reject with a
+  # 400 from the OpenAI API; previously only temperature/top_p were
+  # stripped.
   defp maybe_adjust_for_reasoning(params) do
     model = Map.get(params, "model") || Map.get(params, :model) || ""
 
@@ -117,6 +125,10 @@ defmodule Nous.Providers.OpenAI do
       |> Map.delete(:temperature)
       |> Map.delete("top_p")
       |> Map.delete(:top_p)
+      |> Map.delete("presence_penalty")
+      |> Map.delete(:presence_penalty)
+      |> Map.delete("frequency_penalty")
+      |> Map.delete(:frequency_penalty)
 
       # Note: System messages should be converted to developer messages by the caller
     else

@@ -1003,7 +1003,13 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  # Clean tool names - Claude sometimes uses XML-like syntax
+  # Clean tool names - Claude sometimes uses XML-like syntax.
+  # L-9: tolerate nil/non-binary input - some providers emit malformed
+  # function-call responses with no name; without these clauses
+  # clean_tool_name/1 would crash the entire agent run with FunctionClauseError.
+  defp clean_tool_name(nil), do: ""
+  defp clean_tool_name(name) when not is_binary(name), do: ""
+
   defp clean_tool_name(name) when is_binary(name) do
     name
     |> String.split("\"")

@@ -90,8 +90,14 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
         Logger.warning("Parallel branch #{branch_id} failed: #{inspect(reason)}")
       end)
 
-      # Merge successful results
-      merged_results = Enum.map(successes, fn {:ok, branch_id, result} -> {branch_id, result} end)
+      # L-11: sort by branch_id BEFORE merging so two branches that write
+      # the same key produce a deterministic result (was: order depended
+      # on async_stream_nolink completion order, leading to flaky
+      # last-writer-wins).
+      merged_results =
+        successes
+        |> Enum.sort_by(fn {:ok, branch_id, _} -> branch_id end)
+        |> Enum.map(fn {:ok, branch_id, result} -> {branch_id, result} end)
 
       merged_state =
         StateMerger.merge(merged_results, state, merge_strategy, result_key: result_key)
