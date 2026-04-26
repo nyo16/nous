@@ -12,7 +12,7 @@ defmodule Nous.ToolExecutor do
   """
 
   alias Nous.{Tool, RunContext, Errors}
-  alias Nous.Tool.ContextUpdate
+  alias Nous.Tool.{ContextUpdate, Validator}
 
   require Logger
 
@@ -64,8 +64,40 @@ defmodule Nous.ToolExecutor do
       "Executing tool '#{tool.name}' (retries: #{tool.retries}, takes_ctx: #{tool.takes_ctx}, timeout: #{tool.timeout}ms)"
     )
 
-    do_execute(tool, arguments, ctx, 0)
+    case maybe_validate(tool, arguments) do
+      :ok -> do_execute(tool, arguments, ctx, 0)
+      {:error, _} = err -> err
+    end
   end
+
+  # Validate arguments against tool.parameters JSON schema when tool.validate_args is true.
+  # Returns :ok or {:error, %Errors.ToolError{}} so the LLM gets a structured "missing field" message.
+  defp maybe_validate(%Tool{validate_args: false}, _arguments), do: :ok
+  defp maybe_validate(%Tool{parameters: nil}, _arguments), do: :ok
+  defp maybe_validate(%Tool{parameters: params}, _arguments) when params == %{}, do: :ok
+
+  defp maybe_validate(%Tool{} = tool, arguments) when is_map(arguments) do
+    case Validator.validate(arguments, tool.parameters) do
+      {:ok, _} ->
+        :ok
+
+      {:error, validation_error} ->
+        message =
+          "Invalid arguments for '#{tool.name}': #{Validator.format_error(validation_error)}"
+
+        Logger.debug(message)
+
+        {:error,
+         Errors.ToolError.exception(
+           message: message,
+           tool_name: tool.name,
+           attempt: 1,
+           original_error: validation_error
+         )}
+    end
+  end
+
+  defp maybe_validate(_tool, _arguments), do: :ok
 
   # Private recursive function that implements retry logic
   defp do_execute(tool, arguments, ctx, attempt) do
