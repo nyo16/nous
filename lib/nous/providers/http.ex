@@ -172,17 +172,25 @@ defmodule Nous.Providers.HTTP do
       iex> parse_sse_buffer("data: [DONE]\\n\\n")
       {[{:stream_done, "stop"}], ""}
   """
-  @spec parse_sse_buffer(String.t()) :: {list(), String.t()}
+  @spec parse_sse_buffer(String.t() | nil | any()) ::
+          {list(), String.t()} | {:error, :buffer_overflow}
   def parse_sse_buffer(buffer) when is_binary(buffer) do
-    # Protect against buffer overflow
-    buffer =
-      if byte_size(buffer) > @max_buffer_size do
-        Logger.warning("SSE buffer exceeded max size (#{@max_buffer_size} bytes), truncating")
-        binary_part(buffer, byte_size(buffer) - @max_buffer_size, @max_buffer_size)
-      else
-        buffer
-      end
+    # Buffer overflow is now a HARD error, not a silent truncation. The
+    # previous behavior sliced from the front, which cut mid-event/mid-JSON
+    # and produced one parse_error followed by valid events - silent data
+    # loss. Halting here lets the consumer surface the failure cleanly.
+    if byte_size(buffer) > @max_buffer_size do
+      Logger.error("SSE buffer exceeded max size (#{@max_buffer_size} bytes), aborting stream")
+      {:error, :buffer_overflow}
+    else
+      do_parse_sse_buffer(buffer)
+    end
+  end
 
+  def parse_sse_buffer(nil), do: {[], ""}
+  def parse_sse_buffer(_), do: {[], ""}
+
+  defp do_parse_sse_buffer(buffer) when is_binary(buffer) do
     # Split on double newlines (SSE event separator)
     # Handle both \n\n and \r\n\r\n
     parts = String.split(buffer, ~r/\r?\n\r?\n/)
@@ -204,9 +212,6 @@ defmodule Nous.Providers.HTTP do
         {events, incomplete}
     end
   end
-
-  def parse_sse_buffer(nil), do: {[], ""}
-  def parse_sse_buffer(_), do: {[], ""}
 
   @doc """
   Parse a single SSE event.
@@ -420,8 +425,26 @@ defmodule Nous.Providers.HTTP do
     }
   end
 
-  # Handle the lifecycle of the streaming process
+  # Handle the lifecycle of the streaming process.
+  #
+  # Previously this used `receive ... after 0 -> Task.await(:infinity)`,
+  # which fell straight through to a synchronous infinite await on first
+  # entry. While in Task.await/2 the process could not service the
+  # {:EXIT, parent, _} or {:DOWN, parent_ref, _} messages the receive
+  # claimed to handle - so consumer-cancellation took the full request
+  # timeout to actually stop draining bytes.
+  #
+  # The minimal fix here interleaves message handling with Task.yield/2
+  # polling: every yield window we re-enter the receive, so EXIT/DOWN
+  # are noticed within ~100ms instead of "never". A deeper rewrite
+  # (drop the intermediate spawn entirely, run Finch.stream/5 inside the
+  # consumer's Stream.resource start_fn) is still recommended - see the
+  # comprehensive review for the full design discussion.
   defp handle_stream_lifecycle(parent, parent_ref, stream_task) do
+    do_handle_stream_lifecycle(parent, parent_ref, stream_task)
+  end
+
+  defp do_handle_stream_lifecycle(parent, parent_ref, stream_task) do
     receive do
       {:EXIT, ^parent, reason} ->
         Logger.debug("Parent died (#{inspect(reason)}), cleaning up stream")
@@ -445,22 +468,29 @@ defmodule Nous.Providers.HTTP do
         Task.shutdown(stream_task, :brutal_kill)
         send(parent, {:sse, :done, {:error, reason}})
     after
-      0 ->
-        case Task.await(stream_task, :infinity) do
-          {:ok, _} ->
+      100 ->
+        case Task.yield(stream_task, 0) do
+          nil ->
+            # Task still running - re-enter the receive so EXIT/DOWN can
+            # interrupt; this is the difference vs the prior infinite await.
+            do_handle_stream_lifecycle(parent, parent_ref, stream_task)
+
+          {:ok, {:ok, _}} ->
             send(parent, {:sse, :done, :ok})
 
-          {:error, %Mint.TransportError{reason: :closed}} ->
-            # Normal close
+          {:ok, {:error, %Mint.TransportError{reason: :closed}}} ->
             send(parent, {:sse, :done, :ok})
 
-          {:error, error} ->
+          {:ok, {:error, error}} ->
             Logger.error("Stream task error: #{inspect(error)}")
             send(parent, {:sse, :done, {:error, error}})
 
-          other ->
+          {:ok, other} ->
             Logger.warning("Unexpected stream task result: #{inspect(other)}")
             send(parent, {:sse, :done, {:error, {:unexpected, other}}})
+
+          {:exit, reason} ->
+            send(parent, {:sse, :done, {:error, reason}})
         end
     end
   end
@@ -538,14 +568,28 @@ defmodule Nous.Providers.HTTP do
     end
   end
 
-  # Parse stream buffer using the configured parser (default: SSE)
-  defp parse_stream_buffer(buffer, nil), do: parse_sse_buffer(buffer)
+  # Parse stream buffer using the configured parser (default: SSE).
+  # Translates the new {:error, :buffer_overflow} tuple from parse_sse_buffer
+  # into the legacy {events, buffer} shape so existing call sites keep working.
+  defp parse_stream_buffer(buffer, nil) do
+    case parse_sse_buffer(buffer) do
+      {:error, :buffer_overflow} -> {[{:stream_error, %{reason: :buffer_overflow}}], ""}
+      result -> result
+    end
+  end
+
   defp parse_stream_buffer(buffer, parser_mod), do: parser_mod.parse_buffer(buffer)
 
   # Flush remaining buffer at end of stream
   # SSE needs a trailing \n\n to force the last event through;
   # custom parsers just re-parse the remaining buffer as-is.
-  defp flush_stream_buffer(buffer, nil), do: parse_sse_buffer(buffer <> "\n\n")
+  defp flush_stream_buffer(buffer, nil) do
+    case parse_sse_buffer(buffer <> "\n\n") do
+      {:error, :buffer_overflow} -> {[{:stream_error, %{reason: :buffer_overflow}}], ""}
+      result -> result
+    end
+  end
+
   defp flush_stream_buffer(buffer, parser_mod), do: parser_mod.parse_buffer(buffer)
 
   # Cleanup when stream is done
