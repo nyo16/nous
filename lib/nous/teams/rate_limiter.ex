@@ -137,6 +137,14 @@ defmodule Nous.Teams.RateLimiter do
 
   @impl true
   def handle_call({:acquire, agent_name, tokens}, _from, state) do
+    # M-9 (KNOWN LIMITATION): acquire/3 currently only CHECKS the budget;
+    # actual deduction happens asynchronously in :record_usage. Concurrent
+    # acquires near the cap may all see "budget remaining" and proceed,
+    # producing post-hoc accounting rather than true reservation. A full
+    # token-bucket fix (pre-deduct + delta reconcile + release-on-error)
+    # was attempted but breaks the existing record_usage contract; left
+    # for follow-up. Document this so callers know not to rely on
+    # bounded spend under contention.
     state = prune_window(state)
     agent_usage = Map.get(state.agents, agent_name, default_agent_usage())
 
@@ -173,6 +181,7 @@ defmodule Nous.Teams.RateLimiter do
 
   @impl true
   def handle_cast({:record_usage, agent_name, usage_map}, state) do
+    state = prune_window(state)
     tokens = Map.get(usage_map, :tokens, 0)
     cost = Map.get(usage_map, :cost, 0.0)
     requests = Map.get(usage_map, :requests, 1)

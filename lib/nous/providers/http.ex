@@ -21,6 +21,18 @@ defmodule Nous.Providers.HTTP do
   - Each event contains field lines like `data: {...}`
   - Multiple `data:` fields are concatenated with newlines
   - `[DONE]` signals stream completion (OpenAI convention)
+
+  ## Streaming consumer backpressure (KNOWN LIMITATION)
+
+  The streaming pipeline currently uses fire-and-forget `send/2` from the
+  Finch.stream callback to the Stream.resource consumer; if the consumer
+  is slower than the producer (a fast LLM at 500 tok/s feeding a slow
+  IO sink), the consumer mailbox grows unbounded. The current safeguard
+  is the `@max_buffer_size` halt in `next_chunk/1` (10 MiB).
+
+  A proper fix is to introduce an ack-based pacing protocol or switch
+  the producer to GenStage. Both are larger refactors tracked as
+  follow-up work in the comprehensive review (M-12, H-12).
   """
 
   require Logger

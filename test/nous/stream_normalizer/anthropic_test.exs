@@ -28,17 +28,23 @@ defmodule Nous.StreamNormalizer.AnthropicTest do
   end
 
   describe "normalize_chunk/1 - tool call deltas" do
-    test "content_block_delta with input_json_delta" do
+    test "content_block_delta with input_json_delta tags the index + phase" do
+      # M-5: partial JSON is now tagged with its content_block index and a
+      # :partial phase so a stateful consumer can buffer fragments per
+      # block id and reassemble the full tool call on :stop.
       chunk = %{
         "type" => "content_block_delta",
         "index" => 1,
         "delta" => %{"type" => "input_json_delta", "partial_json" => "{\"query\":"}
       }
 
-      assert [{:tool_call_delta, "{\"query\":"}] = Anthropic.normalize_chunk(chunk)
+      assert [
+               {:tool_call_delta,
+                %{"_index" => 1, "_phase" => :partial, "partial_json" => "{\"query\":"}}
+             ] = Anthropic.normalize_chunk(chunk)
     end
 
-    test "content_block_start with tool_use block" do
+    test "content_block_start with tool_use block tags :start phase" do
       chunk = %{
         "type" => "content_block_start",
         "index" => 1,
@@ -49,7 +55,16 @@ defmodule Nous.StreamNormalizer.AnthropicTest do
         }
       }
 
-      assert [{:tool_call_delta, %{"id" => "toolu_01ABC", "name" => "search"}}] =
+      assert [
+               {:tool_call_delta,
+                %{"id" => "toolu_01ABC", "name" => "search", "_index" => 1, "_phase" => :start}}
+             ] = Anthropic.normalize_chunk(chunk)
+    end
+
+    test "content_block_stop tags :stop phase" do
+      chunk = %{"type" => "content_block_stop", "index" => 1}
+
+      assert [{:tool_call_delta, %{"_index" => 1, "_phase" => :stop}}] =
                Anthropic.normalize_chunk(chunk)
     end
 
@@ -136,10 +151,13 @@ defmodule Nous.StreamNormalizer.AnthropicTest do
       assert [{:unknown, _}] = Anthropic.normalize_chunk(chunk)
     end
 
-    test "content_block_stop returns unknown" do
+    test "content_block_stop now emits a tagged tool_call_delta (M-5 reassembly signal)" do
+      # Was previously :unknown; now used by stateful consumers to flush
+      # buffered tool_use input fragments for the given content block index.
       chunk = %{"type" => "content_block_stop", "index" => 0}
 
-      assert [{:unknown, _}] = Anthropic.normalize_chunk(chunk)
+      assert [{:tool_call_delta, %{"_index" => 0, "_phase" => :stop}}] =
+               Anthropic.normalize_chunk(chunk)
     end
 
     test "unrecognized delta type returns unknown" do

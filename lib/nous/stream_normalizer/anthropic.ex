@@ -31,18 +31,31 @@ defmodule Nous.StreamNormalizer.Anthropic do
     [{:error, message}]
   end
 
-  def normalize_chunk(%{"type" => "content_block_delta", "delta" => delta}) do
-    [parse_delta(delta)]
+  def normalize_chunk(%{"type" => "content_block_delta", "delta" => delta} = chunk) do
+    index = Map.get(chunk, "index")
+    [parse_delta(delta, index)]
   end
 
-  def normalize_chunk(%{"type" => "content_block_start", "content_block" => block}) do
+  def normalize_chunk(%{"type" => "content_block_start", "content_block" => block} = chunk) do
+    index = Map.get(chunk, "index")
+
     case block do
       %{"type" => "tool_use", "id" => id, "name" => name} ->
-        [{:tool_call_delta, %{"id" => id, "name" => name}}]
+        # Emit a structured "start" so a stateful consumer can begin a
+        # buffer keyed by `index` and append input_json_delta fragments
+        # until content_block_stop, then assemble the full tool_call.
+        [{:tool_call_delta, %{"id" => id, "name" => name, "_index" => index, "_phase" => :start}}]
 
       _ ->
         [{:unknown, block}]
     end
+  end
+
+  def normalize_chunk(%{"type" => "content_block_stop"} = chunk) do
+    index = Map.get(chunk, "index")
+    # Signal end of a content block; consumers tracking tool_use buffers
+    # by index should flush at this point.
+    [{:tool_call_delta, %{"_index" => index, "_phase" => :stop}}]
   end
 
   def normalize_chunk(%{"type" => "message_delta", "delta" => delta}) do
@@ -96,19 +109,21 @@ defmodule Nous.StreamNormalizer.Anthropic do
     [{:unknown, chunk}]
   end
 
-  defp parse_delta(%{"type" => "text_delta", "text" => text}) do
+  defp parse_delta(%{"type" => "text_delta", "text" => text}, _index) do
     {:text_delta, text}
   end
 
-  defp parse_delta(%{"type" => "thinking_delta", "thinking" => text}) do
+  defp parse_delta(%{"type" => "thinking_delta", "thinking" => text}, _index) do
     {:thinking_delta, text}
   end
 
-  defp parse_delta(%{"type" => "input_json_delta", "partial_json" => json}) do
-    {:tool_call_delta, json}
+  defp parse_delta(%{"type" => "input_json_delta", "partial_json" => json}, index) do
+    # Tag the partial fragment with its content block index so the consumer
+    # can buffer it correctly when multiple tool calls stream interleaved.
+    {:tool_call_delta, %{"_index" => index, "_phase" => :partial, "partial_json" => json}}
   end
 
-  defp parse_delta(delta) do
+  defp parse_delta(delta, _index) do
     {:unknown, delta}
   end
 end

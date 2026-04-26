@@ -1081,6 +1081,16 @@ defmodule Nous.AgentRunner do
             Callbacks.execute(ctx, :on_tool_call, call)
           end)
 
+        # M-5: Anthropic streaming emits tool_use fragments tagged with
+        # `_phase :start | :partial | :stop` and an `_index`. We don't
+        # reassemble them here per-event because the on_tool_call callback
+        # sees fragments by design (it's a streaming hook); the
+        # post-stream complete-response path is what builds the final
+        # tool_calls list, and Anthropic's convert_complete_response
+        # handles that correctly.
+        {:tool_call_delta, %{"_phase" => _} = _partial} ->
+          :ok
+
         {:tool_call_delta, call} ->
           Callbacks.execute(ctx, :on_tool_call, call)
 
