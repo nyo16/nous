@@ -9,7 +9,8 @@ defmodule Nous.Permissions.Policy do
 
     * `:default` — read/search tools are open, write/execute tools require approval
     * `:permissive` — all tools are open, none require approval
-    * `:strict` — all tools require approval before execution
+    * `:strict` — all tools require approval; at the filter layer, ONLY tools
+      in `:allow_names` / `:allow_prefixes` are exposed (deny-by-default).
 
   ## Examples
 
@@ -20,10 +21,18 @@ defmodule Nous.Permissions.Policy do
         mode: :default
       }
 
+      # Strict + explicit allowlist
+      %Nous.Permissions.Policy{
+        mode: :strict,
+        allow_names: MapSet.new(["file_read", "search_web"])
+      }
+
   """
 
   defstruct deny_names: MapSet.new(),
             deny_prefixes: [],
+            allow_names: MapSet.new(),
+            allow_prefixes: [],
             approval_required: MapSet.new(),
             mode: :default
 
@@ -32,6 +41,8 @@ defmodule Nous.Permissions.Policy do
   @type t :: %__MODULE__{
           deny_names: MapSet.t(),
           deny_prefixes: [String.t()],
+          allow_names: MapSet.t(),
+          allow_prefixes: [String.t()],
           approval_required: MapSet.t(),
           mode: mode()
         }

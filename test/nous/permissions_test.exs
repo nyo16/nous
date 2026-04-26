@@ -36,6 +36,29 @@ defmodule Nous.PermissionsTest do
       assert Permissions.requires_approval?(policy, "file_read")
       assert Permissions.requires_approval?(policy, "bash")
     end
+
+    test "strict mode is deny-by-default at the filter layer (no allowlist)" do
+      # Regression test for H-18: previously blocked? ignored mode, so
+      # strict_policy() with empty deny lists silently allowed every tool.
+      policy = Permissions.strict_policy()
+      assert Permissions.blocked?(policy, "bash")
+      assert Permissions.blocked?(policy, "file_read")
+    end
+
+    test "strict mode honors allow_names allowlist" do
+      policy =
+        Permissions.build_policy(mode: :strict, allow: ["file_read", "search_web"])
+
+      refute Permissions.blocked?(policy, "file_read")
+      refute Permissions.blocked?(policy, "search_web")
+      assert Permissions.blocked?(policy, "bash")
+    end
+
+    test "strict mode honors allow_prefixes" do
+      policy = Permissions.build_policy(mode: :strict, allow_prefixes: ["search_"])
+      refute Permissions.blocked?(policy, "search_web")
+      assert Permissions.blocked?(policy, "bash")
+    end
   end
 
   describe "build_policy/1" do

@@ -153,6 +153,9 @@ defmodule Nous.AgentRunner do
               Requests: #{final_ctx.usage.requests}
             """)
 
+            active_model =
+              get_in(final_ctx.deps, [:active_model]) || agent.model
+
             :telemetry.execute(
               [:nous, :agent, :run, :stop],
               %{
@@ -167,7 +170,12 @@ defmodule Nous.AgentRunner do
               %{
                 agent_name: agent.name,
                 model_provider: agent.model.provider,
-                model_name: agent.model.model
+                model_name: agent.model.model,
+                # When fallback fired, surface BOTH so observability can
+                # split metrics by original (intended) and active (used).
+                active_model_provider: active_model.provider,
+                active_model_name: active_model.model,
+                fallback_used: active_model != agent.model
               }
             )
 
@@ -512,16 +520,47 @@ defmodule Nous.AgentRunner do
           )
           |> Map.new()
 
-        # Make model request (with fallback chain if configured)
+        # Make model request (with fallback chain if configured).
+        #
+        # Sticky-fallback: if a previous iteration already promoted to a
+        # fallback model (recorded in ctx.deps[:active_model]), call into
+        # request_with_fallback with that model first to avoid retrying
+        # a known-bad primary on every iteration.
+        request_agent =
+          case get_in(ctx.deps, [:active_model]) do
+            nil -> agent
+            am -> %{agent | model: am}
+          end
+
         Logger.debug(
           "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
         )
 
-        case request_with_fallback(agent, messages, model_settings, all_tools) do
+        case request_with_fallback(request_agent, messages, model_settings, all_tools) do
           {:ok, response, active_model} ->
-            # Swap model on agent if fallback was used (for remaining iterations)
-            agent =
-              if active_model != agent.model, do: %{agent | model: active_model}, else: agent
+            # Track active_model in ctx for downstream telemetry / observability,
+            # but do NOT mutate agent.model. Mutating made the start-of-run
+            # telemetry tag with one provider and the stop with another, with
+            # no fallback_used indicator - operational metrics drifted apart
+            # for any agent that ever fell back.
+            ctx =
+              if active_model != agent.model do
+                :telemetry.execute(
+                  [:nous, :agent, :fallback, :used],
+                  %{system_time: System.system_time()},
+                  %{
+                    agent_name: agent.name,
+                    original_provider: agent.model.provider,
+                    original_model: agent.model.model,
+                    active_provider: active_model.provider,
+                    active_model: active_model.model
+                  }
+                )
+
+                %{ctx | deps: Map.put(ctx.deps || %{}, :active_model, active_model)}
+              else
+                ctx
+              end
 
             # Update usage
             usage_update = response.metadata.usage || %{}

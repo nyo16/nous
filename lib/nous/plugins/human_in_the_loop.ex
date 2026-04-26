@@ -64,9 +64,14 @@ defmodule Nous.Plugins.HumanInTheLoop do
     if tool_names == [] do
       {ctx, tools}
     else
+      # Case-insensitive matching - Nous.Permissions normalises tool names to
+      # downcase, and a mismatch here meant a tool registered as "Send_Email"
+      # bypassed approval if the operator wrote "send_email" (and vice versa).
+      lookup = downcase_set(tool_names)
+
       tagged_tools =
         Enum.map(tools, fn tool ->
-          if tool.name in tool_names do
+          if matches?(lookup, tool.name) do
             %{tool | requires_approval: true}
           else
             tool
@@ -82,12 +87,23 @@ defmodule Nous.Plugins.HumanInTheLoop do
   end
 
   defp build_handler(handler, tool_names) do
+    lookup = downcase_set(tool_names)
+
     fn tool_call ->
-      if tool_call.name in tool_names do
+      if matches?(lookup, tool_call.name) do
         handler.(tool_call)
       else
         :approve
       end
     end
   end
+
+  defp downcase_set(names) when is_list(names) do
+    names |> Enum.map(fn n -> n |> to_string() |> String.downcase() end) |> MapSet.new()
+  end
+
+  defp matches?(lookup, name) when is_binary(name),
+    do: MapSet.member?(lookup, String.downcase(name))
+
+  defp matches?(_lookup, _name), do: false
 end
