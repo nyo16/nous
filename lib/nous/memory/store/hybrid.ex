@@ -16,6 +16,7 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
 
     @behaviour Nous.Memory.Store
 
+    alias __MODULE__
     alias Nous.Memory.Entry
 
     @default_dimension 1536
@@ -35,7 +36,7 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
            {:ok, collection} <- open_or_create_collection(collection_path, dimension) do
         # Unnamed table - a named table would crash a second concurrent
         # agent (named tables are global per BEAM node).
-        table = :ets.new(__MODULE__, [:set, :public])
+        table = :ets.new(Hybrid, [:set, :public])
 
         {:ok,
          %{
