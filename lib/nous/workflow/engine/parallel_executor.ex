@@ -196,9 +196,23 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
     end
   end
 
+  # Distinguish three handler outcomes:
+  # 1. raised exception      -> {:error, {exception, stacktrace}}   (collected as failure)
+  # 2. returned {:error, _}  -> {:error, reason}                    (collected as failure)
+  # 3. returned {:ok, val}   -> {:ok, val}                          (collected as success)
+  # 4. returned anything else -> {:ok, value}                       (treated as success)
+  #
+  # Previously the handler return value was unconditionally wrapped in :ok,
+  # so {:error, _} returns silently landed in successful_results as the
+  # literal tuple - :fail_fast never tripped on them and downstream nodes
+  # consumed the error tuple as if it were valid output.
   defp safely_run_handler(handler_fn, item, state) do
     try do
-      {:ok, handler_fn.(item, state)}
+      case handler_fn.(item, state) do
+        {:ok, value} -> {:ok, value}
+        {:error, _} = err -> err
+        other -> {:ok, other}
+      end
     rescue
       e -> {:error, {e, __STACKTRACE__}}
     end

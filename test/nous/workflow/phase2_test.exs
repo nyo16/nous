@@ -68,8 +68,10 @@ defmodule Nous.Workflow.Phase2Test do
       assert state.data.finished == true
     end
 
-    test "cycle terminates at max_iterations" do
-      # Infinite loop: a -> b -> a
+    test "cycle terminates at max_iterations with structured error" do
+      # Infinite loop: a -> b -> a. Hitting the iteration cap is now a real
+      # failure (was silently {:ok, state}, which made quality-gate loops
+      # produce results that hadn't passed the gate).
       graph =
         Graph.new("infinite", allows_cycles: true)
         |> Graph.add_node(
@@ -84,10 +86,9 @@ defmodule Nous.Workflow.Phase2Test do
         |> Graph.connect(:b, :a)
 
       {:ok, compiled} = Compiler.compile(graph)
-      assert {:ok, state} = Engine.execute(compiled, %{}, max_iterations: 5)
 
-      # Should have run node :a at most 5 times
-      assert state.data.count <= 5
+      assert {:error, {:max_iterations_exceeded, _node_id, 5}} =
+               Engine.execute(compiled, %{}, max_iterations: 5)
     end
   end
 
@@ -347,6 +348,30 @@ defmodule Nous.Workflow.Phase2Test do
       assert Enum.any?(state.errors, fn {id, _} -> id == "primary" end)
     end
 
+    test "pre_node hook returning :deny aborts the workflow with hook_denied" do
+      # Previously :deny was silently mapped to {:pause, _} so safety hooks
+      # that meant "block this" suspended a checkpoint forever instead of
+      # failing.
+      hook = %Nous.Hook{
+        event: :pre_node,
+        type: :function,
+        name: "deny_dangerous",
+        handler: fn
+          _event, %{node_id: "danger"} -> :deny
+          _event, _payload -> :allow
+        end
+      }
+
+      graph =
+        Workflow.new("policy")
+        |> Workflow.add_node(:safe, :transform, tf(&Function.identity/1))
+        |> Workflow.add_node(:danger, :transform, tf(&Function.identity/1))
+        |> Workflow.chain([:safe, :danger])
+
+      assert {:error, {:hook_denied, "deny_dangerous", "danger"}} =
+               Workflow.run(graph, %{}, hooks: [hook])
+    end
+
     test "fallback chain: backup also fails - propagates structured error" do
       # Use set_entry so :primary is the deterministic entry point and :backup
       # is reached only as the fallback target (not in topo order).
@@ -355,7 +380,9 @@ defmodule Nous.Workflow.Phase2Test do
         |> Nous.Workflow.Graph.add_node(
           :primary,
           :transform,
-          tf(fn _ -> raise "primary boom" end), error_strategy: {:fallback, :backup})
+          tf(fn _ -> raise "primary boom" end),
+          error_strategy: {:fallback, :backup}
+        )
         |> Nous.Workflow.Graph.add_node(
           :backup,
           :transform,
