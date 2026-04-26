@@ -26,14 +26,16 @@ if Code.ensure_loaded?(Zvec) do
       dimension = Keyword.get(opts, :embedding_dimension, @default_dimension)
 
       with {:ok, collection} <- Zvec.create_collection(collection_path, dimension: dimension) do
-        table = :ets.new(:zvec_store, [:set, :public])
+        # Unnamed table - named would crash a second concurrent agent.
+        table = :ets.new(__MODULE__, [:set, :public])
         {:ok, %{collection: collection, entries: table}}
       end
     rescue
       _ ->
         case Zvec.open_collection(collection_path) do
           {:ok, collection} ->
-            table = :ets.new(:zvec_store, [:set, :public])
+            # Unnamed table - named would crash a second concurrent agent.
+            table = :ets.new(__MODULE__, [:set, :public])
             {:ok, %{collection: collection, entries: table}}
 
           error ->
@@ -43,13 +45,22 @@ if Code.ensure_loaded?(Zvec) do
 
     @impl true
     def store(%{collection: collection, entries: table} = state, %Entry{} = entry) do
-      :ets.insert(table, {entry.id, entry})
+      # Add to vector index FIRST; if it fails the entry table remains
+      # consistent (entry absent from both index and entries) instead of
+      # raising MatchError with the entry leaked into ETS.
+      add_result =
+        if entry.embedding,
+          do: Zvec.add(collection, entry.id, entry.embedding),
+          else: :ok
 
-      if entry.embedding do
-        :ok = Zvec.add(collection, entry.id, entry.embedding)
+      case add_result do
+        :ok ->
+          :ets.insert(table, {entry.id, entry})
+          {:ok, state}
+
+        {:error, _} = err ->
+          err
       end
-
-      {:ok, state}
     end
 
     @impl true
@@ -62,9 +73,14 @@ if Code.ensure_loaded?(Zvec) do
 
     @impl true
     def delete(%{collection: collection, entries: table} = state, id) do
-      :ets.delete(table, id)
-      :ok = Zvec.delete(collection, id)
-      {:ok, state}
+      case Zvec.delete(collection, id) do
+        :ok ->
+          :ets.delete(table, id)
+          {:ok, state}
+
+        {:error, _} = err ->
+          err
+      end
     end
 
     @impl true
@@ -73,14 +89,17 @@ if Code.ensure_loaded?(Zvec) do
         {:ok, entry} ->
           now = DateTime.utc_now()
           updated = struct(entry, Map.put(updates, :updated_at, now))
-          :ets.insert(table, {id, updated})
 
           if Map.has_key?(updates, :embedding) and updates.embedding do
-            :ok = Zvec.delete(collection, id)
-            :ok = Zvec.add(collection, id, updated.embedding)
+            with :ok <- Zvec.delete(collection, id),
+                 :ok <- Zvec.add(collection, id, updated.embedding) do
+              :ets.insert(table, {id, updated})
+              {:ok, state}
+            end
+          else
+            :ets.insert(table, {id, updated})
+            {:ok, state}
           end
-
-          {:ok, state}
 
         error ->
           error

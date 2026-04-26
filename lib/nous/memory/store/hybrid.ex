@@ -33,7 +33,9 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
 
       with {:ok, index} <- open_or_create_index(index_path, schema),
            {:ok, collection} <- open_or_create_collection(collection_path, dimension) do
-        table = :ets.new(:hybrid_store, [:set, :public])
+        # Unnamed table - a named table would crash a second concurrent
+        # agent (named tables are global per BEAM node).
+        table = :ets.new(__MODULE__, [:set, :public])
 
         {:ok,
          %{
@@ -49,18 +51,23 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
           %{muninn: %{index: index}, zvec: %{collection: collection}, entries: table} = state,
           %Entry{} = entry
         ) do
-      :ets.insert(table, {entry.id, entry})
-
       doc = %{id: entry.id, content: entry.content}
-      :ok = Muninn.add_document(index, doc)
-      :ok = Muninn.commit(index)
 
-      if entry.embedding do
-        :ok = Zvec.add(collection, entry.id, entry.embedding)
+      with :ok <- Muninn.add_document(index, doc),
+           :ok <- Muninn.commit(index),
+           :ok <- maybe_add_embedding(collection, entry) do
+        # Only add to ETS once both indices accepted the entry, so a NIF
+        # failure leaves a consistent (entry-absent-everywhere) state.
+        :ets.insert(table, {entry.id, entry})
+        {:ok, state}
       end
-
-      {:ok, state}
     end
+
+    defp maybe_add_embedding(collection, %Entry{embedding: emb, id: id}) when not is_nil(emb) do
+      Zvec.add(collection, id, emb)
+    end
+
+    defp maybe_add_embedding(_collection, _entry), do: :ok
 
     @impl true
     def fetch(%{entries: table}, id) do
@@ -75,11 +82,12 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
           %{muninn: %{index: index}, zvec: %{collection: collection}, entries: table} = state,
           id
         ) do
-      :ets.delete(table, id)
-      :ok = Muninn.delete_document(index, "id", id)
-      :ok = Muninn.commit(index)
-      :ok = Zvec.delete(collection, id)
-      {:ok, state}
+      with :ok <- Muninn.delete_document(index, "id", id),
+           :ok <- Muninn.commit(index),
+           :ok <- Zvec.delete(collection, id) do
+        :ets.delete(table, id)
+        {:ok, state}
+      end
     end
 
     @impl true
@@ -92,23 +100,38 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
         {:ok, entry} ->
           now = DateTime.utc_now()
           updated = struct(entry, Map.put(updates, :updated_at, now))
-          :ets.insert(table, {id, updated})
 
-          if Map.has_key?(updates, :content) do
-            :ok = Muninn.delete_document(index, "id", id)
-            :ok = Muninn.add_document(index, %{id: id, content: updated.content})
-            :ok = Muninn.commit(index)
+          with :ok <- maybe_reindex_content(index, id, updates, updated),
+               :ok <- maybe_reindex_embedding(collection, id, updates) do
+            :ets.insert(table, {id, updated})
+            {:ok, state}
           end
-
-          if Map.has_key?(updates, :embedding) and updates.embedding do
-            :ok = Zvec.delete(collection, id)
-            :ok = Zvec.add(collection, id, updated.embedding)
-          end
-
-          {:ok, state}
 
         error ->
           error
+      end
+    end
+
+    defp maybe_reindex_content(index, id, updates, updated) do
+      if Map.has_key?(updates, :content) do
+        with :ok <- Muninn.delete_document(index, "id", id),
+             :ok <- Muninn.add_document(index, %{id: id, content: updated.content}),
+             :ok <- Muninn.commit(index) do
+          :ok
+        end
+      else
+        :ok
+      end
+    end
+
+    defp maybe_reindex_embedding(collection, id, updates) do
+      if Map.has_key?(updates, :embedding) and updates.embedding do
+        with :ok <- Zvec.delete(collection, id),
+             :ok <- Zvec.add(collection, id, updates.embedding) do
+          :ok
+        end
+      else
+        :ok
       end
     end
 

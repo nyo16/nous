@@ -401,8 +401,19 @@ if Code.ensure_loaded?(Duckdbex) do
 
     defp decode_json_atoms(str) when is_binary(str), do: str |> JSON.decode!() |> atomize_keys()
 
-    defp atomize_keys(map) when is_map(map),
-      do: Map.new(map, fn {k, v} -> {String.to_existing_atom(k), v} end)
+    # Decision metadata is user-supplied; never crash on unknown keys.
+    defp atomize_keys(map) when is_map(map) do
+      Map.new(map, fn {k, v} ->
+        atom_or_binary =
+          try do
+            String.to_existing_atom(k)
+          rescue
+            ArgumentError -> k
+          end
+
+        {atom_or_binary, v}
+      end)
+    end
 
     defp datetime_to_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
     defp datetime_to_iso(nil), do: DateTime.to_iso8601(DateTime.utc_now())

@@ -29,7 +29,8 @@ if Code.ensure_loaded?(Muninn) do
       }
 
       with {:ok, index} <- Muninn.create_index(index_path, schema) do
-        table = :ets.new(:muninn_store, [:set, :public])
+        # Unnamed table - named would crash a second concurrent agent.
+        table = :ets.new(__MODULE__, [:set, :public])
         {:ok, %{index: index, entries: table}}
       end
     rescue
@@ -40,7 +41,8 @@ if Code.ensure_loaded?(Muninn) do
 
         case Muninn.open_index(index_path) do
           {:ok, index} ->
-            table = :ets.new(:muninn_store, [:set, :public])
+            # Unnamed table - named would crash a second concurrent agent.
+            table = :ets.new(__MODULE__, [:set, :public])
             {:ok, %{index: index, entries: table}}
 
           error ->
@@ -50,13 +52,16 @@ if Code.ensure_loaded?(Muninn) do
 
     @impl true
     def store(%{index: index, entries: table} = state, %Entry{} = entry) do
-      :ets.insert(table, {entry.id, entry})
-
       doc = %{id: entry.id, content: entry.content}
-      :ok = Muninn.add_document(index, doc)
-      :ok = Muninn.commit(index)
 
-      {:ok, state}
+      with :ok <- Muninn.add_document(index, doc),
+           :ok <- Muninn.commit(index) do
+        # Only insert into the entry table after the index commit succeeds,
+        # so a Muninn write failure leaves a consistent view (entry absent
+        # from both index AND entries) instead of MatchError + desynced ETS.
+        :ets.insert(table, {entry.id, entry})
+        {:ok, state}
+      end
     end
 
     @impl true
@@ -69,10 +74,11 @@ if Code.ensure_loaded?(Muninn) do
 
     @impl true
     def delete(%{index: index, entries: table} = state, id) do
-      :ets.delete(table, id)
-      :ok = Muninn.delete_document(index, "id", id)
-      :ok = Muninn.commit(index)
-      {:ok, state}
+      with :ok <- Muninn.delete_document(index, "id", id),
+           :ok <- Muninn.commit(index) do
+        :ets.delete(table, id)
+        {:ok, state}
+      end
     end
 
     @impl true
@@ -81,15 +87,19 @@ if Code.ensure_loaded?(Muninn) do
         {:ok, entry} ->
           now = DateTime.utc_now()
           updated = struct(entry, Map.put(updates, :updated_at, now))
-          :ets.insert(table, {id, updated})
 
           if Map.has_key?(updates, :content) do
-            :ok = Muninn.delete_document(index, "id", id)
-            :ok = Muninn.add_document(index, %{id: id, content: updated.content})
-            :ok = Muninn.commit(index)
+            # Re-index first; only commit ETS if Muninn succeeds.
+            with :ok <- Muninn.delete_document(index, "id", id),
+                 :ok <- Muninn.add_document(index, %{id: id, content: updated.content}),
+                 :ok <- Muninn.commit(index) do
+              :ets.insert(table, {id, updated})
+              {:ok, state}
+            end
+          else
+            :ets.insert(table, {id, updated})
+            {:ok, state}
           end
-
-          {:ok, state}
 
         error ->
           error
