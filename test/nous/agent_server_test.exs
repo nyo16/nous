@@ -117,6 +117,38 @@ defmodule Nous.AgentServerTest do
     end
   end
 
+  describe "task generation (regression for silent message loss)" do
+    test "stale :agent_response_ready (gen 0) is discarded after clear_history" do
+      session_id = "test_stale_resp_#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          pubsub: nil,
+          inactivity_timeout: :infinity
+        )
+
+      # Simulate: a fresh server (generation 0) where clear_history bumps
+      # the generation, then a *stale* :agent_response_ready from a now-
+      # cancelled task arrives. Without generation tagging this would
+      # clobber the cleared context.
+      AgentServer.clear_history(pid)
+      Process.sleep(20)
+
+      stale_ctx =
+        Context.new(system_prompt: "Be helpful")
+        |> Context.add_message(Message.user("STALE - should be discarded"))
+
+      send(pid, {:agent_response_ready, 0, stale_ctx, nil})
+      Process.sleep(50)
+
+      ctx = AgentServer.get_context(pid)
+      assert ctx.messages == [], "stale response from gen 0 should not have re-populated context"
+      GenServer.stop(pid)
+    end
+  end
+
   describe "clear_history/1" do
     test "resets messages while preserving deps and system_prompt" do
       session_id = "test_clear_#{System.unique_integer([:positive])}"
@@ -134,7 +166,7 @@ defmodule Nous.AgentServerTest do
       ctx = AgentServer.get_context(pid)
       ctx = Context.add_message(ctx, Message.user("Hello"))
       ctx = Context.add_message(ctx, Message.assistant("Hi!"))
-      send(pid, {:agent_response_ready, ctx, nil})
+      send(pid, {:agent_response_ready, 0, ctx, nil})
 
       # Give the GenServer time to process
       Process.sleep(50)
@@ -169,7 +201,7 @@ defmodule Nous.AgentServerTest do
       # Inject messages and save
       ctx = AgentServer.get_context(pid)
       ctx = Context.add_message(ctx, Message.user("Pre-clear"))
-      send(pid, {:agent_response_ready, ctx, nil})
+      send(pid, {:agent_response_ready, 0, ctx, nil})
       Process.sleep(50)
 
       # Verify it was saved with messages
@@ -320,7 +352,7 @@ defmodule Nous.AgentServerTest do
         |> Context.add_message(Message.user("Hello"))
         |> Context.add_message(Message.assistant("Hi!"))
 
-      send(pid, {:agent_response_ready, ctx, nil})
+      send(pid, {:agent_response_ready, 0, ctx, nil})
       Process.sleep(50)
 
       # Context should be persisted

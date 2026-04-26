@@ -321,6 +321,13 @@ defmodule Nous.AgentServer do
       topic: topic,
       agent_type: agent_type,
       current_task: nil,
+      # Monotonic task generation counter. Every spawned task captures the
+      # generation it ran under; replies whose generation no longer matches
+      # the current one are stale (the user sent a new message, called
+      # clear_history, or cancelled) and MUST be discarded - otherwise a
+      # task that completed milliseconds before the cancel can clobber the
+      # freshly-cleared/updated context. See review finding C-5.
+      task_generation: 0,
       cancelled_ref: cancelled_ref,
       inactivity_timeout: inactivity_timeout,
       inactivity_timer_ref: inactivity_timer_ref,
@@ -332,6 +339,11 @@ defmodule Nous.AgentServer do
 
   @impl true
   def handle_cast({:user_message, message}, state) do
+    # Bumping the generation FIRST means any reply that was already in our
+    # mailbox (sent by the just-finishing previous task) is immediately
+    # stale and will be filtered by handle_info before it can clobber state.
+    state = bump_generation(state)
+
     # Gracefully shutdown any existing task if running
     state =
       if state.current_task do
@@ -371,10 +383,11 @@ defmodule Nous.AgentServer do
     # Run agent asynchronously and track the task
     server_pid = self()
     cancelled_ref = state.cancelled_ref
+    generation = state.task_generation
 
     task =
       Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-        run_agent_and_respond(server_pid, state, message, cancelled_ref)
+        run_agent_and_respond(server_pid, state, message, cancelled_ref, generation)
       end)
 
     {:noreply, %{state | current_task: task}}
@@ -383,6 +396,25 @@ defmodule Nous.AgentServer do
   @impl true
   def handle_cast(:clear_history, state) do
     Logger.info("Clearing conversation context for session: #{state.session_id}")
+
+    # Bump the generation and signal cancellation BEFORE clearing - otherwise
+    # an in-flight task can deliver {:agent_response_ready, ...} after this
+    # handler runs and silently re-populate the context we just cleared.
+    state = bump_generation(state)
+    :atomics.put(state.cancelled_ref, 1, 1)
+
+    state =
+      if state.current_task do
+        case Task.shutdown(state.current_task, 2_000) do
+          _ -> :ok
+        end
+
+        %{state | current_task: nil}
+      else
+        state
+      end
+
+    :atomics.put(state.cancelled_ref, 1, 0)
 
     # Create fresh context preserving deps and system prompt
     new_context =
@@ -420,6 +452,10 @@ defmodule Nous.AgentServer do
 
       task ->
         Logger.info("Cancelling execution for session: #{state.session_id}")
+
+        # Bump generation FIRST so a reply that arrives between :atomics.put
+        # and Task.shutdown is filtered as stale rather than overwriting state.
+        state = bump_generation(state)
 
         # Set cancelled flag - the runner will check this via atomics
         :atomics.put(state.cancelled_ref, 1, 1)
@@ -539,26 +575,49 @@ defmodule Nous.AgentServer do
   end
 
   @impl true
-  def handle_info({:agent_response_ready, context, _result}, state) do
-    # Update state with new context (current_task is cleared by :DOWN)
-    state = %{state | context: context}
+  def handle_info({:agent_response_ready, generation, context, _result}, state) do
+    if generation == state.task_generation do
+      state = %{state | context: context}
+      do_save_context(state)
+      {:noreply, state}
+    else
+      # Stale reply from a previous task that completed milliseconds before
+      # the user sent a new message / called clear_history / cancelled.
+      # Discard - the current state already reflects the newer truth.
+      Logger.debug(
+        "Discarding stale :agent_response_ready (gen #{generation}, current #{state.task_generation})"
+      )
 
-    # Auto-save context if persistence is configured
-    do_save_context(state)
-
-    {:noreply, state}
+      {:noreply, state}
+    end
   end
 
   @impl true
-  def handle_info({:agent_task_completed, _reason}, state) do
-    # Task completed (with error or cancellation), clear it
+  def handle_info({:agent_task_completed, generation, _reason}, state) do
+    if generation == state.task_generation do
+      {:noreply, %{state | current_task: nil}}
+    else
+      # Stale completion from a previous task; current_task already points
+      # to a newer task, do not clear it.
+      {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info(
+        {:DOWN, ref, :process, _pid, _reason},
+        %{current_task: %Task{ref: ref}} = state
+      ) do
+    # Our current task's monitor fired; clear the task slot.
     {:noreply, %{state | current_task: nil}}
   end
 
   @impl true
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
-    # Task completed or died, clear it
-    {:noreply, %{state | current_task: nil}}
+    # Some other monitor fired (Phoenix.PubSub, future plugin monitor, or a
+    # stale ref from a previous task). Don't clear current_task - that would
+    # drop our newer task's bookkeeping.
+    {:noreply, state}
   end
 
   @impl true
@@ -631,18 +690,18 @@ defmodule Nous.AgentServer do
     end
   end
 
-  defp run_agent_and_respond(server_pid, state, message, cancelled_ref) do
+  defp run_agent_and_respond(server_pid, state, message, cancelled_ref, generation) do
     # Check if cancelled before starting
     if :atomics.get(cancelled_ref, 1) == 1 do
       Logger.info("Execution cancelled before agent run for session: #{state.session_id}")
       broadcast(state, {:agent_cancelled, "Execution cancelled"})
       :cancelled
     else
-      do_agent_run(server_pid, state, message, cancelled_ref)
+      do_agent_run(server_pid, state, message, cancelled_ref, generation)
     end
   end
 
-  defp do_agent_run(server_pid, state, message, cancelled_ref) do
+  defp do_agent_run(server_pid, state, message, cancelled_ref, generation) do
     # Run agent with context continuation and notify_pid for events
     result =
       Nous.AgentRunner.run(state.agent, message,
@@ -662,13 +721,14 @@ defmodule Nous.AgentServer do
         broadcast(state, {:agent_response, response.output})
         broadcast(state, {:agent_complete, response})
 
-        # Send context update to server
-        send(server_pid, {:agent_response_ready, response.context, response})
+        # Send context update to server, tagged with our generation so it
+        # can be discarded if the user has already sent a newer message.
+        send(server_pid, {:agent_response_ready, generation, response.context, response})
 
       {:error, %Nous.Errors.ExecutionCancelled{}} ->
         Logger.info("Agent execution was cancelled for session: #{state.session_id}")
         broadcast(state, {:agent_cancelled, "Execution cancelled"})
-        send(server_pid, {:agent_task_completed, :cancelled})
+        send(server_pid, {:agent_task_completed, generation, :cancelled})
 
       {:error, error} ->
         error_msg = if is_exception(error), do: Exception.message(error), else: inspect(error)
@@ -676,11 +736,15 @@ defmodule Nous.AgentServer do
 
         # Broadcast error
         broadcast(state, {:agent_error, error_msg})
-        send(server_pid, {:agent_task_completed, :error})
+        send(server_pid, {:agent_task_completed, generation, :error})
     end
   end
 
   defp broadcast(state, message) do
     Nous.PubSub.broadcast(state.pubsub, state.topic, message)
+  end
+
+  defp bump_generation(state) do
+    %{state | task_generation: state.task_generation + 1}
   end
 end
