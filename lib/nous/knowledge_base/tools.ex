@@ -6,6 +6,11 @@ defmodule Nous.KnowledgeBase.Tools do
   via `takes_ctx: true` and returns `{:ok, result, ContextUpdate.new()}`.
   """
 
+  # MapSet is an opaque type; identify_issues/4 builds MapSets from optional
+  # store callbacks whose return type dialyzer can't fully narrow. Suppress
+  # the contract_with_opaque warnings.
+  @dialyzer :no_opaque
+
   alias Nous.KnowledgeBase.{Document, Entry, Link}
   alias Nous.Tool
   alias Nous.Tool.ContextUpdate

@@ -122,19 +122,14 @@ if Code.ensure_loaded?(Floki) do
       end
     end
 
-    defp location_header(headers) when is_list(headers) do
-      Enum.find_value(headers, fn
-        {"location", v} -> v
-        {"Location", v} -> v
-        _ -> nil
-      end)
-    end
-
+    # Req returns headers as a string-keyed map of String -> [String].
     defp location_header(headers) when is_map(headers) do
-      headers["location"] || headers["Location"]
+      case headers["location"] || headers["Location"] do
+        [v | _] -> v
+        v when is_binary(v) -> v
+        _ -> nil
+      end
     end
-
-    defp location_header(_), do: nil
 
     defp parse_html(body) when is_binary(body) do
       case Floki.parse_document(body) do

@@ -148,7 +148,7 @@ defmodule Nous.Workflow.Engine do
           # M-11: pass the failure-time state to the :workflow_end hook
           # rather than the initial state. Falls back to initial state if
           # the error was raised before any node ran.
-          end_state = Map.get(err_ctx || %{}, :failure_state, state)
+          end_state = Map.get(err_ctx, :failure_state, state)
 
           run_hooks(hooks, :workflow_end, %{
             workflow_id: graph.id,

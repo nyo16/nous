@@ -45,13 +45,10 @@ defmodule Nous.Tools.FileGlob do
         files =
           full_pattern
           |> Path.wildcard(match_dot: false)
-          |> Enum.filter(&File.regular?/1)
-          # Drop any matches that escaped the workspace via symlink etc.
+          # Keep regular files inside the workspace (rejects directories,
+          # special files, and matches that escaped the workspace via symlink).
           |> Enum.filter(fn f ->
-            case Nous.Tools.PathGuard.validate(f, ctx) do
-              {:ok, _} -> true
-              _ -> false
-            end
+            File.regular?(f) and match?({:ok, _}, Nous.Tools.PathGuard.validate(f, ctx))
           end)
           |> sort_by_mtime()
           |> Enum.take(@default_limit)

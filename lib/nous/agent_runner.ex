@@ -557,7 +557,7 @@ defmodule Nous.AgentRunner do
                   }
                 )
 
-                %{ctx | deps: Map.put(ctx.deps || %{}, :active_model, active_model)}
+                %{ctx | deps: Map.put(ctx.deps, :active_model, active_model)}
               else
                 ctx
               end
