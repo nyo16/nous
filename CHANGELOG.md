@@ -22,6 +22,7 @@ Read these before upgrading.
 - **Permissions `:strict` mode is deny-by-default at the filter layer.** New `:allow_names` / `:allow_prefixes` opts on `Nous.Permissions.build_policy/1`. Previously `strict_policy()` with empty deny lists silently exposed every tool.
 - **`PromEx` plugin event names corrected** (`[:nous, :model, ...]` → `[:nous, :provider, ...]`). Anyone using `Nous.PromEx.Plugin` saw zero data on the model/stream metric panels until now. Metric paths still emit as `nous_model_*` for dashboard backward compatibility.
 - **`Nous.Tool.Validator` now actually runs.** `tool.validate_args` defaulted to `true` for months but `ToolExecutor` never called the validator. Tools whose params declared `"required": [...]` will now reject calls with missing fields up-front (returning a structured `ToolError` to the LLM with the field name) instead of crashing inside the tool body and reporting a generic `FunctionClauseError`. If you have tools that relied on the lack of validation, set `validate_args: false` on the tool struct.
+- **`Nous.Teams.RateLimiter.acquire/3` returns `{:ok, reservation_ref}`** instead of `:ok`. Existing call sites doing `assert :ok = RateLimiter.acquire(...)` need `assert {:ok, _ref} = ...`. This is the contract change that makes concurrent acquires near the cap race-safe (M-9). Pair with `record_usage(reservation: ref, ...)` for atomic reconciliation, or `release/2` to cancel. Bare `record_usage/3` (no `:reservation`) still works for legacy post-hoc callers.
 
 ### Added
 
@@ -65,6 +66,8 @@ Read these before upgrading.
 - **Workflow `:workflow_end` hook payload now reflects failure-time state**, not initial state, so post-mortems see the actual state at failure.
 - **AgentServer `load_context` runs in a `Task.Supervisor.start_child` task** with `GenServer.reply/2` — slow persistence backends no longer block concurrent `get_context` / `cancel_execution` calls.
 - **AgentDynamicSupervisor + Application supervisor restart limits** tuned to `max_restarts: 100, max_seconds: 10` (was the default 3-in-5) so one bad user's crash loop doesn't take down every other tenant.
+- **`Nous.Teams.RateLimiter` is now race-safe under concurrent acquires (M-9 final).** `acquire/3` now returns `{:ok, reservation_ref} | {:error, _}` and atomically reserves the estimated tokens + 1 request slot. `record_usage/3` accepts `:reservation` to reconcile actual vs estimated; missing reconciliations are auto-refunded after `:reservation_ttl_ms` (default 5 min) with a `Logger.warning/1`. `release/2` cancels a reservation when the call errored before completing. Legacy `record_usage/3` without `:reservation` still works for callers that don't go through `acquire`. Added `:open_reservations` to `get_status/1`.
+- **`Nous.Memory.Embedding.Bumblebee` uses a Registry + DynamicSupervisor (M-7 final).** Each model_name is owned by exactly one `ServingHolder` GenServer registered by name. Replaces the `:persistent_term` cache (which forced a node-wide GC pause per new model). `Nous.Application` conditionally adds the Registry + ServingSupervisor children when Bumblebee is loaded.
 
 ### Fixed (UX / minor)
 
@@ -79,9 +82,7 @@ Read these before upgrading.
 
 ### Known limitations (documented in code, not silently glossed)
 
-- **`RateLimiter` (M-9):** `acquire/3` still only checks rather than reserves; concurrent acquires near the cap may all see "budget remaining" and proceed. A token-bucket rewrite was attempted but breaks the existing `record_usage` contract; documented in code with a `KNOWN LIMITATION` comment.
-- **Bumblebee (M-7):** added a `:global` lock so concurrent first-time loaders don't both load a 1.5 GB model and leak. Full Registry-backed singleton is follow-up.
-- **9 modules carry `@dialyzer :no_opaque`** for `MapSet` capture-syntax false positives — Elixir community standard, each suppression has a one-line justification at the top of its module.
+- **9 modules carry `@dialyzer :no_opaque`** for `MapSet` capture-syntax false positives — Elixir community standard, each suppression has a one-line justification at the top of its module. Specs were tried first and verified not to help; this isn't a code bug, it's a known dialyzer/Elixir interaction with opaque types and capture syntax (`&MapSet.member?(set, &1)` inside `Enum.*`).
 
 ### Dependencies
 
