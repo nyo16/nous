@@ -1,6 +1,7 @@
 defmodule Nous.Permissions do
-  # MapSet is opaque — suppress contract_with_opaque for functions returning Policy structs
-  @dialyzer [:no_opaque]
+  # blocked?/2 / requires_approval?/2 use MapSet.member? on the deny/allow
+  # set fields of %Policy{}; capture-syntax false positive for opacity.
+  @dialyzer :no_opaque
 
   @moduledoc """
   Tool-level permission policy engine.
@@ -98,6 +99,9 @@ defmodule Nous.Permissions do
       mode: Keyword.get(opts, :mode, :default),
       deny_names: opts |> Keyword.get(:deny, []) |> Enum.map(&String.downcase/1) |> MapSet.new(),
       deny_prefixes: opts |> Keyword.get(:deny_prefixes, []) |> Enum.map(&String.downcase/1),
+      allow_names:
+        opts |> Keyword.get(:allow, []) |> Enum.map(&String.downcase/1) |> MapSet.new(),
+      allow_prefixes: opts |> Keyword.get(:allow_prefixes, []) |> Enum.map(&String.downcase/1),
       approval_required:
         opts
         |> Keyword.get(:approval_required, [])
@@ -124,11 +128,36 @@ defmodule Nous.Permissions do
 
   """
   @spec blocked?(Policy.t(), String.t()) :: boolean()
-  def blocked?(%Policy{deny_names: deny_names, deny_prefixes: deny_prefixes}, tool_name) do
+  def blocked?(
+        %Policy{
+          mode: mode,
+          deny_names: deny_names,
+          deny_prefixes: deny_prefixes,
+          allow_names: allow_names,
+          allow_prefixes: allow_prefixes
+        },
+        tool_name
+      ) do
     name = String.downcase(tool_name)
 
-    MapSet.member?(deny_names, name) or
-      Enum.any?(deny_prefixes, &String.starts_with?(name, String.downcase(&1)))
+    cond do
+      MapSet.member?(deny_names, name) ->
+        true
+
+      Enum.any?(deny_prefixes, &String.starts_with?(name, String.downcase(&1))) ->
+        true
+
+      mode == :strict ->
+        # Deny-by-default in strict mode: only tools explicitly allowed
+        # via :allow_names / :allow_prefixes pass the filter. This closes
+        # the gap where strict_policy() with empty deny lists silently
+        # exposed every tool at the filter layer.
+        not (MapSet.member?(allow_names, name) or
+               Enum.any?(allow_prefixes, &String.starts_with?(name, String.downcase(&1))))
+
+      true ->
+        false
+    end
   end
 
   @doc """

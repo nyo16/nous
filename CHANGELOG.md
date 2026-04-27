@@ -2,6 +2,93 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.0] - 2026-04-26
+
+Comprehensive security & correctness pass driven by a multi-agent code review of every subsystem. **57 fixes** across 10 Critical, 19 High, 16 Medium, and 12 Low severity findings, plus a streaming pipeline rewrite. The full review report is at `docs/reviews/2026-04-26-comprehensive-review.md`.
+
+Minor version bump (not patch) because of the 9 behavioral changes called out below — most are security defaults moving from open to deny, which existing callers may need to opt back into.
+
+### ⚠ Behavioral / breaking changes
+
+Read these before upgrading.
+
+- **Sub-agent deps no longer auto-forward to children.** `Nous.Plugins.SubAgent.compute_sub_deps/1` now defaults to `[]`. The previous default forwarded every parent dep (minus a 6-key denylist) — secrets, repo handles, signed URLs all leaked into LLM-controlled sub-agent contexts. To restore the old behaviour, set `:sub_agent_shared_deps, :all` explicitly. Recommended: list specific keys with `:sub_agent_shared_deps, [:key1, :key2]`.
+- **Tools with `requires_approval: true` are now rejected when no `:approval_handler` is wired** (was silently approved). If you use `Nous.Tools.Bash`, `FileWrite`, or `FileEdit`, configure an `approval_handler` on `RunContext` or those tools will refuse to run.
+- **File tools (`FileRead/Write/Edit/Glob/Grep`) now enforce a workspace root.** Defaults to `cwd`; override per-agent via `deps: %{workspace_root: "/path"}`. Paths that escape the root (absolute paths outside, `..` traversal, symlink-escape) are rejected with a clear error to the LLM.
+- **`PromptTemplate.from_template/2` rejects template bodies containing `<% ... %>` blocks** other than the simple `<%= @ident %>` substitution form. Previously bodies were passed through `EEx.eval_string/2`, which executes arbitrary Elixir — an RCE vector for any caller piping LLM output into a template. Conditionals must now be expressed by composing multiple smaller templates.
+- **Workflow `:fallback` error strategy now actually executes the fallback node** (was a silent no-op that returned `{:fallback, id}` as if the primary had succeeded). Workflows that relied on the broken behaviour will now see real fallback execution.
+- **Workflow `max_iterations` exhaustion returns `{:error, {:max_iterations_exceeded, node_id, max}}`** instead of silently `{:ok, state}`. Quality-gate loops that saturate now surface as failures rather than passing-looking results.
+- **Workflow `:pre_node` hook returning `:deny` aborts the workflow** with `{:error, {:hook_denied, hook_name, node_id}}`. Previously was silently mapped to `{:pause, _}` so safety hooks suspended a checkpoint forever.
+- **Permissions `:strict` mode is deny-by-default at the filter layer.** New `:allow_names` / `:allow_prefixes` opts on `Nous.Permissions.build_policy/1`. Previously `strict_policy()` with empty deny lists silently exposed every tool.
+- **`PromEx` plugin event names corrected** (`[:nous, :model, ...]` → `[:nous, :provider, ...]`). Anyone using `Nous.PromEx.Plugin` saw zero data on the model/stream metric panels until now. Metric paths still emit as `nous_model_*` for dashboard backward compatibility.
+- **`Nous.Tool.Validator` now actually runs.** `tool.validate_args` defaulted to `true` for months but `ToolExecutor` never called the validator. Tools whose params declared `"required": [...]` will now reject calls with missing fields up-front (returning a structured `ToolError` to the LLM with the field name) instead of crashing inside the tool body and reporting a generic `FunctionClauseError`. If you have tools that relied on the lack of validation, set `validate_args: false` on the tool struct.
+- **`Nous.Teams.RateLimiter.acquire/3` returns `{:ok, reservation_ref}`** instead of `:ok`. Existing call sites doing `assert :ok = RateLimiter.acquire(...)` need `assert {:ok, _ref} = ...`. This is the contract change that makes concurrent acquires near the cap race-safe (M-9). Pair with `record_usage(reservation: ref, ...)` for atomic reconciliation, or `release/2` to cancel. Bare `record_usage/3` (no `:reservation`) still works for legacy post-hoc callers.
+
+### Added
+
+- **`Nous.Tools.PathGuard`** — workspace-root sandbox for file tools. Rejects path traversal, NUL-byte injection, and symlink escapes. Used by all five built-in file tools.
+- **`Nous.Tools.UrlGuard`** — SSRF protection for outbound HTTP. Rejects schemes other than `http`/`https`, blocks RFC1918 / loopback / link-local / CGNAT / IPv6 ULA / cloud-metadata IPs (`169.254.169.254`). Used by `WebFetch` (with redirect re-validation) and the Custom provider's `base_url`. `:allow_private_hosts` opt-in for local dev.
+- **Streaming pipeline rewritten on `:hackney 4` `:async, :once` (pull-based)**, replacing the prior spawn + `Finch.stream` + mailbox plumbing. The `Stream.resource` consumer now drives `:hackney.stream_next/1` directly — backpressure is structural, no consumer mailbox can grow unboundedly. Same path picks up hackney 4's HTTP/3 + Alt-Svc auto-upgrade for free. New `:bypass`-driven integration tests exercise the streaming path end-to-end.
+- **`link_counts_by_source/1` optional Store callback** for KB backends. ETS implementation provided. Reduces `kb_health_check` from O(E·L) to O(L) — health checks on a 1k-entry / 5k-link KB drop from millions of comparisons to thousands.
+- **Workflow fallback validation in `Nous.Workflow.Compiler`** — fallback target nodes are reachable for the purposes of `:unreachable_nodes` validation but excluded from the topo order so they don't double-execute.
+- **AgentServer task generation refs** — every spawned agent task carries a monotonic ref; stale `:agent_response_ready` / `:agent_task_completed` messages from cancelled tasks are discarded. Fixes silent message loss when the user types fast or calls `clear_history` mid-stream.
+- Seven new test files: `test/nous/json_test.exs`, `test/nous/prompt_template_test.exs`, `test/nous/tools/path_guard_test.exs`, `test/nous/tools/url_guard_test.exs`, plus expanded coverage in `test/nous/workflow/phase2_test.exs`, `test/nous/workflow/phase3_test.exs`, `test/nous/transcript_test.exs`. **Test suite: 1539 → 1543 passing** (`mix test`), plus 0 dialyzer errors and 0 credo issues at `--strict`.
+
+### Fixed (security)
+
+- **Atom-table DoS via `String.to_atom/1` on untrusted input across 7 modules** (Critical). Adopted a project-wide rule — never `String.to_atom/1` on data that didn't originate from a literal in this repo. Audited and fixed: `Agent.Context.safe_to_atom`, skill loader frontmatter parser, LlamaCpp provider message-key conversion, `PromptTemplate.extract_variables`, `Eval.TestCase` YAML key conversion, and the `--tags` / `--exclude` parsers in `mix nous.eval` / `mix nous.optimize`.
+- **EEx code-execution from template bodies** (Critical, see breaking changes above) — `PromptTemplate` now rejects non-`<%= @var %>` markers.
+- **`Nous.Hook` `:command` type now requires a `[program | args]` list**, not a raw string. Previous string handler was passed to `NetRunner.run(["sh", "-c", str], ...)` — RCE class if `handler` ever came from config or user input.
+- **`Bash` and `FileGrep` tools scrub the env before shelling out** — whitelists `PATH/HOME/LANG/LC_ALL/TZ/USER/SHELL/TERM`, drops `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `LD_PRELOAD`, etc. `FileGrep` now resolves `rg` via `System.find_executable/1` (no `which` PATH-shadowing). `Bash` uses absolute `/bin/sh`.
+- **`HumanInTheLoop` plugin matches tool names case-insensitively** — was raw equality; a tool registered as `"Send_Email"` bypassed approval if config said `"send_email"`.
+- **`Nous.Plugins.Memory` wraps auto-injected memories in `<retrieved_memory>` tags with provenance metadata** and an explicit "USER-SUPPLIED DATA, not instructions" framing — defense-in-depth against stored prompt injection through the LLM-callable `remember` tool.
+- **`extra_body` blocked-keys list** — drops `messages`, `model`, `stream`, `system`, `tools`, `tool_choice` with a logged warning. Prevents `extra_body` from being a back-door for rewriting the conversation, model, or safe-tool whitelist.
+- **`BraveSearch` migrated from raw `:httpc` (no TLS verify by default) to `Req` with explicit `verify: :verify_peer`.** Previous code path leaked the API key to any MITM on the wire.
+- **`Custom` provider validates `base_url` through `UrlGuard`** at startup — SSRF prevention for the user-supplied endpoint URL.
+- **Skill loader caps file count (1000) and individual file size (5MB), and skips symlinks** — prevents loading `/etc/passwd` via a symlink in a skills directory.
+
+### Fixed (correctness)
+
+- **Streaming normalizers (OpenAI / LlamaCpp) no longer drop `tool_calls` or `finish_reason`** when both arrive in the same chunk. Previously the `cond` returned a single event and silently dropped the others; tool-calling agents misclassified termination and the OpenAI complete-response path lost tool calls entirely.
+- **Anthropic streaming `input_json_delta` fragments** are now tagged with content-block `_index` and `_phase` (`:start | :partial | :stop`) so a stateful consumer can reassemble the full tool call. The non-streaming `convert_complete_response/1` path was already correct.
+- **Transcript compaction preserves `tool_call`/`tool_result` pairs** across the compaction boundary. Previously the naive `Enum.split` could orphan a `:tool` message from its assistant prelude — Anthropic and OpenAI 400 in that shape.
+- **AgentServer task generation refs (C-5/H-16/L-7)** prevent silent message loss in three races: stale `:agent_response_ready` overwriting a cancelled context, `clear_history` un-clearing itself, and the wildcard `:DOWN` handler clearing the wrong task.
+- **Workflow scratch ETS leak** — `maybe_cleanup_scratch/1` now runs on every non-suspended terminal path (was only the `:ok` arm). Failed workflows under retry no longer accumulate orphan ETS tables.
+- **Memory backends (Hybrid/Muninn/Zvec) use unnamed ETS tables** — named tables are global per BEAM, so a second concurrent agent crashed `init/1` with "table already exists".
+- **Memory backends roll back on NIF errors** — `:ok = NIF.call(...)` pattern-matches replaced with `with` chains; ETS insert/delete only happens after the index op succeeds, leaving consistent (entry-absent) state on failure.
+- **SQLite memory store wraps multi-statement ops in `BEGIN ... COMMIT`** — a crash mid-write would have left a row in `memories` without its `memories_fts` row, silently invisible to `recall` but visible to `list`.
+- **SQLite/DuckDB metadata `atomize_keys` survives unknown keys** — was raising `ArgumentError` on a single new key in user-supplied metadata, breaking `recall`/`list` for the entire process.
+- **`parallel_map` handler `{:error, _}` returns are collected as failures** — `safely_run_handler/3` previously wrapped any return value in `:ok`, so user error returns silently landed in `successful_results`.
+- **`AgentRunner` no longer mutates `agent.model` mid-run** when fallback fires. Active model is tracked on `ctx.deps[:active_model]` and surfaced in stop telemetry as `:active_model_provider` / `:active_model_name` / `:fallback_used`. Sticky-fallback is preserved across iterations. New `[:nous, :agent, :fallback, :used]` event when the chain advances.
+- **`Persistence.ETS` table is owned by a dedicated `TableOwner` GenServer** under the application supervisor — was dying with whichever transient process happened to call `save/load` first. `save/2` now returns `{:error, _}` on insert failure (was unconditional `:ok`).
+- **`Decisions.supersede/5` docstring corrected** — flagged as best-effort, not atomic. The Store behaviour has no transaction primitive yet.
+- **Coordinator `Process.demonitor/2` on agent removal** — was leaking monitor refs and could fire spurious `{:agent_crashed, name, _}` for healthy agents after rapid stop+respawn.
+- **Workflow `:workflow_end` hook payload now reflects failure-time state**, not initial state, so post-mortems see the actual state at failure.
+- **AgentServer `load_context` runs in a `Task.Supervisor.start_child` task** with `GenServer.reply/2` — slow persistence backends no longer block concurrent `get_context` / `cancel_execution` calls.
+- **AgentDynamicSupervisor + Application supervisor restart limits** tuned to `max_restarts: 100, max_seconds: 10` (was the default 3-in-5) so one bad user's crash loop doesn't take down every other tenant.
+- **`Nous.Teams.RateLimiter` is now race-safe under concurrent acquires (M-9 final).** `acquire/3` now returns `{:ok, reservation_ref} | {:error, _}` and atomically reserves the estimated tokens + 1 request slot. `record_usage/3` accepts `:reservation` to reconcile actual vs estimated; missing reconciliations are auto-refunded after `:reservation_ttl_ms` (default 5 min) with a `Logger.warning/1`. `release/2` cancels a reservation when the call errored before completing. Legacy `record_usage/3` without `:reservation` still works for callers that don't go through `acquire`. Added `:open_reservations` to `get_status/1`.
+- **`Nous.Memory.Embedding.Bumblebee` uses a Registry + DynamicSupervisor (M-7 final).** Each model_name is owned by exactly one `ServingHolder` GenServer registered by name. Replaces the `:persistent_term` cache (which forced a node-wide GC pause per new model). `Nous.Application` conditionally adds the Registry + ServingSupervisor children when Bumblebee is loaded.
+
+### Fixed (UX / minor)
+
+- `clean_tool_name/1` tolerates `nil` and non-binary input (some providers emit malformed function-call responses).
+- OpenAI `reasoning_model?/1` matches the full `o[1-9]` family via regex (catches new `o4`, `o3-pro`, etc.); also strips `presence_penalty` and `frequency_penalty` for reasoning models.
+- `Tool.from_function/2` no longer fakes a hardcoded `query` parameter schema when no `@doc` is found — falls back to the empty additional-properties schema with a debug log.
+- KB `Entry.slugify/1` NFD-normalises and strips combining marks so `"Café"` → `"cafe"` instead of being entirely stripped.
+- `kb_health_check` `coherence_score` weighted by issue severity (`:high 0.2, :medium 0.1, :low 0.05`), clamped to `[0.0, 1.0]`.
+- ParallelExecutor sorts branch results by `branch_id` before merging — deterministic instead of completion-order-dependent.
+- Transcript `summarize/1` redacts `:tool` message content (replaced with a structural marker) so secrets / PII pulled from MCP don't bake into the permanent summary.
+- All compile warnings cleared (unused aliases, unused vars, dialyzer "clause never matches" on test stubs, "incompatible types" on intentional `assert_raise` constructions).
+
+### Known limitations (documented in code, not silently glossed)
+
+- **9 modules carry `@dialyzer :no_opaque`** for `MapSet` capture-syntax false positives — Elixir community standard, each suppression has a one-line justification at the top of its module. Specs were tried first and verified not to help; this isn't a code bug, it's a known dialyzer/Elixir interaction with opaque types and capture syntax (`&MapSet.member?(set, &1)` inside `Enum.*`).
+
+### Dependencies
+
+- Added `{:hackney, "~> 4.0"}` (production) for pull-based streaming, replacing `Finch.stream/5` for the streaming path. `Finch` / `Req` are still used for non-streaming requests.
+- Added `{:bypass, "~> 2.1", only: :test}` for in-test HTTP server fixtures driving the new streaming integration tests.
+
 ## [0.14.3] - 2026-04-25
 
 ### Added

@@ -80,7 +80,12 @@ if Code.ensure_loaded?(PromEx) do
     @impl true
     def event_metrics(opts) do
       otp_app = Keyword.get(opts, :otp_app)
-      metric_prefix = Keyword.get(opts, :metric_prefix, [otp_app, :nous])
+
+      metric_prefix =
+        Keyword.get_lazy(opts, :metric_prefix, fn ->
+          if otp_app, do: [otp_app, :nous], else: [:nous]
+        end)
+
       duration_unit = Keyword.get(opts, :duration_unit, :millisecond)
 
       [
@@ -178,7 +183,7 @@ if Code.ensure_loaded?(PromEx) do
         [
           distribution(
             metric_prefix ++ [:model, :request, :duration, duration_unit],
-            event_name: [:nous, :model, :request, :stop],
+            event_name: [:nous, :provider, :request, :stop],
             measurement: :duration,
             description: "Duration of model API requests",
             tags: [:provider, :model_name, :has_tool_calls],
@@ -190,7 +195,7 @@ if Code.ensure_loaded?(PromEx) do
           ),
           distribution(
             metric_prefix ++ [:model, :request, :tokens, :total],
-            event_name: [:nous, :model, :request, :stop],
+            event_name: [:nous, :provider, :request, :stop],
             measurement: :total_tokens,
             description: "Total tokens per model request",
             tags: [:provider, :model_name],
@@ -201,7 +206,7 @@ if Code.ensure_loaded?(PromEx) do
           ),
           distribution(
             metric_prefix ++ [:model, :request, :tokens, :input],
-            event_name: [:nous, :model, :request, :stop],
+            event_name: [:nous, :provider, :request, :stop],
             measurement: :input_tokens,
             description: "Input tokens per model request",
             tags: [:provider, :model_name],
@@ -212,7 +217,7 @@ if Code.ensure_loaded?(PromEx) do
           ),
           distribution(
             metric_prefix ++ [:model, :request, :tokens, :output],
-            event_name: [:nous, :model, :request, :stop],
+            event_name: [:nous, :provider, :request, :stop],
             measurement: :output_tokens,
             description: "Output tokens per model request",
             tags: [:provider, :model_name],
@@ -223,14 +228,14 @@ if Code.ensure_loaded?(PromEx) do
           ),
           counter(
             metric_prefix ++ [:model, :request, :exceptions, :total],
-            event_name: [:nous, :model, :request, :exception],
+            event_name: [:nous, :provider, :request, :exception],
             description: "Total number of model request exceptions",
             tags: [:provider, :model_name, :error_kind],
             tag_values: &model_exception_tag_values/1
           ),
           distribution(
             metric_prefix ++ [:model, :stream, :connect, :duration, duration_unit],
-            event_name: [:nous, :model, :stream, :connected],
+            event_name: [:nous, :provider, :stream, :connected],
             measurement: :duration,
             description: "Time to establish streaming connection",
             tags: [:provider, :model_name],
@@ -242,7 +247,7 @@ if Code.ensure_loaded?(PromEx) do
           ),
           counter(
             metric_prefix ++ [:model, :stream, :exceptions, :total],
-            event_name: [:nous, :model, :stream, :exception],
+            event_name: [:nous, :provider, :stream, :exception],
             description: "Total number of stream exceptions",
             tags: [:provider, :model_name, :error_kind],
             tag_values: &model_exception_tag_values/1

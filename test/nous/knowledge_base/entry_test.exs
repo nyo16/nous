@@ -93,14 +93,15 @@ defmodule Nous.KnowledgeBase.EntryTest do
     end
 
     test "raises on missing title" do
+      # apply/3 hides the literal struct from dialyzer's incompatible-types check.
       assert_raise KeyError, fn ->
-        Entry.new(%{content: "test"})
+        apply(Entry, :new, [%{content: "test"}])
       end
     end
 
     test "raises on missing content" do
       assert_raise KeyError, fn ->
-        Entry.new(%{title: "test"})
+        apply(Entry, :new, [%{title: "test"}])
       end
     end
   end

@@ -55,6 +55,32 @@ defmodule Nous.TranscriptTest do
     test "handles empty list" do
       assert Transcript.compact([], 10) == []
     end
+
+    test "never splits a tool_call/tool_result pair across the boundary" do
+      # Regression for H-1: with the naive split, a :tool message at the
+      # head of `recent` would be orphaned from its assistant tool_call
+      # in `old`, and the next provider call would 400 with "tool_use ids
+      # did not have corresponding tool_result".
+      tc = %{id: "call_1", function: %{name: "x", arguments: "{}"}}
+
+      messages = [
+        Message.system("sys"),
+        Message.user("u1"),
+        Message.user("u2"),
+        Message.user("u3"),
+        # The boundary should land at this assistant with keep_last: 4
+        Message.assistant("calling tool", tool_calls: [tc]),
+        Message.tool("call_1", "tool result"),
+        Message.user("u4"),
+        Message.assistant("done")
+      ]
+
+      compacted = Transcript.compact(messages, 4)
+
+      # The :tool message must NOT appear at the head of `recent`.
+      [_system, _summary | recent] = compacted
+      refute hd(recent).role == :tool
+    end
   end
 
   describe "estimate_tokens/1" do

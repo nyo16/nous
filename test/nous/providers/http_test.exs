@@ -319,6 +319,107 @@ defmodule Nous.Providers.HTTPTest do
   end
 
   # ============================================================================
+  # End-to-end streaming via Bypass (covers the hackney :async, :once path)
+  # ============================================================================
+
+  describe "stream/4 end-to-end (hackney pull-based)" do
+    setup do
+      bypass = Bypass.open()
+      url = "http://localhost:#{bypass.port}/v1/chat/completions"
+      {:ok, bypass: bypass, url: url}
+    end
+
+    test "consumes a multi-event SSE response", %{bypass: bypass, url: url} do
+      Bypass.expect_once(bypass, "POST", "/v1/chat/completions", fn conn ->
+        conn = Plug.Conn.put_resp_content_type(conn, "text/event-stream")
+
+        body = """
+        data: {"text":"hello"}
+
+        data: {"text":" world"}
+
+        data: [DONE]
+
+        """
+
+        Plug.Conn.send_resp(conn, 200, body)
+      end)
+
+      assert {:ok, stream} =
+               HTTP.stream(url, %{model: "x"}, [{"content-type", "application/json"}])
+
+      events = Enum.to_list(stream)
+
+      # Should emit two data events (parsed JSON maps) and the [DONE] marker.
+      assert Enum.any?(events, fn
+               %{"text" => "hello"} -> true
+               _ -> false
+             end)
+
+      assert Enum.any?(events, fn
+               %{"text" => " world"} -> true
+               _ -> false
+             end)
+
+      assert Enum.any?(events, fn
+               {:stream_done, _} -> true
+               _ -> false
+             end)
+    end
+
+    test "emits {:stream_error, %{status: ...}} on non-2xx response", %{bypass: bypass, url: url} do
+      Bypass.expect_once(bypass, "POST", "/v1/chat/completions", fn conn ->
+        Plug.Conn.send_resp(conn, 500, "internal error")
+      end)
+
+      {:ok, stream} = HTTP.stream(url, %{}, [])
+      events = Enum.to_list(stream)
+
+      assert Enum.any?(events, fn
+               {:stream_error, %{status: 500}} -> true
+               _ -> false
+             end)
+    end
+
+    test "halts cleanly when consumer breaks early via Stream.take/2", %{
+      bypass: bypass,
+      url: url
+    } do
+      # Server sends 100 events. Consumer takes only 2. cleanup/1 must
+      # release the connection without leaking; the test passes if it
+      # completes (no hang, no crash).
+      Bypass.expect_once(bypass, "POST", "/v1/chat/completions", fn conn ->
+        events =
+          1..100
+          |> Enum.map_join("\n\n", fn i -> ~s(data: {"i":#{i}}) end)
+          |> Kernel.<>("\n\n")
+
+        Plug.Conn.send_resp(conn, 200, events)
+      end)
+
+      {:ok, stream} = HTTP.stream(url, %{}, [])
+
+      taken =
+        stream
+        |> Stream.reject(&match?({:stream_done, _}, &1))
+        |> Enum.take(2)
+
+      assert length(taken) == 2
+    end
+
+    test "returns a stream that emits stream_error when host is unreachable" do
+      # Use a guaranteed-closed port so connect fails fast.
+      {:ok, stream} = HTTP.stream("http://127.0.0.1:1/", %{}, [])
+      events = Enum.to_list(stream)
+
+      assert Enum.any?(events, fn
+               {:stream_error, _} -> true
+               _ -> false
+             end)
+    end
+  end
+
+  # ============================================================================
   # Real-World SSE Examples
   # ============================================================================
 

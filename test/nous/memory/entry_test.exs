@@ -87,8 +87,10 @@ defmodule Nous.Memory.EntryTest do
     end
 
     test "raises on missing content" do
+      # apply/3 hides the literal struct from dialyzer's incompatible-types
+      # check - this test deliberately constructs an incomplete struct.
       assert_raise KeyError, fn ->
-        Entry.new(%{})
+        apply(Entry, :new, [%{}])
       end
     end
   end

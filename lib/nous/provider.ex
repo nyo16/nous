@@ -437,9 +437,39 @@ defmodule Nous.Provider do
       defp maybe_merge_extra_body(params, nil), do: params
       defp maybe_merge_extra_body(params, extra) when extra == %{}, do: params
 
+      # Block top-level keys that would override safety / auth / routing fields.
+      # `:extra_body` is for vendor-specific *additive* params (vLLM `top_k`,
+      # `chat_template_kwargs`, etc.) - it must NOT be a back-door for
+      # rewriting the conversation, the model, or the tool list.
+      @blocked_extra_body_keys ~w(messages model stream system tools tool_choice)
+
       defp maybe_merge_extra_body(params, extra) when is_map(extra) do
         stringified = Map.new(extra, fn {k, v} -> {to_string(k), v} end)
-        Map.merge(params, stringified)
+
+        {dropped, allowed} =
+          Map.split(
+            stringified,
+            Enum.filter(@blocked_extra_body_keys, &Map.has_key?(stringified, &1))
+          )
+
+        if map_size(dropped) > 0 do
+          require Logger
+
+          Logger.warning(
+            ":extra_body contains blocked keys (#{inspect(Map.keys(dropped))}); dropping. " <>
+              "Use the proper request fields for these instead."
+          )
+        end
+
+        Map.merge(params, allowed)
+      end
+
+      # Defense-in-depth for non-map / non-nil values - log and pass through
+      # without crashing the provider request pipeline.
+      defp maybe_merge_extra_body(params, other) do
+        require Logger
+        Logger.warning(":extra_body must be a map, got: #{inspect(other)}; ignoring")
+        params
       end
 
       # Default stream normalizer - providers can override

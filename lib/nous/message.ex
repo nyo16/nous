@@ -208,7 +208,11 @@ defmodule Nous.Message do
   """
   @spec tool(String.t(), String.t() | map(), keyword()) :: t()
   def tool(tool_call_id, result, opts \\ []) do
-    content = if is_binary(result), do: result, else: JSON.encode!(result)
+    content =
+      cond do
+        is_binary(result) -> result
+        true -> encode_tool_result(result)
+      end
 
     attrs =
       %{role: :tool, content: content, tool_call_id: tool_call_id}
@@ -216,6 +220,61 @@ defmodule Nous.Message do
 
     new!(attrs)
   end
+
+  # Encode an arbitrary tool return value as a JSON string for the LLM.
+  # Walks the tree and converts BEAM-only values (DateTime, MapSet, PID,
+  # function refs, custom structs without a JSON encoder) into strings so
+  # the agent doesn't crash when a tool returns DateTime.utc_now() in its
+  # result map - the OTP-27 :json module raises Protocol.UndefinedError
+  # on those, and the rescue keeps the agent loop alive.
+  defp encode_tool_result(value) do
+    JSON.encode!(sanitize_for_json(value))
+  rescue
+    e in [Protocol.UndefinedError, ArgumentError] ->
+      require Logger
+
+      Logger.warning(
+        "Tool result not JSON-encodable (#{Exception.message(e)}); falling back to inspect/2"
+      )
+
+      JSON.encode!(inspect(value))
+  end
+
+  defp sanitize_for_json(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp sanitize_for_json(%Date{} = d), do: Date.to_iso8601(d)
+  defp sanitize_for_json(%Time{} = t), do: Time.to_iso8601(t)
+  defp sanitize_for_json(%NaiveDateTime{} = ndt), do: NaiveDateTime.to_iso8601(ndt)
+
+  defp sanitize_for_json(%MapSet{} = ms),
+    do: ms |> MapSet.to_list() |> Enum.map(&sanitize_for_json/1)
+
+  defp sanitize_for_json(%_{} = struct) do
+    # Generic struct - convert to map (preserving __struct__ as a tag) and
+    # recurse. Skips Ecto.Schema's __meta__ if present.
+    struct
+    |> Map.from_struct()
+    |> Map.delete(:__meta__)
+    |> sanitize_for_json()
+  end
+
+  defp sanitize_for_json(map) when is_map(map) do
+    Map.new(map, fn {k, v} -> {sanitize_key(k), sanitize_for_json(v)} end)
+  end
+
+  defp sanitize_for_json(list) when is_list(list), do: Enum.map(list, &sanitize_for_json/1)
+
+  defp sanitize_for_json(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> sanitize_for_json()
+
+  defp sanitize_for_json(pid) when is_pid(pid), do: inspect(pid)
+  defp sanitize_for_json(ref) when is_reference(ref), do: inspect(ref)
+  defp sanitize_for_json(fun) when is_function(fun), do: inspect(fun)
+  defp sanitize_for_json(port) when is_port(port), do: inspect(port)
+  defp sanitize_for_json(value), do: value
+
+  defp sanitize_key(k) when is_atom(k), do: k
+  defp sanitize_key(k) when is_binary(k), do: k
+  defp sanitize_key(k), do: inspect(k)
 
   # Utility functions
 

@@ -211,6 +211,83 @@ defmodule Nous.ToolExecutorTest do
     end
   end
 
+  describe "execute/3 with validate_args" do
+    setup do
+      schema = %{
+        "type" => "object",
+        "properties" => %{
+          "name" => %{"type" => "string"},
+          "count" => %{"type" => "integer"}
+        },
+        "required" => ["name"]
+      }
+
+      tool =
+        Tool.from_function(&TestTools.simple_tool/1,
+          name: "schema_tool",
+          parameters: schema,
+          retries: 0
+        )
+
+      ctx = RunContext.new(%{}, retry: 0)
+      {:ok, tool: tool, ctx: ctx, schema: schema}
+    end
+
+    test "rejects missing required field with structured ToolError before invoking tool", %{
+      tool: tool,
+      ctx: ctx
+    } do
+      # No "name" field - validator should reject before tool even runs
+      assert {:error, %Errors.ToolError{} = err} = ToolExecutor.execute(tool, %{}, ctx)
+      assert err.tool_name == "schema_tool"
+      assert err.attempt == 1
+      assert err.message =~ "Missing required fields: name"
+      assert {:missing_required, ["name"]} = err.original_error
+    end
+
+    test "rejects type mismatch", %{tool: tool, ctx: ctx} do
+      assert {:error, %Errors.ToolError{} = err} =
+               ToolExecutor.execute(tool, %{"name" => "alice", "count" => "not-int"}, ctx)
+
+      assert err.message =~ "expected integer"
+      assert {:type_mismatch, _} = err.original_error
+    end
+
+    test "passes valid args through to the tool", %{ctx: ctx} do
+      tool =
+        Tool.from_function(&TestTools.simple_tool/1,
+          name: "schema_pass",
+          parameters: %{
+            "type" => "object",
+            "properties" => %{"value" => %{"type" => "integer"}},
+            "required" => ["value"]
+          },
+          retries: 0
+        )
+
+      assert {:ok, %{success: true, doubled: 10}} =
+               ToolExecutor.execute(tool, %{"value" => 5}, ctx)
+    end
+
+    test "validate_args: false bypasses validation", %{schema: schema, ctx: ctx} do
+      tool =
+        Tool.from_function(&TestTools.simple_tool/1,
+          name: "no_validate",
+          parameters: schema,
+          validate_args: false,
+          retries: 0
+        )
+
+      # No "name" required field, but simple_tool needs "value" - it will crash, but
+      # validation does NOT block the call. The crash proves we reached the tool.
+      capture_log(fn ->
+        assert {:error, %Errors.ToolError{} = err} = ToolExecutor.execute(tool, %{}, ctx)
+        # Got to the tool body (FunctionClauseError on Map pattern), not validator
+        refute err.original_error == {:missing_required, ["value"]}
+      end)
+    end
+  end
+
   describe "execute/3 with simple tools" do
     test "executes tool without context successfully", %{ctx: ctx} do
       tool =

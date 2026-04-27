@@ -1,4 +1,9 @@
 defmodule Nous.Tool.Registry do
+  # Tag/category filtering uses MapSet.disjoint?/2 with sets built via
+  # capture syntax inside Enum.filter/2; same dialyzer false-positive as
+  # Nous.Workflow.Engine.
+  @dialyzer :no_opaque
+
   @moduledoc """
   Stateless helpers for building and querying tool collections.
 

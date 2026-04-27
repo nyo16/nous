@@ -1,4 +1,9 @@
 defmodule Nous.Workflow.Compiler do
+  # See Nous.Workflow.Engine for the same MapSet-capture-opacity rationale.
+  # bfs_loop/3 and the reachability/parallel-branch unions exhibit the
+  # same false-positive pattern; specs don't fix it (verified).
+  @dialyzer :no_opaque
+
   @moduledoc """
   Validates and compiles workflow graphs for execution.
 
@@ -54,15 +59,20 @@ defmodule Nous.Workflow.Compiler do
           {:ok, order, lvls} -> {order, lvls, %{cycle_nodes: MapSet.new()}}
         end
 
-      # Remove parallel branch targets from topo order — they're executed
-      # by ParallelExecutor, not the main engine loop
-      parallel_branches = collect_parallel_branches(graph)
+      # Remove parallel branch targets and fallback targets from topo order
+      # — they're executed by ParallelExecutor / the fallback path, not the
+      # main engine loop. Otherwise a fallback-only node with no incoming
+      # edges would also run on its own and double-execute.
+      excluded =
+        graph
+        |> collect_parallel_branches()
+        |> MapSet.union(collect_fallback_only_targets(graph))
 
-      filtered_order = Enum.reject(topo_order, &MapSet.member?(parallel_branches, &1))
+      filtered_order = Enum.reject(topo_order, &MapSet.member?(excluded, &1))
 
       filtered_levels =
         levels
-        |> Enum.map(fn level -> Enum.reject(level, &MapSet.member?(parallel_branches, &1)) end)
+        |> Enum.map(fn level -> Enum.reject(level, &MapSet.member?(excluded, &1)) end)
         |> Enum.reject(&(&1 == []))
 
       {:ok,
@@ -148,7 +158,16 @@ defmodule Nous.Workflow.Compiler do
   defp check_reachability(errors, %Graph{entry_node: nil}), do: errors
 
   defp check_reachability(errors, %Graph{} = graph) do
-    reachable = bfs_reachable(graph, graph.entry_node)
+    # Reachable = entry-node BFS over edges, plus any nodes referenced from
+    # error_strategy: {:fallback, id} (which are NOT connected by a regular
+    # edge but are still legitimately reachable when their primary fails),
+    # plus parallel branch targets.
+    reachable =
+      graph
+      |> bfs_reachable(graph.entry_node)
+      |> MapSet.union(collect_fallback_targets(graph))
+      |> MapSet.union(collect_parallel_branches(graph))
+
     all_ids = MapSet.new(Map.keys(graph.nodes))
     unreachable = MapSet.difference(all_ids, reachable)
 
@@ -163,6 +182,31 @@ defmodule Nous.Workflow.Compiler do
         | errors
       ]
     end
+  end
+
+  # Nodes referenced as fallbacks via error_strategy: {:fallback, id}.
+  @spec collect_fallback_targets(Graph.t()) :: MapSet.t(Graph.node_id())
+  defp collect_fallback_targets(%Graph{} = graph) do
+    Enum.reduce(graph.nodes, MapSet.new(), fn
+      {_id, %{error_strategy: {:fallback, fallback_id}}}, acc ->
+        MapSet.put(acc, to_string(fallback_id))
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  # Fallback targets that have NO regular incoming edges, i.e. nodes that
+  # exist solely to be invoked via the fallback path. These are excluded
+  # from the topo order so they don't double-execute. (A node that is both
+  # a downstream consumer AND a fallback target stays in topo order.)
+  @spec collect_fallback_only_targets(Graph.t()) :: MapSet.t(Graph.node_id())
+  defp collect_fallback_only_targets(%Graph{} = graph) do
+    fallback_ids = collect_fallback_targets(graph)
+
+    fallback_ids
+    |> Enum.filter(fn id -> Map.get(graph.in_edges, id, []) == [] end)
+    |> MapSet.new()
   end
 
   # ---------------------------------------------------------------------------
@@ -364,10 +408,13 @@ defmodule Nous.Workflow.Compiler do
   # Graph traversal helpers
   # ---------------------------------------------------------------------------
 
+  @spec bfs_reachable(Graph.t(), Graph.node_id()) :: MapSet.t(Graph.node_id())
   defp bfs_reachable(%Graph{} = graph, start_id) do
     bfs_loop(graph, [start_id], MapSet.new([start_id]))
   end
 
+  @spec bfs_loop(Graph.t(), [Graph.node_id()], MapSet.t(Graph.node_id())) ::
+          MapSet.t(Graph.node_id())
   defp bfs_loop(_graph, [], visited), do: visited
 
   defp bfs_loop(graph, queue, visited) do
@@ -401,10 +448,11 @@ defmodule Nous.Workflow.Compiler do
     |> List.flatten()
   end
 
+  @spec collect_parallel_branches(Graph.t()) :: MapSet.t(Graph.node_id())
   defp collect_parallel_branches(%Graph{} = graph) do
     Enum.reduce(graph.nodes, MapSet.new(), fn
       {_id, %{type: :parallel, config: %{branches: branches}}}, acc ->
-        branches |> Enum.map(&to_string/1) |> MapSet.new() |> MapSet.union(acc)
+        MapSet.union(acc, MapSet.new(branches, &to_string/1))
 
       _, acc ->
         acc

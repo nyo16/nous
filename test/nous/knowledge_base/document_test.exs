@@ -96,14 +96,16 @@ defmodule Nous.KnowledgeBase.DocumentTest do
     end
 
     test "raises on missing title" do
+      # apply/3 hides the literal struct from dialyzer's incompatible-types
+      # check - this test deliberately constructs an incomplete struct.
       assert_raise KeyError, fn ->
-        Document.new(%{content: "test"})
+        apply(Document, :new, [%{content: "test"}])
       end
     end
 
     test "raises on missing content" do
       assert_raise KeyError, fn ->
-        Document.new(%{title: "test"})
+        apply(Document, :new, [%{title: "test"}])
       end
     end
   end

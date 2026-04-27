@@ -291,26 +291,20 @@ defmodule Nous.Tool do
     end)
   end
 
+  # L-8: previously returned a hardcoded `query` schema even when the
+  # function had no `query` parameter, which advertised a misleading
+  # contract to the LLM. Until real markdown parsing is implemented, fall
+  # back to the empty additionalProperties: true schema and log a warning
+  # so the developer knows to pass `:parameters` explicitly.
   defp parse_param_schema(doc_string) when is_binary(doc_string) do
-    # Simple parsing - look for parameter patterns
-    # This is a simplified version; a full implementation would parse markdown
-    # and extract parameter types and descriptions
+    require Logger
 
-    # For now, return a generic schema
-    # In a full implementation, parse lines like:
-    # - `query` (string) - The search query
-    # - `limit` (integer) - Maximum results
+    Logger.debug(
+      "Tool.from_function/2: no automatic schema inference yet; pass :parameters explicitly " <>
+        "for accurate validation. Defaulting to additionalProperties: true."
+    )
 
-    %{
-      "type" => "object",
-      "properties" => %{
-        "query" => %{
-          "type" => "string",
-          "description" => "Input parameter"
-        }
-      },
-      "required" => []
-    }
+    default_schema()
   end
 
   defp default_schema do

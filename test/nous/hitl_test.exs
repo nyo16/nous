@@ -216,7 +216,11 @@ defmodule Nous.HITLTest do
       assert result.output =~ "Tool result: approved"
     end
 
-    test "fail-open: proceeds when no handler configured but tool requires approval" do
+    test "default-DENY: rejects when no handler configured but tool requires approval" do
+      # Security regression test for C-3: previously this proceeded (fail-open),
+      # which made requires_approval: true a silent no-op for any agent that
+      # didn't explicitly wire an approval_handler - one prompt-injected doc
+      # away from RCE for tools like Bash/FileWrite.
       tool =
         Tool.from_function(&dummy_tool/2,
           name: "send_email",
@@ -224,7 +228,7 @@ defmodule Nous.HITLTest do
           requires_approval: true
         )
 
-      # No plugins, no approval_handler set on context
+      # No plugins, no approval_handler set on context.
       agent =
         Agent.new("openai:test-model",
           instructions: "Use tools",
@@ -233,8 +237,9 @@ defmodule Nous.HITLTest do
 
       {:ok, result} = Agent.run(agent, "tool_call_test")
 
-      # Without a handler, should proceed (fail-open)
-      assert result.output =~ "Tool result: approved"
+      # Tool was rejected; the LLM sees the rejection and emits a generic
+      # response. The dummy "approved" string MUST NOT appear in output.
+      refute result.output =~ "Tool result: approved"
     end
   end
 

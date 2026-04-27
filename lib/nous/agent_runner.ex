@@ -153,6 +153,9 @@ defmodule Nous.AgentRunner do
               Requests: #{final_ctx.usage.requests}
             """)
 
+            active_model =
+              get_in(final_ctx.deps, [:active_model]) || agent.model
+
             :telemetry.execute(
               [:nous, :agent, :run, :stop],
               %{
@@ -167,7 +170,12 @@ defmodule Nous.AgentRunner do
               %{
                 agent_name: agent.name,
                 model_provider: agent.model.provider,
-                model_name: agent.model.model
+                model_name: agent.model.model,
+                # When fallback fired, surface BOTH so observability can
+                # split metrics by original (intended) and active (used).
+                active_model_provider: active_model.provider,
+                active_model_name: active_model.model,
+                fallback_used: active_model != agent.model
               }
             )
 
@@ -512,16 +520,47 @@ defmodule Nous.AgentRunner do
           )
           |> Map.new()
 
-        # Make model request (with fallback chain if configured)
+        # Make model request (with fallback chain if configured).
+        #
+        # Sticky-fallback: if a previous iteration already promoted to a
+        # fallback model (recorded in ctx.deps[:active_model]), call into
+        # request_with_fallback with that model first to avoid retrying
+        # a known-bad primary on every iteration.
+        request_agent =
+          case get_in(ctx.deps, [:active_model]) do
+            nil -> agent
+            am -> %{agent | model: am}
+          end
+
         Logger.debug(
           "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
         )
 
-        case request_with_fallback(agent, messages, model_settings, all_tools) do
+        case request_with_fallback(request_agent, messages, model_settings, all_tools) do
           {:ok, response, active_model} ->
-            # Swap model on agent if fallback was used (for remaining iterations)
-            agent =
-              if active_model != agent.model, do: %{agent | model: active_model}, else: agent
+            # Track active_model in ctx for downstream telemetry / observability,
+            # but do NOT mutate agent.model. Mutating made the start-of-run
+            # telemetry tag with one provider and the stop with another, with
+            # no fallback_used indicator - operational metrics drifted apart
+            # for any agent that ever fell back.
+            ctx =
+              if active_model != agent.model do
+                :telemetry.execute(
+                  [:nous, :agent, :fallback, :used],
+                  %{system_time: System.system_time()},
+                  %{
+                    agent_name: agent.name,
+                    original_provider: agent.model.provider,
+                    original_model: agent.model.model,
+                    active_provider: active_model.provider,
+                    active_model: active_model.model
+                  }
+                )
+
+                %{ctx | deps: Map.put(ctx.deps, :active_model, active_model)}
+              else
+                ctx
+              end
 
             # Update usage
             usage_update = response.metadata.usage || %{}
@@ -909,25 +948,42 @@ defmodule Nous.AgentRunner do
     end)
   end
 
-  # Check if a tool call requires approval and invoke the handler
+  # Check if a tool call requires approval and invoke the handler.
+  #
+  # Default-deny: a tool with `requires_approval: true` but no
+  # `ctx.approval_handler` is REJECTED, not approved. The previous behaviour
+  # auto-approved in this case, which made the requires_approval flag a
+  # silent no-op for the default Agent setup - one prompt-injected document
+  # away from RCE on tools like Bash/FileWrite.
   defp check_tool_approval(nil, _call, _ctx), do: :approve
 
-  defp check_tool_approval(%Tool{requires_approval: true}, call, %Context{
+  defp check_tool_approval(%Tool{requires_approval: true} = tool, call, %Context{
          approval_handler: handler
        })
        when is_function(handler) do
     tool_call_info = %{
       name: get_tool_field(call, :name),
       id: get_tool_field(call, :id),
-      arguments: get_tool_field(call, :arguments)
+      arguments: get_tool_field(call, :arguments),
+      tool: tool
     }
 
     case handler.(tool_call_info) do
       :approve -> :approve
       :reject -> :reject
       {:edit, new_args} when is_map(new_args) -> {:edit, new_args}
-      _ -> :approve
+      _ -> :reject
     end
+  end
+
+  defp check_tool_approval(%Tool{requires_approval: true} = tool, call, _ctx) do
+    Logger.warning(
+      "Tool '#{tool.name}' has requires_approval: true but no :approval_handler is configured " <>
+        "in ctx. Rejecting call (id=#{inspect(get_tool_field(call, :id))}). " <>
+        "Wire an approval_handler to allow these tools."
+    )
+
+    :reject
   end
 
   defp check_tool_approval(_tool, _call, _ctx), do: :approve
@@ -947,7 +1003,13 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  # Clean tool names - Claude sometimes uses XML-like syntax
+  # Clean tool names - Claude sometimes uses XML-like syntax.
+  # L-9: tolerate nil/non-binary input - some providers emit malformed
+  # function-call responses with no name; without these clauses
+  # clean_tool_name/1 would crash the entire agent run with FunctionClauseError.
+  defp clean_tool_name(nil), do: ""
+  defp clean_tool_name(name) when not is_binary(name), do: ""
+
   defp clean_tool_name(name) when is_binary(name) do
     name
     |> String.split("\"")
@@ -1024,6 +1086,16 @@ defmodule Nous.AgentRunner do
           Enum.each(calls, fn call ->
             Callbacks.execute(ctx, :on_tool_call, call)
           end)
+
+        # M-5: Anthropic streaming emits tool_use fragments tagged with
+        # `_phase :start | :partial | :stop` and an `_index`. We don't
+        # reassemble them here per-event because the on_tool_call callback
+        # sees fragments by design (it's a streaming hook); the
+        # post-stream complete-response path is what builds the final
+        # tool_calls list, and Anthropic's convert_complete_response
+        # handles that correctly.
+        {:tool_call_delta, %{"_phase" => _} = _partial} ->
+          :ok
 
         {:tool_call_delta, call} ->
           Callbacks.execute(ctx, :on_tool_call, call)

@@ -90,8 +90,14 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
         Logger.warning("Parallel branch #{branch_id} failed: #{inspect(reason)}")
       end)
 
-      # Merge successful results
-      merged_results = Enum.map(successes, fn {:ok, branch_id, result} -> {branch_id, result} end)
+      # L-11: sort by branch_id BEFORE merging so two branches that write
+      # the same key produce a deterministic result (was: order depended
+      # on async_stream_nolink completion order, leading to flaky
+      # last-writer-wins).
+      merged_results =
+        successes
+        |> Enum.sort_by(fn {:ok, branch_id, _} -> branch_id end)
+        |> Enum.map(fn {:ok, branch_id, result} -> {branch_id, result} end)
 
       merged_state =
         StateMerger.merge(merged_results, state, merge_strategy, result_key: result_key)
@@ -196,9 +202,23 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
     end
   end
 
+  # Distinguish three handler outcomes:
+  # 1. raised exception      -> {:error, {exception, stacktrace}}   (collected as failure)
+  # 2. returned {:error, _}  -> {:error, reason}                    (collected as failure)
+  # 3. returned {:ok, val}   -> {:ok, val}                          (collected as success)
+  # 4. returned anything else -> {:ok, value}                       (treated as success)
+  #
+  # Previously the handler return value was unconditionally wrapped in :ok,
+  # so {:error, _} returns silently landed in successful_results as the
+  # literal tuple - :fail_fast never tripped on them and downstream nodes
+  # consumed the error tuple as if it were valid output.
   defp safely_run_handler(handler_fn, item, state) do
     try do
-      {:ok, handler_fn.(item, state)}
+      case handler_fn.(item, state) do
+        {:ok, value} -> {:ok, value}
+        {:error, _} = err -> err
+        other -> {:ok, other}
+      end
     rescue
       e -> {:error, {e, __STACKTRACE__}}
     end

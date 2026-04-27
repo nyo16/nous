@@ -90,12 +90,18 @@ if Code.ensure_loaded?(Exqlite) do
         datetime_to_iso(entry.last_accessed_at)
       ]
 
-      with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-           :ok <- bind_and_step(conn, stmt, params),
-           {:ok, fts_stmt} <- Exqlite.Sqlite3.prepare(conn, fts_sql),
-           :ok <- bind_and_step(conn, fts_stmt, [entry.id, entry.content]) do
-        {:ok, conn}
-      end
+      # Wrap the two writes in a transaction so a crash mid-write (or an
+      # FTS insert failure) doesn't leave a row in `memories` without its
+      # corresponding row in `memories_fts` - which would silently appear
+      # in `list/2` but not in `recall/2`.
+      transaction(conn, fn ->
+        with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
+             :ok <- bind_and_step(conn, stmt, params),
+             {:ok, fts_stmt} <- Exqlite.Sqlite3.prepare(conn, fts_sql),
+             :ok <- bind_and_step(conn, fts_stmt, [entry.id, entry.content]) do
+          {:ok, conn}
+        end
+      end)
     end
 
     @impl true
@@ -122,12 +128,14 @@ if Code.ensure_loaded?(Exqlite) do
       mem_sql = "DELETE FROM memories WHERE id = ?1"
       fts_sql = "DELETE FROM memories_fts WHERE id = ?1"
 
-      with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, mem_sql),
-           :ok <- bind_and_step(conn, stmt, [id]),
-           {:ok, fts_stmt} <- Exqlite.Sqlite3.prepare(conn, fts_sql),
-           :ok <- bind_and_step(conn, fts_stmt, [id]) do
-        {:ok, conn}
-      end
+      transaction(conn, fn ->
+        with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, mem_sql),
+             :ok <- bind_and_step(conn, stmt, [id]),
+             {:ok, fts_stmt} <- Exqlite.Sqlite3.prepare(conn, fts_sql),
+             :ok <- bind_and_step(conn, fts_stmt, [id]) do
+          {:ok, conn}
+        end
+      end)
     end
 
     @impl true
@@ -154,17 +162,41 @@ if Code.ensure_loaded?(Exqlite) do
           sql = "UPDATE memories SET #{set_clauses} WHERE id = ?#{map_size(updates) + 1}"
           params = params ++ [id]
 
-          with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-               :ok <- bind_and_step(conn, stmt, params) do
-            if Map.has_key?(updates, :content) do
-              update_fts(conn, id, updated.content)
-            end
+          transaction(conn, fn ->
+            with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
+                 :ok <- bind_and_step(conn, stmt, params) do
+              if Map.has_key?(updates, :content) do
+                update_fts(conn, id, updated.content)
+              end
 
-            {:ok, conn}
-          end
+              {:ok, conn}
+            end
+          end)
 
         error ->
           error
+      end
+    end
+
+    # Run `fun` inside a SQLite transaction. Commits on {:ok, _}, rolls
+    # back on anything else. Mid-statement crashes leave no partial writes.
+    defp transaction(conn, fun) when is_function(fun, 0) do
+      :ok = Exqlite.Sqlite3.execute(conn, "BEGIN")
+
+      try do
+        case fun.() do
+          {:ok, _} = ok ->
+            :ok = Exqlite.Sqlite3.execute(conn, "COMMIT")
+            ok
+
+          other ->
+            :ok = Exqlite.Sqlite3.execute(conn, "ROLLBACK")
+            other
+        end
+      rescue
+        e ->
+          _ = Exqlite.Sqlite3.execute(conn, "ROLLBACK")
+          reraise e, __STACKTRACE__
       end
     end
 
@@ -387,8 +419,22 @@ if Code.ensure_loaded?(Exqlite) do
 
     defp decode_json_atoms(str) when is_binary(str), do: str |> JSON.decode!() |> atomize_keys()
 
-    defp atomize_keys(map) when is_map(map),
-      do: Map.new(map, fn {k, v} -> {String.to_existing_atom(k), v} end)
+    # Metadata is user-supplied (the `remember` tool's :metadata arg has a
+    # wide-open object schema). Keys read from the DB that don't already
+    # exist as atoms must NOT crash recall - leave them as binaries so a
+    # single bad row can't break list/search.
+    defp atomize_keys(map) when is_map(map) do
+      Map.new(map, fn {k, v} ->
+        atom_or_binary =
+          try do
+            String.to_existing_atom(k)
+          rescue
+            ArgumentError -> k
+          end
+
+        {atom_or_binary, v}
+      end)
+    end
 
     defp bool_to_int(true), do: 1
     defp bool_to_int(false), do: 0

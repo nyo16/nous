@@ -1,4 +1,9 @@
 defmodule Nous.KnowledgeBase.Tools do
+  # identify_issues/4 builds two MapSets from optional Store callbacks
+  # whose return type dialyzer can't fully narrow; same opaque-capture
+  # false-positive as Workflow.Engine.
+  @dialyzer :no_opaque
+
   @moduledoc """
   Agent tools for knowledge base operations.
 
@@ -579,15 +584,12 @@ defmodule Nous.KnowledgeBase.Tools do
       {:ok, entries} = store_mod.list_entries(store_state, opts)
       {:ok, docs} = store_mod.list_documents(store_state, opts)
 
-      # Count links
-      link_count =
-        entries
-        |> Enum.reduce(0, fn entry, acc ->
-          case store_mod.outlinks(store_state, entry.id) do
-            {:ok, links} -> acc + length(links)
-            _ -> acc
-          end
-        end)
+      # Count links via the optional bulk callback when available - O(L)
+      # versus per-entry outlinks/2 which scans the link table per entry
+      # (O(E*L) on the only included ETS impl). On a 1k-entry KB with 5k
+      # links this is the difference between ~5M comparisons and ~5k.
+      counts_by_source = link_counts_by_source(store_mod, store_state)
+      link_count = counts_by_source |> Map.values() |> Enum.sum()
 
       # Identify issues
       issues = identify_issues(store_mod, store_state, entries, docs)
@@ -627,10 +629,27 @@ defmodule Nous.KnowledgeBase.Tools do
           issues: issues,
           coverage_score: coverage_score,
           freshness_score: freshness_score,
+          # L-4: weight by severity so a single high-severity issue isn't
+          # treated like a single low-severity nit. Clamps before rounding
+          # so very-bad KBs saturate at 0.0 cleanly.
           coherence_score:
             if(issues == [],
               do: 1.0,
-              else: Float.round(1.0 - length(issues) * 0.1, 3) |> max(0.0)
+              else:
+                issues
+                |> Enum.reduce(1.0, fn issue, acc ->
+                  weight =
+                    case issue.severity do
+                      :high -> 0.2
+                      :medium -> 0.1
+                      :low -> 0.05
+                      _ -> 0.05
+                    end
+
+                  acc - weight
+                end)
+                |> max(0.0)
+                |> Float.round(3)
             )
         })
 
@@ -750,19 +769,20 @@ defmodule Nous.KnowledgeBase.Tools do
   defp identify_issues(store_mod, store_state, entries, docs) do
     issues = []
 
+    # M-1: hoist link reads out of the per-entry filter. Build two
+    # MapSets of "entries with any links" once (O(L) total) and use them
+    # for the orphan check (O(E) lookups), instead of calling backlinks/2
+    # AND outlinks/2 inside Enum.filter for every entry (O(E*L)).
+    out_sources = link_counts_by_source(store_mod, store_state) |> Map.keys() |> MapSet.new()
+    in_targets = link_targets_by_destination(store_mod, store_state, entries)
+
     # Orphaned entries (no source documents and no links)
     orphan_issues =
       entries
       |> Enum.filter(fn entry ->
-        entry.source_doc_ids == [] &&
-          case store_mod.backlinks(store_state, entry.id) do
-            {:ok, []} -> true
-            _ -> false
-          end &&
-          case store_mod.outlinks(store_state, entry.id) do
-            {:ok, []} -> true
-            _ -> false
-          end
+        entry.source_doc_ids == [] and
+          not MapSet.member?(in_targets, entry.id) and
+          not MapSet.member?(out_sources, entry.id)
       end)
       |> Enum.map(fn entry ->
         %{
@@ -803,6 +823,35 @@ defmodule Nous.KnowledgeBase.Tools do
       end)
 
     issues ++ orphan_issues ++ low_confidence_issues ++ failed_doc_issues
+  end
+
+  # Use the optional bulk Store callback if implemented; fall back to
+  # per-entry outlinks/2 (the legacy O(E*L) path) so older custom backends
+  # keep working without code changes.
+  defp link_counts_by_source(store_mod, store_state) do
+    if function_exported?(store_mod, :link_counts_by_source, 1) do
+      case store_mod.link_counts_by_source(store_state) do
+        {:ok, counts} -> counts
+        _ -> %{}
+      end
+    else
+      %{}
+    end
+  end
+
+  # Build a MapSet of entry IDs that appear as the destination of any link.
+  # Single scan via the bulk callback (when available); otherwise empty
+  # (the orphan check is conservative: an entry with no source docs AND
+  # no recorded incoming/outgoing links is flagged).
+  defp link_targets_by_destination(store_mod, store_state, _entries) do
+    if function_exported?(store_mod, :link_counts_by_destination, 1) do
+      case store_mod.link_counts_by_destination(store_state) do
+        {:ok, counts} -> counts |> Map.keys() |> MapSet.new()
+        _ -> MapSet.new()
+      end
+    else
+      MapSet.new()
+    end
   end
 
   defp format_as_summary(topic, entries) do

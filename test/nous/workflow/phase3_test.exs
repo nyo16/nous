@@ -2,7 +2,7 @@ defmodule Nous.Workflow.Phase3Test do
   use ExUnit.Case, async: true
 
   alias Nous.Workflow
-  alias Nous.Workflow.{Graph, Compiler, Engine, State}
+  alias Nous.Workflow.{Graph, State}
   alias Nous.Workflow.Engine.StateMerger
 
   defp tf(fun), do: %{transform_fn: fun}
@@ -292,6 +292,24 @@ defmodule Nous.Workflow.Phase3Test do
 
       assert {:ok, _state} = Workflow.run(graph)
       assert :atomics.get(max_seen, 1) <= 3
+    end
+
+    test "handler returning {:error, _} is collected as failure (not silent success)" do
+      # Previously safely_run_handler unconditionally wrapped the return in
+      # :ok, so a handler that returned {:error, reason} silently landed in
+      # successful_results as the literal tuple - :fail_fast never tripped.
+      graph =
+        Graph.new("err_returns")
+        |> Graph.add_node(:process, :parallel_map, %{
+          items: fn _state -> [:a, :b, :c] end,
+          handler: fn item, _state ->
+            if item == :b, do: {:error, :nope}, else: {:ok, item}
+          end,
+          on_error: :fail_fast,
+          result_key: :results
+        })
+
+      assert {:error, {_node, {:parallel_map_failed, _}}} = Workflow.run(graph)
     end
   end
 

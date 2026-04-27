@@ -157,33 +157,8 @@ defmodule Nous.Tools.BraveSearch do
 
     params = build_search_params(query, count, country, search_lang, safesearch)
 
-    headers = [
-      {~c"X-Subscription-Token", String.to_charlist(api_key)},
-      {~c"Accept", ~c"application/json"}
-    ]
-
     Logger.debug("Brave search: #{query} (#{count} results)")
-
-    full_url = url <> "?" <> URI.encode_query(params)
-
-    case :httpc.request(:get, {String.to_charlist(full_url), headers}, [], []) do
-      {:ok, {{_, 200, _}, _headers, body}} ->
-        case JSON.decode(to_string(body)) do
-          {:ok, response} ->
-            results = parse_web_results(response)
-            {:ok, results}
-
-          {:error, decode_error} ->
-            Logger.error("Failed to decode Brave web search response: #{inspect(decode_error)}")
-            {:error, "Invalid JSON response from Brave API"}
-        end
-
-      {:ok, {{_, status, _}, _headers, body}} ->
-        {:error, "HTTP #{status}: #{to_string(body)}"}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    do_brave_request(url, params, api_key, &parse_web_results/1, "web")
   end
 
   defp perform_news_search(query, api_key, count, country, search_lang) do
@@ -197,29 +172,42 @@ defmodule Nous.Tools.BraveSearch do
       |> maybe_add_param("country", country)
       |> maybe_add_param("search_lang", search_lang)
 
-    headers = [
-      {~c"X-Subscription-Token", String.to_charlist(api_key)},
-      {~c"Accept", ~c"application/json"}
-    ]
-
     Logger.debug("Brave news search: #{query} (#{count} results)")
+    do_brave_request(url, params, api_key, &parse_news_results/1, "news")
+  end
 
-    full_url = url <> "?" <> URI.encode_query(params)
+  # L-5: switched from raw :httpc (which defaults to NO TLS verification
+  # and doesn't share Nous's Finch pool) to Req. The previous code path
+  # accepted MITM-altered TLS connections and would silently leak the
+  # Brave API key to any attacker on-path.
+  defp do_brave_request(url, params, api_key, parse_results, label) do
+    case Req.get(url,
+           params: params,
+           headers: [
+             {"x-subscription-token", api_key},
+             {"accept", "application/json"}
+           ],
+           connect_options: [transport_opts: [verify: :verify_peer]],
+           receive_timeout: 15_000
+         ) do
+      {:ok, %Req.Response{status: 200, body: body}} when is_map(body) ->
+        {:ok, parse_results.(body)}
 
-    case :httpc.request(:get, {String.to_charlist(full_url), headers}, [], []) do
-      {:ok, {{_, 200, _}, _headers, body}} ->
-        case JSON.decode(to_string(body)) do
+      {:ok, %Req.Response{status: 200, body: body}} when is_binary(body) ->
+        case JSON.decode(body) do
           {:ok, response} ->
-            results = parse_news_results(response)
-            {:ok, results}
+            {:ok, parse_results.(response)}
 
           {:error, decode_error} ->
-            Logger.error("Failed to decode Brave news search response: #{inspect(decode_error)}")
+            Logger.error(
+              "Failed to decode Brave #{label} search response: #{inspect(decode_error)}"
+            )
+
             {:error, "Invalid JSON response from Brave API"}
         end
 
-      {:ok, {{_, status, _}, _headers, body}} ->
-        {:error, "HTTP #{status}: #{to_string(body)}"}
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, "HTTP #{status}: #{inspect(body)}"}
 
       {:error, reason} ->
         {:error, reason}

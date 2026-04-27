@@ -39,22 +39,25 @@ defmodule Nous.Tools.FileRead do
   end
 
   @impl true
-  def execute(_ctx, %{"file_path" => file_path} = args) do
+  def execute(ctx, %{"file_path" => file_path} = args) do
     offset = Map.get(args, "offset", 1) |> max(1)
     limit = Map.get(args, "limit", @default_limit)
 
-    case File.read(file_path) do
-      {:ok, content} ->
-        result =
-          content
-          |> String.split("\n")
-          |> Enum.with_index(1)
-          |> Enum.drop(offset - 1)
-          |> Enum.take(limit)
-          |> Enum.map(fn {line, num} -> "#{num}\t#{line}" end)
-          |> Enum.join("\n")
+    with {:ok, safe_path} <- Nous.Tools.PathGuard.validate(file_path, ctx),
+         {:ok, content} <- File.read(safe_path) do
+      result =
+        content
+        |> String.split("\n")
+        |> Enum.with_index(1)
+        |> Enum.drop(offset - 1)
+        |> Enum.take(limit)
+        |> Enum.map(fn {line, num} -> "#{num}\t#{line}" end)
+        |> Enum.join("\n")
 
-        {:ok, result}
+      {:ok, result}
+    else
+      {:error, reason} when is_binary(reason) ->
+        {:error, reason}
 
       {:error, reason} ->
         {:error, "Failed to read #{file_path}: #{inspect(reason)}"}

@@ -17,7 +17,10 @@
           {Credo.Check.Consistency.ExceptionNames, false},
           {Credo.Check.Consistency.LineEndings, []},
           {Credo.Check.Consistency.ParameterPatternMatching, []},
-          {Credo.Check.Consistency.SpaceAroundOperators, []},
+          # Disabled: credo 1.7.15 crashes on the new Elixir 1.20-rc sigil
+          # token format (FunctionClauseError in Credo.Code.Token.position/1).
+          # Re-enable once credo ships a fix that supports the new tokens.
+          {Credo.Check.Consistency.SpaceAroundOperators, false},
           {Credo.Check.Consistency.SpaceInParentheses, []},
           {Credo.Check.Consistency.TabsOrSpaces, []},
 

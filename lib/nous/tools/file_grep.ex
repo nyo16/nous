@@ -44,24 +44,35 @@ defmodule Nous.Tools.FileGrep do
   end
 
   @impl true
-  def execute(_ctx, %{"pattern" => pattern} = args) do
+  def execute(ctx, %{"pattern" => pattern} = args) do
     path = Map.get(args, "path", ".")
     glob = Map.get(args, "glob")
     output_mode = Map.get(args, "output_mode", "files_with_matches")
 
-    if rg_available?() do
-      run_rg(pattern, path, glob, output_mode)
-    else
-      run_elixir_grep(pattern, path, glob, output_mode)
+    case Nous.Tools.PathGuard.validate(path, ctx) do
+      {:ok, safe_path} ->
+        if rg_available?() do
+          run_rg(pattern, safe_path, glob, output_mode)
+        else
+          run_elixir_grep(pattern, safe_path, glob, output_mode)
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp rg_available? do
-    case System.cmd("which", ["rg"], stderr_to_stdout: true) do
-      {_, 0} -> true
-      _ -> false
+  # Resolve rg's absolute path once at module load to avoid PATH-poisoning
+  # (a user-controlled `rg` binary earlier on PATH would shadow the real one).
+  # Returns nil if rg isn't installed.
+  defp rg_path do
+    case System.find_executable("rg") do
+      nil -> nil
+      path -> path
     end
   end
+
+  defp rg_available?, do: not is_nil(rg_path())
 
   defp run_rg(pattern, path, glob, output_mode) do
     args =
@@ -70,11 +81,22 @@ defmodule Nous.Tools.FileGrep do
         glob_flag(glob) ++
         ["--max-count", "#{@default_limit}"]
 
-    case System.cmd("rg", args, stderr_to_stdout: true) do
+    rg = rg_path()
+
+    case System.cmd(rg, args, stderr_to_stdout: true, env: scrubbed_env()) do
       {output, 0} -> {:ok, String.trim(output)}
       {_output, 1} -> {:ok, "No matches found"}
       {output, _} -> {:error, "rg failed: #{String.trim(output)}"}
     end
+  end
+
+  # Same allowlist as Nous.Tools.Bash; keeps API keys out of subprocesses.
+  @env_allowlist ~w(PATH HOME LANG LC_ALL TZ USER SHELL TERM)
+
+  defp scrubbed_env do
+    @env_allowlist
+    |> Enum.map(fn name -> {name, System.get_env(name)} end)
+    |> Enum.reject(fn {_, v} -> is_nil(v) end)
   end
 
   defp mode_flag("content"), do: ["-n"]

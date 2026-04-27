@@ -94,8 +94,16 @@ defmodule Nous.Decisions do
   Supersede a node with a new one.
 
   Marks the old node as `:superseded` and adds a `:supersedes` edge
-  from the new node to the old node. This is an atomic operation --
-  if the update fails, the edge is not added.
+  from the new node to the old node.
+
+  > #### Best-effort, not atomic {: .warning}
+  >
+  > This function performs two backend writes (`update_node` then
+  > `add_edge`). If `update_node` succeeds but `add_edge` fails (network
+  > blip, lock contention, NIF failure), the old node is left marked
+  > `:superseded` with no edge connecting the new and old. There is no
+  > automatic rollback. The Store behaviour does not currently expose a
+  > transaction primitive; once it does, this should be wrapped in one.
 
   ## Options
 

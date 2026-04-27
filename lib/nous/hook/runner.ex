@@ -185,9 +185,27 @@ defmodule Nous.Hook.Runner do
     end
   end
 
-  defp execute_hook(%Hook{type: :command, handler: command, timeout: timeout}, event, payload)
-       when is_binary(command) do
-    execute_command_hook(command, event, payload, timeout)
+  # Command hook handler MUST be a [program | args] list. The previous
+  # API accepted a raw string and ran it via `sh -c`, which means any
+  # caller-controllable handler value became RCE through shell expansion.
+  # Lists bypass the shell entirely.
+  defp execute_hook(
+         %Hook{type: :command, handler: [program | _] = argv, timeout: timeout},
+         event,
+         payload
+       )
+       when is_binary(program) do
+    execute_command_hook(argv, event, payload, timeout)
+  end
+
+  defp execute_hook(%Hook{type: :command, handler: handler}, _event, _payload) do
+    Logger.warning(
+      "Command hook handler must be a [program | args] list of binaries, got: #{inspect(handler)}. " <>
+        "Raw shell strings are no longer accepted - they're an RCE risk if the value " <>
+        "is ever set from user input or config. Convert to e.g. [\"python3\", \"scripts/check.py\"]."
+    )
+
+    {:error, :invalid_command_handler}
   end
 
   defp execute_hook(hook, _event, _payload) do
@@ -195,8 +213,9 @@ defmodule Nous.Hook.Runner do
     {:error, :invalid_hook}
   end
 
-  # Execute a shell command hook via NetRunner
-  defp execute_command_hook(command, event, payload, timeout) do
+  # Execute a command hook via NetRunner. The argv list is passed
+  # directly - no shell, no expansion.
+  defp execute_command_hook(argv, event, payload, timeout) do
     json_input =
       JSON.encode!(%{
         event: event,
@@ -204,7 +223,7 @@ defmodule Nous.Hook.Runner do
       })
 
     try do
-      case NetRunner.run(["sh", "-c", command], input: json_input, timeout: timeout) do
+      case NetRunner.run(argv, input: json_input, timeout: timeout) do
         {output, 0} ->
           parse_command_output(output)
 
@@ -212,7 +231,7 @@ defmodule Nous.Hook.Runner do
           :deny
 
         {:error, :timeout} ->
-          Logger.warning("Command hook timed out after #{timeout}ms: #{command}")
+          Logger.warning("Command hook timed out after #{timeout}ms: #{inspect(argv)}")
           {:error, :timeout}
 
         {output, exit_code} ->

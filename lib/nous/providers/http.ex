@@ -2,15 +2,30 @@ defmodule Nous.Providers.HTTP do
   @moduledoc """
   Shared HTTP utilities for all LLM providers.
 
-  Provides both non-streaming (Req) and streaming (Finch) HTTP capabilities
-  with provider-agnostic SSE (Server-Sent Events) parsing.
+  Two HTTP families, deliberately split by use case:
+
+  - **Non-streaming** requests (one-shot model calls, web fetching, search
+    APIs) go through `Req` (which uses `Finch` underneath) for connection
+    pooling, redirects, and retry ergonomics.
+  - **Streaming** requests (SSE / chunked LLM responses) go through
+    `:hackney` in `:async, :once` pull-based mode. Hackney's `:async, :once`
+    is true pull-based streaming - the consumer calls
+    `:hackney.stream_next/1` to ask for one more chunk, the producer reads
+    it off the socket and delivers it as a single message. The consumer
+    paces the producer, so a slow consumer (LiveView assigns + diff +
+    push, slow IO, etc.) can never grow its mailbox unboundedly.
+
+  This split fixes M-12 (streaming consumer backpressure) and H-12 (stream
+  lifecycle EXIT handling) from the comprehensive review by eliminating
+  the spawn-and-mailbox plumbing entirely - the `Stream.resource`
+  consumer is the only process involved.
 
   ## Usage
 
-      # Non-streaming request
+      # Non-streaming request (Req + Finch)
       {:ok, body} = HTTP.post(url, body, headers)
 
-      # Streaming request (returns lazy stream)
+      # Streaming request (hackney pull-based, returns lazy stream)
       {:ok, stream} = HTTP.stream(url, body, headers)
       Enum.each(stream, &process_event/1)
 
@@ -21,6 +36,23 @@ defmodule Nous.Providers.HTTP do
   - Each event contains field lines like `data: {...}`
   - Multiple `data:` fields are concatenated with newlines
   - `[DONE]` signals stream completion (OpenAI convention)
+
+  ## Hackney pool
+
+  Hackney's `:default` pool starts automatically when the `:hackney`
+  application boots. Defaults: 50 max connections per pool, 2s idle
+  keepalive timeout. For most LLM workloads (long-lived streams of
+  seconds-to-minutes) the defaults are appropriate. Apps that need a
+  Nous-isolated pool can pass `pool: :my_pool` per request and start
+  the pool with `:hackney_pool.start_pool/2` (or include
+  `:hackney_pool.child_spec/2` in their supervision tree).
+
+  ## TLS verification
+
+  Streaming requests pass `verify: :verify_peer` with system CAs from
+  `:public_key.cacerts_get/0` explicitly. Do not silently regress this -
+  hackney would otherwise default to `:verify_none` and accept MITM'd
+  connections.
   """
 
   require Logger
@@ -172,17 +204,25 @@ defmodule Nous.Providers.HTTP do
       iex> parse_sse_buffer("data: [DONE]\\n\\n")
       {[{:stream_done, "stop"}], ""}
   """
-  @spec parse_sse_buffer(String.t()) :: {list(), String.t()}
+  @spec parse_sse_buffer(String.t() | nil | any()) ::
+          {list(), String.t()} | {:error, :buffer_overflow}
   def parse_sse_buffer(buffer) when is_binary(buffer) do
-    # Protect against buffer overflow
-    buffer =
-      if byte_size(buffer) > @max_buffer_size do
-        Logger.warning("SSE buffer exceeded max size (#{@max_buffer_size} bytes), truncating")
-        binary_part(buffer, byte_size(buffer) - @max_buffer_size, @max_buffer_size)
-      else
-        buffer
-      end
+    # Buffer overflow is now a HARD error, not a silent truncation. The
+    # previous behavior sliced from the front, which cut mid-event/mid-JSON
+    # and produced one parse_error followed by valid events - silent data
+    # loss. Halting here lets the consumer surface the failure cleanly.
+    if byte_size(buffer) > @max_buffer_size do
+      Logger.error("SSE buffer exceeded max size (#{@max_buffer_size} bytes), aborting stream")
+      {:error, :buffer_overflow}
+    else
+      do_parse_sse_buffer(buffer)
+    end
+  end
 
+  def parse_sse_buffer(nil), do: {[], ""}
+  def parse_sse_buffer(_), do: {[], ""}
+
+  defp do_parse_sse_buffer(buffer) when is_binary(buffer) do
     # Split on double newlines (SSE event separator)
     # Handle both \n\n and \r\n\r\n
     parts = String.split(buffer, ~r/\r?\n\r?\n/)
@@ -204,9 +244,6 @@ defmodule Nous.Providers.HTTP do
         {events, incomplete}
     end
   end
-
-  def parse_sse_buffer(nil), do: {[], ""}
-  def parse_sse_buffer(_), do: {[], ""}
 
   @doc """
   Parse a single SSE event.
@@ -362,157 +399,106 @@ defmodule Nous.Providers.HTTP do
     end
   end
 
-  # Start streaming - spawn a process to handle Finch.stream
-  defp start_streaming(url, headers, body, finch_name, timeout, stream_parser) do
-    parent = self()
+  # Start streaming via hackney's `:async, :once` pull-based mode.
+  #
+  # The previous implementation used `Finch.stream/5` with a callback that
+  # fire-and-forgets `send(parent, ...)` per chunk - push-based, with no
+  # backpressure. A fast LLM (e.g. Groq at 500 tok/s) feeding a slow
+  # consumer (LiveView assigns + diff + push, slow stdout, etc.) grew the
+  # consumer mailbox unboundedly until either the 10 MiB buffer cap tripped
+  # or the BEAM scheduler starved.
+  #
+  # `:hackney.request/5` with `[:async, :once]` returns a request ref. The
+  # consumer pulls chunks one at a time by calling `:hackney.stream_next/1`,
+  # which causes hackney to read one more chunk off the socket and deliver
+  # it as `{:hackney_response, ref, chunk_or_done}`. The network read only
+  # happens when the consumer asks for it — the producer literally cannot
+  # outrun the consumer.
+  #
+  # As a side-effect this also eliminates the spawn-and-monitor plumbing
+  # that the previous design needed (H-12), the `Task.await(:infinity)`
+  # blocker, and the awkward parent EXIT/DOWN handling. The Stream.resource
+  # consumer IS the only process; cancellation is just the consumer
+  # halting its enumerator and `:hackney.close/1` releasing the conn.
+  #
+  # `finch_name` is now unused (legacy positional arg, kept for source
+  # compatibility with callers in providers/*).
+  defp start_streaming(url, headers, body, _finch_name, timeout, stream_parser) do
+    hackney_headers = Enum.map(headers, fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
 
-    pid =
-      spawn_link(fn ->
-        Process.flag(:trap_exit, true)
-        parent_ref = Process.monitor(parent)
+    opts = [
+      :async,
+      :once,
+      {:recv_timeout, timeout},
+      {:connect_timeout, 30_000},
+      {:ssl_options, [verify: :verify_peer, cacerts: :public_key.cacerts_get()]}
+    ]
 
-        request = Finch.build(:post, url, headers, body)
+    case :hackney.request(:post, url, hackney_headers, body, opts) do
+      {:ok, ref} ->
+        %{
+          ref: ref,
+          buffer: "",
+          done: false,
+          status: nil,
+          timeout: timeout,
+          error: nil,
+          stream_parser: stream_parser
+        }
 
-        stream_task =
-          Task.async(fn ->
-            try do
-              Finch.stream(
-                request,
-                finch_name,
-                nil,
-                fn
-                  {:status, status}, acc ->
-                    send(parent, {:sse, :status, status})
-                    acc
+      {:error, reason} ->
+        Logger.error("hackney request failed: #{inspect(reason)}")
 
-                  {:headers, resp_headers}, acc ->
-                    send(parent, {:sse, :headers, resp_headers})
-                    acc
-
-                  {:data, data}, acc ->
-                    send(parent, {:sse, :data, data})
-                    acc
-                end,
-                receive_timeout: timeout
-              )
-            rescue
-              e ->
-                Logger.error("Finch.stream raised: #{inspect(e)}")
-                {:error, e}
-            catch
-              kind, reason ->
-                Logger.error("Finch.stream caught #{kind}: #{inspect(reason)}")
-                {:error, {kind, reason}}
-            end
-          end)
-
-        handle_stream_lifecycle(parent, parent_ref, stream_task)
-      end)
-
-    %{
-      pid: pid,
-      buffer: "",
-      done: false,
-      status: nil,
-      timeout: timeout,
-      error: nil,
-      stream_parser: stream_parser
-    }
-  end
-
-  # Handle the lifecycle of the streaming process
-  defp handle_stream_lifecycle(parent, parent_ref, stream_task) do
-    receive do
-      {:EXIT, ^parent, reason} ->
-        Logger.debug("Parent died (#{inspect(reason)}), cleaning up stream")
-        Task.shutdown(stream_task, 1_000)
-
-      {:DOWN, ^parent_ref, :process, ^parent, reason} ->
-        Logger.debug("Parent monitor fired (#{inspect(reason)}), cleaning up stream")
-        Task.shutdown(stream_task, 1_000)
-
-      {:EXIT, _from, :shutdown} ->
-        Logger.debug("Graceful shutdown requested for stream")
-
-        case Task.shutdown(stream_task, 1_000) do
-          {:ok, _} -> send(parent, {:sse, :done, :ok})
-          nil -> send(parent, {:sse, :done, :ok})
-          {:exit, reason} -> send(parent, {:sse, :done, {:error, reason}})
-        end
-
-      {:EXIT, _from, reason} ->
-        Logger.debug("Force shutdown requested for stream: #{inspect(reason)}")
-        Task.shutdown(stream_task, :brutal_kill)
-        send(parent, {:sse, :done, {:error, reason}})
-    after
-      0 ->
-        case Task.await(stream_task, :infinity) do
-          {:ok, _} ->
-            send(parent, {:sse, :done, :ok})
-
-          {:error, %Mint.TransportError{reason: :closed}} ->
-            # Normal close
-            send(parent, {:sse, :done, :ok})
-
-          {:error, error} ->
-            Logger.error("Stream task error: #{inspect(error)}")
-            send(parent, {:sse, :done, {:error, error}})
-
-          other ->
-            Logger.warning("Unexpected stream task result: #{inspect(other)}")
-            send(parent, {:sse, :done, {:error, {:unexpected, other}}})
-        end
+        # Stay `done: false` here so the next_chunk error-emission clause
+        # fires once before halting. Setting done immediately would short-
+        # circuit straight to {:halt, _} and the consumer would never see
+        # the {:stream_error, _} event.
+        %{
+          ref: nil,
+          buffer: "",
+          done: false,
+          status: nil,
+          timeout: timeout,
+          error: {:stream_error, %{reason: reason}},
+          stream_parser: stream_parser
+        }
     end
   end
 
-  # Get next chunk from the stream
+  # Get next chunk from the hackney `:async, :once` stream.
+  #
+  # Pull semantics: we call `:hackney.stream_next/1` to ask for ONE more
+  # message from hackney, then block in `receive` for it. No mailbox
+  # accumulation possible - each iteration moves exactly one chunk through.
   defp next_chunk(%{done: true} = state), do: {:halt, state}
+
+  defp next_chunk(%{ref: nil, error: {:stream_error, _} = err} = state) do
+    {[err], %{state | done: true}}
+  end
 
   defp next_chunk(state) do
     timeout = state.timeout
 
+    # :hackney.stream_next/1 is spec'd to return :ok unconditionally
+    # (errors arrive asynchronously as {:hackney_response, ref, {:error, _}}).
+    :ok = :hackney.stream_next(state.ref)
+
+    ref = state.ref
+
     receive do
-      {:sse, :status, status} when status not in 200..299 ->
-        Logger.error("SSE stream got error status #{status}")
+      {:hackney_response, ^ref, {:status, status, _reason_phrase}}
+      when status not in 200..299 ->
+        Logger.error("Hackney stream got error status #{status}")
         {[{:stream_error, %{status: status}}], %{state | done: true}}
 
-      {:sse, :status, status} ->
+      {:hackney_response, ^ref, {:status, status, _reason_phrase}} ->
         next_chunk(%{state | status: status})
 
-      {:sse, :headers, _headers} ->
+      {:hackney_response, ^ref, {:headers, _headers}} ->
         next_chunk(state)
 
-      {:sse, :data, data} ->
-        new_buffer = state.buffer <> data
-
-        # Check buffer size
-        if byte_size(new_buffer) > @max_buffer_size do
-          Logger.error("SSE buffer overflow, terminating stream")
-          {[{:stream_error, %{reason: :buffer_overflow}}], %{state | done: true}}
-        else
-          {events, remaining_buffer} = parse_stream_buffer(new_buffer, state.stream_parser)
-
-          # Filter out parse errors if we want to be lenient
-          {valid_events, errors} =
-            Enum.split_with(events, fn
-              {:parse_error, _} -> false
-              _ -> true
-            end)
-
-          # Log parse errors but don't emit them (they're usually partial data)
-          for {:parse_error, err} <- errors do
-            Logger.debug("SSE parse error (ignored): #{inspect(err)}")
-          end
-
-          if Enum.empty?(valid_events) do
-            next_chunk(%{state | buffer: remaining_buffer})
-          else
-            {valid_events, %{state | buffer: remaining_buffer}}
-          end
-        end
-
-      {:sse, :done, :ok} ->
-        # Flush any remaining buffer
+      {:hackney_response, ^ref, :done} ->
+        # Flush any remaining buffer with the parser's end-of-stream rules.
         {events, _} = flush_stream_buffer(state.buffer, state.stream_parser)
 
         final_events =
@@ -528,40 +514,74 @@ defmodule Nous.Providers.HTTP do
           {final_events, %{state | done: true, buffer: ""}}
         end
 
-      {:sse, :done, {:error, error}} ->
-        Logger.error("SSE stream error: #{inspect(error)}")
-        {[{:stream_error, error}], %{state | done: true}}
+      {:hackney_response, ^ref, {:error, reason}} ->
+        Logger.error("Hackney stream error: #{inspect(reason)}")
+        {[{:stream_error, reason}], %{state | done: true}}
+
+      {:hackney_response, ^ref, chunk} when is_binary(chunk) ->
+        new_buffer = state.buffer <> chunk
+
+        if byte_size(new_buffer) > @max_buffer_size do
+          Logger.error("SSE buffer overflow, terminating stream")
+          {[{:stream_error, %{reason: :buffer_overflow}}], %{state | done: true}}
+        else
+          {events, remaining_buffer} = parse_stream_buffer(new_buffer, state.stream_parser)
+
+          {valid_events, errors} =
+            Enum.split_with(events, fn
+              {:parse_error, _} -> false
+              _ -> true
+            end)
+
+          for {:parse_error, err} <- errors do
+            Logger.debug("SSE parse error (ignored): #{inspect(err)}")
+          end
+
+          if Enum.empty?(valid_events) do
+            next_chunk(%{state | buffer: remaining_buffer})
+          else
+            {valid_events, %{state | buffer: remaining_buffer}}
+          end
+        end
     after
       timeout ->
-        Logger.error("SSE stream timeout after #{timeout}ms")
+        Logger.error("Hackney stream timeout after #{timeout}ms")
         {[{:stream_error, %{reason: :timeout, timeout_ms: timeout}}], %{state | done: true}}
     end
   end
 
-  # Parse stream buffer using the configured parser (default: SSE)
-  defp parse_stream_buffer(buffer, nil), do: parse_sse_buffer(buffer)
+  # Parse stream buffer using the configured parser (default: SSE).
+  # Translates the new {:error, :buffer_overflow} tuple from parse_sse_buffer
+  # into the legacy {events, buffer} shape so existing call sites keep working.
+  defp parse_stream_buffer(buffer, nil) do
+    case parse_sse_buffer(buffer) do
+      {:error, :buffer_overflow} -> {[{:stream_error, %{reason: :buffer_overflow}}], ""}
+      result -> result
+    end
+  end
+
   defp parse_stream_buffer(buffer, parser_mod), do: parser_mod.parse_buffer(buffer)
 
   # Flush remaining buffer at end of stream
   # SSE needs a trailing \n\n to force the last event through;
   # custom parsers just re-parse the remaining buffer as-is.
-  defp flush_stream_buffer(buffer, nil), do: parse_sse_buffer(buffer <> "\n\n")
+  defp flush_stream_buffer(buffer, nil) do
+    case parse_sse_buffer(buffer <> "\n\n") do
+      {:error, :buffer_overflow} -> {[{:stream_error, %{reason: :buffer_overflow}}], ""}
+      result -> result
+    end
+  end
+
   defp flush_stream_buffer(buffer, parser_mod), do: parser_mod.parse_buffer(buffer)
 
-  # Cleanup when stream is done
-  defp cleanup(state) do
-    if state[:pid] && Process.alive?(state.pid) do
-      Process.exit(state.pid, :shutdown)
+  # Cleanup when the consumer halts (Stream.take/2, exception, normal end).
+  # `:hackney.close/1` releases the connection back to the default pool
+  # (or closes it if no pool was configured). Idempotent and safe to call
+  # whether or not the stream finished.
+  defp cleanup(%{ref: nil}), do: :ok
 
-      # Give it a moment to cleanup gracefully
-      Process.sleep(100)
-
-      if Process.alive?(state.pid) do
-        Logger.debug("Stream process didn't respond to graceful shutdown, force killing")
-        Process.exit(state.pid, :kill)
-      end
-    end
-
+  defp cleanup(%{ref: ref}) do
+    _ = :hackney.close(ref)
     :ok
   end
 

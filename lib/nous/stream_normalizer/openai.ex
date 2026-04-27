@@ -36,7 +36,7 @@ defmodule Nous.StreamNormalizer.OpenAI do
         convert_complete_response(chunk)
 
       true ->
-        [parse_delta_chunk(chunk)]
+        parse_delta_chunk(chunk)
     end
   end
 
@@ -63,27 +63,46 @@ defmodule Nous.StreamNormalizer.OpenAI do
         message = get_flexible(choice, :message)
         content = get_flexible(message, :content)
         reasoning = get_flexible(message, :reasoning) || get_flexible(message, :reasoning_content)
+        tool_calls = get_flexible(message, :tool_calls)
         finish_reason = get_flexible(choice, :finish_reason) || "stop"
 
-        events = []
-
-        events =
-          if reasoning && reasoning != "",
-            do: [{:thinking_delta, reasoning} | events],
-            else: events
-
-        events = if content && content != "", do: [{:text_delta, content} | events], else: events
-
-        events = [{:finish, finish_reason} | events]
-
-        Enum.reverse(events)
+        # Build events in order: thinking -> text -> tool_calls -> finish
+        # NOTE: previously this path read only :content/:reasoning and silently
+        # dropped :tool_calls, so non-streaming "complete response" returns
+        # (common from LM Studio / vLLM / Ollama / llamacpp when stream:true
+        # degenerates) lost tool calls and the agent saw finish_reason "stop"
+        # instead of "tool_calls".
+        []
+        |> maybe_prepend(reasoning, &{:thinking_delta, &1})
+        |> maybe_prepend(content, &{:text_delta, &1})
+        |> maybe_prepend_tool_calls(tool_calls)
+        |> Kernel.++([{:finish, finish_reason}])
 
       _ ->
         [{:unknown, chunk}]
     end
   end
 
-  # Parse standard streaming delta chunk
+  defp maybe_prepend(events, value, builder) when is_binary(value) and value != "" do
+    events ++ [builder.(value)]
+  end
+
+  defp maybe_prepend(events, _value, _builder), do: events
+
+  defp maybe_prepend_tool_calls(events, calls) when is_list(calls) and calls != [] do
+    events ++ [{:tool_call_delta, calls}]
+  end
+
+  defp maybe_prepend_tool_calls(events, _), do: events
+
+  # Parse standard streaming delta chunk.
+  #
+  # Returns a LIST of events because a single chunk can carry multiple
+  # signals at once - notably OpenAI sends `tool_calls + finish_reason:
+  # "tool_calls"` in the same final delta, and providers that interleave
+  # thinking/content can put both `reasoning` and `content` in one chunk.
+  # Previously this returned a single event via cond/0 and silently dropped
+  # all but one signal per chunk.
   defp parse_delta_chunk(chunk) do
     choices = get_choices(chunk)
     choice = List.first(choices)
@@ -94,30 +113,24 @@ defmodule Nous.StreamNormalizer.OpenAI do
       tool_calls = get_flexible(delta, :tool_calls)
       finish_reason = get_flexible(choice, :finish_reason)
 
-      # Thinking/reasoning content
       # vLLM uses "reasoning", DeepSeek/SGLang use "reasoning_content"
       reasoning = get_flexible(delta, :reasoning) || get_flexible(delta, :reasoning_content)
 
-      cond do
-        reasoning && reasoning != "" ->
-          {:thinking_delta, reasoning}
+      events =
+        []
+        |> append_if(reasoning && reasoning != "", {:thinking_delta, reasoning})
+        |> append_if(content && content != "", {:text_delta, content})
+        |> append_if(is_list(tool_calls) and tool_calls != [], {:tool_call_delta, tool_calls})
+        |> append_if(not is_nil(finish_reason), {:finish, finish_reason})
 
-        content && content != "" ->
-          {:text_delta, content}
-
-        tool_calls ->
-          {:tool_call_delta, tool_calls}
-
-        finish_reason ->
-          {:finish, finish_reason}
-
-        true ->
-          {:unknown, chunk}
-      end
+      if events == [], do: [{:unknown, chunk}], else: events
     else
-      {:unknown, chunk}
+      [{:unknown, chunk}]
     end
   end
+
+  defp append_if(list, true, event), do: list ++ [event]
+  defp append_if(list, _, _event), do: list
 
   # Get choices from chunk, handling struct, atom-map, and string-map formats
   defp get_choices(chunk) do

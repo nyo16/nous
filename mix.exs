@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.14.3"
+  @version "0.15.0"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -27,7 +27,10 @@ defmodule Nous.MixProject do
   def application do
     [
       extra_applications: [:logger, :inets],
-      mod: {Nous.Application, []}
+      mod: {Nous.Application, []},
+      # hackney's :default pool starts automatically when the :hackney
+      # application starts; ensuring it's listed here is just defensive.
+      included_applications: []
     ]
   end
 
@@ -42,9 +45,16 @@ defmodule Nous.MixProject do
       # Validation
       {:ecto, "~> 3.11"},
 
-      # HTTP clients for all LLM providers
+      # HTTP clients for all LLM providers.
+      # Finch/Req for non-streaming (one-shot requests, redirects, retries).
+      # Hackney for SSE/long-streaming bodies — its `:async, :once` mode is
+      # truly pull-based, so the consumer paces the producer and a slow
+      # consumer can't OOM us via mailbox accumulation. (Finch.stream/5's
+      # callback is push-based; a fast LLM + slow consumer = unbounded
+      # mailbox growth — see review M-12.)
       {:finch, "~> 0.19"},
       {:req, "~> 0.5"},
+      {:hackney, "~> 4.0"},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
       {:goth, "~> 1.4", optional: true},
@@ -79,7 +89,10 @@ defmodule Nous.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:mox, "~> 1.1", only: :test},
-      {:phoenix_pubsub, "~> 2.1", only: :test}
+      {:phoenix_pubsub, "~> 2.1", only: :test},
+      # Bypass = in-test HTTP server for exercising the streaming pipeline
+      # without hitting real LLM endpoints.
+      {:bypass, "~> 2.1", only: :test}
     ]
   end
 

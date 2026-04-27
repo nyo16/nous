@@ -40,9 +40,10 @@ defmodule Nous.Workflow.NodeTest do
     end
 
     test "raises on missing required fields" do
-      assert_raise KeyError, fn -> Node.new(%{type: :transform, label: "x"}) end
-      assert_raise KeyError, fn -> Node.new(%{id: "x", label: "x"}) end
-      assert_raise KeyError, fn -> Node.new(%{id: "x", type: :transform}) end
+      # apply/3 hides the literal struct from dialyzer's incompatible-types check.
+      assert_raise KeyError, fn -> apply(Node, :new, [%{type: :transform, label: "x"}]) end
+      assert_raise KeyError, fn -> apply(Node, :new, [%{id: "x", label: "x"}]) end
+      assert_raise KeyError, fn -> apply(Node, :new, [%{id: "x", type: :transform}]) end
     end
 
     test "raises on invalid node type" do

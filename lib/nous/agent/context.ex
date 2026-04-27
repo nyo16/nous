@@ -1,4 +1,8 @@
 defmodule Nous.Agent.Context do
+  # MapSet.difference/2 in update_needs_response triggers dialyzer's
+  # opaque-tracking false positive (same pattern as Workflow.Engine).
+  @dialyzer :no_opaque
+
   @moduledoc """
   Unified context for agent execution.
 
@@ -581,7 +585,14 @@ defmodule Nous.Agent.Context do
     }
   end
 
+  # Known message fields - any other key in the persisted map is logged as
+  # a warning so a forward-compatibility issue (a future Message field that
+  # the current code doesn't know about, OR a typo in a persisted blob)
+  # surfaces loudly rather than silently dropping data.
+  @known_message_keys ~w(role content tool_calls tool_call_id name metadata)
+
   defp deserialize_message(data) when is_map(data) do
+    warn_unknown_keys(data, @known_message_keys, "Nous.Message")
     data = atomize_keys(data)
 
     role =
@@ -621,6 +632,20 @@ defmodule Nous.Agent.Context do
     Message.new!(attrs)
   end
 
+  defp warn_unknown_keys(map, known_string_keys, module_label) when is_map(map) do
+    map
+    |> Map.keys()
+    |> Enum.each(fn key ->
+      str = if is_atom(key), do: Atom.to_string(key), else: to_string(key)
+
+      unless str in known_string_keys do
+        Logger.debug(
+          "#{module_label} deserialize: ignoring unknown key #{inspect(key)} from persisted data"
+        )
+      end
+    end)
+  end
+
   defp serialize_usage(%Usage{} = usage) do
     %{
       requests: usage.requests,
@@ -651,14 +676,6 @@ defmodule Nous.Agent.Context do
     }
   end
 
-  @atomize_allowed_keys ~w(
-    role content tool_calls tool_call_id name metadata
-    requests input_tokens output_tokens total_tokens
-    version messages system_prompt deps usage needs_response
-    iteration max_iterations started_at agent_name
-    id arguments type function
-  )a
-
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
       {k, v} when is_atom(k) -> {k, v}
@@ -666,15 +683,14 @@ defmodule Nous.Agent.Context do
     end)
   end
 
+  # Safe atom resolution for keys read from persisted state.
+  # NEVER calls String.to_atom/1 - that would let attacker-controlled persisted blobs
+  # exhaust the global atom table (atoms are not GC'd; node-wide DoS).
+  # Unknown keys stay as binaries; downstream Ecto.cast simply ignores them.
   defp safe_to_atom(key) do
     String.to_existing_atom(key)
   rescue
-    ArgumentError ->
-      if String.to_atom(key) in @atomize_allowed_keys do
-        String.to_atom(key)
-      else
-        key
-      end
+    ArgumentError -> key
   end
 
   defp update_needs_response(ctx, %Message{role: :assistant} = message) do

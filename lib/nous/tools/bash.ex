@@ -44,10 +44,15 @@ defmodule Nous.Tools.Bash do
   def execute(_ctx, %{"command" => command} = args) do
     timeout = Map.get(args, "timeout", @default_timeout)
 
+    # Use absolute path to /bin/sh and a scrubbed env so the spawned shell
+    # doesn't inherit OPENAI_API_KEY / BRAVE_API_KEY / TAVILY_API_KEY etc.
+    # The LLM can `printenv` itself one bash call away from secret leak
+    # if the BEAM env isn't filtered.
     result =
-      NetRunner.run(["sh", "-c", command],
+      NetRunner.run(["/bin/sh", "-c", command],
         timeout: timeout,
-        max_output_size: @max_output_size
+        max_output_size: @max_output_size,
+        env: scrubbed_env()
       )
 
     case result do
@@ -66,5 +71,16 @@ defmodule Nous.Tools.Bash do
       {output, exit_code} ->
         {:ok, "Exit code: #{exit_code}\n#{output}"}
     end
+  end
+
+  # Whitelist of env vars safe to forward to the shell. Everything else,
+  # including API keys, OAuth tokens, vault creds, and shell-loader hooks
+  # (LD_PRELOAD, DYLD_INSERT_LIBRARIES) is dropped.
+  @env_allowlist ~w(PATH HOME LANG LC_ALL TZ USER SHELL TERM)
+
+  defp scrubbed_env do
+    @env_allowlist
+    |> Enum.map(fn name -> {name, System.get_env(name)} end)
+    |> Enum.reject(fn {_, v} -> is_nil(v) end)
   end
 end

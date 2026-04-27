@@ -1,4 +1,12 @@
 defmodule Nous.Workflow.Engine do
+  # `MapSet.t()` is dialyzer-opaque. `bfs_loop/3`, `bfs_order_loop/5`, and
+  # `resolve_branch/4` use `&MapSet.member?(set, &1)` capture syntax inside
+  # `Enum.reject/2` / `Enum.filter/2`; dialyzer can't propagate opacity
+  # through capture closures, so it reports false-positive
+  # `call_without_opaque` warnings even though the calls are well-typed.
+  # Specs on the BFS functions don't help (verified). Suppress just here.
+  @dialyzer :no_opaque
+
   @moduledoc """
   Core workflow execution engine.
 
@@ -101,86 +109,105 @@ defmodule Nous.Workflow.Engine do
         execute_loop(run_ctx, topo_order, state)
       end
 
-    case result do
-      {:ok, final_state, final_ctx} ->
-        nodes_executed =
-          if final_ctx.trace,
-            do: Trace.node_count(final_ctx.trace),
-            else: map_size(final_state.node_results)
+    # Track whether the workflow suspended; suspended workflows MUST keep
+    # their scratch table around for resume. Every other terminal outcome
+    # (success, error) must release it, otherwise long-running supervisors
+    # that retry on failure leak ETS tables until the BEAM OOMs.
+    suspended? = match?({:suspended, _, _, _}, result) or match?({:suspended, _, _}, result)
 
-        WTelemetry.workflow_stop(graph.id, start_time, :completed, nodes_executed)
+    final_result =
+      case result do
+        {:ok, final_state, final_ctx} ->
+          nodes_executed =
+            if final_ctx.trace,
+              do: Trace.node_count(final_ctx.trace),
+              else: map_size(final_state.node_results)
 
-        run_hooks(hooks, :workflow_end, %{
-          workflow_id: graph.id,
-          state: final_state,
-          status: :completed
-        })
+          WTelemetry.workflow_stop(graph.id, start_time, :completed, nodes_executed)
 
-        maybe_cleanup_scratch(final_ctx)
-        final_state = maybe_attach_trace(final_state, final_ctx.trace)
-        {:ok, final_state}
+          run_hooks(hooks, :workflow_end, %{
+            workflow_id: graph.id,
+            state: final_state,
+            status: :completed
+          })
 
-      {:suspended, susp_state, checkpoint, susp_ctx} ->
-        WTelemetry.workflow_stop(
-          graph.id,
-          start_time,
-          :suspended,
-          map_size(susp_state.node_results)
-        )
+          final_state = maybe_attach_trace(final_state, final_ctx.trace)
+          {:ok, final_state}
 
-        run_hooks(hooks, :workflow_end, %{
-          workflow_id: graph.id,
-          state: susp_state,
-          status: :suspended
-        })
+        {:suspended, susp_state, checkpoint, susp_ctx} ->
+          WTelemetry.workflow_stop(
+            graph.id,
+            start_time,
+            :suspended,
+            map_size(susp_state.node_results)
+          )
 
-        susp_state = maybe_attach_trace(susp_state, susp_ctx.trace)
-        {:suspended, susp_state, checkpoint}
+          run_hooks(hooks, :workflow_end, %{
+            workflow_id: graph.id,
+            state: susp_state,
+            status: :suspended
+          })
 
-      {:error, reason, _err_ctx} ->
-        WTelemetry.workflow_exception(graph.id, start_time, reason)
-        run_hooks(hooks, :workflow_end, %{workflow_id: graph.id, state: state, status: :failed})
+          susp_state = maybe_attach_trace(susp_state, susp_ctx.trace)
+          {:suspended, susp_state, checkpoint}
 
-        {:error, reason}
+        {:error, reason, err_ctx} ->
+          WTelemetry.workflow_exception(graph.id, start_time, reason)
+          # M-11: pass the failure-time state to the :workflow_end hook
+          # rather than the initial state. Falls back to initial state if
+          # the error was raised before any node ran.
+          end_state = Map.get(err_ctx, :failure_state, state)
 
-      # Legacy returns without ctx (from edge-following)
-      {:ok, final_state} ->
-        WTelemetry.workflow_stop(
-          graph.id,
-          start_time,
-          :completed,
-          map_size(final_state.node_results)
-        )
+          run_hooks(hooks, :workflow_end, %{
+            workflow_id: graph.id,
+            state: end_state,
+            status: :failed
+          })
 
-        run_hooks(hooks, :workflow_end, %{
-          workflow_id: graph.id,
-          state: final_state,
-          status: :completed
-        })
+          {:error, reason}
 
-        {:ok, final_state}
+        # Legacy returns without ctx (from edge-following)
+        {:ok, final_state} ->
+          WTelemetry.workflow_stop(
+            graph.id,
+            start_time,
+            :completed,
+            map_size(final_state.node_results)
+          )
 
-      {:suspended, susp_state, checkpoint} ->
-        WTelemetry.workflow_stop(
-          graph.id,
-          start_time,
-          :suspended,
-          map_size(susp_state.node_results)
-        )
+          run_hooks(hooks, :workflow_end, %{
+            workflow_id: graph.id,
+            state: final_state,
+            status: :completed
+          })
 
-        run_hooks(hooks, :workflow_end, %{
-          workflow_id: graph.id,
-          state: susp_state,
-          status: :suspended
-        })
+          {:ok, final_state}
 
-        {:suspended, susp_state, checkpoint}
+        {:suspended, susp_state, checkpoint} ->
+          WTelemetry.workflow_stop(
+            graph.id,
+            start_time,
+            :suspended,
+            map_size(susp_state.node_results)
+          )
 
-      {:error, _} = error ->
-        WTelemetry.workflow_exception(graph.id, start_time, error)
-        run_hooks(hooks, :workflow_end, %{workflow_id: graph.id, state: state, status: :failed})
-        error
-    end
+          run_hooks(hooks, :workflow_end, %{
+            workflow_id: graph.id,
+            state: susp_state,
+            status: :suspended
+          })
+
+          {:suspended, susp_state, checkpoint}
+
+        {:error, _} = error ->
+          WTelemetry.workflow_exception(graph.id, start_time, error)
+          run_hooks(hooks, :workflow_end, %{workflow_id: graph.id, state: state, status: :failed})
+          error
+      end
+
+    unless suspended?, do: maybe_cleanup_scratch(%{scratch: scratch})
+
+    final_result
   end
 
   # ---------------------------------------------------------------------------
@@ -195,7 +222,11 @@ defmodule Nous.Workflow.Engine do
 
     if visit_count >= run_ctx.max_iterations do
       Logger.warning("Node #{node_id} hit max iteration limit (#{run_ctx.max_iterations})")
-      {:ok, state}
+      # Hitting max_iterations is a real failure - quality-gate loops that
+      # saturate did NOT pass the gate. Returning {:ok, state} here silently
+      # produced "passing" output that hadn't actually passed.
+      # The outer execute/3 case will fire the workflow_exception telemetry.
+      {:error, {:max_iterations_exceeded, node_id, run_ctx.max_iterations}}
     else
       run_ctx = %{run_ctx | visit_counts: Map.update(run_ctx.visit_counts, node_id, 1, &(&1 + 1))}
 
@@ -210,6 +241,13 @@ defmodule Nous.Workflow.Engine do
           {:pause, reason} ->
             Logger.info("Workflow paused before node #{node_id}: #{inspect(reason)}")
             {:suspended, state, %{node_id: node_id, run_ctx: run_ctx, reason: reason}}
+
+          {:deny, hook_name} ->
+            Logger.warning(
+              "Workflow node #{node_id} denied by hook #{hook_name}; aborting workflow"
+            )
+
+            {:error, {:hook_denied, hook_name, node_id}}
 
           {:modify, new_state} ->
             execute_edge_node(run_ctx, node, new_state)
@@ -283,7 +321,9 @@ defmodule Nous.Workflow.Engine do
 
     if visit_count >= run_ctx.max_iterations do
       Logger.warning("Node #{node_id} hit max iteration limit (#{run_ctx.max_iterations})")
-      execute_loop(run_ctx, rest, state)
+      # Same rationale as in execute_edge_following: silent success would let
+      # quality-gate loops produce results that did not pass the gate.
+      {:error, {:max_iterations_exceeded, node_id, run_ctx.max_iterations}, run_ctx}
     else
       run_ctx = %{run_ctx | visit_counts: Map.update(run_ctx.visit_counts, node_id, 1, &(&1 + 1))}
 
@@ -308,6 +348,13 @@ defmodule Nous.Workflow.Engine do
             }
 
             {:suspended, state, checkpoint, run_ctx}
+
+          {:deny, hook_name} ->
+            Logger.warning(
+              "Workflow node #{node_id} denied by hook #{hook_name}; aborting workflow"
+            )
+
+            {:error, {:hook_denied, hook_name, node_id}, run_ctx}
 
           {:modify, new_state} ->
             execute_node(run_ctx, node, rest, new_state)
@@ -349,7 +396,7 @@ defmodule Nous.Workflow.Engine do
               resolve_branch(run_ctx.graph, node.id, updated_state, rest)
 
             :parallel ->
-              branch_ids = node.config.branches |> Enum.map(&to_string/1) |> MapSet.new()
+              branch_ids = MapSet.new(node.config.branches, &to_string/1)
               Enum.reject(rest, &MapSet.member?(branch_ids, &1))
 
             _ ->
@@ -391,6 +438,12 @@ defmodule Nous.Workflow.Engine do
           end
 
         Logger.error("Workflow failed at node #{node.id}: #{inspect(reason)}")
+        # Capture failure-time state on run_ctx so the outer execute/3 case
+        # can pass it to the :workflow_end hook payload instead of the
+        # initial state (M-11). Operators inspecting why a workflow failed
+        # need to see what was in state at the moment of failure, not what
+        # was passed in.
+        run_ctx = Map.put(run_ctx, :failure_state, state)
         {:error, {node.id, reason}, run_ctx}
     end
   end
@@ -432,9 +485,40 @@ defmodule Nous.Workflow.Engine do
       {:ok, result, updated_state} ->
         {:ok, result, updated_state}
 
-      {:error, _reason} ->
-        Logger.warning("Node #{node.id} failed, falling back to #{fallback_id}")
-        {:ok, {:fallback, fallback_id}, state}
+      {:error, reason} ->
+        # Graph node ids are stringified internally (Graph.add_node), so the
+        # atom referenced from error_strategy must be normalized before lookup.
+        fallback_key = to_string(fallback_id)
+
+        Logger.warning(
+          "Node #{node.id} failed (#{inspect(reason)}), executing fallback: #{fallback_key}"
+        )
+
+        case Map.get(graph_nodes, fallback_key) do
+          nil ->
+            Logger.error(
+              "Fallback node #{fallback_key} not found in graph for failed node #{node.id}"
+            )
+
+            {:error, {:fallback_not_found, fallback_key, node.id}}
+
+          fallback_node ->
+            # Run the fallback node and substitute its result for the failed node's.
+            # Record the original failure on state so observability sees both events.
+            state_with_err = State.put_error(state, node.id, reason)
+
+            case run_executor(fallback_node, state_with_err, graph_nodes) do
+              {:ok, fallback_result, updated_state} ->
+                {:ok, fallback_result, updated_state}
+
+              {:error, fallback_reason} ->
+                Logger.error(
+                  "Fallback node #{fallback_key} also failed: #{inspect(fallback_reason)}"
+                )
+
+                {:error, {:fallback_failed, fallback_key, fallback_reason}}
+            end
+        end
     end
   end
 
@@ -502,10 +586,18 @@ defmodule Nous.Workflow.Engine do
     bfs_order(graph, target_id, reachable)
   end
 
+  @spec bfs_order(Graph.t(), Graph.node_id(), MapSet.t(Graph.node_id())) :: [Graph.node_id()]
   defp bfs_order(graph, start_id, allowed_set) do
     bfs_order_loop(graph, [start_id], [], MapSet.new([start_id]), allowed_set)
   end
 
+  @spec bfs_order_loop(
+          Graph.t(),
+          [Graph.node_id()],
+          [Graph.node_id()],
+          MapSet.t(Graph.node_id()),
+          MapSet.t(Graph.node_id())
+        ) :: [Graph.node_id()]
   defp bfs_order_loop(_graph, [], order, _visited, _allowed), do: Enum.reverse(order)
 
   defp bfs_order_loop(graph, queue, order, visited, allowed) do
@@ -525,10 +617,13 @@ defmodule Nous.Workflow.Engine do
     )
   end
 
+  @spec bfs_reachable(Graph.t(), Graph.node_id()) :: MapSet.t(Graph.node_id())
   defp bfs_reachable(graph, start_id) do
     bfs_loop(graph, [start_id], MapSet.new([start_id]))
   end
 
+  @spec bfs_loop(Graph.t(), [Graph.node_id()], MapSet.t(Graph.node_id())) ::
+          MapSet.t(Graph.node_id())
   defp bfs_loop(_graph, [], visited), do: visited
 
   defp bfs_loop(graph, queue, visited) do
@@ -569,7 +664,10 @@ defmodule Nous.Workflow.Engine do
       try do
         case hook.handler.(:pre_node, payload) do
           :allow -> {:cont, :allow}
-          :deny -> {:halt, {:pause, "denied by hook #{hook.name || "unnamed"}"}}
+          # :deny is a HARD stop, not a pause. Previously :deny was mapped
+          # to {:pause, _} so policy-hook denials silently suspended a
+          # checkpoint forever instead of failing the workflow.
+          :deny -> {:halt, {:deny, hook.name || "unnamed"}}
           {:pause, reason} -> {:halt, {:pause, reason}}
           {:modify, new_state} -> {:halt, {:modify, new_state}}
           _ -> {:cont, :allow}

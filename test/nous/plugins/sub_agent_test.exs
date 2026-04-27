@@ -607,21 +607,18 @@ defmodule Nous.Plugins.SubAgentTest do
   # ===========================================================================
 
   describe "compute_sub_deps/1" do
-    test "forwards user deps and excludes plugin-internal keys" do
+    test "default: forwards NOTHING - secrets in parent deps stay with parent" do
+      # Sub-agent prompts are LLM-controlled and tools see ctx.deps; the safe
+      # default is to forward nothing. Callers must opt in explicitly.
       parent_deps = %{
         workspace_id: 42,
         database: :fake_db,
+        api_key: "secret",
         sub_agent_templates: %{"t" => %{}},
-        sub_agent_shared_deps: nil,
-        parallel_max_concurrency: 3,
-        parallel_timeout: 60_000,
-        __sub_agent_pubsub__: SomePubSub,
-        __sub_agent_pubsub_topic__: "topic:1"
+        sub_agent_shared_deps: nil
       }
 
-      result = SubAgent.compute_sub_deps(parent_deps)
-
-      assert result == %{workspace_id: 42, database: :fake_db}
+      assert SubAgent.compute_sub_deps(parent_deps) == %{}
     end
 
     test "explicit allowlist restricts to specified keys" do
@@ -647,6 +644,30 @@ defmodule Nous.Plugins.SubAgentTest do
       result = SubAgent.compute_sub_deps(parent_deps)
 
       assert result == %{}
+    end
+
+    test ":all opts in to the prior behaviour - everything except plugin internals" do
+      parent_deps = %{
+        workspace_id: 42,
+        database: :fake_db,
+        sub_agent_templates: %{"t" => %{}},
+        sub_agent_shared_deps: :all,
+        parallel_max_concurrency: 3,
+        parallel_timeout: 60_000,
+        __sub_agent_pubsub__: SomePubSub,
+        __sub_agent_pubsub_topic__: "topic:1"
+      }
+
+      assert SubAgent.compute_sub_deps(parent_deps) == %{
+               workspace_id: 42,
+               database: :fake_db
+             }
+    end
+
+    test "raises on invalid value" do
+      assert_raise ArgumentError, ~r/sub_agent_shared_deps/, fn ->
+        SubAgent.compute_sub_deps(%{sub_agent_shared_deps: "not a list"})
+      end
     end
   end
 

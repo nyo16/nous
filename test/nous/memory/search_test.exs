@@ -52,7 +52,7 @@ defmodule Nous.Memory.SearchTest do
     end
 
     test "returns empty list for no matches", %{table: table} do
-      {:ok, results} = Search.search(Store.ETS, table, "quantum physics")
+      {:ok, _results} = Search.search(Store.ETS, table, "quantum physics")
       # Jaro distance may still return some results with low scores,
       # but with min_score filter they should be eliminated
       {:ok, results} = Search.search(Store.ETS, table, "quantum physics", nil, min_score: 0.9)

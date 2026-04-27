@@ -76,9 +76,34 @@ defmodule Nous.Transcript do
       messages
     else
       {old, recent} = Enum.split(rest, length(rest) - keep_last)
+      # Critical: never split a tool_use/tool_result pair across the
+      # boundary - Anthropic, OpenAI, and Gemini all 400 if we do.
+      # Walk forward from `recent` until we no longer dangle tool calls or
+      # have orphan tool results at the head.
+      {old, recent} = balance_tool_call_boundary(old, recent)
       summary = summarize(old)
       system_msgs ++ [summary | recent]
     end
+  end
+
+  # Move messages from `recent` into `old` (or vice versa) so the boundary
+  # never splits a tool_call/tool_result pair. Two cases:
+  #
+  # 1. The last message in `old` is an :assistant with tool_calls but the
+  #    matching :tool result(s) are at the head of `recent` - those tool
+  #    results are orphans without their assistant prelude. Move them into
+  #    `old` so they are summarized along with their assistant message.
+  #
+  # 2. The first message in `recent` is a :tool result whose matching
+  #    assistant tool_call sits in `old`. Same fix - pull the orphan tool
+  #    results back into `old`.
+  defp balance_tool_call_boundary(old, recent) do
+    # Pull leading :tool messages from recent into old until the head is
+    # a non-tool message. Their corresponding assistant message is in old.
+    {orphan_tools, recent_rest} =
+      Enum.split_while(recent, fn msg -> msg.role == :tool end)
+
+    {old ++ orphan_tools, recent_rest}
   end
 
   @doc """
@@ -297,14 +322,27 @@ defmodule Nous.Transcript do
 
     content =
       messages
-      |> Enum.map(fn msg ->
-        role = msg.role || :unknown
-        text = Message.extract_text(msg)
-        preview = text |> String.slice(0..100) |> String.replace("\n", " ")
-        "  [#{role}] #{preview}"
-      end)
+      |> Enum.map(&summarize_one/1)
       |> Enum.join("\n")
 
     Message.system("[Compacted #{count} earlier messages]\n#{content}")
+  end
+
+  # L-12: never echo tool_result content verbatim into the summary - tool
+  # results frequently carry API keys, PII pulled from MCP, or other data
+  # that scanning/redaction policies would otherwise scrub. The compacted
+  # summary becomes a permanent system message that survives further
+  # compactions, so any leak here is durable. Show a structural marker
+  # instead. Other roles still get a short preview for context.
+  defp summarize_one(%{role: :tool} = msg) do
+    name = Map.get(msg, :name) || "unknown"
+    "  [tool] <result for #{inspect(name)} omitted from summary>"
+  end
+
+  defp summarize_one(msg) do
+    role = msg.role || :unknown
+    text = Message.extract_text(msg)
+    preview = text |> String.slice(0..100) |> String.replace("\n", " ")
+    "  [#{role}] #{preview}"
   end
 end

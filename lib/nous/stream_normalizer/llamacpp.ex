@@ -64,17 +64,25 @@ if Code.ensure_loaded?(LlamaCppEx) do
         [choice | _] ->
           message = Map.get(choice, :message) || Map.get(choice, "message") || %{}
           content = Map.get(message, :content) || Map.get(message, "content")
+          tool_calls = Map.get(message, :tool_calls) || Map.get(message, "tool_calls")
 
           finish_reason =
             Map.get(choice, :finish_reason) || Map.get(choice, "finish_reason") || "stop"
 
+          # Order: text -> tool_calls -> finish.
+          # Previously dropped tool_calls entirely - any llamacpp non-streaming
+          # tool-call response surfaced as text-only with finish_reason "stop".
           events = []
 
           events =
-            if content && content != "", do: [{:text_delta, content} | events], else: events
+            if content && content != "", do: events ++ [{:text_delta, content}], else: events
 
-          events = [{:finish, finish_reason} | events]
-          Enum.reverse(events)
+          events =
+            if is_list(tool_calls) and tool_calls != [],
+              do: events ++ [{:tool_call_delta, tool_calls}],
+              else: events
+
+          events ++ [{:finish, finish_reason}]
 
         _ ->
           [{:finish, "stop"}]
