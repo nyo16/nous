@@ -2,9 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.15.2] - 2026-04-26
+## [0.15.2] - 2026-04-27
 
 Documentation-only release. No code changes.
+
+### Added
+
+- **`AGENTS.md`** — quick-reference for AI coding agents (Claude, Cursor,
+  Copilot, Codex, etc.) consuming the library. Covers the minimal API,
+  provider quick-pick, key opts, custom tools, HTTP backend, security
+  rules, common workflows, and what's public vs internal. Conforms to
+  <https://agents.md>.
 
 ### Changed
 
