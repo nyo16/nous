@@ -1,32 +1,34 @@
 # HTTP Backend Benchmark
 
-Comparison of `Nous.HTTP.Backend.Req` and `Nous.HTTP.Backend.Hackney` for
-non-streaming POST requests. The benchmark uses an in-process
-`Plug.Cowboy` server on `localhost`, so the numbers reflect HTTP-client
-overhead (encode/decode, connection pooling, scheduler interaction) and
-not real-world LLM latency.
+Comparison of `Nous.HTTP.Backend.Req` (default) and
+`Nous.HTTP.Backend.Hackney` for non-streaming POST requests.
 
-This is **descriptive, not prescriptive** — neither backend is the
-"winner." Pick based on what you value:
+Two benchmarks are included:
 
-- **Req** — better for apps that want middleware (`Req.Steps`), built-in
-  retries, content-type negotiation, the Elixir-idiomatic API, and the
-  best small-payload throughput.
-- **Hackney** — better for apps that want one HTTP family across
-  streaming + non-streaming, HTTP/3 support (Alt-Svc auto-upgrade), and
-  the best large-payload throughput.
+1. **Localhost** (`bench/http_backend.exs`) — in-process `Plug.Cowboy`
+   server. Measures pure client overhead (pool contention, encode/decode,
+   scheduler interaction). No network in the path.
+2. **Real endpoint** (`bench/http_backend_real.exs`) — OpenRouter free
+   models. Measures what users actually feel: TLS handshake, real
+   network RTT, real LLM response variance.
+
+Both confirm the same conclusion: **Req is the right default**, with the
+gap shrinking but never vanishing as response time grows.
 
 ## Reproducing
 
 ```sh
+# Localhost — pure client overhead.
 mix run bench/http_backend.exs
+
+# Real endpoint — needs creds in env (no secrets land in source).
+OPENROUTER_API_KEY=sk-or-... \
+  OPENROUTER_MODEL=nvidia/nemotron-3-nano-30b-a3b:free \
+  OPENROUTER_MAX_TOKENS=8 \
+    mix run bench/http_backend_real.exs
 ```
 
-(The benchmark script is `bench/http_backend.exs`. It needs `:benchee`
-and `:bypass`/`:plug_cowboy` from the dev/test deps, both already in
-`mix.exs`.)
-
-## Results
+## Localhost results
 
 Hardware: Apple M1 Max, 10 cores, 64 GB RAM
 Runtime: Elixir 1.20-rc.4 / Erlang 28.2 (JIT enabled)
@@ -61,21 +63,104 @@ Benchee config: 2 s warmup, 10 s measurement, sequential (`parallel: 1`)
    binary handling for large payloads is more efficient than Req's
    middleware stack pays for itself.
 
+## Real-endpoint results (OpenRouter)
+
+Two free models tested: a fast MoE (Nemotron 3 Nano 30B-A3B,
+`max_tokens=8`, ~400ms responses) and a thinking model (Liquid LFM-2.5
+1.2B,  `max_tokens=300`, ~1s responses with 100+ reasoning tokens
+generated internally).
+
+Sequential = 10 paced requests (4s gap). Parallel = 3 batches of 5
+concurrent requests (15s gap between batches). Pacing keeps us under
+typical free-tier 20/min rate caps.
+
+### Nemotron 3 Nano 30B-A3B (fast, max_tokens=8)
+
+| Scenario   | Backend | p50      | p95       | mean     |
+| ---------- | ------- | -------- | --------- | -------- |
+| Sequential | Req     | 416 ms   | 1549 ms   | 591 ms   |
+| Sequential | Hackney | 415 ms   | 2549 ms   | 645 ms   |
+| Parallel   | Req     | 454 ms   | 943 ms    | 543 ms   |
+| Parallel   | Hackney | 504 ms   | 894 ms    | 648 ms   |
+
+Within ~10% across the board. At this latency the localhost
+"Req is 6.5×" finding completely vanishes.
+
+### Liquid LFM-2.5 1.2B Thinking (slower, max_tokens=300)
+
+| Scenario   | Backend | p50      | p95       | mean     |
+| ---------- | ------- | -------- | --------- | -------- |
+| Sequential | Req     | 831 ms   | 1004 ms   | 820 ms   |
+| Sequential | Hackney | 793 ms   | 1826 ms   | 880 ms   |
+| Parallel   | Req     | 1134 ms  | 1389 ms   | 1099 ms  |
+| Parallel   | Hackney | **1987 ms** (1.75× slower) | 2490 ms  | 2043 ms  |
+
+Once responses run longer than a few hundred ms, **the parallel gap
+reappears**. Hackney's per-connection `gen_server` (`hackney_conn`) does
+one mailbox hop per chunk read — long responses = more chunks = more
+hops piling up. Mint (Req's underlying client) is process-less, so
+chunk count is irrelevant.
+
+Hackney also has consistently worse p95 tails on sequential — cold
+connection setup is more expensive than Req's pooled-Mint path.
+
 ### When to switch from the default
 
 Default is Req. Switch to Hackney if:
 
-- You're already using hackney for streaming and want to consolidate.
-- Your provider serves large responses (long completions, embedding
-  batches >100 vectors) and you want to shave 15–20% off body decode.
 - You need HTTP/3 — hackney 4 auto-upgrades via Alt-Svc; Req/Finch
   doesn't yet.
+- Your traffic is purely sequential (no parallel batching) and you want
+  to consolidate on one HTTP family across streaming + non-streaming.
+- Your provider serves large response *bodies* (long completions,
+  embedding batches >100 vectors) — Hackney pulls ahead ~15–20% on the
+  256KB-body localhost scenario.
 
-Stay on Req if:
+Stay on Req if (most users):
 
-- You batch many parallel requests against one provider.
+- You batch parallel requests against one provider — gap can be
+  1.5–2× slower on Hackney for ~1s+ responses.
 - You use Req middleware (`Req.Steps`, custom step pipelines).
+- You want the lowest p95 tails on cold connections.
 - You want the most idiomatic Elixir HTTP API.
+
+## Why streaming stays on Hackney regardless
+
+The non-streaming bench is about **throughput**: how fast can you
+round-trip a request/response. Streaming is about **backpressure**:
+can the consumer pace the producer.
+
+Hackney's `:async, :once` mode is the only Elixir HTTP API that gives
+true pull-based streaming. The consumer calls `:hackney.stream_next/1`
+to ask for ONE more chunk, the producer reads ONE chunk off the socket
+and delivers it — the consumer literally cannot fall behind. A slow
+LiveView assigns + diff + push pipeline can't OOM under a fast Groq
+endpoint, no matter how big the disparity.
+
+`Finch.stream/5`'s callback is push-based: the callback fires for
+every chunk that arrives, regardless of whether the consumer is keeping
+up. A fast LLM (Groq at 500 tok/s) feeding a slow consumer grows the
+consumer's mailbox unboundedly until the BEAM scheduler starves or the
+10 MiB SSE buffer cap trips. This was the M-12 finding from the 0.15.0
+review and the reason streaming moved to hackney in the first place.
+
+The same per-connection `gen_server` that hurts hackney's parallel
+non-streaming throughput is the **feature** that makes streaming safe —
+that conn process can throttle. And the throughput cost doesn't bite
+in streaming because chunks arrive at token-rate (10–100/sec), so the
+mailbox-hop overhead per chunk has plenty of breathing room.
+
+**Trade-off summary:**
+
+| | Non-streaming | Streaming |
+|---|---|---|
+| **Default** | Req | Hackney |
+| **Why** | Lower latency under parallel load, simpler API | Pull-based backpressure (no consumer OOM) |
+| **Mint/Finch alternative?** | — (default) | Push-based only — no equivalent today |
+
+If a future Mint version adds pull-based streaming, we'd revisit the
+streaming choice. Until then, Hackney for streaming is structural,
+not a preference.
 
 ## Configuration
 
