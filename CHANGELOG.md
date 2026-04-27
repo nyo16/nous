@@ -2,9 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.15.0] - 2026-04-26
 
 Comprehensive security & correctness pass driven by a multi-agent code review of every subsystem. **57 fixes** across 10 Critical, 19 High, 16 Medium, and 12 Low severity findings, plus a streaming pipeline rewrite. The full review report is at `docs/reviews/2026-04-26-comprehensive-review.md`.
+
+Minor version bump (not patch) because of the 9 behavioral changes called out below — most are security defaults moving from open to deny, which existing callers may need to opt back into.
 
 ### ⚠ Behavioral / breaking changes
 
