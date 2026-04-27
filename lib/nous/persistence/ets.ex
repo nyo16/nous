@@ -3,10 +3,9 @@ defmodule Nous.Persistence.ETS do
   ETS-based persistence backend.
 
   Stores serialized context data in a named ETS table. The table is owned
-  by a dedicated GenServer (`Nous.Persistence.ETS.TableOwner`) started
-  under the Nous application supervisor, so the table outlives transient
-  callers - previously the table died with whichever process happened to
-  call save/load first.
+  by a dedicated GenServer started under the Nous application supervisor,
+  so the table outlives transient callers - previously the table died
+  with whichever process happened to call save/load first.
 
   Data does not survive node restarts. Useful for development, testing,
   and short-lived sessions.

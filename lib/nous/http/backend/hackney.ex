@@ -4,7 +4,7 @@ defmodule Nous.HTTP.Backend.Hackney do
 
   Uses `:hackney.request/5` synchronously — hackney 4 returns the full
   response body inline as `{:ok, status, headers, body}` (the legacy
-  `:hackney.body/1` follow-up call from hackney 1.x was removed).
+  `hackney.body/1` follow-up call from hackney 1.x was removed in v4).
   Hackney 4 is already in the dependency tree from 0.15.0 (used for
   streaming) — this backend lets users consolidate non-streaming HTTP
   onto the same library without keeping Finch/Mint in the hot path.
@@ -47,7 +47,7 @@ defmodule Nous.HTTP.Backend.Hackney do
   end
 
   # Hackney 4 returns the body inline: `{:ok, status, headers, body}`. The
-  # legacy `:hackney.body/1` follow-up call from hackney 1.x is gone — the
+  # legacy hackney.body/1 follow-up call from hackney 1.x is gone — the
   # `with_body` option is now the default and ignored.
   defp do_request(url, headers, body, timeout, connect_timeout, pool) do
     hackney_opts = [
