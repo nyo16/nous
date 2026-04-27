@@ -5,8 +5,11 @@ defmodule Nous.Providers.HTTP do
   Two HTTP families, deliberately split by use case:
 
   - **Non-streaming** requests (one-shot model calls, web fetching, search
-    APIs) go through `Req` (which uses `Finch` underneath) for connection
-    pooling, redirects, and retry ergonomics.
+    APIs) go through a pluggable `Nous.HTTP.Backend`. The default is
+    `Nous.HTTP.Backend.Req` (Req on top of Finch). `Nous.HTTP.Backend.Hackney`
+    is also shipped — pick it via per-call `:backend` opt, the
+    `NOUS_HTTP_BACKEND` env var, or `config :nous, :http_backend, ...`.
+    See `docs/benchmarks/http_backend.md` for the trade-offs.
   - **Streaming** requests (SSE / chunked LLM responses) go through
     `:hackney` in `:async, :once` pull-based mode. Hackney's `:async, :once`
     is true pull-based streaming - the consumer calls
@@ -58,6 +61,7 @@ defmodule Nous.Providers.HTTP do
   require Logger
 
   @default_timeout 60_000
+  @default_connect_timeout 30_000
   # 10MB max buffer
   @max_buffer_size 10 * 1024 * 1024
 
@@ -68,45 +72,32 @@ defmodule Nous.Providers.HTTP do
   @doc """
   Make a non-streaming POST request.
 
+  Dispatches to the configured `Nous.HTTP.Backend`. Resolution order
+  (highest precedence first):
+
+  1. Per-call `:backend` opt — `HTTP.post(url, body, headers, backend: Nous.HTTP.Backend.Hackney)`
+  2. `NOUS_HTTP_BACKEND` env var — `req`, `hackney`, or a fully-qualified
+     module name (e.g. `MyApp.MyHTTPBackend`)
+  3. `Application.get_env(:nous, :http_backend, ...)`
+  4. Default: `Nous.HTTP.Backend.Req`
+
   Returns `{:ok, body}` or `{:error, reason}`.
 
   ## Options
+    * `:backend` - Backend module (overrides env / config / default)
     * `:timeout` - Request timeout in ms (default: 60_000)
 
   ## Error Reasons
     * `%{status: integer(), body: term()}` - HTTP error response
-    * `%Mint.TransportError{}` - Network error
+    * `%Mint.TransportError{}` - Network error (Req backend)
     * `%JSON.DecodeError{}` - JSON decode error
   """
   @spec post(String.t(), map(), list(), keyword()) :: {:ok, map()} | {:error, term()}
   def post(url, body, headers, opts \\ [])
 
   def post(url, body, headers, opts) when is_binary(url) and is_map(body) and is_list(headers) do
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    case Req.post(url,
-           json: body,
-           headers: headers,
-           receive_timeout: timeout
-         ) do
-      {:ok, %Req.Response{status: status, body: response_body}} when status in 200..299 ->
-        {:ok, response_body}
-
-      {:ok, %Req.Response{status: status, body: response_body}} ->
-        Logger.warning(
-          "HTTP request failed with status #{status}: #{truncate_for_log(response_body)}"
-        )
-
-        {:error, %{status: status, body: response_body}}
-
-      {:error, %Mint.TransportError{reason: reason} = error} ->
-        Logger.error("Transport error: #{inspect(reason)}")
-        {:error, error}
-
-      {:error, error} ->
-        Logger.error("HTTP request error: #{inspect(error)}")
-        {:error, error}
-    end
+    backend = Keyword.get(opts, :backend) || configured_backend()
+    backend.post(url, body, headers, opts)
   end
 
   def post(url, body, headers, _opts) do
@@ -118,6 +109,39 @@ defmodule Nous.Providers.HTTP do
      }}
   end
 
+  # Resolve the configured HTTP backend. The env var takes precedence over
+  # app config so ops can A/B-test backends without a redeploy.
+  #
+  # Custom backend modules are resolved via `String.to_existing_atom/1` to
+  # uphold the project-wide rule (review C-2): never `String.to_atom/1` on
+  # untrusted input. If the atom doesn't exist or doesn't implement the
+  # behaviour, fall back to app config / default rather than crash.
+  defp configured_backend do
+    case System.get_env("NOUS_HTTP_BACKEND") do
+      nil -> app_or_default()
+      "req" -> Nous.HTTP.Backend.Req
+      "hackney" -> Nous.HTTP.Backend.Hackney
+      other -> resolve_custom_backend(other)
+    end
+  end
+
+  defp resolve_custom_backend(name) do
+    mod = String.to_existing_atom("Elixir." <> name)
+    Code.ensure_loaded?(mod)
+
+    if function_exported?(mod, :post, 4) do
+      mod
+    else
+      app_or_default()
+    end
+  rescue
+    ArgumentError -> app_or_default()
+  end
+
+  defp app_or_default do
+    Application.get_env(:nous, :http_backend, Nous.HTTP.Backend.Req)
+  end
+
   @doc """
   Make a streaming POST request with SSE parsing.
 
@@ -125,11 +149,19 @@ defmodule Nous.Providers.HTTP do
   Events are maps with string keys (parsed JSON) or `{:stream_done, reason}` tuples.
 
   ## Options
-    * `:timeout` - Request timeout in ms (default: 60_000)
-    * `:finch_name` - Finch pool name (default: Nous.Finch)
+    * `:timeout` - Receive timeout in ms (default: 60_000) — passed to
+      hackney as `:recv_timeout`.
+    * `:connect_timeout` - TCP connect timeout in ms (default: 30_000).
+    * `:pool` - Hackney pool name (default: `:default`). Configure the
+      default pool via `config :nous, :hackney_pool, max_connections:
+      ..., timeout: ...` or start a dedicated pool with
+      `:hackney_pool.start_pool/2`.
     * `:stream_parser` - Module for parsing the stream buffer (default: SSE parsing).
       Must implement `parse_buffer/1` returning `{events, remaining_buffer}`.
       See `Nous.Providers.HTTP.JSONArrayParser` for an example.
+    * `:finch_name` - Ignored. Kept for source compatibility with
+      callers from before the 0.15.0 hackney rewrite. Will be removed
+      in a future release.
 
   ## Error Handling
   The stream will emit `{:stream_error, reason}` on errors and then halt.
@@ -140,7 +172,8 @@ defmodule Nous.Providers.HTTP do
   def stream(url, body, headers, opts)
       when is_binary(url) and is_map(body) and is_list(headers) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
-    finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
+    connect_timeout = Keyword.get(opts, :connect_timeout, @default_connect_timeout)
+    pool = Keyword.get(opts, :pool, :default)
     stream_parser = Keyword.get(opts, :stream_parser)
 
     try do
@@ -152,7 +185,9 @@ defmodule Nous.Providers.HTTP do
       stream =
         Stream.resource(
           fn ->
-            start_streaming(url, headers, json_body, finch_name, timeout, stream_parser)
+            start_streaming(url, headers, json_body, timeout, connect_timeout, pool,
+              stream_parser: stream_parser
+            )
           end,
           &next_chunk/1,
           &cleanup/1
@@ -421,16 +456,16 @@ defmodule Nous.Providers.HTTP do
   # consumer IS the only process; cancellation is just the consumer
   # halting its enumerator and `:hackney.close/1` releasing the conn.
   #
-  # `finch_name` is now unused (legacy positional arg, kept for source
-  # compatibility with callers in providers/*).
-  defp start_streaming(url, headers, body, _finch_name, timeout, stream_parser) do
+  defp start_streaming(url, headers, body, timeout, connect_timeout, pool, extra) do
+    stream_parser = Keyword.get(extra, :stream_parser)
     hackney_headers = Enum.map(headers, fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
 
     opts = [
       :async,
       :once,
+      {:pool, pool},
       {:recv_timeout, timeout},
-      {:connect_timeout, 30_000},
+      {:connect_timeout, connect_timeout},
       {:ssl_options, [verify: :verify_peer, cacerts: :public_key.cacerts_get()]}
     ]
 
@@ -593,6 +628,4 @@ defmodule Nous.Providers.HTTP do
       data
     end
   end
-
-  defp truncate_for_log(data), do: inspect(data, limit: 500)
 end

@@ -5,6 +5,8 @@ defmodule Nous.Application do
 
   @impl true
   def start(_type, _args) do
+    configure_hackney_pool()
+
     children =
       [
         {Finch, name: Nous.Finch, pools: %{default: [size: 10, count: 1]}},
@@ -45,5 +47,37 @@ defmodule Nous.Application do
     end
   else
     defp optional_bumblebee_children, do: []
+  end
+
+  # Reconfigure hackney's `:default` pool from app config. Used by both the
+  # streaming pipeline (`HTTP.stream/4`) and the Hackney HTTP backend
+  # (`Nous.HTTP.Backend.Hackney`). Defaults match hackney's stock defaults
+  # (50 max connections, 2s idle keepalive). Override via:
+  #
+  #     config :nous, :hackney_pool,
+  #       max_connections: 200,
+  #       timeout: 1_500   # idle keepalive in ms (hackney 4 caps at 2_000)
+  #
+  # Apps that want a fully isolated pool should pass `pool: :my_pool` per
+  # call after starting it with `:hackney_pool.start_pool/2` rather than
+  # mutating the shared `:default` pool here.
+  defp configure_hackney_pool do
+    case Application.get_env(:nous, :hackney_pool) do
+      nil ->
+        :ok
+
+      opts when is_list(opts) ->
+        Application.ensure_all_started(:hackney)
+
+        if max = Keyword.get(opts, :max_connections) do
+          :hackney_pool.set_max_connections(:default, max)
+        end
+
+        if timeout = Keyword.get(opts, :timeout) do
+          :hackney_pool.set_timeout(:default, timeout)
+        end
+
+        :ok
+    end
   end
 end

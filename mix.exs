@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.15.0"
+  @version "0.15.1"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -91,8 +91,11 @@ defmodule Nous.MixProject do
       {:mox, "~> 1.1", only: :test},
       {:phoenix_pubsub, "~> 2.1", only: :test},
       # Bypass = in-test HTTP server for exercising the streaming pipeline
-      # without hitting real LLM endpoints.
-      {:bypass, "~> 2.1", only: :test}
+      # without hitting real LLM endpoints. Available in :dev too so
+      # `bench/http_backend.exs` can spin up an in-process server.
+      {:bypass, "~> 2.1", only: [:dev, :test]},
+      # Benchee = HTTP backend benchmark (`mix run bench/http_backend.exs`).
+      {:benchee, "~> 1.3", only: :dev}
     ]
   end
 

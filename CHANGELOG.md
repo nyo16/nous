@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.1] - 2026-04-26
+
+Follow-up to 0.15.0. No behavioral changes for existing users — the
+default HTTP backend stays Req. Two themes: making the HTTP backend
+pluggable, and bringing the local-server providers (LM Studio, vLLM,
+SGLang) up to date with the post-0.15.0 hackney streaming rewrite.
+
+### Added
+
+- **Pluggable HTTP backend for non-streaming requests.** New
+  `Nous.HTTP.Backend` behaviour with `Nous.HTTP.Backend.Req` (default)
+  and `Nous.HTTP.Backend.Hackney` implementations. Configure via:
+  - per-call: `HTTP.post(url, body, headers, backend: Nous.HTTP.Backend.Hackney)`
+  - env var: `NOUS_HTTP_BACKEND=hackney` (also accepts `req` or any
+    fully-qualified custom backend module name)
+  - app config: `config :nous, :http_backend, Nous.HTTP.Backend.Hackney`
+
+  Precedence: per-call > env > app config > default. Custom backends
+  are resolved via `String.to_existing_atom/1` with rescue (per the
+  project-wide C-2 rule from the 0.15.0 review — never `String.to_atom/1`
+  on env input). Benchmark script at `bench/http_backend.exs`; results
+  in `docs/benchmarks/http_backend.md`.
+- **Hackney `:default` pool is now configurable from app config:**
+  `config :nous, :hackney_pool, max_connections: 200, timeout: 1_500`.
+  Applied at `Nous.Application` boot. Used by both the Hackney HTTP
+  backend and the streaming pipeline. (Hackney 4 caps the idle
+  keepalive timeout at 2_000 ms — values above that silently cap.)
+- **Per-call `:connect_timeout` and `:pool` opts** added to both HTTP
+  backends and `Nous.Providers.HTTP.stream/4`. Default 30_000ms /
+  `:default` pool. Lets a single app run different timeouts per
+  provider without mutating shared state.
+- Test coverage for `lmstudio:`, `vllm:`, `sglang:` providers (12 new
+  tests) plus 14 backend contract tests run twice (once per backend)
+  and 9 backend-resolution tests.
+
+### Fixed
+
+- Removed dead `finch_name` arg from `lmstudio.ex` / `vllm.ex` /
+  `sglang.ex` `chat_stream/2` calls — leftover from the pre-hackney
+  streaming code; `HTTP.stream/4` has been ignoring it since 0.15.0.
+- `lmstudio:` / `vllm:` / `sglang:` `base_url` is now validated through
+  `Nous.Tools.UrlGuard` with `allow_private_hosts: true`. Rejects
+  malformed schemes (`file://`, `gopher://`, etc.) from `*_BASE_URL`
+  env vars while keeping localhost defaults.
+
 ## [0.15.0] - 2026-04-26
 
 Comprehensive security & correctness pass driven by a multi-agent code review of every subsystem. **57 fixes** across 10 Critical, 19 High, 16 Medium, and 12 Low severity findings, plus a streaming pipeline rewrite. The full review report is at `docs/reviews/2026-04-26-comprehensive-review.md`.
