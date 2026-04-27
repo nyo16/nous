@@ -23,7 +23,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.15.1"}
+    {:nous, "~> 0.15.2"}
   ]
 end
 ```
@@ -95,23 +95,32 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 
 | Provider | Model String | Streaming |
 |----------|-------------|-----------|
-| LM Studio | `lmstudio:qwen3` | ✅ |
 | OpenAI | `openai:gpt-4` | ✅ |
 | Anthropic | `anthropic:claude-sonnet-4-5-20250929` | ✅ |
 | Google Gemini | `gemini:gemini-2.0-flash` | ✅ |
 | Google Vertex AI | `vertex_ai:gemini-3.1-pro-preview` | ✅ |
 | Groq | `groq:llama-3.1-70b-versatile` | ✅ |
-| Ollama | `ollama:llama2` | ✅ |
+| Mistral | `mistral:mistral-large-latest` | ✅ |
 | OpenRouter | `openrouter:anthropic/claude-3.5-sonnet` | ✅ |
 | Together AI | `together:meta-llama/Llama-3-70b-chat-hf` | ✅ |
+| Ollama | `ollama:llama2` | ✅ |
+| LM Studio | `lmstudio:qwen3` | ✅ |
+| vLLM | `vllm:meta-llama/Llama-3-8B-Instruct` | ✅ |
+| SGLang | `sglang:meta-llama/Llama-3-8B-Instruct` | ✅ |
 | LlamaCpp | `llamacpp:local` + `:llamacpp_model` | ✅ |
 | **Custom** | `custom:model` + `:base_url` | ✅ |
 
-All HTTP providers use pure Elixir HTTP clients (Req + Finch). LlamaCpp runs in-process via NIFs.
+HTTP providers use a pluggable backend — `Req` (default, on top of Finch) or
+`hackney 4` — selected per-call, via `NOUS_HTTP_BACKEND`, or via app config.
+Streaming always uses `hackney`'s `:async, :once` pull-based mode for
+backpressure (a slow consumer can't OOM under a fast LLM). LlamaCpp runs
+in-process via NIFs. See [HTTP Backend](#http-backend) below for details.
 
-> **Tip**: The `custom:` prefix works with **any** OpenAI-compatible endpoint—Groq, Together,
-> OpenRouter, local servers (vLLM, SGLang, LM Studio), or self-hosted endpoints. See
-> [Custom Providers](#custom-providers) for details.
+> **Tip**: The named local providers (`lmstudio:`, `vllm:`, `sglang:`,
+> `ollama:`) are the recommended way to talk to local OpenAI-compatible
+> servers — they default to the right port, validate `*_BASE_URL` env vars
+> through `UrlGuard`, and pick up the OpenAI stream normalizer for free.
+> Use `custom:` only when no named provider fits.
 
 ### Custom Providers
 
@@ -177,23 +186,25 @@ agent = Nous.new("custom:anthropic/claude-3.5-sonnet",
 )
 ```
 
-**Local Servers** (LM Studio, Ollama, vLLM, SGLang):
+**Local Servers** — prefer the named providers below; use `custom:` only when
+your local server isn't one of them.
+
 ```elixir
-# LM Studio (default: localhost:1234)
-agent = Nous.new("custom:qwen3", base_url: "http://localhost:1234/v1")
+# Named providers — recommended. Each defaults to the standard port for
+# its server, and the *_BASE_URL env var is validated for SSRF safety.
+agent = Nous.new("lmstudio:qwen3")                          # localhost:1234
+agent = Nous.new("ollama:llama2")                           # localhost:11434
+agent = Nous.new("vllm:meta-llama/Llama-3-8B-Instruct")     # localhost:8000
+agent = Nous.new("sglang:meta-llama/Llama-3-8B-Instruct")   # localhost:30000
 
-# Ollama (default: localhost:11434)
-agent = Nous.new("custom:llama2", base_url: "http://localhost:11434/v1")
+# Per-provider overrides via env (or :base_url opt):
+# export LMSTUDIO_BASE_URL="http://10.0.0.5:1234/v1"
+# export VLLM_BASE_URL="http://gpu-host:8000/v1"
+# export SGLANG_BASE_URL="http://gpu-host:30000/v1"
 
-# vLLM (default: localhost:8000)
-agent = Nous.new("custom:my-model", base_url: "http://localhost:8000/v1")
-
-# SGLang (default: localhost:30000)
-agent = Nous.new("custom:my-model", base_url: "http://localhost:30000/v1")
-
-# Or use environment variables
-# export CUSTOM_BASE_URL="http://localhost:1234/v1"
-agent = Nous.new("custom:qwen3")  # base_url read from env
+# Fall back to custom: only for non-OpenAI-compatible local servers,
+# or servers without a named provider.
+agent = Nous.new("custom:my-model", base_url: "http://localhost:9999/v1")
 ```
 
 > **Note**: The legacy `openai_compatible:` prefix still works for backward compatibility
@@ -252,6 +263,43 @@ agent = Nous.new("openai:gpt-4",
   fallback: ["anthropic:claude-sonnet-4-20250514", "groq:llama-3.1-70b-versatile"]
 )
 ```
+
+### HTTP Backend
+
+Non-streaming HTTP requests go through a pluggable backend. Default is
+`Nous.HTTP.Backend.Req` (Req on top of Finch); `Nous.HTTP.Backend.Hackney`
+is shipped as an alternative. Streaming always uses hackney's `:async, :once`
+pull-based mode for backpressure — that choice is structural, not
+configurable.
+
+Pick per-call, per-environment, or per-app:
+
+```elixir
+# Per-call
+HTTP.post(url, body, headers, backend: Nous.HTTP.Backend.Hackney)
+
+# Env (highest precedence after per-call):
+# NOUS_HTTP_BACKEND=hackney   # also accepts "req" or a fully-qualified
+#                             # custom module name like "MyApp.MyBackend"
+
+# App config
+config :nous, :http_backend, Nous.HTTP.Backend.Hackney
+```
+
+Tune the shared hackney `:default` pool from app config (used by both the
+Hackney backend and the streaming pipeline):
+
+```elixir
+config :nous, :hackney_pool,
+  max_connections: 200,
+  timeout: 1_500   # idle keepalive ms (hackney 4 caps at 2_000)
+```
+
+See [the HTTP backend benchmark report](https://github.com/nyo16/nous/blob/master/docs/benchmarks/http_backend.md)
+for localhost + real-endpoint benchmark numbers and guidance on when
+to switch backends. Headline: stick with the Req default unless you
+specifically need HTTP/3 (Alt-Svc auto-upgrade) or want to consolidate
+on one HTTP family.
 
 ### Timeouts
 

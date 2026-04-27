@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.2] - 2026-04-26
+
+Documentation-only release. No code changes.
+
+### Changed
+
+- README "Supported Providers" table now lists `vllm:` and `sglang:`
+  as first-class named providers (previously only `lmstudio:` was
+  mentioned; vLLM and SGLang were buried in the `custom:` section).
+- README "Local Servers" section now recommends the dedicated
+  `lmstudio:` / `vllm:` / `sglang:` / `ollama:` prefixes over `custom:`
+  — they default to the right port, validate `*_BASE_URL` env vars
+  through `UrlGuard`, and pick up the OpenAI stream normalizer for free.
+- New "HTTP Backend" section in README covering the pluggable
+  `Nous.HTTP.Backend` behaviour, env-var selection, and shared hackney
+  pool config.
+- Cleaned up `mix docs` warnings — replaced backticks around hidden
+  module references in CHANGELOG so ExDoc no longer tries to auto-link
+  them.
+
 ## [0.15.1] - 2026-04-26
 
 Follow-up to 0.15.0. No behavioral changes for existing users — the
@@ -26,9 +46,9 @@ SGLang) up to date with the post-0.15.0 hackney streaming rewrite.
   in `docs/benchmarks/http_backend.md`.
 - **Hackney `:default` pool is now configurable from app config:**
   `config :nous, :hackney_pool, max_connections: 200, timeout: 1_500`.
-  Applied at `Nous.Application` boot. Used by both the Hackney HTTP
-  backend and the streaming pipeline. (Hackney 4 caps the idle
-  keepalive timeout at 2_000 ms — values above that silently cap.)
+  Applied at app boot. Used by both the Hackney HTTP backend and the
+  streaming pipeline. (Hackney 4 caps the idle keepalive timeout at
+  2_000 ms — values above that silently cap.)
 - **Per-call `:connect_timeout` and `:pool` opts** added to both HTTP
   backends and `Nous.Providers.HTTP.stream/4`. Default 30_000ms /
   `:default` pool. Lets a single app run different timeouts per
@@ -57,7 +77,7 @@ Minor version bump (not patch) because of the 9 behavioral changes called out be
 
 Read these before upgrading.
 
-- **Sub-agent deps no longer auto-forward to children.** `Nous.Plugins.SubAgent.compute_sub_deps/1` now defaults to `[]`. The previous default forwarded every parent dep (minus a 6-key denylist) — secrets, repo handles, signed URLs all leaked into LLM-controlled sub-agent contexts. To restore the old behaviour, set `:sub_agent_shared_deps, :all` explicitly. Recommended: list specific keys with `:sub_agent_shared_deps, [:key1, :key2]`.
+- **Sub-agent deps no longer auto-forward to children.** The `compute_sub_deps/1` helper in `Nous.Plugins.SubAgent` now defaults to `[]`. The previous default forwarded every parent dep (minus a 6-key denylist) — secrets, repo handles, signed URLs all leaked into LLM-controlled sub-agent contexts. To restore the old behaviour, set `:sub_agent_shared_deps, :all` explicitly. Recommended: list specific keys with `:sub_agent_shared_deps, [:key1, :key2]`.
 - **Tools with `requires_approval: true` are now rejected when no `:approval_handler` is wired** (was silently approved). If you use `Nous.Tools.Bash`, `FileWrite`, or `FileEdit`, configure an `approval_handler` on `RunContext` or those tools will refuse to run.
 - **File tools (`FileRead/Write/Edit/Glob/Grep`) now enforce a workspace root.** Defaults to `cwd`; override per-agent via `deps: %{workspace_root: "/path"}`. Paths that escape the root (absolute paths outside, `..` traversal, symlink-escape) are rejected with a clear error to the LLM.
 - **`PromptTemplate.from_template/2` rejects template bodies containing `<% ... %>` blocks** other than the simple `<%= @ident %>` substitution form. Previously bodies were passed through `EEx.eval_string/2`, which executes arbitrary Elixir — an RCE vector for any caller piping LLM output into a template. Conditionals must now be expressed by composing multiple smaller templates.
@@ -112,7 +132,7 @@ Read these before upgrading.
 - **AgentServer `load_context` runs in a `Task.Supervisor.start_child` task** with `GenServer.reply/2` — slow persistence backends no longer block concurrent `get_context` / `cancel_execution` calls.
 - **AgentDynamicSupervisor + Application supervisor restart limits** tuned to `max_restarts: 100, max_seconds: 10` (was the default 3-in-5) so one bad user's crash loop doesn't take down every other tenant.
 - **`Nous.Teams.RateLimiter` is now race-safe under concurrent acquires (M-9 final).** `acquire/3` now returns `{:ok, reservation_ref} | {:error, _}` and atomically reserves the estimated tokens + 1 request slot. `record_usage/3` accepts `:reservation` to reconcile actual vs estimated; missing reconciliations are auto-refunded after `:reservation_ttl_ms` (default 5 min) with a `Logger.warning/1`. `release/2` cancels a reservation when the call errored before completing. Legacy `record_usage/3` without `:reservation` still works for callers that don't go through `acquire`. Added `:open_reservations` to `get_status/1`.
-- **`Nous.Memory.Embedding.Bumblebee` uses a Registry + DynamicSupervisor (M-7 final).** Each model_name is owned by exactly one `ServingHolder` GenServer registered by name. Replaces the `:persistent_term` cache (which forced a node-wide GC pause per new model). `Nous.Application` conditionally adds the Registry + ServingSupervisor children when Bumblebee is loaded.
+- **`Nous.Memory.Embedding.Bumblebee` uses a Registry + DynamicSupervisor (M-7 final).** Each model_name is owned by exactly one `ServingHolder` GenServer registered by name. Replaces the `:persistent_term` cache (which forced a node-wide GC pause per new model). The application supervisor conditionally adds the Registry + ServingSupervisor children when Bumblebee is loaded.
 
 ### Fixed (UX / minor)
 
@@ -138,7 +158,7 @@ Read these before upgrading.
 
 ### Added
 
-- **`:extra_body` setting for arbitrary request body params** — pass vendor-specific top-level JSON keys (e.g. `top_k`, `chat_template_kwargs`, `repetition_penalty`, `min_p`, `best_of`, `ignore_eos`) to OpenAI-compatible providers (`vllm:`, `sglang:`, `custom:`, `lmstudio:`, `ollama:`). Mirrors the OpenAI Python SDK's `extra_body=` argument. Works in `default_settings`, `Nous.LLM` calls, and `Agent.run/3` `model_settings`. Atom keys are stringified at request build time; nested values pass through verbatim. `extra_body` wins on collision with whitelisted keys (escape-hatch semantics). Also forwarded by Gemini and Vertex AI overrides.
+- **`:extra_body` setting for arbitrary request body params** — pass vendor-specific top-level JSON keys (e.g. `top_k`, `chat_template_kwargs`, `repetition_penalty`, `min_p`, `best_of`, `ignore_eos`) to OpenAI-compatible providers (`vllm:`, `sglang:`, `custom:`, `lmstudio:`, `ollama:`). Mirrors the OpenAI Python SDK's `extra_body=` argument. Works in `default_settings`, `Nous.LLM` calls, and agent `model_settings`. Atom keys are stringified at request build time; nested values pass through verbatim. `extra_body` wins on collision with whitelisted keys (escape-hatch semantics). Also forwarded by Gemini and Vertex AI overrides.
 
   Example — disable Qwen3 thinking and tune sampling on a vLLM endpoint:
 
