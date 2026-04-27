@@ -62,18 +62,30 @@ defmodule Nous.Providers.LMStudio do
     url = "#{get_base_url(opts)}/chat/completions"
     headers = build_headers(api_key(opts))
     timeout = Keyword.get(opts, :timeout, @streaming_timeout)
-    finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
 
     params = Map.put(params, "stream", true)
 
-    HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
+    HTTP.stream(url, params, headers, timeout: timeout)
   end
 
-  # Get base URL, also checking LMSTUDIO_BASE_URL env var
+  # Resolve and validate the base URL. The resolved URL goes through
+  # `Nous.Tools.UrlGuard` with `allow_private_hosts: true` (LM Studio is
+  # local-by-default) to reject malformed schemes (`file://` etc.) while
+  # still allowing the localhost default.
   defp get_base_url(opts) do
-    Keyword.get(opts, :base_url) ||
-      System.get_env("LMSTUDIO_BASE_URL") ||
-      base_url(opts)
+    base =
+      Keyword.get(opts, :base_url) ||
+        System.get_env("LMSTUDIO_BASE_URL") ||
+        base_url(opts)
+
+    case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: true) do
+      {:ok, _uri} ->
+        base
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "LM Studio base_url failed validation: #{reason}. Got: #{inspect(base)}"
+    end
   end
 
   defp build_headers(api_key) do
