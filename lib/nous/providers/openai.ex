@@ -51,7 +51,7 @@ defmodule Nous.Providers.OpenAI do
 
   alias Nous.Providers.HTTP
 
-  @default_timeout 60_000
+  @default_timeout 180_000
   @streaming_timeout 120_000
 
   # Reasoning models have different requirements.

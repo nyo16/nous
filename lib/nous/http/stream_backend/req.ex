@@ -32,8 +32,10 @@ defmodule Nous.HTTP.StreamBackend.Req do
 
   alias Nous.Providers.HTTP
 
-  @default_timeout 60_000
-  @default_connect_timeout 30_000
+  # 3 minutes — LLM streams (especially with reasoning) can sit silent
+  # between chunks long enough to trip a tighter timeout. Per-call
+  # `:timeout` opt overrides.
+  @default_timeout 180_000
 
   @impl Nous.HTTP.StreamBackend
   def stream(url, body, headers, opts \\ [])
@@ -41,13 +43,13 @@ defmodule Nous.HTTP.StreamBackend.Req do
   def stream(url, body, headers, opts)
       when is_binary(url) and is_map(body) and is_list(headers) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
-    connect_timeout = Keyword.get(opts, :connect_timeout, @default_connect_timeout)
     stream_parser = Keyword.get(opts, :stream_parser)
+    finch_name = Keyword.get(opts, :finch_name) || Application.get_env(:nous, :finch, Nous.Finch)
 
     parent = self()
     ref = make_ref()
 
-    task = start_request_task(url, body, headers, timeout, connect_timeout, parent, ref)
+    task = start_request_task(url, body, headers, timeout, finch_name, parent, ref)
 
     state = %{
       ref: ref,
@@ -69,14 +71,14 @@ defmodule Nous.HTTP.StreamBackend.Req do
     {:ok, stream}
   end
 
-  defp start_request_task(url, body, headers, timeout, connect_timeout, parent, ref) do
+  defp start_request_task(url, body, headers, timeout, finch_name, parent, ref) do
     Task.async(fn ->
       result =
         Req.post(url,
           json: body,
           headers: headers,
           receive_timeout: timeout,
-          connect_options: [timeout: connect_timeout],
+          finch: finch_name,
           into: fn {:data, chunk}, {req, resp} ->
             if resp.status in 200..299 do
               send(parent, {ref, {:chunk, chunk}})

@@ -132,8 +132,8 @@ defmodule Nous.Providers.OpenAICompatible do
 
   alias Nous.Providers.HTTP
 
-  @default_timeout 60_000
-  @streaming_timeout 120_000
+  @default_timeout 180_000
+  @streaming_timeout 300_000
 
   @impl Nous.Provider
   def chat(params, opts \\ []) do

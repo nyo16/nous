@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.5] - 2026-05-01
+
+### Fixed
+
+- Both Req-based HTTP backends (`Nous.HTTP.Backend.Req` and
+  `Nous.HTTP.StreamBackend.Req`) now actually use the configured
+  `Nous.Finch` pool. Previously they ignored the `:finch_name` opt
+  built by `Nous.Provider` and let Req spin up its own default Finch
+  instance, leaving the supervised `Nous.Finch` pool (started by
+  `Nous.Application` with `size: 10, count: 1`) idle. Both backends
+  now read `:finch_name` from per-call opts, falling back to
+  `Application.get_env(:nous, :finch, Nous.Finch)`. Net effect:
+  `Nous.Finch` becomes the live default for both streaming and
+  non-streaming on Req, so pool tuning via app config actually takes
+  effect. (Note: Req disallows passing `:finch` together with
+  `:connect_options`; connect timeouts are now pool-level — configure
+  on the `Nous.Finch` pool itself if a non-default is needed.)
+
+### Changed
+
+- **Default timeouts increased to 3 minutes (180_000 ms) across the
+  board.** The previous 60s default routinely tripped on reasoning
+  models and longer completions. Affected:
+  - `Nous.Model` `receive_timeout` default → 180_000
+  - `Nous.Model.default_receive_timeout/1` per-provider:
+    cloud/custom → 180_000, llamacpp → 300_000 (up from 120_000)
+  - Provider `@default_timeout` (OpenAI, Anthropic, Mistral, VertexAI,
+    OpenAICompatible) → 180_000
+  - Provider `@streaming_timeout` (Anthropic, Mistral, VertexAI,
+    OpenAICompatible) → 300_000 (up from 120_000)
+  - HTTP backend defaults (Req + Hackney, both streaming and
+    non-streaming) → 180_000
+
+  Per-call `:timeout` / `:receive_timeout` opts continue to override.
+
 ## [0.15.4] - 2026-05-01
 
 Pluggable streaming HTTP backends + hackney 4 pull-mode bug fix.

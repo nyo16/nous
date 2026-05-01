@@ -23,7 +23,9 @@ defmodule Nous.HTTP.Backend.Hackney do
 
   require Logger
 
-  @default_timeout 60_000
+  # 3 minutes — LLMs with reasoning/long completions routinely exceed
+  # the previous 60s default. Per-call `:timeout` opt overrides.
+  @default_timeout 180_000
   @default_connect_timeout 30_000
 
   @impl Nous.HTTP.Backend

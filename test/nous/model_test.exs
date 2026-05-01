@@ -89,11 +89,11 @@ defmodule Nous.ModelTest do
     end
 
     test "sets default receive_timeout based on provider" do
-      # Cloud providers get 60 seconds
+      # Cloud providers get 3 minutes (reasoning models can take a while)
       openai = Model.new(:openai, "gpt-4")
-      assert openai.receive_timeout == 60_000
+      assert openai.receive_timeout == 180_000
 
-      # Local providers get 120 seconds
+      # Local OpenAI-compatible servers get 2 minutes
       lmstudio = Model.new(:lmstudio, "qwen3")
       assert lmstudio.receive_timeout == 120_000
 

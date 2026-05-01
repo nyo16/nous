@@ -13,20 +13,25 @@ defmodule Nous.HTTP.Backend.Req do
 
   require Logger
 
-  @default_timeout 60_000
-  @default_connect_timeout 30_000
+  # 3 minutes — LLMs with reasoning/long completions routinely exceed
+  # the previous 60s default. Per-call `:timeout` opt overrides.
+  @default_timeout 180_000
 
   @impl Nous.HTTP.Backend
   def post(url, body, headers, opts \\ [])
       when is_binary(url) and is_map(body) and is_list(headers) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
-    connect_timeout = Keyword.get(opts, :connect_timeout, @default_connect_timeout)
+    finch_name = Keyword.get(opts, :finch_name) || Application.get_env(:nous, :finch, Nous.Finch)
 
+    # Note: Req disallows both `:finch` and `:connect_options` — connect
+    # timeouts are pool-level when using a named Finch pool. If callers
+    # need a custom connect timeout, configure it on the Finch pool
+    # itself (`Nous.Application` starts `Nous.Finch`).
     case Req.post(url,
            json: body,
            headers: headers,
            receive_timeout: timeout,
-           connect_options: [timeout: connect_timeout]
+           finch: finch_name
          ) do
       {:ok, %Req.Response{status: status, body: response_body}} when status in 200..299 ->
         {:ok, response_body}
