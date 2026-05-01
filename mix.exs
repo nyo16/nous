@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.15.2"
+  @version "0.15.3"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -379,6 +379,10 @@ defmodule Nous.MixProject do
 
   defp package do
     [
+      # Explicit files list — exclude `priv/plts/` (dialyzer artifacts) which
+      # the default Hex package set would otherwise bundle, bloating the
+      # tarball by 100MB+.
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md AGENTS.md),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,

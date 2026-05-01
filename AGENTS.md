@@ -39,8 +39,17 @@ agent =
 {:ok, result} = Nous.run(agent, "Find all TODOs in lib/")
 # result.text, result.messages, result.usage
 
-# Streaming agent run
+# Streaming agent run (text deltas only, no tool execution)
 {:ok, stream} = Nous.run_stream(agent, "Summarize this repo")
+
+# Streaming + tool execution in the same call (Nous 0.15.3+)
+{:ok, result} = Nous.run(agent, "Search and summarize",
+  stream: true,
+  callbacks: %{
+    on_llm_new_delta: fn _, t -> IO.write(t) end,
+    on_llm_new_thinking_delta: fn _, t -> IO.write(["[thinking] ", t]) end
+  }
+)
 ```
 
 That's 90% of what most apps need. Everything else is configuration.

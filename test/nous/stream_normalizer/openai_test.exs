@@ -263,4 +263,42 @@ defmodule Nous.StreamNormalizer.OpenAITest do
                Normalizer.convert_complete_response(chunk)
     end
   end
+
+  describe "normalize_chunk/1 - usage events" do
+    test "final usage-only chunk emits {:usage, %Usage{}}" do
+      chunk = %{
+        "choices" => [],
+        "usage" => %{
+          "prompt_tokens" => 10,
+          "completion_tokens" => 5,
+          "total_tokens" => 15
+        }
+      }
+
+      assert [
+               {:usage,
+                %Nous.Usage{
+                  input_tokens: 10,
+                  output_tokens: 5,
+                  total_tokens: 15
+                }}
+             ] = Normalizer.normalize_chunk(chunk)
+    end
+
+    test "delta chunk with text plus usage emits both events" do
+      chunk = %{
+        "choices" => [%{"delta" => %{"content" => "hi"}, "finish_reason" => nil}],
+        "usage" => %{"prompt_tokens" => 1, "completion_tokens" => 1, "total_tokens" => 2}
+      }
+
+      assert [{:text_delta, "hi"}, {:usage, %Nous.Usage{total_tokens: 2}}] =
+               Normalizer.normalize_chunk(chunk)
+    end
+
+    test "missing usage produces no usage event (back-compat)" do
+      chunk = %{"choices" => [%{"delta" => %{"content" => "hi"}}]}
+
+      assert [{:text_delta, "hi"}] = Normalizer.normalize_chunk(chunk)
+    end
+  end
 end

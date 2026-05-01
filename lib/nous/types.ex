@@ -119,12 +119,15 @@ defmodule Nous.Types do
   @type message :: model_request() | model_response()
 
   @typedoc """
-  Stream event types emitted by `run_stream/3`.
+  Stream event types emitted by `run_stream/3` and the `stream: true` path of `run/3`.
 
   On successful streams, events typically arrive in this order:
   - `{:text_delta, text}` — incremental text content
   - `{:thinking_delta, text}` — incremental reasoning/thinking content
   - `{:tool_call_delta, calls}` — tool call information (list for OpenAI, map/string for others)
+  - `{:usage, usage}` — token usage, emitted as a final chunk for OpenAI-compat
+    providers when `stream_options.include_usage` is enabled, or alongside
+    Anthropic `message_delta` / Gemini `usageMetadata` chunks
   - `{:finish, reason}` — stream finished, reason is a string like `"stop"` or `"length"`
   - `{:complete, result}` — final aggregated result with `%{output: text, finish_reason: reason}`
 
@@ -136,6 +139,7 @@ defmodule Nous.Types do
           {:text_delta, String.t()}
           | {:thinking_delta, String.t()}
           | {:tool_call_delta, any()}
+          | {:usage, map()}
           | {:finish, String.t()}
           | {:complete, map()}
           | {:error, term()}

@@ -7,6 +7,9 @@ defmodule Nous.StreamNormalizer do
   - `{:text_delta, text}` - Incremental text content
   - `{:thinking_delta, text}` - Incremental reasoning/thinking content
   - `{:tool_call_delta, tool_calls}` - Tool call information
+  - `{:usage, usage_map}` - Token usage (final chunk for OpenAI-compat with
+    `stream_options.include_usage`, Anthropic `message_delta`, or Gemini
+    `usageMetadata`)
   - `{:finish, reason}` - Stream completion signal
   - `{:unknown, chunk}` - Unrecognized chunk (filtered by default)
 

@@ -340,6 +340,31 @@ The following Ecto types are mapped to JSON schema types:
 | `Ecto.Enum` | `"string"` with `"enum"` values |
 | `{:array, type}` | `"array"` with typed items |
 
+## Streaming Structured Output
+
+`stream: true` works alongside `output_type`. The model produces JSON via
+the synthetic structured-output tool; the runner streams the tool-call
+fragments, reassembles them, validates the result, and returns the
+structured value as usual.
+
+```elixir
+agent = Nous.new("openai:gpt-4o", output_type: TestUser)
+
+{:ok, result} = Nous.run(agent, "Extract name and age from: Alice is 30",
+  stream: true,
+  callbacks: %{
+    on_tool_call: fn _e, _call -> :ok end  # synthetic tool — internal
+  }
+)
+# result.output #=> %TestUser{name: "Alice", age: 30}
+```
+
+Caveat: `:on_llm_new_delta` will fire **zero or near-zero** times in this
+mode — the model writes JSON to the synthetic tool's arguments, not as
+plain text. Use `:on_tool_call` if you want a "writing structured
+output…" indicator. The synthetic tool is internal and is *not* counted
+in `result.usage.tool_calls`.
+
 ## Per-Run Output Override
 
 Override the agent's `output_type` or `structured_output` options on each `run()` call.

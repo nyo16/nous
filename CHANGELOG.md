@@ -2,6 +2,72 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.3] - 2026-05-01
+
+Streaming + tool execution. The `Nous.Agent.run/3` loop now has a
+`stream: true` opt that combines per-token deltas with the regular
+tool-call loop. Behavior is identical to non-streaming `run/3` except
+for the additional streaming events: same final result, same callbacks,
+same fallback chain, same hook/plugin pipeline.
+
+### Added
+
+- **`:stream` option on `Nous.Agent.run/3`** — runs the iteration loop
+  with the LLM call streamed. Per-iteration assembly produces a
+  `%Nous.Message{}` structurally identical to what the non-streaming
+  path returns, so `:on_llm_new_message`, `process_response`,
+  `handle_tool_calls`, and the loop continuation are all unchanged.
+  Per-token `:on_llm_new_delta` fires for text and the new
+  `:on_llm_new_thinking_delta` fires for reasoning. Works across all
+  providers (OpenAI-compatible, Anthropic, Gemini, Vertex AI, Mistral)
+  and is compatible with `output_type` for streaming structured output.
+- **`:on_llm_new_thinking_delta` callback** — cleanly-separated reasoning
+  deltas. Pre-existing `Nous.Agent.run_stream/3` keeps emitting
+  `[thinking] …` on `:on_llm_new_delta` for backward compatibility — the
+  split is opt-in via `stream: true`.
+- **`Nous.StreamNormalizer.ToolCallAccumulator`** — polymorphic across
+  the three provider chunk shapes (OpenAI list with split JSON args,
+  Anthropic `_phase`-tagged fragments, Gemini already-complete
+  `functionCall`). Reassembles them into the unified
+  `%{"id", "name", "arguments" => decoded_map}` shape that
+  `Nous.Messages.extract_tool_calls/1` already understands.
+- **`{:usage, %Nous.Usage{}}` stream event** — emitted by
+  `Nous.StreamNormalizer.OpenAI` when chunks carry a `usage` field
+  (auto-enabled by injecting `stream_options.include_usage: true` on
+  the OpenAI-compatible streaming request), by
+  `Nous.StreamNormalizer.Anthropic` from `message_start` and
+  `message_delta` chunks, and by `Nous.StreamNormalizer.Gemini` from
+  `usageMetadata`. The `Nous.Types.stream_event` typespec is updated.
+- **Mid-stream cancellation** — `ctx.cancellation_check` is invoked
+  between every streamed chunk; a thrown `{:cancelled, reason}` halts
+  the run with `Errors.ExecutionCancelled` and discards partial state.
+  No tool execution happens on cancellation.
+- **`Nous.Messages.OpenAI.decode_arguments/1` and `parse_usage/1`**
+  promoted to public helpers (formerly private) so the streaming path
+  and the `ToolCallAccumulator` reuse the same JSON-decode-with-fallback
+  and usage-parsing logic as the non-streaming path. Anthropic and
+  Gemini's `parse_usage/1` are similarly public for the same reason.
+
+### Changed
+
+- Pre-existing `Nous.Agent.run_stream/3` semantics are unchanged. The
+  `[thinking] …` prefix on `:on_llm_new_delta` is preserved for that
+  legacy path so existing consumers don't break.
+- `lib/nous/provider.ex` `build_request_params` allowlist now includes
+  `stream_options` (no-op for non-OpenAI providers — silently ignored).
+
+### Documentation
+
+- New "Streaming with Tool Execution" section in `README.md`.
+- New "Streaming with Tool Execution (Recommended)" section in
+  `docs/guides/liveview-integration.md` with a complete LiveView
+  example wiring `:agent_delta`, `:agent_thinking`, `:tool_call`,
+  `:tool_result`, `:agent_message`, and `:agent_complete`.
+- New "Streaming Structured Output" section in
+  `docs/guides/structured_output.md`.
+- 0.15.2 → 0.15.3 entry in `docs/guides/migration_guide.md`.
+- `AGENTS.md` Quick Start example updated.
+
 ## [0.15.2] - 2026-04-27
 
 Documentation-only release. No code changes.

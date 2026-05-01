@@ -29,9 +29,11 @@ defmodule Nous.StreamNormalizer.Gemini do
   end
 
   def normalize_chunk(%{"candidates" => candidates} = chunk) when is_list(candidates) do
+    usage_events = maybe_usage_event(chunk)
+
     case candidates do
-      [candidate | _] -> parse_candidate(candidate, chunk)
-      [] -> [{:unknown, chunk}]
+      [candidate | _] -> parse_candidate(candidate, chunk) ++ usage_events
+      [] -> if usage_events == [], do: [{:unknown, chunk}], else: usage_events
     end
   end
 
@@ -57,6 +59,13 @@ defmodule Nous.StreamNormalizer.Gemini do
 
   def convert_complete_response(chunk) do
     [{:unknown, chunk}]
+  end
+
+  defp maybe_usage_event(chunk) do
+    case Map.get(chunk, "usageMetadata") do
+      nil -> []
+      usage -> [{:usage, Nous.Messages.Gemini.parse_usage(usage)}]
+    end
   end
 
   defp parse_candidate(candidate, _chunk) do

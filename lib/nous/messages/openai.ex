@@ -211,24 +211,46 @@ defmodule Nous.Messages.OpenAI do
     name = Map.get(func, "name") || Map.get(func, :name)
     arguments = Map.get(func, "arguments") || Map.get(func, :arguments)
 
-    parsed_args =
-      case JSON.decode(arguments) do
-        {:ok, decoded_args} ->
-          decoded_args
-
-        {:error, _} ->
-          Logger.warning("Failed to decode tool arguments: #{inspect(arguments)}")
-          %{"error" => "Invalid JSON arguments", "raw" => arguments}
-      end
-
     %{
       "id" => id,
       "name" => name,
-      "arguments" => parsed_args
+      "arguments" => decode_arguments(arguments)
     }
   end
 
-  defp parse_usage(usage_data) when is_map(usage_data) do
+  @doc """
+  Decode an OpenAI tool-call `arguments` JSON string into a map.
+
+  Falls back to `%{"error" => "Invalid JSON arguments", "raw" => raw}` and logs a
+  warning when the JSON is malformed. Used by both the non-streaming response
+  parser and the streaming `ToolCallAccumulator`.
+  """
+  @spec decode_arguments(String.t() | nil) :: map()
+  def decode_arguments(nil), do: %{}
+  def decode_arguments(""), do: %{}
+
+  def decode_arguments(arguments) when is_binary(arguments) do
+    case JSON.decode(arguments) do
+      {:ok, decoded_args} when is_map(decoded_args) ->
+        decoded_args
+
+      {:ok, other} ->
+        Logger.warning("Tool arguments decoded to non-map: #{inspect(other)}")
+        %{"error" => "Invalid JSON arguments", "raw" => arguments}
+
+      {:error, _} ->
+        Logger.warning("Failed to decode tool arguments: #{inspect(arguments)}")
+        %{"error" => "Invalid JSON arguments", "raw" => arguments}
+    end
+  end
+
+  @doc """
+  Parse an OpenAI-format usage map into a `%Nous.Usage{}` struct.
+
+  Returns an empty `%Usage{}` for `nil`. Accepts both atom and string keys.
+  """
+  @spec parse_usage(map() | nil) :: Usage.t()
+  def parse_usage(usage_data) when is_map(usage_data) do
     %Usage{
       requests: 1,
       input_tokens:
@@ -239,5 +261,5 @@ defmodule Nous.Messages.OpenAI do
     }
   end
 
-  defp parse_usage(nil), do: %Usage{}
+  def parse_usage(nil), do: %Usage{}
 end

@@ -206,6 +206,19 @@ defmodule Nous.Agent do
         }
       )
 
+      # Streaming + tool execution (works across providers)
+      {:ok, result} = Agent.run(agent, "Search and summarize",
+        stream: true,
+        callbacks: %{
+          on_llm_new_delta: fn _, text -> IO.write(text) end,
+          on_llm_new_thinking_delta: fn _, text -> IO.write(["[thinking] ", text]) end,
+          on_tool_call: fn _, call -> IO.inspect(call, label: "tool") end
+        }
+      )
+
+  See `Nous.AgentRunner.run/3` for the full option list. The `:stream` option
+  combines per-token deltas with the regular tool-call loop.
+
   ## Returns
 
       {:ok, %{

@@ -10,6 +10,10 @@ defmodule Nous.Agent.Callbacks do
 
   - `:on_agent_start` - Agent run begins
   - `:on_llm_new_delta` - Streaming text chunk received
+  - `:on_llm_new_thinking_delta` - Streaming reasoning/thinking chunk received
+    (only fires under the `stream: true` path of `Nous.Agent.run/3`; the legacy
+    `Nous.Agent.run_stream/3` keeps emitting reasoning as `[thinking] …` on
+    `:on_llm_new_delta` for backward compatibility)
   - `:on_llm_new_message` - Complete LLM response received
   - `:on_tool_call` - Tool invocation started
   - `:on_tool_response` - Tool execution completed
@@ -59,6 +63,7 @@ defmodule Nous.Agent.Callbacks do
   @type event ::
           :on_agent_start
           | :on_llm_new_delta
+          | :on_llm_new_thinking_delta
           | :on_llm_new_message
           | :on_tool_call
           | :on_tool_response
@@ -70,6 +75,7 @@ defmodule Nous.Agent.Callbacks do
   @events [
     :on_agent_start,
     :on_llm_new_delta,
+    :on_llm_new_thinking_delta,
     :on_llm_new_message,
     :on_tool_call,
     :on_tool_response,
@@ -84,6 +90,7 @@ defmodule Nous.Agent.Callbacks do
 
   - `:on_agent_start` - Payload: `%{agent: agent}`
   - `:on_llm_new_delta` - Payload: `String.t()` (text chunk)
+  - `:on_llm_new_thinking_delta` - Payload: `String.t()` (reasoning chunk)
   - `:on_llm_new_message` - Payload: `Message.t()`
   - `:on_tool_call` - Payload: `%{id: String.t(), name: String.t(), arguments: map()}`
   - `:on_tool_response` - Payload: `%{id: String.t(), name: String.t(), result: any()}`
@@ -286,6 +293,7 @@ defmodule Nous.Agent.Callbacks do
   |-------|---------|
   | `:on_agent_start` | `{:agent_start, payload}` |
   | `:on_llm_new_delta` | `{:agent_delta, text}` |
+  | `:on_llm_new_thinking_delta` | `{:agent_thinking, text}` |
   | `:on_llm_new_message` | `{:agent_message, message}` |
   | `:on_tool_call` | `{:tool_call, %{id, name, arguments}}` |
   | `:on_tool_response` | `{:tool_result, %{id, name, result}}` |
@@ -304,6 +312,7 @@ defmodule Nous.Agent.Callbacks do
   @spec to_message(event(), payload()) :: tuple()
   def to_message(:on_agent_start, payload), do: {:agent_start, payload}
   def to_message(:on_llm_new_delta, text), do: {:agent_delta, text}
+  def to_message(:on_llm_new_thinking_delta, text), do: {:agent_thinking, text}
   def to_message(:on_llm_new_message, message), do: {:agent_message, message}
   def to_message(:on_tool_call, call), do: {:tool_call, call}
   def to_message(:on_tool_response, result), do: {:tool_result, result}

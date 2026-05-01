@@ -2,6 +2,22 @@
 
 Guide for upgrading Nous AI between versions and migrating configurations.
 
+## 0.15.2 → 0.15.3
+
+Backward-compatible. Two new opt-in features:
+
+- **`stream: true` on `Nous.Agent.run/3`**: combines per-token deltas with
+  the regular tool-call loop. Existing `Nous.Agent.run_stream/3` semantics
+  are unchanged. Works across all providers (OpenAI-compat, Anthropic,
+  Gemini) and is compatible with `output_type` for structured output.
+- **`:on_llm_new_thinking_delta` callback**: cleanly-separated reasoning
+  deltas. Only fires under `stream: true`; `run_stream/3` keeps the
+  existing `[thinking] …` prefix on `:on_llm_new_delta` for back-compat.
+
+No code changes required to upgrade. Add `stream: true` and the new
+callback to opt in. See the "Streaming with Tool Execution" section in
+the README and `docs/guides/liveview-integration.md` for the full pattern.
+
 ## Quick Migration Checklist
 
 **Upgrading Nous?** Follow these steps:
