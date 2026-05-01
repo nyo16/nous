@@ -48,8 +48,8 @@ defmodule Nous.Providers.Anthropic do
 
   @api_version "2023-06-01"
   @long_context_beta "context-1m-2025-08-07"
-  @default_timeout 60_000
-  @streaming_timeout 120_000
+  @default_timeout 180_000
+  @streaming_timeout 300_000
 
   @impl Nous.Provider
   def chat(params, opts \\ []) do

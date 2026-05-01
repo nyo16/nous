@@ -52,7 +52,7 @@ defmodule Nous.HTTP.StreamBackend do
   parsed events.
 
   ## Options
-    * `:timeout` — receive timeout in milliseconds (default: `60_000`)
+    * `:timeout` — receive timeout in milliseconds (default: `180_000`)
     * `:connect_timeout` — TCP connect timeout in milliseconds (default: `30_000`)
     * `:stream_parser` — module implementing `parse_buffer/1` for non-SSE
       formats (e.g. JSON-array streams). Defaults to SSE.

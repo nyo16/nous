@@ -44,7 +44,10 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
 
   alias Nous.Providers.HTTP
 
-  @default_timeout 60_000
+  # 3 minutes — LLM streams (especially with reasoning) can sit silent
+  # between chunks long enough to trip a tighter timeout. Per-call
+  # `:timeout` opt overrides.
+  @default_timeout 180_000
   @default_connect_timeout 30_000
 
   @impl Nous.HTTP.StreamBackend

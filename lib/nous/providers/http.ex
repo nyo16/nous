@@ -82,7 +82,7 @@ defmodule Nous.Providers.HTTP do
 
   ## Options
     * `:backend` - Backend module (overrides env / config / default)
-    * `:timeout` - Request timeout in ms (default: 60_000)
+    * `:timeout` - Request timeout in ms (default: 180_000)
 
   ## Error Reasons
     * `%{status: integer(), body: term()}` - HTTP error response
@@ -158,7 +158,7 @@ defmodule Nous.Providers.HTTP do
 
   ## Options
     * `:stream_backend` - Backend module (overrides env / config / default)
-    * `:timeout` - Receive timeout in ms (default: 60_000)
+    * `:timeout` - Receive timeout in ms (default: 180_000)
     * `:connect_timeout` - TCP connect timeout in ms (default: 30_000)
     * `:stream_parser` - Module for parsing the stream buffer (default: SSE).
       Must implement `parse_buffer/1` returning `{events, remaining_buffer}`.

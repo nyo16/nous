@@ -156,8 +156,8 @@ defmodule Nous.Providers.VertexAI do
 
   require Logger
 
-  @default_timeout 60_000
-  @streaming_timeout 120_000
+  @default_timeout 180_000
+  @streaming_timeout 300_000
 
   # Override to convert from generic format to Gemini's format (same API format)
   defp build_request_params(model, messages, settings) do

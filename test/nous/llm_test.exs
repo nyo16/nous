@@ -64,8 +64,8 @@ defmodule Nous.LLMTest do
       {:ok, _text} = Nous.LLM.generate_text("openai:gpt-4", "hi")
 
       [model] = CapturingDispatcher.get_models()
-      # OpenAI default is 60_000
-      assert model.receive_timeout == 60_000
+      # OpenAI default is 180_000 (3 minutes, bumped in 0.15.5)
+      assert model.receive_timeout == 180_000
     end
 
     test "with string model for local provider uses its default" do
@@ -102,7 +102,8 @@ defmodule Nous.LLMTest do
       _chunks = Enum.to_list(stream)
 
       [model] = CapturingDispatcher.get_models()
-      assert model.receive_timeout == 60_000
+      # OpenAI default is 180_000 (3 minutes, bumped in 0.15.5)
+      assert model.receive_timeout == 180_000
     end
 
     test "with %Model{} struct preserves receive_timeout" do

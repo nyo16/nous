@@ -49,8 +49,9 @@ defmodule Nous.Model do
     :api_key,
     :organization,
     :stream_normalizer,
-    # 60 seconds default (OpenaiEx default is 15s which is too short for local models)
-    receive_timeout: 60_000,
+    # 3 minutes default — LLMs with reasoning/long completions routinely
+    # exceed shorter timeouts; local models can be slower still.
+    receive_timeout: 180_000,
     default_settings: %{}
   ]
 
@@ -216,7 +217,7 @@ defmodule Nous.Model do
     * `:base_url` - Custom API base URL
     * `:api_key` - API key (defaults to environment config)
     * `:organization` - Organization ID (for OpenAI)
-    * `:receive_timeout` - HTTP receive timeout in milliseconds (default: 60000).
+    * `:receive_timeout` - HTTP receive timeout in milliseconds (default: 180000).
       Increase this for local models that may take longer to respond.
     * `:default_settings` - Default model settings (temperature, max_tokens, etc.)
     * `:stream_normalizer` - Custom stream normalizer module implementing `Nous.StreamNormalizer` behaviour
@@ -302,10 +303,10 @@ defmodule Nous.Model do
   defp default_receive_timeout(:vllm), do: 120_000
   # 2 minutes for local SGLang
   defp default_receive_timeout(:sglang), do: 120_000
-  # 2 minutes for local LlamaCpp
-  defp default_receive_timeout(:llamacpp), do: 120_000
-  # 2 minutes for custom endpoints
-  defp default_receive_timeout(:custom), do: 120_000
-  # 60 seconds for cloud providers
-  defp default_receive_timeout(_provider), do: 60_000
+  # 5 minutes for local LlamaCpp (slow first-token on cold weights)
+  defp default_receive_timeout(:llamacpp), do: 300_000
+  # 3 minutes for custom endpoints
+  defp default_receive_timeout(:custom), do: 180_000
+  # 3 minutes for cloud providers (reasoning models can take a while)
+  defp default_receive_timeout(_provider), do: 180_000
 end
