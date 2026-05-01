@@ -329,11 +329,19 @@ defmodule Nous.Providers.HTTP do
   # Public for stream-backend reuse only. Flush remaining buffer at end
   # of stream — SSE needs a trailing `\n\n` to force the last event
   # through; custom parsers just re-parse the remaining buffer as-is.
+  #
+  # The chunk handler already enforces `@max_buffer_size` on every
+  # received chunk, so the buffer reaching here is by construction
+  # within limits. The synthetic `"\n\n"` is bookkeeping, not received
+  # data — bypass the public size check so a buffer at exactly the cap
+  # doesn't trip a false-positive overflow on the 2-byte append. Only
+  # surface overflow if the input itself is over.
   @spec flush_stream_buffer(String.t(), module() | nil) :: {list(), String.t()}
   def flush_stream_buffer(buffer, nil) do
-    case parse_sse_buffer(buffer <> "\n\n") do
-      {:error, :buffer_overflow} -> {[{:stream_error, %{reason: :buffer_overflow}}], ""}
-      result -> result
+    if byte_size(buffer) > @max_buffer_size do
+      {[{:stream_error, %{reason: :buffer_overflow}}], ""}
+    else
+      do_parse_sse_buffer(buffer <> "\n\n")
     end
   end
 

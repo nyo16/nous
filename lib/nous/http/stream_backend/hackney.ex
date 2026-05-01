@@ -79,18 +79,31 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
     end
   end
 
-  # Start streaming via hackney's `[{:async, :once}]` pull-based mode.
-  defp start_streaming(url, headers, body, timeout, connect_timeout, pool, extra) do
-    stream_parser = Keyword.get(extra, :stream_parser)
-    hackney_headers = Enum.map(headers, fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
-
-    opts = [
+  @doc false
+  # Public for unit-testing the regression net on the option proplist
+  # shape. Returns the proplist passed to `:hackney.request/5`. The
+  # `{:async, :once}` tuple form is what enables pull mode — a bare
+  # `:async` atom would put hackney into push mode (proplists resolves
+  # bare atoms as `{atom, true}`), forfeiting backpressure. See
+  # `deps/hackney/NEWS.md:269-272` and the regression test in
+  # `test/nous/http/stream_backend/hackney_test.exs`.
+  @spec request_opts(non_neg_integer(), non_neg_integer(), atom()) :: keyword()
+  def request_opts(timeout, connect_timeout, pool) do
+    [
       {:async, :once},
       {:pool, pool},
       {:recv_timeout, timeout},
       {:connect_timeout, connect_timeout},
       {:ssl_options, [verify: :verify_peer, cacerts: :public_key.cacerts_get()]}
     ]
+  end
+
+  # Start streaming via hackney's `[{:async, :once}]` pull-based mode.
+  defp start_streaming(url, headers, body, timeout, connect_timeout, pool, extra) do
+    stream_parser = Keyword.get(extra, :stream_parser)
+    hackney_headers = Enum.map(headers, fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
+
+    opts = request_opts(timeout, connect_timeout, pool)
 
     case :hackney.request(:post, url, hackney_headers, body, opts) do
       {:ok, ref} ->

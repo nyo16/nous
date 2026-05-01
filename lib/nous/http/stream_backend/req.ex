@@ -52,6 +52,7 @@ defmodule Nous.HTTP.StreamBackend.Req do
     state = %{
       ref: ref,
       task: task,
+      task_ref: task.ref,
       buffer: "",
       done: false,
       timeout: timeout,
@@ -126,6 +127,15 @@ defmodule Nous.HTTP.StreamBackend.Req do
 
       {ref, {:error, reason}} when ref == state.ref ->
         {[{:stream_error, reason}], %{state | done: true}}
+
+      # Task crashed without sending an explicit completion message —
+      # surface it as a stream error instead of waiting for the receive
+      # timeout. The :normal case here can only fire if a stale DOWN
+      # arrives before our explicit messages, which doesn't happen with
+      # Task.async monitor ordering, so any DOWN here is abnormal.
+      {:DOWN, task_ref, :process, _pid, reason} when task_ref == state.task_ref ->
+        Logger.error("Req stream task died: #{inspect(reason)}")
+        {[{:stream_error, %{reason: :task_died, details: reason}}], %{state | done: true}}
 
       {ref, {:chunk, chunk}} when ref == state.ref ->
         new_buffer = state.buffer <> chunk

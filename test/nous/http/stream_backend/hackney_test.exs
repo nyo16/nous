@@ -74,21 +74,26 @@ defmodule Nous.HTTP.StreamBackend.HackneyTest do
     assert Enum.any?(events, &match?({:stream_error, _}, &1))
   end
 
-  # Regression net for the [{:async, :once}] tuple fix. If a future hackney
-  # bump silently changes the option shape, this test should fail loudly:
-  # in push mode the receive loop would still get messages but the
-  # backpressure property is lost. Here we verify the *messages* shape by
-  # asserting the stream completes against a Bypass server that delivers
-  # all data in one chunk — works in both push and pull.
-  test "request actually goes through hackney pull mode", %{bypass: bypass, url: url} do
-    Bypass.expect_once(bypass, "POST", "/v1/sse", fn conn ->
-      ua = conn |> Plug.Conn.get_req_header("user-agent") |> List.first("")
-      assert String.contains?(ua, "hackney")
-      send_sse(conn, "data: {\"ok\":true}\n\ndata: [DONE]\n\n")
-    end)
+  # Regression net for the [{:async, :once}] tuple fix. The end-to-end
+  # tests above pass in BOTH push and pull mode because hackney's push
+  # mode happens to deliver messages in the same `{:hackney_response,
+  # conn, _}` shape the receive loop tolerates. The architectural
+  # difference (and the entire reason this backend exists) is the
+  # *option proplist shape*: bare `:async` atom = push (no backpressure),
+  # `{:async, :once}` tuple = pull. Verifying the option shape directly
+  # is the only sound regression net.
+  test "request_opts/3 uses {:async, :once} tuple form (not bare atom)" do
+    opts = Hackney.request_opts(60_000, 30_000, :default)
 
-    {:ok, stream} = Hackney.stream(url, %{}, [], [])
-    events = Enum.to_list(stream)
-    assert Enum.any?(events, &match?(%{"ok" => true}, &1))
+    assert {:async, :once} in opts,
+           "expected `{:async, :once}` tuple in opts: #{inspect(opts)}"
+
+    refute :async in opts,
+           "bare `:async` atom found — proplists would resolve it as `{:async, true}`, " <>
+             "putting hackney into push mode and forfeiting backpressure. " <>
+             "See deps/hackney/NEWS.md:269-272."
+
+    refute :once in opts,
+           "bare `:once` atom found — would be silently ignored by hackney's proplist parser."
   end
 end
