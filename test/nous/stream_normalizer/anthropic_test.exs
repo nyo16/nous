@@ -80,34 +80,57 @@ defmodule Nous.StreamNormalizer.AnthropicTest do
   end
 
   describe "normalize_chunk/1 - finish" do
-    test "message_delta with stop_reason" do
+    test "message_delta with stop_reason emits usage and finish" do
       chunk = %{
         "type" => "message_delta",
         "delta" => %{"stop_reason" => "end_turn"},
         "usage" => %{"output_tokens" => 42}
       }
 
-      assert [{:finish, "end_turn"}] = Anthropic.normalize_chunk(chunk)
+      assert [{:usage, %Nous.Usage{output_tokens: 42}}, {:finish, "end_turn"}] =
+               Anthropic.normalize_chunk(chunk)
     end
 
-    test "message_delta with tool_use stop_reason" do
+    test "message_delta with tool_use stop_reason emits usage and finish" do
       chunk = %{
         "type" => "message_delta",
         "delta" => %{"stop_reason" => "tool_use"},
         "usage" => %{"output_tokens" => 10}
       }
 
-      assert [{:finish, "tool_use"}] = Anthropic.normalize_chunk(chunk)
+      assert [{:usage, %Nous.Usage{output_tokens: 10}}, {:finish, "tool_use"}] =
+               Anthropic.normalize_chunk(chunk)
     end
 
-    test "message_delta without stop_reason returns unknown" do
+    test "message_delta without stop_reason emits usage only" do
       chunk = %{
         "type" => "message_delta",
         "delta" => %{},
         "usage" => %{"output_tokens" => 0}
       }
 
+      assert [{:usage, %Nous.Usage{output_tokens: 0}}] = Anthropic.normalize_chunk(chunk)
+    end
+
+    test "message_delta without usage and without stop_reason returns unknown" do
+      chunk = %{
+        "type" => "message_delta",
+        "delta" => %{}
+      }
+
       assert [{:unknown, _}] = Anthropic.normalize_chunk(chunk)
+    end
+
+    test "message_start with usage emits {:usage, _}" do
+      chunk = %{
+        "type" => "message_start",
+        "message" => %{
+          "id" => "msg_1",
+          "usage" => %{"input_tokens" => 7, "output_tokens" => 0}
+        }
+      }
+
+      assert [{:usage, %Nous.Usage{input_tokens: 7}}] = Anthropic.normalize_chunk(chunk)
     end
   end
 

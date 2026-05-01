@@ -40,6 +40,16 @@ defmodule Nous.StreamNormalizer.OpenAI do
     end
   end
 
+  # Extract a {:usage, %Usage{}} event from the chunk's "usage" field if
+  # present. OpenAI sends a final chunk with empty choices and a populated
+  # usage map when stream_options.include_usage is enabled.
+  defp maybe_usage_event(chunk) do
+    case get_flexible(chunk, :usage) do
+      nil -> []
+      usage -> [{:usage, Nous.Messages.OpenAI.parse_usage(usage)}]
+    end
+  end
+
   @impl true
   def complete_response?(chunk) do
     choices = get_choices(chunk)
@@ -106,6 +116,7 @@ defmodule Nous.StreamNormalizer.OpenAI do
   defp parse_delta_chunk(chunk) do
     choices = get_choices(chunk)
     choice = List.first(choices)
+    usage_events = maybe_usage_event(chunk)
 
     if choice do
       delta = get_flexible(choice, :delta) || %{}
@@ -123,9 +134,15 @@ defmodule Nous.StreamNormalizer.OpenAI do
         |> append_if(is_list(tool_calls) and tool_calls != [], {:tool_call_delta, tool_calls})
         |> append_if(not is_nil(finish_reason), {:finish, finish_reason})
 
-      if events == [], do: [{:unknown, chunk}], else: events
+      cond do
+        events != [] -> events ++ usage_events
+        usage_events != [] -> usage_events
+        true -> [{:unknown, chunk}]
+      end
     else
-      [{:unknown, chunk}]
+      # OpenAI's final usage-only chunk has empty choices and a populated
+      # `usage` field. Emit just the usage event in that case.
+      if usage_events == [], do: [{:unknown, chunk}], else: usage_events
     end
   end
 

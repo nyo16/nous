@@ -93,7 +93,11 @@ defmodule Nous.Agent.Context do
           hook_registry: Nous.Hook.Registry.t() | nil,
 
           # Skills (runtime-only, never serialized)
-          active_skills: [Nous.Skill.t()]
+          active_skills: [Nous.Skill.t()],
+
+          # Streaming flag — when true, the LLM call site streams chunks
+          # through the new tool-aware path. Runtime-only.
+          stream: boolean()
         }
 
   defstruct messages: [],
@@ -113,7 +117,8 @@ defmodule Nous.Agent.Context do
             pubsub: nil,
             pubsub_topic: nil,
             hook_registry: nil,
-            active_skills: []
+            active_skills: [],
+            stream: false
 
   @doc """
   Create a new context with options.
@@ -129,6 +134,7 @@ defmodule Nous.Agent.Context do
     * `:agent_name` - Name for telemetry/logging
     * `:cancellation_check` - Function to check for cancellation
     * `:approval_handler` - Function called for tools with `requires_approval: true`
+    * `:stream` - When true, the runner uses streaming + tool execution (default: false)
 
   ## Examples
 
@@ -158,7 +164,8 @@ defmodule Nous.Agent.Context do
       cancellation_check: Keyword.get(opts, :cancellation_check),
       approval_handler: Keyword.get(opts, :approval_handler),
       pubsub: Keyword.get(opts, :pubsub) || Nous.PubSub.configured_pubsub(),
-      pubsub_topic: Keyword.get(opts, :pubsub_topic)
+      pubsub_topic: Keyword.get(opts, :pubsub_topic),
+      stream: Keyword.get(opts, :stream, false)
     }
   end
 

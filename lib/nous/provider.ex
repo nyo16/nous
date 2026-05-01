@@ -414,6 +414,8 @@ defmodule Nous.Provider do
         |> maybe_put("stop", merged_settings[:stop_sequences] || merged_settings[:stop])
         |> maybe_put("tools", merged_settings[:tools])
         |> maybe_put("tool_choice", merged_settings[:tool_choice])
+        # OpenAI-style streaming usage opt-in (no-op on Anthropic/Gemini)
+        |> maybe_put("stream_options", merged_settings[:stream_options])
         # Structured output: response_format
         |> maybe_put("response_format", merged_settings[:response_format])
         # vLLM guided decoding

@@ -295,7 +295,13 @@ defmodule Nous.Messages.Gemini do
     {text_content, reasoning_content, Enum.reverse(tool_calls)}
   end
 
-  defp parse_usage(usage_data) when is_map(usage_data) do
+  @doc """
+  Parse a Gemini-format `usageMetadata` map into a `%Nous.Usage{}` struct.
+
+  Used by both the non-streaming response parser and the streaming normalizer.
+  """
+  @spec parse_usage(map() | nil) :: Usage.t()
+  def parse_usage(usage_data) when is_map(usage_data) do
     %Usage{
       input_tokens: Map.get(usage_data, "promptTokenCount", 0),
       output_tokens: Map.get(usage_data, "candidatesTokenCount", 0),
@@ -303,7 +309,7 @@ defmodule Nous.Messages.Gemini do
     }
   end
 
-  defp parse_usage(_), do: %Usage{}
+  def parse_usage(_), do: %Usage{}
 
   defp consolidate_content_parts([]), do: ""
   defp consolidate_content_parts([%ContentPart{type: :text, content: content}]), do: content

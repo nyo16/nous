@@ -58,10 +58,26 @@ defmodule Nous.StreamNormalizer.Anthropic do
     [{:tool_call_delta, %{"_index" => index, "_phase" => :stop}}]
   end
 
-  def normalize_chunk(%{"type" => "message_delta", "delta" => delta}) do
+  def normalize_chunk(%{"type" => "message_delta", "delta" => delta} = chunk) do
+    usage_events =
+      case Map.get(chunk, "usage") do
+        usage when is_map(usage) -> [{:usage, Nous.Messages.Anthropic.parse_usage(usage)}]
+        _ -> []
+      end
+
     case Map.get(delta, "stop_reason") do
-      nil -> [{:unknown, delta}]
-      reason -> [{:finish, reason}]
+      nil ->
+        if usage_events == [], do: [{:unknown, delta}], else: usage_events
+
+      reason ->
+        usage_events ++ [{:finish, reason}]
+    end
+  end
+
+  def normalize_chunk(%{"type" => "message_start", "message" => message}) do
+    case Map.get(message, "usage") do
+      usage when is_map(usage) -> [{:usage, Nous.Messages.Anthropic.parse_usage(usage)}]
+      _ -> [{:unknown, message}]
     end
   end
 

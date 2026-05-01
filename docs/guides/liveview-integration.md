@@ -298,6 +298,81 @@ end
 
 ## Streaming Patterns
 
+### Streaming with Tool Execution (Recommended)
+
+`Nous.run/3` with `stream: true` is the cleanest way to combine per-token
+deltas with the tool-call loop. It runs in a background task; events arrive
+as `handle_info` messages via `notify_pid` (or via the `callbacks` map).
+
+```elixir
+defmodule MyAppWeb.ChatLive do
+  use Phoenix.LiveView
+
+  def mount(_params, _session, socket) do
+    agent = Nous.new("openai:gpt-4o", tools: [&MyTools.search/2])
+    {:ok, assign(socket, agent: agent, messages: [], stream: nil, cancel: false)}
+  end
+
+  def handle_event("send", %{"prompt" => prompt}, socket) do
+    parent = self()
+    cancel_ref = make_ref()
+
+    {:ok, task} =
+      Task.start_link(fn ->
+        Nous.run(socket.assigns.agent, prompt,
+          stream: true,
+          notify_pid: parent,
+          cancellation_check: fn ->
+            if Process.get({:cancel, cancel_ref}), do: throw({:cancelled, :user})
+          end
+        )
+      end)
+
+    {:noreply, assign(socket, stream: {task, cancel_ref}, current: "")}
+  end
+
+  def handle_event("stop", _, socket) do
+    {_task, ref} = socket.assigns.stream
+    Process.put({:cancel, ref}, true)
+    {:noreply, socket}
+  end
+
+  # Per-token text delta — append to the in-progress assistant message
+  def handle_info({:agent_delta, text}, socket) do
+    {:noreply, assign(socket, current: socket.assigns.current <> text)}
+  end
+
+  # Per-token reasoning delta — render in a separate "thinking" pane
+  def handle_info({:agent_thinking, text}, socket) do
+    {:noreply, push_event(socket, "thinking", %{text: text})}
+  end
+
+  # Tool was invoked — render a "calling tool…" indicator
+  def handle_info({:tool_call, call}, socket) do
+    {:noreply, push_event(socket, "tool_call", call)}
+  end
+
+  # Tool returned — render the result
+  def handle_info({:tool_result, result}, socket) do
+    {:noreply, push_event(socket, "tool_result", result)}
+  end
+
+  # Iteration complete — flush the assembled assistant message
+  def handle_info({:agent_message, message}, socket) do
+    messages = socket.assigns.messages ++ [message]
+    {:noreply, assign(socket, messages: messages, current: "")}
+  end
+
+  def handle_info({:agent_complete, _result}, socket) do
+    {:noreply, assign(socket, stream: nil)}
+  end
+end
+```
+
+The mapping from callback events to `handle_info` messages is documented in
+`Nous.Agent.Callbacks` — `:on_llm_new_delta` becomes `{:agent_delta, text}`,
+`:on_llm_new_thinking_delta` becomes `{:agent_thinking, text}`, etc.
+
 ### Basic Text Streaming
 
 ```elixir

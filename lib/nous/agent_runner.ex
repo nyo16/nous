@@ -56,12 +56,21 @@ defmodule Nous.AgentRunner do
     * `:usage_limits` - Usage limits (not implemented yet)
     * `:model_settings` - Override model settings
     * `:max_iterations` - Maximum iterations (default: 10)
-    * `:cancellation_check` - Function to check if execution should be cancelled
+    * `:cancellation_check` - Function to check if execution should be cancelled.
+      Under `stream: true`, also invoked between every streamed chunk; on
+      cancellation the consumer aborts cleanly without partial tool execution.
     * `:callbacks` - Map of callback functions
     * `:notify_pid` - PID to receive event messages
     * `:context` - Existing context to continue from
     * `:output_type` - Override the agent's `output_type` for this run
     * `:structured_output` - Override the agent's `structured_output` options for this run
+    * `:stream` - When `true`, the LLM call streams chunks while still running
+      the tool-call loop (default: `false`). Fires `:on_llm_new_delta` per
+      text chunk and `:on_llm_new_thinking_delta` per reasoning chunk.
+      `:on_llm_new_message` still fires once per iteration with the assembled
+      message, identical in shape to the non-streaming path. Works across all
+      providers (OpenAI-compatible, Anthropic, Gemini) and is compatible with
+      `output_type` (the synthetic-tool path is honored under streaming).
 
   """
   @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -225,6 +234,7 @@ defmodule Nous.AgentRunner do
       ctx
       |> maybe_update_callbacks(opts)
       |> maybe_update_notify_pid(opts)
+      |> maybe_update_stream(opts)
       |> Context.set_needs_response(true)
       |> Context.patch_dangling_tool_calls()
 
@@ -353,10 +363,12 @@ defmodule Nous.AgentRunner do
         |> Context.set_needs_response(true)
         |> maybe_update_callbacks(opts)
         |> maybe_update_notify_pid(opts)
+        |> maybe_update_stream(opts)
 
       nil ->
         # Build fresh context
         message_history = Keyword.get(opts, :message_history, [])
+        stream = Keyword.get(opts, :stream, false)
 
         # Build system prompt
         system_prompt =
@@ -404,8 +416,18 @@ defmodule Nous.AgentRunner do
           agent_name: agent.name,
           cancellation_check: Keyword.get(opts, :cancellation_check),
           pubsub: Keyword.get(opts, :pubsub),
-          pubsub_topic: Keyword.get(opts, :pubsub_topic)
+          pubsub_topic: Keyword.get(opts, :pubsub_topic),
+          stream: stream
         )
+    end
+  end
+
+  # When continuing from an existing context (the %Context{} branch above),
+  # honor the `:stream` opt as an override.
+  defp maybe_update_stream(ctx, opts) do
+    case Keyword.fetch(opts, :stream) do
+      {:ok, value} when is_boolean(value) -> %{ctx | stream: value}
+      _ -> ctx
     end
   end
 
@@ -536,7 +558,20 @@ defmodule Nous.AgentRunner do
           "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
         )
 
-        case request_with_fallback(request_agent, messages, model_settings, all_tools) do
+        request_result =
+          if ctx.stream do
+            stream_request_with_fallback(
+              request_agent,
+              messages,
+              model_settings,
+              all_tools,
+              ctx
+            )
+          else
+            request_with_fallback(request_agent, messages, model_settings, all_tools)
+          end
+
+        case request_result do
           {:ok, response, active_model} ->
             # Track active_model in ctx for downstream telemetry / observability,
             # but do NOT mutate agent.model. Mutating made the start-of-run
@@ -1325,6 +1360,156 @@ defmodule Nous.AgentRunner do
       get_dispatcher().request_stream(model, messages, settings)
     end)
   end
+
+  # Streaming counterpart to request_with_fallback/4. Initializes the stream
+  # via stream_with_fallback/4 (so initialization errors trigger fallback),
+  # then consumes the stream eagerly into a %Nous.Message{} structurally
+  # identical to what request_with_fallback/4 returns. Per-chunk delta
+  # callbacks fire from the consumer, and the assembled message flows back
+  # into the same do_iteration code path that handles tool calls and the
+  # next iteration.
+  #
+  # Returns {:ok, response, active_model} or {:error, reason}.
+  @openai_compat_providers ~w(openai custom vllm sglang lmstudio llamacpp)a
+
+  defp stream_request_with_fallback(agent, messages, model_settings, all_tools, ctx) do
+    model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
+
+    Fallback.with_fallback(model_chain, fn model ->
+      settings =
+        model
+        |> rebuild_settings_for_model(model_settings, all_tools, agent)
+        |> maybe_inject_include_usage(model.provider)
+
+      with {:ok, stream} <- get_dispatcher().request_stream(model, messages, settings),
+           {:ok, message} <- consume_stream_into_message(stream, ctx, model.provider) do
+        {:ok, {message, model}}
+      end
+    end)
+    |> case do
+      {:ok, {response, active_model}} -> {:ok, response, active_model}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp maybe_inject_include_usage(settings, provider)
+       when provider in @openai_compat_providers do
+    current = Map.get(settings, :stream_options) || %{}
+    Map.put(settings, :stream_options, Map.put(current, :include_usage, true))
+  end
+
+  defp maybe_inject_include_usage(settings, _provider), do: settings
+
+  # Consume a normalized stream into a single %Nous.Message{}, firing
+  # per-chunk delta callbacks along the way. Halts cleanly with
+  # ExecutionCancelled if `ctx.cancellation_check` raises {:cancelled, reason}
+  # between chunks.
+  defp consume_stream_into_message(stream, ctx, provider) do
+    initial = %{
+      text: [],
+      reasoning: [],
+      tool_acc: Nous.StreamNormalizer.ToolCallAccumulator.new(),
+      usage: nil,
+      finish_reason: "stop",
+      error: nil,
+      cancelled: nil
+    }
+
+    final =
+      Enum.reduce_while(stream, initial, fn event, acc ->
+        case check_cancellation_inline(ctx) do
+          {:cancelled, reason} ->
+            {:halt, %{acc | cancelled: reason}}
+
+          :ok ->
+            {:cont, handle_stream_event(event, acc, ctx)}
+        end
+      end)
+
+    cond do
+      final.cancelled ->
+        {:error, Errors.ExecutionCancelled.exception(reason: final.cancelled)}
+
+      final.error ->
+        {:error, final.error}
+
+      true ->
+        {:ok, build_streamed_message(final, provider)}
+    end
+  end
+
+  defp handle_stream_event({:text_delta, text}, acc, ctx) do
+    Callbacks.execute(ctx, :on_llm_new_delta, text)
+    %{acc | text: [acc.text, text]}
+  end
+
+  defp handle_stream_event({:thinking_delta, text}, acc, ctx) do
+    Callbacks.execute(ctx, :on_llm_new_thinking_delta, text)
+    %{acc | reasoning: [acc.reasoning, text]}
+  end
+
+  defp handle_stream_event({:tool_call_delta, fragment}, acc, _ctx) do
+    %{acc | tool_acc: Nous.StreamNormalizer.ToolCallAccumulator.feed(acc.tool_acc, fragment)}
+  end
+
+  defp handle_stream_event({:usage, usage}, acc, _ctx) do
+    %{acc | usage: usage}
+  end
+
+  defp handle_stream_event({:finish, reason}, acc, _ctx) do
+    %{acc | finish_reason: reason}
+  end
+
+  defp handle_stream_event({:error, reason}, acc, _ctx) do
+    %{acc | error: reason}
+  end
+
+  defp handle_stream_event(_other, acc, _ctx), do: acc
+
+  defp build_streamed_message(acc, _provider) do
+    text = IO.iodata_to_binary(acc.text)
+    reasoning = IO.iodata_to_binary(acc.reasoning)
+    tool_calls = Nous.StreamNormalizer.ToolCallAccumulator.finalize(acc.tool_acc)
+
+    attrs = %{
+      role: :assistant,
+      metadata: %{
+        usage: acc.usage || %Nous.Usage{},
+        finish_reason: acc.finish_reason,
+        timestamp: DateTime.utc_now()
+      }
+    }
+
+    attrs = if text != "", do: Map.put(attrs, :content, text), else: attrs
+
+    attrs =
+      if reasoning != "",
+        do: Map.put(attrs, :reasoning_content, reasoning),
+        else: attrs
+
+    attrs =
+      if tool_calls != [],
+        do: Map.put(attrs, :tool_calls, tool_calls),
+        else: attrs
+
+    Message.new!(attrs)
+  end
+
+  # Inline cancellation probe used between streamed chunks. Mirrors
+  # check_cancellation/1 but returns a value instead of an {:error, _}
+  # tuple so the reduce can decide between :halt and :cont.
+  defp check_cancellation_inline(%{cancellation_check: nil}), do: :ok
+
+  defp check_cancellation_inline(%{cancellation_check: check}) when is_function(check, 0) do
+    try do
+      check.()
+      :ok
+    catch
+      {:cancelled, reason} -> {:cancelled, reason}
+    end
+  end
+
+  defp check_cancellation_inline(_), do: :ok
 
   # Rebuild model settings when falling back to a different provider.
   # Tool schemas must be re-converted for the target provider's format.

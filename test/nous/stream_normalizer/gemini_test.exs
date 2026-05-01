@@ -245,4 +245,32 @@ defmodule Nous.StreamNormalizer.GeminiTest do
       assert [{:unknown, %{}}] = Gemini.convert_complete_response(%{})
     end
   end
+
+  describe "normalize_chunk/1 - usage events" do
+    test "chunks with usageMetadata emit {:usage, %Usage{}}" do
+      chunk = %{
+        "candidates" => [
+          %{"content" => %{"parts" => [%{"text" => "hi"}]}}
+        ],
+        "usageMetadata" => %{
+          "promptTokenCount" => 4,
+          "candidatesTokenCount" => 2,
+          "totalTokenCount" => 6
+        }
+      }
+
+      events = Gemini.normalize_chunk(chunk)
+
+      assert {:text_delta, "hi"} in events
+      assert {:usage, %Nous.Usage{input_tokens: 4, output_tokens: 2, total_tokens: 6}} in events
+    end
+
+    test "missing usageMetadata produces no usage event" do
+      chunk = %{
+        "candidates" => [%{"content" => %{"parts" => [%{"text" => "hi"}]}}]
+      }
+
+      assert [{:text_delta, "hi"}] = Gemini.normalize_chunk(chunk)
+    end
+  end
 end

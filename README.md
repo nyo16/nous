@@ -527,6 +527,33 @@ stream
 end)
 ```
 
+### Streaming with Tool Execution
+
+`Nous.run_stream/3` streams text but does **not** execute tools. To get
+per-token deltas *and* tool execution in the same call, pass `stream: true`
+to `Nous.run/3`. The agent loop runs as usual; deltas fire as the model
+produces them.
+
+```elixir
+agent = Nous.new("openai:gpt-4", tools: [&MyTools.search/2])
+
+{:ok, result} = Nous.run(agent, "Find an Elixir tutorial",
+  stream: true,
+  callbacks: %{
+    on_llm_new_delta: fn _e, t -> IO.write(t) end,
+    on_llm_new_thinking_delta: fn _e, t -> IO.write(["[thinking] ", t]) end,
+    on_tool_call: fn _e, call -> IO.inspect(call, label: "tool") end,
+    on_tool_response: fn _e, resp -> IO.inspect(resp, label: "result") end
+  }
+)
+```
+
+Works across providers (OpenAI-compatible, Anthropic, Gemini). Compatible
+with `output_type` for structured output. `cancellation_check` is honored
+between chunks — a flipped flag aborts the run cleanly without partial
+tool execution. See `docs/guides/liveview-integration.md` for the LiveView
+pattern.
+
 ### Fallback Models
 
 Automatically try alternative models when the primary fails (rate limit, server error, timeout):
