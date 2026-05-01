@@ -2,6 +2,79 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.4] - 2026-05-01
+
+Pluggable streaming HTTP backends + hackney 4 pull-mode bug fix.
+
+### Fixed
+
+- **Hackney 4 streaming was silently in push mode, not pull mode.**
+  `lib/nous/providers/http.ex:463-470` (in 0.15.0–0.15.3) passed
+  `[:async, :once, ...]` as separate atoms to `:hackney.request/5`.
+  Erlang's `proplists` resolves bare atom `:async` as `{:async, true}`,
+  which puts hackney into push mode; the bare `:once` atom is silently
+  ignored. The architectural intent of M-12 (strict pull-based
+  backpressure so a slow consumer cannot grow its mailbox) was
+  forfeited — `:hackney.stream_next/1` is a no-op in push mode, so the
+  receive loop appeared to work in many cases (chunks arrive in the
+  same shape) but the pacing came from the producer, not the consumer.
+  The fix is the tuple form `[{:async, :once}, ...]` per
+  `deps/hackney/NEWS.md:269-272`. Empirical confirmation: with the
+  broken form a benign Bypass server delivers 97 messages to the
+  caller's mailbox in 2 s without any `stream_next/1` call; with the
+  tuple form the mailbox holds only 2 messages (status + headers) and
+  body chunks gate on `stream_next/1`. Reported as part of the same
+  bug that caused observable timeouts against cold/slow SSE backends.
+
+### Added
+
+- **`Nous.HTTP.StreamBackend` behaviour** — pluggable streaming HTTP
+  layer mirroring the non-streaming `Nous.HTTP.Backend` introduced in
+  0.15.1. Two impls ship:
+  - `Nous.HTTP.StreamBackend.Req` — the new default. Drives
+    `Req.post/1` with the `:into` callback. Simpler stack
+    (Req/Finch/Mint), marginally faster TTFB than hackney in
+    benchmarks against LMStudio (~130 ms vs ~133 ms mean).
+  - `Nous.HTTP.StreamBackend.Hackney` — opt-in. Strict pull-based
+    backpressure via `:hackney`'s `[{:async, :once}]` mode (the bug
+    above is fixed here). Pick this when downstream consumers can
+    block per chunk (LiveView fan-out under load,
+    persistence-on-every-chunk, slow IO).
+- **`:stream_backend` per-call opt** on `Nous.Providers.HTTP.stream/4`.
+- **`NOUS_HTTP_STREAM_BACKEND` env var** (`req` | `hackney` |
+  `My.Custom.Backend`). Resolution mirrors `NOUS_HTTP_BACKEND`:
+  per-call → env → app config → default.
+- **`config :nous, :http_stream_backend, MyBackend`** application
+  config knob.
+
+### Changed
+
+- `Nous.Providers.HTTP.stream/4` now dispatches to the configured
+  `Nous.HTTP.StreamBackend` instead of inlining hackney plumbing. The
+  public API surface (return shape, event types, error tuples) is
+  unchanged. Provider stream normalizers (`Nous.StreamNormalizer.*`)
+  consume normalized events and need no changes.
+- The non-streaming pluggable `Nous.HTTP.Backend` resolver is
+  refactored to share its `String.to_existing_atom/1` safety logic with
+  the streaming resolver — same C-2 protection on both paths.
+
+### Documentation
+
+- `Nous.Providers.HTTP` moduledoc rewritten around the dual
+  pluggable-backend model and the streaming backpressure trade-off.
+- `Nous.HTTP.StreamBackend` and the two impl modules carry full
+  moduledocs explaining when to pick each.
+
+### Migration
+
+No code changes required for callers — the default behavior is
+restored to "streaming works against any healthy SSE backend." Apps
+that depend on strict pull-based backpressure should set:
+
+    config :nous, :http_stream_backend, Nous.HTTP.StreamBackend.Hackney
+
+or pass `stream_backend: Nous.HTTP.StreamBackend.Hackney` per call.
+
 ## [0.15.3] - 2026-05-01
 
 Streaming + tool execution. The `Nous.Agent.run/3` loop now has a
