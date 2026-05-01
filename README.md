@@ -110,11 +110,13 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 | LlamaCpp | `llamacpp:local` + `:llamacpp_model` | ✅ |
 | **Custom** | `custom:model` + `:base_url` | ✅ |
 
-HTTP providers use a pluggable backend — `Req` (default, on top of Finch) or
-`hackney 4` — selected per-call, via `NOUS_HTTP_BACKEND`, or via app config.
-Streaming always uses `hackney`'s `:async, :once` pull-based mode for
-backpressure (a slow consumer can't OOM under a fast LLM). LlamaCpp runs
-in-process via NIFs. See [HTTP Backend](#http-backend) below for details.
+HTTP providers use a pluggable backend on both the non-streaming and
+streaming paths — `Req` (default, on top of Finch) or `hackney 4` —
+selected per-call, via `NOUS_HTTP_BACKEND` / `NOUS_HTTP_STREAM_BACKEND`,
+or via app config. The Hackney streaming backend uses `[{:async, :once}]`
+pull-based mode for strict backpressure (a slow consumer can't grow its
+mailbox under a fast LLM). LlamaCpp runs in-process via NIFs.
+See [HTTP Backend](#http-backend) below for details.
 
 > **Tip**: The named local providers (`lmstudio:`, `vllm:`, `sglang:`,
 > `ollama:`) are the recommended way to talk to local OpenAI-compatible
@@ -266,11 +268,13 @@ agent = Nous.new("openai:gpt-4",
 
 ### HTTP Backend
 
-Non-streaming HTTP requests go through a pluggable backend. Default is
-`Nous.HTTP.Backend.Req` (Req on top of Finch); `Nous.HTTP.Backend.Hackney`
-is shipped as an alternative. Streaming always uses hackney's `:async, :once`
-pull-based mode for backpressure — that choice is structural, not
-configurable.
+Both the non-streaming and streaming HTTP paths go through pluggable
+backends. Defaults are `Nous.HTTP.Backend.Req` and
+`Nous.HTTP.StreamBackend.Req` (both on Req + Finch).
+`Nous.HTTP.Backend.Hackney` and `Nous.HTTP.StreamBackend.Hackney` are
+shipped as alternatives.
+
+#### Non-streaming (`Nous.HTTP.Backend`)
 
 Pick per-call, per-environment, or per-app:
 
@@ -286,8 +290,37 @@ HTTP.post(url, body, headers, backend: Nous.HTTP.Backend.Hackney)
 config :nous, :http_backend, Nous.HTTP.Backend.Hackney
 ```
 
-Tune the shared hackney `:default` pool from app config (used by both the
-Hackney backend and the streaming pipeline):
+#### Streaming (`Nous.HTTP.StreamBackend`)
+
+Same resolution chain, separate config knob:
+
+```elixir
+# Per-call
+HTTP.stream(url, body, headers,
+  stream_backend: Nous.HTTP.StreamBackend.Hackney)
+
+# Env
+# NOUS_HTTP_STREAM_BACKEND=hackney
+
+# App config
+config :nous, :http_stream_backend, Nous.HTTP.StreamBackend.Hackney
+```
+
+When to pick which streaming backend:
+
+| Backend | Pick it when |
+|---------|--------------|
+| `Nous.HTTP.StreamBackend.Req` *(default)* | One HTTP stack across streaming + non-streaming. Right default for almost every app. Backpressure is bounded by parsing speed, not strict pull pacing — fine for typical LLM workloads where token rate is the bottleneck. |
+| `Nous.HTTP.StreamBackend.Hackney` | Strict pull-based backpressure via `[{:async, :once}]`. Pick this when downstream consumers can block per chunk (LiveView fan-out under load, persistence-on-every-chunk, slow IO). |
+
+Both emit identical normalized event streams (parsed JSON maps,
+`{:stream_done, _}`, `{:stream_error, _}`); switching backends needs no
+other code changes.
+
+#### Hackney pool
+
+Tune the shared hackney `:default` pool from app config (used by both
+the Hackney non-streaming and Hackney streaming backends):
 
 ```elixir
 config :nous, :hackney_pool,
@@ -297,9 +330,8 @@ config :nous, :hackney_pool,
 
 See [the HTTP backend benchmark report](https://github.com/nyo16/nous/blob/master/docs/benchmarks/http_backend.md)
 for localhost + real-endpoint benchmark numbers and guidance on when
-to switch backends. Headline: stick with the Req default unless you
-specifically need HTTP/3 (Alt-Svc auto-upgrade) or want to consolidate
-on one HTTP family.
+to switch backends. Headline: stick with the Req defaults unless you
+have a specific reason (strict backpressure, HTTP/3 upgrade, single-HTTP-stack consolidation).
 
 ### Timeouts
 
