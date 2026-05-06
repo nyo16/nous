@@ -314,5 +314,19 @@ defmodule Nous.Messages.Gemini do
   defp consolidate_content_parts([]), do: ""
   defp consolidate_content_parts([%ContentPart{type: :text, content: content}]), do: content
   defp consolidate_content_parts([%ContentPart{type: :thinking, content: content}]), do: content
-  defp consolidate_content_parts(parts) when is_list(parts), do: parts
+
+  defp consolidate_content_parts(parts) when is_list(parts) do
+    # Gemini may split a single response into multiple text (or thought) parts.
+    # Join homogeneous lists into a single string so they fit Message.content.
+    cond do
+      Enum.all?(parts, &match?(%ContentPart{type: :text}, &1)) ->
+        Enum.map_join(parts, "", & &1.content)
+
+      Enum.all?(parts, &match?(%ContentPart{type: :thinking}, &1)) ->
+        Enum.map_join(parts, "", & &1.content)
+
+      true ->
+        parts
+    end
+  end
 end
