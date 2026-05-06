@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.7] - 2026-05-05
+
+### Changed
+
+- **`hackney` is now an optional dependency.** Req (default for both
+  one-shot and streaming) is the primary HTTP backend; `hackney` is only
+  used when a consumer opts into `Nous.HTTP.Backend.Hackney` /
+  `Nous.HTTP.StreamBackend.Hackney` via `NOUS_HTTP_BACKEND=hackney`
+  (or the streaming variant) or app config. Forcing `hackney ~> 4.0` as
+  a hard dep (added in 0.15.x) broke downstream apps with any
+  transitive constraint of `hackney ~> 1.20` (e.g. `aws ~> 1.0`'s
+  optional dep), since the resolver activated the optional constraint
+  once hackney 4 entered the graph. Apps that use the hackney backend
+  now declare `{:hackney, "~> 4.0"}` in their own `mix.exs`.
+
 ## [0.15.6] - 2026-05-05
 
 ### Fixed
