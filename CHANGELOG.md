@@ -2,6 +2,85 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.8] - 2026-05-06
+
+### Fixed
+
+- **Vertex AI / Gemini whitespace text parts no longer crash the
+  request pipeline.** Gemini occasionally returns `text` parts whose
+  content is only newlines (e.g. `"\n\n\n"`) — typically between tool
+  calls or as filler when the model is blocked. Ecto's default
+  `:empty_values` for `cast/3` treats whitespace-only strings as
+  empty, so `Nous.Message.ContentPart`'s changeset dropped the
+  `content` field entirely and then raised
+  `%Ecto.InvalidChangesetError{errors: [content: {"content is required",
+  []}]}` from `ContentPart.new!/1`, taking down the whole
+  `Nous.LLM.run_with_tools/6` call. `ContentPart` now overrides
+  `:empty_values` to `[""]` so legitimate whitespace content is
+  preserved, and `Nous.Messages.Gemini.parse_content/1` defensively
+  skips whitespace-only text parts to avoid creating useless
+  `ContentPart`s. The streaming normalizer (`Nous.StreamNormalizer.Gemini`)
+  already had this guard; the non-streaming path is now consistent.
+- **`Nous.Messages.Gemini.parse_content/1` no longer silently drops
+  function calls without `args`.** Nullary tool calls
+  (`%{"functionCall" => %{"name" => "get_time"}}`) were falling into
+  the catch-all clause and disappearing. Pattern now requires only
+  `name` and falls back to `%{}` for `args`, matching the behavior of
+  the sibling `parse_parts/1` helper.
+
+### Added
+
+- **`Nous.Errors.RetryInfo`** parses server-suggested retry hints from
+  provider error responses. Checks `error.details[]` for
+  `google.rpc.RetryInfo` (Vertex AI / Gemini) first, then the
+  `Retry-After` HTTP header. Returns delay in milliseconds, or `nil`
+  when no hint is available — `nil` is itself meaningful for Google
+  APIs, since long-term/daily quota exhaustion deliberately omits
+  `RetryInfo` to discourage retry loops.
+- **`Nous.Errors.ProviderError` gains `:retry_after_ms`** alongside
+  the existing `:status_code`. `Nous.Provider.request/3` and
+  `request_stream/3` now populate both fields automatically when the
+  underlying HTTP layer returns an error tuple, so callers can branch
+  on rate-limit hints without parsing provider-specific bodies:
+
+  ```elixir
+  case Nous.LLM.run_with_tools(...) do
+    {:error, %Nous.Errors.ProviderError{retry_after_ms: ms}} when is_integer(ms) ->
+      {:snooze, ms}                     # use server-suggested delay
+    {:error, %Nous.Errors.ProviderError{status_code: 429}} ->
+      {:snooze, exp_backoff(attempt)}   # rate-limited, no hint
+    ...
+  end
+  ```
+
+- **Gemini/Vertex `finishReason` and `promptFeedback` are surfaced.**
+  `Nous.Messages.Gemini.from_response/1` now stores both in
+  `message.metadata` (when present) and emits a `Logger.warning` when
+  the candidate produced empty content for a non-STOP reason
+  (`SAFETY`, `RECITATION`, `MAX_TOKENS`, etc.) or when the prompt was
+  blocked. Previously these signals were discarded, so blocked
+  generations manifested as silent empty messages with no diagnostic.
+
+### Changed
+
+- **HTTP error tuples now carry response headers.**
+  `Nous.HTTP.Backend.Req`, `Nous.HTTP.Backend.Hackney`, and
+  `Nous.HTTP.StreamBackend.Req` previously returned
+  `{:error, %{status, body}}` and dropped headers entirely, which made
+  it impossible to read `Retry-After`. They now return
+  `{:error, %{status, body, headers}}` with `headers` as a list of
+  `{name, value}` tuples (lowercased per HTTP spec, both string).
+  Existing pattern matches on `%{status: _, body: _}` continue to work
+  since map matching is non-exhaustive.
+- **Gemini tool-call ID generation unified.**
+  `Nous.Messages.Gemini.parse_content/1` previously used
+  `"gemini_#{:rand.uniform(10_000)}"` (~50% birthday-paradox collision
+  at ~118 calls) while `parse_parts/1` used
+  `"call_#{:rand.uniform(1_000_000)}"` — two formats, two ranges. Both
+  now share a `generate_tool_call_id/0` helper using 64 bits of
+  `:crypto.strong_rand_bytes/1`, base64url-encoded with the
+  `gemini_` prefix preserved.
+
 ## [0.15.7] - 2026-05-05
 
 ### Changed
