@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.15.6"
+  @version "0.15.7"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -46,15 +46,17 @@ defmodule Nous.MixProject do
       {:ecto, "~> 3.11"},
 
       # HTTP clients for all LLM providers.
-      # Finch/Req for non-streaming (one-shot requests, redirects, retries).
-      # Hackney for SSE/long-streaming bodies — its `:async, :once` mode is
-      # truly pull-based, so the consumer paces the producer and a slow
-      # consumer can't OOM us via mailbox accumulation. (Finch.stream/5's
-      # callback is push-based; a fast LLM + slow consumer = unbounded
-      # mailbox growth — see review M-12.)
+      # Finch/Req is the default backend for both one-shot and streaming.
+      # Hackney is an opt-in alternative for SSE/long-streaming bodies — its
+      # `:async, :once` mode is truly pull-based, so the consumer paces the
+      # producer and a slow consumer can't OOM us via mailbox accumulation.
+      # (Finch.stream/5's callback is push-based; a fast LLM + slow consumer =
+      # unbounded mailbox growth — see review M-12.) To use the hackney
+      # backend, declare `{:hackney, "~> 4.0"}` in your app's deps and select
+      # it via `NOUS_HTTP_BACKEND=hackney` (or the streaming variant).
       {:finch, "~> 0.19"},
       {:req, "~> 0.5"},
-      {:hackney, "~> 4.0"},
+      {:hackney, "~> 4.0", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
       {:goth, "~> 1.4", optional: true},
