@@ -147,6 +147,49 @@ defmodule Nous.MessagesGeminiTest do
       assert msg.role == :assistant
       assert msg.content == "" or msg.content == nil
     end
+
+    test "joins multiple text parts in a single candidate" do
+      # Long Gemini responses are sometimes split across multiple `text`
+      # parts. Without consolidation, Message.new!/1 raises because content
+      # is :string, not a list of ContentParts.
+      response = %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [
+                %{"text" => "First chunk. "},
+                %{"text" => "Second chunk. "},
+                %{"text" => "Third chunk."}
+              ]
+            }
+          }
+        ]
+      }
+
+      msg = Gemini.from_response(response)
+      assert msg.role == :assistant
+      assert msg.content == "First chunk. Second chunk. Third chunk."
+    end
+
+    test "joins multiple thought parts into reasoning_content" do
+      response = %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [
+                %{"text" => "Thinking step 1. ", "thought" => true},
+                %{"text" => "Thinking step 2.", "thought" => true},
+                %{"text" => "Final answer."}
+              ]
+            }
+          }
+        ]
+      }
+
+      msg = Gemini.from_response(response)
+      assert msg.content == "Final answer."
+      assert msg.reasoning_content == "Thinking step 1. Thinking step 2."
+    end
   end
 
   describe "to_format/1" do

@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.15.6] - 2026-05-05
+
+### Fixed
+
+- **Gemini / Vertex AI multi-part responses no longer crash
+  `Message.new!/1`.** When a Gemini candidate contained more than one
+  `text` (or `thought`) part — common on long `gemini-2.5-pro` outputs
+  such as multi-thousand-token translations — `from_response/1` passed
+  the raw list of `ContentPart` structs to `Nous.Message`, whose
+  `:content` field is `:string`. Ecto then raised
+  `%Ecto.InvalidChangesetError{errors: [content: {"is invalid",
+  [type: :string, validation: :cast]}]}`. `consolidate_content_parts/1`
+  now joins homogeneous lists of `:text` or `:thinking` parts into a
+  single string. Vertex AI is fixed implicitly via the existing
+  `:vertex_ai → from_gemini_response/1` delegation in
+  `Nous.Messages.from_provider_response/2`.
+
 ## [0.15.5] - 2026-05-01
 
 ### Fixed
