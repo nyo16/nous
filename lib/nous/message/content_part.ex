@@ -473,8 +473,11 @@ defmodule Nous.Message.ContentPart do
   # Private functions
 
   defp changeset(content_part, attrs) do
+    # Override Ecto's default :empty_values, which treats whitespace-only
+    # strings as empty and drops them. Gemini/Vertex sometimes returns text
+    # parts that are just newlines, and they're legitimate content here.
     content_part
-    |> cast(attrs, [:type, :content, :options])
+    |> cast(attrs, [:type, :content, :options], empty_values: [""])
     |> validate_required([:type])
     |> validate_content()
   end
@@ -489,9 +492,6 @@ defmodule Nous.Message.ContentPart do
 
       {_, nil} ->
         add_error(changeset, :content, "content is required")
-
-      {_, ""} ->
-        add_error(changeset, :content, "content cannot be empty")
 
       {:image_url, content} ->
         validate_image_url(changeset, content)

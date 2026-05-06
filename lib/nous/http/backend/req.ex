@@ -36,12 +36,16 @@ defmodule Nous.HTTP.Backend.Req do
       {:ok, %Req.Response{status: status, body: response_body}} when status in 200..299 ->
         {:ok, response_body}
 
-      {:ok, %Req.Response{status: status, body: response_body}} ->
+      {:ok, %Req.Response{status: status, body: response_body, headers: resp_headers}} ->
         Logger.warning(
           "HTTP request failed with status #{status}: #{truncate_for_log(response_body)}"
         )
 
-        {:error, %{status: status, body: response_body}}
+        # Headers are surfaced (Retry-After etc.) so Nous.Errors.RetryInfo
+        # can extract server-suggested backoff. Req returns headers as a
+        # map of lowercased name => list of values; flatten to a list of
+        # {name, value} pairs to match the shape other layers expect.
+        {:error, %{status: status, body: response_body, headers: normalize_headers(resp_headers)}}
 
       {:error, %Mint.TransportError{reason: reason} = error} ->
         Logger.error("Transport error: #{inspect(reason)}")
@@ -51,6 +55,12 @@ defmodule Nous.HTTP.Backend.Req do
         Logger.error("HTTP request error: #{inspect(error)}")
         {:error, error}
     end
+  end
+
+  # Req returns headers as %{"name" => ["value", ...]}. Flatten into the
+  # [{name, value}] shape that downstream consumers (RetryInfo) expect.
+  defp normalize_headers(headers) when is_map(headers) do
+    Enum.flat_map(headers, fn {k, vs} -> Enum.map(vs, &{k, &1}) end)
   end
 
   defp truncate_for_log(data) when is_binary(data) do

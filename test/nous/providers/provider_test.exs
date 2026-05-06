@@ -51,6 +51,36 @@ defmodule Nous.ProviderTest do
       do: build_request_params(model, messages, settings)
   end
 
+  # Provider used for the error-wrapping tests: chat/2 returns an error tuple
+  # whose shape matches what Nous.HTTP.Backend produces (status + body + headers).
+  defmodule ErrorWrappingProvider do
+    use Nous.Provider,
+      id: :openai_compatible,
+      default_base_url: "https://err.example.com/v1",
+      default_env_key: "ERR_WRAP_TEST_API_KEY"
+
+    @impl true
+    def chat(_params, opts) do
+      Keyword.fetch!(opts, :__simulated_error__)
+    end
+
+    @impl true
+    def chat_stream(_params, opts) do
+      Keyword.fetch!(opts, :__simulated_error__)
+    end
+
+    # Override to inject the error tuple via opts so request/3 wraps it.
+    defp build_provider_opts(model) do
+      [
+        base_url: model.base_url,
+        api_key: model.api_key,
+        timeout: model.receive_timeout,
+        finch_name: Nous.Finch,
+        __simulated_error__: model.default_settings[:__simulated_error__]
+      ]
+    end
+  end
+
   defmodule CustomTokenProvider do
     use Nous.Provider,
       id: :custom_token,
@@ -608,6 +638,78 @@ defmodule Nous.ProviderTest do
   # ============================================================================
   # High-Level Request Callback Tests
   # ============================================================================
+
+  describe "request/3 error wrapping" do
+    alias Nous.Errors.ProviderError
+    alias Nous.Message
+    alias Nous.Model
+
+    defp err_model(simulated_error) do
+      %Model{
+        provider: :openai_compatible,
+        model: "test-model",
+        base_url: "https://err.example.com/v1",
+        default_settings: %{__simulated_error__: simulated_error}
+      }
+    end
+
+    test "populates :status_code from HTTP error tuple" do
+      error = {:error, %{status: 500, body: %{"error" => "boom"}, headers: []}}
+
+      assert {:error, %ProviderError{} = err} =
+               ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
+
+      assert err.status_code == 500
+      assert err.retry_after_ms == nil
+      assert err.provider == :openai_compatible
+      assert err.details == elem(error, 1)
+    end
+
+    test "populates :retry_after_ms from Vertex/Gemini RetryInfo body" do
+      error =
+        {:error,
+         %{
+           status: 429,
+           body: %{
+             "error" => %{
+               "code" => 429,
+               "details" => [
+                 %{
+                   "@type" => "type.googleapis.com/google.rpc.RetryInfo",
+                   "retryDelay" => "34s"
+                 }
+               ]
+             }
+           },
+           headers: []
+         }}
+
+      assert {:error, %ProviderError{status_code: 429, retry_after_ms: 34_000}} =
+               ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
+    end
+
+    test "populates :retry_after_ms from Retry-After header" do
+      error =
+        {:error,
+         %{
+           status: 429,
+           body: %{"error" => "rate limited"},
+           headers: [{"retry-after", "12"}]
+         }}
+
+      assert {:error, %ProviderError{status_code: 429, retry_after_ms: 12_000}} =
+               ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
+    end
+
+    test "leaves :status_code and :retry_after_ms nil for transport errors" do
+      error = {:error, %Mint.TransportError{reason: :econnrefused}}
+
+      assert {:error, %ProviderError{status_code: nil, retry_after_ms: nil} = err} =
+               ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
+
+      assert %Mint.TransportError{reason: :econnrefused} = err.details
+    end
+  end
 
   describe "request/3 and request_stream/3 callbacks" do
     test "providers have request/3 function injected" do

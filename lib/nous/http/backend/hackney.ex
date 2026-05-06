@@ -63,17 +63,23 @@ defmodule Nous.HTTP.Backend.Hackney do
       {:ok, status, _resp_headers, body_bin} when status in 200..299 ->
         {:ok, decode_body(body_bin)}
 
-      {:ok, status, _resp_headers, body_bin} ->
+      {:ok, status, resp_headers, body_bin} ->
         decoded = decode_body(body_bin)
 
         Logger.warning("HTTP request failed with status #{status}: #{truncate_for_log(decoded)}")
 
-        {:error, %{status: status, body: decoded}}
+        # Headers surfaced for Nous.Errors.RetryInfo. Hackney returns names
+        # and values as charlists; convert to strings for downstream parsing.
+        {:error, %{status: status, body: decoded, headers: stringify_headers(resp_headers)}}
 
       {:error, reason} = err ->
         Logger.error("Hackney request error: #{inspect(reason)}")
         err
     end
+  end
+
+  defp stringify_headers(headers) when is_list(headers) do
+    Enum.map(headers, fn {k, v} -> {to_string(k), to_string(v)} end)
   end
 
   defp decode_body(""), do: %{}

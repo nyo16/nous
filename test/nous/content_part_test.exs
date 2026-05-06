@@ -83,6 +83,24 @@ defmodule Nous.Message.ContentPartTest do
     end
   end
 
+  describe "new/1 and text/1 with whitespace content" do
+    test "accepts whitespace-only text content (regression: Vertex \"\\n\\n\\n\")" do
+      # Ecto's default :empty_values trims whitespace and treats it as empty,
+      # which used to drop the content field and trigger "content is required"
+      # for legitimate Gemini text parts containing only newlines.
+      assert %ContentPart{type: :text, content: "\n\n\n"} = ContentPart.text("\n\n\n")
+      assert {:ok, %ContentPart{content: "   "}} = ContentPart.new(%{type: :text, content: "   "})
+    end
+
+    test "still rejects nil content" do
+      assert {:error, %Ecto.Changeset{}} = ContentPart.new(%{type: :text})
+    end
+
+    test "still rejects literal empty string" do
+      assert {:error, %Ecto.Changeset{}} = ContentPart.new(%{type: :text, content: ""})
+    end
+  end
+
   describe "from_binary/2" do
     test "converts binary data to content part with auto-detected MIME" do
       binary = File.read!(@parthenon_path)

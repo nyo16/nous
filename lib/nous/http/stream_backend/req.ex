@@ -95,9 +95,19 @@ defmodule Nous.HTTP.StreamBackend.Req do
         {:ok, %Req.Response{status: status}} when status in 200..299 ->
           send(parent, {ref, :done})
 
-        {:ok, %Req.Response{status: status, body: response_body}} ->
+        {:ok, %Req.Response{status: status, body: response_body, headers: resp_headers}} ->
           Logger.error("Req stream got error status #{status}")
-          send(parent, {ref, {:error, %{status: status, body: response_body}}})
+
+          send(
+            parent,
+            {ref,
+             {:error,
+              %{
+                status: status,
+                body: response_body,
+                headers: normalize_headers(resp_headers)
+              }}}
+          )
 
         {:error, reason} ->
           Logger.error("Req stream error: #{inspect(reason)}")
@@ -170,6 +180,12 @@ defmodule Nous.HTTP.StreamBackend.Req do
         Logger.error("Req stream timeout after #{state.timeout}ms")
         {[{:stream_error, %{reason: :timeout, timeout_ms: state.timeout}}], %{state | done: true}}
     end
+  end
+
+  # Mirror Nous.HTTP.Backend.Req.normalize_headers/1 — flatten the map shape
+  # Req returns into [{name, value}] tuples that RetryInfo expects.
+  defp normalize_headers(headers) when is_map(headers) do
+    Enum.flat_map(headers, fn {k, vs} -> Enum.map(vs, &{k, &1}) end)
   end
 
   defp cleanup(%{task: nil}), do: :ok

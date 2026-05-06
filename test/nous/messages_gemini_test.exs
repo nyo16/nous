@@ -171,6 +171,76 @@ defmodule Nous.MessagesGeminiTest do
       assert msg.content == "First chunk. Second chunk. Third chunk."
     end
 
+    test "skips whitespace-only text parts (regression: Vertex \"\\n\\n\\n\")" do
+      # Vertex/Gemini sometimes emits text parts that are pure whitespace,
+      # particularly between tool calls or after blocked generations. They
+      # should not crash ContentPart.text/1 and should not pollute content.
+      response = %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [
+                %{"text" => "\n\n\n"},
+                %{"text" => "real content"}
+              ]
+            }
+          }
+        ]
+      }
+
+      msg = Gemini.from_response(response)
+      assert msg.content == "real content"
+    end
+
+    test "skips text part that is only whitespace with no other content" do
+      response = %{
+        "candidates" => [
+          %{"content" => %{"parts" => [%{"text" => "\n\n\n"}]}}
+        ]
+      }
+
+      msg = Gemini.from_response(response)
+      # Message's own changeset trims "" → nil; either result is fine here.
+      assert msg.content in [nil, ""]
+    end
+
+    test "captures finishReason in metadata" do
+      response = %{
+        "candidates" => [
+          %{"content" => %{"parts" => [%{"text" => "Hi"}]}, "finishReason" => "STOP"}
+        ]
+      }
+
+      msg = Gemini.from_response(response)
+      assert msg.metadata.finish_reason == "STOP"
+    end
+
+    test "captures promptFeedback when present" do
+      response = %{
+        "candidates" => [%{"content" => %{"parts" => []}, "finishReason" => "SAFETY"}],
+        "promptFeedback" => %{"blockReason" => "SAFETY"}
+      }
+
+      msg = Gemini.from_response(response)
+      assert msg.metadata.finish_reason == "SAFETY"
+      assert msg.metadata.prompt_feedback == %{"blockReason" => "SAFETY"}
+    end
+
+    test "parses functionCall without args (nullary tool)" do
+      response = %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [%{"functionCall" => %{"name" => "get_time"}}]
+            }
+          }
+        ]
+      }
+
+      msg = Gemini.from_response(response)
+      assert [%{"name" => "get_time", "arguments" => %{}}] = msg.tool_calls
+    end
+
     test "joins multiple thought parts into reasoning_content" do
       response = %{
         "candidates" => [

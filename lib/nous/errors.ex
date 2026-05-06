@@ -85,14 +85,25 @@ defmodule Nous.Errors do
     Error from an LLM provider.
 
     Raised when a provider API call fails.
+
+    ## Fields
+
+      * `:provider` — provider id atom (e.g., `:vertex_ai`)
+      * `:status_code` — HTTP status when applicable
+      * `:retry_after_ms` — server-suggested backoff in milliseconds, parsed
+        from the response body (`google.rpc.RetryInfo`) or `Retry-After`
+        header. `nil` when the failure is not retry-hinted (e.g. daily quota
+        exhaustion deliberately omits `RetryInfo` per Google's spec).
+      * `:details` — raw error payload from the HTTP layer
     """
 
-    defexception [:message, :provider, :status_code, :details]
+    defexception [:message, :provider, :status_code, :retry_after_ms, :details]
 
     @type t :: %__MODULE__{
             message: String.t(),
             provider: atom() | nil,
             status_code: integer() | nil,
+            retry_after_ms: pos_integer() | nil,
             details: any()
           }
 
@@ -100,6 +111,7 @@ defmodule Nous.Errors do
     def exception(opts) when is_list(opts) do
       provider = Keyword.get(opts, :provider)
       status_code = Keyword.get(opts, :status_code)
+      retry_after_ms = Keyword.get(opts, :retry_after_ms)
       details = Keyword.get(opts, :details)
 
       message =
@@ -112,6 +124,7 @@ defmodule Nous.Errors do
         message: message,
         provider: provider,
         status_code: status_code,
+        retry_after_ms: retry_after_ms,
         details: details
       }
     end
