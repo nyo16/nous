@@ -8,6 +8,8 @@ defmodule Nous.Messages.Gemini do
   alias Nous.{Message, Usage}
   alias Nous.Message.ContentPart
 
+  require Logger
+
   @doc """
   Convert messages to Gemini format.
 
@@ -56,22 +58,39 @@ defmodule Nous.Messages.Gemini do
     candidates = Map.get(response, "candidates", [])
     usage_data = Map.get(response, "usageMetadata", %{})
     model_version = Map.get(response, "modelVersion", "gemini-model")
+    prompt_feedback = Map.get(response, "promptFeedback")
 
     candidate = List.first(candidates) || %{}
     content_data = Map.get(candidate, "content", %{})
     parts_data = Map.get(content_data, "parts", [])
+    finish_reason = Map.get(candidate, "finishReason")
 
     {content_parts, reasoning_content, tool_calls} = parse_content(parts_data)
 
-    attrs = %{
-      role: :assistant,
-      content: consolidate_content_parts(content_parts),
-      reasoning_content: consolidate_content_parts(reasoning_content),
-      metadata: %{
+    consolidated_content = consolidate_content_parts(content_parts)
+
+    log_if_blocked(
+      consolidated_content,
+      tool_calls,
+      finish_reason,
+      prompt_feedback,
+      model_version
+    )
+
+    metadata =
+      %{
         model_name: model_version,
         usage: parse_usage(usage_data),
         timestamp: DateTime.utc_now()
       }
+      |> maybe_put_metadata(:finish_reason, finish_reason)
+      |> maybe_put_metadata(:prompt_feedback, prompt_feedback)
+
+    attrs = %{
+      role: :assistant,
+      content: consolidated_content,
+      reasoning_content: consolidate_content_parts(reasoning_content),
+      metadata: metadata
     }
 
     attrs = if length(tool_calls) > 0, do: Map.put(attrs, :tool_calls, tool_calls), else: attrs
@@ -228,18 +247,26 @@ defmodule Nous.Messages.Gemini do
     {content_parts, reasoning_content, tool_calls} =
       Enum.reduce(parts_data, {[], [], []}, fn item, {parts, reasoning, tools} ->
         case item do
-          %{"text" => text} ->
-            if Map.get(item, "thought") do
-              {parts, [ContentPart.thinking(text) | reasoning], tools}
-            else
-              {[ContentPart.text(text) | parts], reasoning, tools}
+          %{"text" => text} when is_binary(text) ->
+            cond do
+              # Drop whitespace-only text. Gemini emits these between tool
+              # calls and after blocked generations. Carrying them forward
+              # produces empty ContentParts that add no value.
+              String.trim(text) == "" ->
+                {parts, reasoning, tools}
+
+              Map.get(item, "thought") ->
+                {parts, [ContentPart.thinking(text) | reasoning], tools}
+
+              true ->
+                {[ContentPart.text(text) | parts], reasoning, tools}
             end
 
-          %{"functionCall" => %{"name" => name, "args" => args}} ->
+          %{"functionCall" => %{"name" => name} = function_call} when is_binary(name) ->
             tool_call = %{
-              "id" => "gemini_#{:rand.uniform(10000)}",
+              "id" => generate_tool_call_id(),
               "name" => name,
-              "arguments" => args
+              "arguments" => Map.get(function_call, "args", %{})
             }
 
             {parts, reasoning, [tool_call | tools]}
@@ -269,8 +296,7 @@ defmodule Nous.Messages.Gemini do
             function_call = Map.get(part, "functionCall")
 
             tool_call = %{
-              # Generate random ID since Gemini doesn't provide one
-              "id" => "call_#{:rand.uniform(1_000_000)}",
+              "id" => generate_tool_call_id(),
               "name" => Map.get(function_call, "name"),
               "arguments" => Map.get(function_call, "args", %{})
             }
@@ -310,6 +336,31 @@ defmodule Nous.Messages.Gemini do
   end
 
   def parse_usage(_), do: %Usage{}
+
+  # Gemini doesn't provide tool call IDs, so we synthesize one. 64 bits of
+  # entropy keeps collision probability negligible across high-volume jobs.
+  defp generate_tool_call_id do
+    "gemini_" <> (:crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false))
+  end
+
+  defp maybe_put_metadata(metadata, _key, nil), do: metadata
+  defp maybe_put_metadata(metadata, key, value), do: Map.put(metadata, key, value)
+
+  # Surface non-STOP finish reasons (SAFETY, RECITATION, MAX_TOKENS, etc.)
+  # and prompt blocks so they don't manifest as silent empty responses.
+  defp log_if_blocked(content, tool_calls, finish_reason, prompt_feedback, model_version) do
+    empty? = (content == "" or is_nil(content)) and tool_calls == []
+    block_reason = prompt_feedback && Map.get(prompt_feedback, "blockReason")
+    interesting_finish? = finish_reason not in [nil, "STOP", "FINISH_REASON_UNSPECIFIED"]
+
+    if empty? and (interesting_finish? or block_reason) do
+      Logger.warning(
+        "Gemini/Vertex returned empty content. " <>
+          "model=#{model_version} finishReason=#{inspect(finish_reason)} " <>
+          "promptFeedback=#{inspect(prompt_feedback)}"
+      )
+    end
+  end
 
   defp consolidate_content_parts([]), do: ""
   defp consolidate_content_parts([%ContentPart{type: :text, content: content}]), do: content

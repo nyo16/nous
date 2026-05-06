@@ -10,8 +10,11 @@ defmodule Nous.HTTP.Backend do
   `docs/benchmarks/http_backend.md` for performance characteristics.
 
   Custom backends just need to implement `c:post/4` and return one of:
-  `{:ok, decoded_body}` for 2xx, `{:error, %{status: status, body: body}}`
-  for 4xx/5xx, or `{:error, term()}` for transport / decode failures.
+  `{:ok, decoded_body}` for 2xx,
+  `{:error, %{status: status, body: body, headers: headers}}` for 4xx/5xx
+  (headers as a list of `{name, value}` tuples — used by
+  `Nous.Errors.RetryInfo` to extract `Retry-After` hints), or
+  `{:error, term()}` for transport / decode failures.
 
   Streaming requests do NOT go through this behaviour — those always
   use hackney's `:async, :once` mode for backpressure (see

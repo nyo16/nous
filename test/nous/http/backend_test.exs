@@ -88,6 +88,46 @@ defmodule Nous.HTTP.BackendTest do
                  Nous.Providers.HTTP.post("http://x", "not a map", [], backend: @backend)
       end
 
+      test "surfaces response headers in error tuple (e.g. Retry-After)",
+           %{bypass: bypass, url: url} do
+        Bypass.expect_once(bypass, "POST", "/v1/test", fn conn ->
+          conn
+          |> Plug.Conn.put_resp_header("retry-after", "42")
+          |> Plug.Conn.put_resp_header("content-type", "application/json")
+          |> Plug.Conn.resp(429, ~s({"error":{"message":"rate limited"}}))
+        end)
+
+        assert {:error, %{status: 429, headers: headers}} =
+                 @backend.post(url, %{}, [], [])
+
+        assert is_list(headers)
+
+        retry_after =
+          Enum.find_value(headers, fn {k, v} ->
+            if String.downcase(to_string(k)) == "retry-after", do: to_string(v)
+          end)
+
+        assert retry_after == "42"
+
+        # Must round-trip through Nous.Errors.RetryInfo unchanged.
+        assert Nous.Errors.RetryInfo.parse(%{status: 429, headers: headers}) == 42_000
+      end
+
+      test "extracts Vertex/Gemini RetryInfo from error body", %{bypass: bypass, url: url} do
+        body =
+          ~s({"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[) <>
+            ~s({"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"7s"}]}})
+
+        Bypass.expect_once(bypass, "POST", "/v1/test", fn conn ->
+          conn
+          |> Plug.Conn.put_resp_header("content-type", "application/json")
+          |> Plug.Conn.resp(429, body)
+        end)
+
+        assert {:error, error} = @backend.post(url, %{}, [], [])
+        assert Nous.Errors.RetryInfo.parse(error) == 7_000
+      end
+
       test "passes custom headers through", %{bypass: bypass, url: url} do
         Bypass.expect_once(bypass, "POST", "/v1/test", fn conn ->
           assert ["Bearer test-token"] = Plug.Conn.get_req_header(conn, "authorization")

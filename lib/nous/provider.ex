@@ -241,6 +241,8 @@ defmodule Nous.Provider do
               wrapped_error =
                 Nous.Errors.ProviderError.exception(
                   provider: @provider_id,
+                  status_code: error_status(error),
+                  retry_after_ms: Nous.Errors.RetryInfo.parse(error),
                   message: "Request failed: #{inspect(error)}",
                   details: error
                 )
@@ -350,6 +352,8 @@ defmodule Nous.Provider do
             wrapped_error =
               Nous.Errors.ProviderError.exception(
                 provider: @provider_id,
+                status_code: error_status(error),
+                retry_after_ms: Nous.Errors.RetryInfo.parse(error),
                 message: "Streaming request failed: #{inspect(error)}",
                 details: error
               )
@@ -357,6 +361,10 @@ defmodule Nous.Provider do
             {:error, wrapped_error}
         end
       end
+
+      # Pull HTTP status from the standard backend error tuple shape.
+      defp error_status(%{status: status}) when is_integer(status), do: status
+      defp error_status(_), do: nil
 
       # Build provider options from model config
       defp build_provider_opts(model) do
