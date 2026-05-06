@@ -57,18 +57,11 @@ defmodule Nous.HTTP.Backend.Req do
     end
   end
 
-  # Req returns headers as %{"name" => ["value", ...]} for newer versions
-  # and as a list of {name, value} tuples for older ones. Flatten both into
-  # the [{name, value}] shape that downstream consumers (RetryInfo) expect.
+  # Req returns headers as %{"name" => ["value", ...]}. Flatten into the
+  # [{name, value}] shape that downstream consumers (RetryInfo) expect.
   defp normalize_headers(headers) when is_map(headers) do
-    Enum.flat_map(headers, fn
-      {k, vs} when is_list(vs) -> Enum.map(vs, &{k, &1})
-      {k, v} -> [{k, v}]
-    end)
+    Enum.flat_map(headers, fn {k, vs} -> Enum.map(vs, &{k, &1}) end)
   end
-
-  defp normalize_headers(headers) when is_list(headers), do: headers
-  defp normalize_headers(_), do: []
 
   defp truncate_for_log(data) when is_binary(data) do
     if byte_size(data) > 500 do

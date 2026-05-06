@@ -82,8 +82,6 @@ defmodule Nous.HTTP.Backend.Hackney do
     Enum.map(headers, fn {k, v} -> {to_string(k), to_string(v)} end)
   end
 
-  defp stringify_headers(_), do: []
-
   defp decode_body(""), do: %{}
 
   defp decode_body(bin) when is_binary(bin) do

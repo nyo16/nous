@@ -185,14 +185,8 @@ defmodule Nous.HTTP.StreamBackend.Req do
   # Mirror Nous.HTTP.Backend.Req.normalize_headers/1 — flatten the map shape
   # Req returns into [{name, value}] tuples that RetryInfo expects.
   defp normalize_headers(headers) when is_map(headers) do
-    Enum.flat_map(headers, fn
-      {k, vs} when is_list(vs) -> Enum.map(vs, &{k, &1})
-      {k, v} -> [{k, v}]
-    end)
+    Enum.flat_map(headers, fn {k, vs} -> Enum.map(vs, &{k, &1}) end)
   end
-
-  defp normalize_headers(headers) when is_list(headers), do: headers
-  defp normalize_headers(_), do: []
 
   defp cleanup(%{task: nil}), do: :ok
 
