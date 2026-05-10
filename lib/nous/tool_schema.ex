@@ -32,6 +32,43 @@ defmodule Nous.ToolSchema do
   end
 
   @doc """
+  Convert tool to Gemini/Vertex `functionDeclarations` schema (string keys).
+
+  Vertex/Gemini's function declaration is shaped like OpenAI's inner `function`
+  object, minus the `strict` field which is OpenAI-specific.
+
+  Returns:
+
+      %{
+        "name" => "...",
+        "description" => "...",
+        "parameters" => %{...}
+      }
+  """
+  @spec to_gemini(Tool.t()) :: map()
+  def to_gemini(tool) do
+    %{"function" => function} = Tool.to_openai_schema(tool)
+
+    function
+    |> Map.delete("strict")
+    |> Map.update("parameters", %{}, &strip_unsupported_schema_keys/1)
+  end
+
+  # Vertex's parameters schema rejects fields like `additionalProperties` /
+  # `$schema`. Drop the well-known unsupported ones so callers don't have to
+  # think about it.
+  defp strip_unsupported_schema_keys(schema) when is_map(schema) do
+    schema
+    |> Map.drop(["additionalProperties", "$schema"])
+    |> Map.new(fn {k, v} -> {k, strip_unsupported_schema_keys(v)} end)
+  end
+
+  defp strip_unsupported_schema_keys(list) when is_list(list),
+    do: Enum.map(list, &strip_unsupported_schema_keys/1)
+
+  defp strip_unsupported_schema_keys(value), do: value
+
+  @doc """
   Convert tool to Anthropic tool schema (atom keys).
 
   Anthropic uses a different format with atom keys:

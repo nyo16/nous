@@ -128,6 +128,28 @@ defmodule Nous.Providers.VertexAI do
         goth: MyApp.Goth,
         base_url: "https://aiplatform.googleapis.com/v1beta1/projects/my-project/locations/global"
 
+  ## Thinking (Gemini 2.5/3.x)
+
+  For models that support extended thinking, pass `:thinking_config` in
+  `default_settings`. Both the Elixir shape (snake_case atoms) and the native
+  Vertex shape (camelCase strings) are accepted:
+
+      Nous.new("vertex_ai:gemini-2.5-pro",
+        default_settings: %{
+          thinking_config: %{thinking_budget: 1024, include_thoughts: true}
+        }
+      )
+
+  When `include_thoughts: true`, thought summaries arrive as
+  `Message.reasoning_content`. For tool-using thinking models, Vertex emits a
+  `thoughtSignature` on each tool call; Nous preserves it in
+  `tool_call["metadata"]["thought_signature"]` and echoes it back on the next
+  turn automatically — required for multi-turn thinking + tool loops to keep
+  working.
+
+  See https://cloud.google.com/vertex-ai/generative-ai/docs/thinking for the
+  Vertex thinking docs.
+
   ## Examples
 
       # Gemini 3.1 Pro on global endpoint (preview, v1beta1)
@@ -156,8 +178,13 @@ defmodule Nous.Providers.VertexAI do
 
   require Logger
 
+  # Single source of truth for the provider's HTTP receive timeout. The actual
+  # timeout used at request time is `model.receive_timeout` (set via
+  # `Model.parse(..., receive_timeout: ms)`), which flows through
+  # `build_provider_opts/1` as the `:timeout` option. This constant is only the
+  # safety-net default when `chat/2` or `chat_stream/2` is called directly
+  # without a model-level value.
   @default_timeout 180_000
-  @streaming_timeout 300_000
 
   # Override to convert from generic format to Gemini's format (same API format)
   defp build_request_params(model, messages, settings) do
@@ -181,7 +208,18 @@ defmodule Nous.Providers.VertexAI do
       |> maybe_put("temperature", merged_settings[:temperature])
       |> maybe_put("maxOutputTokens", merged_settings[:max_tokens])
       |> maybe_put("topP", merged_settings[:top_p])
+      |> maybe_put("topK", merged_settings[:top_k])
+      |> maybe_put("seed", merged_settings[:seed])
+      |> maybe_put("candidateCount", merged_settings[:candidate_count])
+      |> maybe_put("presencePenalty", merged_settings[:presence_penalty])
+      |> maybe_put("frequencyPenalty", merged_settings[:frequency_penalty])
+      |> maybe_put("responseModalities", merged_settings[:response_modalities])
       |> maybe_put("stopSequences", merged_settings[:stop_sequences] || merged_settings[:stop])
+      |> maybe_put(
+        "thinkingConfig",
+        Nous.Messages.Gemini.normalize_thinking_config(merged_settings[:thinking_config])
+      )
+      |> Map.merge(Nous.Messages.Gemini.json_config_for_settings(merged_settings))
 
     # Merge any explicit generationConfig from settings
     generation_config =
@@ -194,7 +232,28 @@ defmodule Nous.Providers.VertexAI do
         params
       end
 
+    params =
+      params
+      |> maybe_put(
+        "tools",
+        Nous.Messages.Gemini.build_tools(
+          merged_settings[:tools] || [],
+          merged_settings[:native_tools]
+        )
+      )
+      |> maybe_put(
+        "safetySettings",
+        Nous.Messages.Gemini.normalize_safety_settings(merged_settings[:safety_settings])
+      )
+      |> maybe_put("toolConfig", resolve_tool_config(merged_settings))
+      |> maybe_put("cachedContent", merged_settings[:cached_content])
+
     maybe_merge_extra_body(params, merged_settings[:extra_body])
+  end
+
+  defp resolve_tool_config(settings) do
+    settings[:tool_config] ||
+      Nous.Messages.Gemini.normalize_tool_choice(settings[:tool_choice])
   end
 
   # Use Gemini stream normalizer — same response format
@@ -227,7 +286,7 @@ defmodule Nous.Providers.VertexAI do
          {:ok, url_base} <- resolve_base_url(opts, model) do
       url = build_url(url_base, model, :stream)
       headers = build_headers(token)
-      timeout = Keyword.get(opts, :timeout, @streaming_timeout)
+      timeout = Keyword.get(opts, :timeout, @default_timeout)
       finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
 
       Logger.debug("Vertex AI stream request: url=#{url}, model=#{model}")
