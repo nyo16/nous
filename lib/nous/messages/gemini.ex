@@ -164,6 +164,7 @@ defmodule Nous.Messages.Gemini do
                 "args" => Map.get(call, "arguments") || Map.get(call, :arguments, %{})
               }
             }
+            |> maybe_put_signature_on_part(extract_thought_signature(call))
           end)
 
         tool_parts ++ parts
@@ -263,11 +264,13 @@ defmodule Nous.Messages.Gemini do
             end
 
           %{"functionCall" => %{"name" => name} = function_call} when is_binary(name) ->
-            tool_call = %{
-              "id" => generate_tool_call_id(),
-              "name" => name,
-              "arguments" => Map.get(function_call, "args", %{})
-            }
+            tool_call =
+              %{
+                "id" => generate_tool_call_id(),
+                "name" => name,
+                "arguments" => Map.get(function_call, "args", %{})
+              }
+              |> maybe_put_thought_signature(Map.get(item, "thoughtSignature"))
 
             {parts, reasoning, [tool_call | tools]}
 
@@ -295,11 +298,13 @@ defmodule Nous.Messages.Gemini do
           Map.has_key?(part, "functionCall") ->
             function_call = Map.get(part, "functionCall")
 
-            tool_call = %{
-              "id" => generate_tool_call_id(),
-              "name" => Map.get(function_call, "name"),
-              "arguments" => Map.get(function_call, "args", %{})
-            }
+            tool_call =
+              %{
+                "id" => generate_tool_call_id(),
+                "name" => Map.get(function_call, "name"),
+                "arguments" => Map.get(function_call, "args", %{})
+              }
+              |> maybe_put_thought_signature(Map.get(part, "thoughtSignature"))
 
             {texts, reasoning, [tool_call | tools]}
 
@@ -319,6 +324,186 @@ defmodule Nous.Messages.Gemini do
       end
 
     {text_content, reasoning_content, Enum.reverse(tool_calls)}
+  end
+
+  @doc """
+  Derive Gemini's `responseMimeType`/`responseSchema` pair from generic settings.
+
+  Honors three settings keys, in priority order:
+
+  - `:json_schema` (map) — forces JSON mime type and sets the schema.
+  - `:response_format` (map) — accepts `%{type: :json_schema, schema: schema}` or
+    `%{type: :json_object}` for cross-provider consistency.
+  - `:json_response` (boolean) — forces JSON mime type without a schema.
+
+  Returns a map with `"responseMimeType"` and (optionally) `"responseSchema"`,
+  or `%{}` when none apply.
+  """
+  @spec json_config_for_settings(map() | keyword()) :: map()
+  def json_config_for_settings(settings) do
+    schema = get_setting(settings, :json_schema)
+    response_format = get_setting(settings, :response_format)
+    json_response = get_setting(settings, :json_response)
+
+    cond do
+      is_map(schema) ->
+        %{"responseMimeType" => "application/json", "responseSchema" => schema}
+
+      response_format_schema(response_format) ->
+        %{
+          "responseMimeType" => "application/json",
+          "responseSchema" => response_format_schema(response_format)
+        }
+
+      json_object_response_format?(response_format) ->
+        %{"responseMimeType" => "application/json"}
+
+      json_response == true ->
+        %{"responseMimeType" => "application/json"}
+
+      true ->
+        %{}
+    end
+  end
+
+  defp get_setting(settings, key) when is_map(settings),
+    do: Map.get(settings, key) || Map.get(settings, Atom.to_string(key))
+
+  defp get_setting(settings, key) when is_list(settings), do: Keyword.get(settings, key)
+  defp get_setting(_, _), do: nil
+
+  defp response_format_schema(%{type: :json_schema, schema: %{} = schema}), do: schema
+  defp response_format_schema(%{"type" => "json_schema", "schema" => %{} = schema}), do: schema
+  defp response_format_schema(_), do: nil
+
+  defp json_object_response_format?(%{type: :json_object}), do: true
+  defp json_object_response_format?(%{"type" => "json_object"}), do: true
+  defp json_object_response_format?(_), do: false
+
+  @doc """
+  Build Vertex's `tools` array from function declarations and native tools.
+
+  - `function_declarations` — list of Gemini-shaped function declarations
+    (already converted via `Nous.ToolSchema.to_gemini/1`). May be empty.
+  - `native_tools` — list of native Vertex tools, each one of:
+      * `:google_search`
+      * `:url_context`
+      * `:code_execution`
+      * `{atom_or_string, %{config}}` — for tools that take configuration
+      * a raw map — passed through (e.g. `%{"googleSearch" => %{}}`)
+
+  Returns `nil` when both lists are empty so callers can `maybe_put`.
+  """
+  @spec build_tools([map()], [atom() | tuple() | map()] | nil) :: [map()] | nil
+  def build_tools(function_declarations, native_tools)
+
+  def build_tools([], native_tools) when native_tools in [nil, []], do: nil
+
+  def build_tools(function_declarations, native_tools) do
+    declarations_entry =
+      case function_declarations do
+        [] -> []
+        list -> [%{"functionDeclarations" => list}]
+      end
+
+    native_entries = native_tools |> List.wrap() |> Enum.map(&native_tool_entry/1)
+
+    declarations_entry ++ native_entries
+  end
+
+  defp native_tool_entry(:google_search), do: %{"googleSearch" => %{}}
+  defp native_tool_entry(:url_context), do: %{"urlContext" => %{}}
+  defp native_tool_entry(:code_execution), do: %{"codeExecution" => %{}}
+
+  defp native_tool_entry({name, config}) when is_atom(name) and is_map(config),
+    do: %{atom_to_camel(name) => config}
+
+  defp native_tool_entry({name, config}) when is_binary(name) and is_map(config),
+    do: %{name => config}
+
+  defp native_tool_entry(map) when is_map(map), do: map
+
+  defp atom_to_camel(:google_search), do: "googleSearch"
+  defp atom_to_camel(:url_context), do: "urlContext"
+  defp atom_to_camel(:code_execution), do: "codeExecution"
+  defp atom_to_camel(atom), do: atom |> Atom.to_string() |> camelize()
+
+  defp camelize(string) do
+    [head | rest] = String.split(string, "_")
+    [head | Enum.map(rest, &String.capitalize/1)] |> Enum.join()
+  end
+
+  @doc """
+  Normalize a list of safety settings into Vertex's `safetySettings` shape.
+
+  Accepts atom-keyed (`%{category: ..., threshold: ...}`) or string-keyed
+  (`%{"category" => ..., "threshold" => ...}`) entries. Passes unknown keys
+  through so newer Vertex fields (e.g. `"method"`) work without a library
+  bump. Returns `nil` for nil input.
+  """
+  @spec normalize_safety_settings([map()] | nil) :: [map()] | nil
+  def normalize_safety_settings(nil), do: nil
+
+  def normalize_safety_settings(settings) when is_list(settings) do
+    Enum.map(settings, fn entry ->
+      Map.new(entry, fn
+        {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+        {k, v} -> {k, v}
+      end)
+    end)
+  end
+
+  @doc """
+  Normalize a `:tool_choice` setting into Vertex's `toolConfig` shape.
+
+  Accepts:
+
+    * `:auto` → mode `AUTO`
+    * `:any` / `:required` → mode `ANY` (model must call a function)
+    * `:none` → mode `NONE`
+    * `{:any, ["name_a", ...]}` → mode `ANY` with `allowedFunctionNames`
+    * a raw map (passed through as-is)
+    * `nil` (returns nil)
+  """
+  @spec normalize_tool_choice(atom() | tuple() | map() | nil) :: map() | nil
+  def normalize_tool_choice(nil), do: nil
+  def normalize_tool_choice(:auto), do: function_calling_mode("AUTO")
+  def normalize_tool_choice(:any), do: function_calling_mode("ANY")
+  def normalize_tool_choice(:required), do: function_calling_mode("ANY")
+  def normalize_tool_choice(:none), do: function_calling_mode("NONE")
+
+  def normalize_tool_choice({:any, names}) when is_list(names) do
+    %{
+      "functionCallingConfig" => %{"mode" => "ANY", "allowedFunctionNames" => names}
+    }
+  end
+
+  def normalize_tool_choice(map) when is_map(map), do: map
+
+  defp function_calling_mode(mode) do
+    %{"functionCallingConfig" => %{"mode" => mode}}
+  end
+
+  @doc """
+  Normalize a Nous-shaped `thinking_config` into Gemini's `thinkingConfig`.
+
+  Accepts either the Elixir shape (`%{thinking_budget: 1024, include_thoughts:
+  true}`) or the native Vertex shape (`%{"thinkingBudget" => 1024,
+  "includeThoughts" => true}`). Returns `nil` when the input is nil.
+
+  Unrecognized keys are passed through unchanged so newer Vertex fields work
+  without a library bump.
+  """
+  @spec normalize_thinking_config(map() | nil) :: map() | nil
+  def normalize_thinking_config(nil), do: nil
+
+  def normalize_thinking_config(config) when is_map(config) do
+    Map.new(config, fn
+      {:thinking_budget, v} -> {"thinkingBudget", v}
+      {:include_thoughts, v} -> {"includeThoughts", v}
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
   end
 
   @doc """
@@ -345,6 +530,37 @@ defmodule Nous.Messages.Gemini do
 
   defp maybe_put_metadata(metadata, _key, nil), do: metadata
   defp maybe_put_metadata(metadata, key, value), do: Map.put(metadata, key, value)
+
+  # Parse path: store Vertex's thoughtSignature inside the tool_call's
+  # internal metadata bag so it survives until the next turn.
+  defp maybe_put_thought_signature(tool_call, nil), do: tool_call
+  defp maybe_put_thought_signature(tool_call, ""), do: tool_call
+
+  defp maybe_put_thought_signature(tool_call, signature) when is_binary(signature) do
+    metadata =
+      tool_call
+      |> Map.get("metadata", %{})
+      |> Map.put("thought_signature", signature)
+
+    Map.put(tool_call, "metadata", metadata)
+  end
+
+  # Encode path: emit thoughtSignature at the top level of the Gemini part,
+  # as required by the Vertex API shape.
+  defp maybe_put_signature_on_part(part, nil), do: part
+  defp maybe_put_signature_on_part(part, ""), do: part
+
+  defp maybe_put_signature_on_part(part, signature) when is_binary(signature),
+    do: Map.put(part, "thoughtSignature", signature)
+
+  # Read the signature back from a tool_call's metadata, supporting both
+  # string-keyed and atom-keyed metadata bags so callers building tool_calls
+  # by hand don't have to think about it.
+  defp extract_thought_signature(call) do
+    metadata = Map.get(call, "metadata") || Map.get(call, :metadata) || %{}
+
+    Map.get(metadata, "thought_signature") || Map.get(metadata, :thought_signature)
+  end
 
   # Surface non-STOP finish reasons (SAFETY, RECITATION, MAX_TOKENS, etc.)
   # and prompt blocks so they don't manifest as silent empty responses.

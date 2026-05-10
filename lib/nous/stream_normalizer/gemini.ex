@@ -92,15 +92,25 @@ defmodule Nous.StreamNormalizer.Gemini do
     end
   end
 
-  defp parse_part(%{"functionCall" => %{"name" => name, "args" => args}}) do
-    [{:tool_call_delta, %{"name" => name, "arguments" => args}}]
+  defp parse_part(%{"functionCall" => %{"name" => name, "args" => args}} = part) do
+    [{:tool_call_delta, attach_thought_signature(%{"name" => name, "arguments" => args}, part)}]
   end
 
-  defp parse_part(%{"functionCall" => %{"name" => name}}) do
-    [{:tool_call_delta, %{"name" => name, "arguments" => %{}}}]
+  defp parse_part(%{"functionCall" => %{"name" => name}} = part) do
+    [{:tool_call_delta, attach_thought_signature(%{"name" => name, "arguments" => %{}}, part)}]
   end
 
   defp parse_part(_), do: []
+
+  defp attach_thought_signature(delta, part) do
+    case Map.get(part, "thoughtSignature") do
+      sig when is_binary(sig) and sig != "" ->
+        Map.put(delta, "metadata", %{"thought_signature" => sig})
+
+      _ ->
+        delta
+    end
+  end
 
   defp normalize_finish_reason("STOP"), do: "stop"
   defp normalize_finish_reason("MAX_TOKENS"), do: "length"

@@ -355,6 +355,250 @@ defmodule Nous.MessagesGeminiTest do
       assert system_prompt == "First instruction\n\nSecond instruction"
       assert length(contents) == 1
     end
+
+    test "echoes thoughtSignature on assistant tool call when present in metadata" do
+      tool_call = %{
+        "id" => "call_1",
+        "name" => "search",
+        "arguments" => %{"q" => "elixir"},
+        "metadata" => %{"thought_signature" => "EjQK...sig"}
+      }
+
+      msg = Message.new!(%{role: :assistant, content: nil, tool_calls: [tool_call]})
+
+      {_sys, [encoded]} = Gemini.to_format([msg])
+
+      assert [%{"functionCall" => %{"name" => "search"}, "thoughtSignature" => "EjQK...sig"}] =
+               encoded["parts"]
+    end
+
+    test "omits thoughtSignature when metadata absent" do
+      tool_call = %{"id" => "call_1", "name" => "search", "arguments" => %{}}
+      msg = Message.new!(%{role: :assistant, content: nil, tool_calls: [tool_call]})
+
+      {_sys, [encoded]} = Gemini.to_format([msg])
+
+      [part] = encoded["parts"]
+      refute Map.has_key?(part, "thoughtSignature")
+    end
+  end
+
+  describe "thoughtSignature round-trip" do
+    test "parse_content captures thoughtSignature on tool call" do
+      response = %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [
+                %{
+                  "functionCall" => %{"name" => "search", "args" => %{"q" => "elixir"}},
+                  "thoughtSignature" => "EjQK...sig"
+                }
+              ],
+              "role" => "model"
+            }
+          }
+        ]
+      }
+
+      msg = Gemini.from_response(response)
+
+      assert [%{"name" => "search", "metadata" => %{"thought_signature" => "EjQK...sig"}}] =
+               msg.tool_calls
+    end
+
+    test "from_response → to_format preserves the signature" do
+      response = %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [
+                %{
+                  "functionCall" => %{"name" => "search", "args" => %{"q" => "elixir"}},
+                  "thoughtSignature" => "EjQK...sig"
+                }
+              ],
+              "role" => "model"
+            }
+          }
+        ]
+      }
+
+      msg = Gemini.from_response(response)
+      {_sys, [encoded]} = Gemini.to_format([msg])
+
+      assert Enum.any?(encoded["parts"], fn part ->
+               part["thoughtSignature"] == "EjQK...sig" and
+                 get_in(part, ["functionCall", "name"]) == "search"
+             end)
+    end
+  end
+
+  describe "build_tools/2" do
+    test "returns nil when no function declarations and no native tools" do
+      assert Gemini.build_tools([], nil) == nil
+      assert Gemini.build_tools([], []) == nil
+    end
+
+    test "wraps function declarations in functionDeclarations entry" do
+      decls = [%{"name" => "search", "description" => "x", "parameters" => %{}}]
+
+      assert Gemini.build_tools(decls, nil) == [%{"functionDeclarations" => decls}]
+    end
+
+    test "emits native tools as separate entries" do
+      assert Gemini.build_tools([], [:google_search]) == [%{"googleSearch" => %{}}]
+      assert Gemini.build_tools([], [:url_context]) == [%{"urlContext" => %{}}]
+      assert Gemini.build_tools([], [:code_execution]) == [%{"codeExecution" => %{}}]
+    end
+
+    test "combines function declarations with native tools" do
+      decls = [%{"name" => "x"}]
+
+      assert Gemini.build_tools(decls, [:google_search]) == [
+               %{"functionDeclarations" => decls},
+               %{"googleSearch" => %{}}
+             ]
+    end
+
+    test "supports {tool, config} tuple form" do
+      assert Gemini.build_tools([], [{:google_search, %{"some" => "config"}}]) == [
+               %{"googleSearch" => %{"some" => "config"}}
+             ]
+    end
+
+    test "passes raw map entries through" do
+      assert Gemini.build_tools([], [%{"customTool" => %{}}]) == [%{"customTool" => %{}}]
+    end
+  end
+
+  describe "normalize_safety_settings/1" do
+    test "returns nil for nil" do
+      assert Gemini.normalize_safety_settings(nil) == nil
+    end
+
+    test "stringifies atom keys" do
+      assert Gemini.normalize_safety_settings([
+               %{category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_LOW_AND_ABOVE"}
+             ]) == [
+               %{
+                 "category" => "HARM_CATEGORY_DANGEROUS_CONTENT",
+                 "threshold" => "BLOCK_LOW_AND_ABOVE"
+               }
+             ]
+    end
+
+    test "passes string-keyed entries through" do
+      input = [%{"category" => "HARM_CATEGORY_HARASSMENT", "threshold" => "BLOCK_NONE"}]
+      assert Gemini.normalize_safety_settings(input) == input
+    end
+  end
+
+  describe "normalize_tool_choice/1" do
+    test ":auto produces AUTO mode" do
+      assert Gemini.normalize_tool_choice(:auto) == %{
+               "functionCallingConfig" => %{"mode" => "AUTO"}
+             }
+    end
+
+    test ":any and :required produce ANY mode" do
+      expected = %{"functionCallingConfig" => %{"mode" => "ANY"}}
+      assert Gemini.normalize_tool_choice(:any) == expected
+      assert Gemini.normalize_tool_choice(:required) == expected
+    end
+
+    test ":none produces NONE mode" do
+      assert Gemini.normalize_tool_choice(:none) == %{
+               "functionCallingConfig" => %{"mode" => "NONE"}
+             }
+    end
+
+    test "{:any, names} restricts to allowed function names" do
+      assert Gemini.normalize_tool_choice({:any, ["a", "b"]}) == %{
+               "functionCallingConfig" => %{
+                 "mode" => "ANY",
+                 "allowedFunctionNames" => ["a", "b"]
+               }
+             }
+    end
+
+    test "raw map passes through" do
+      raw = %{"functionCallingConfig" => %{"mode" => "AUTO"}}
+      assert Gemini.normalize_tool_choice(raw) == raw
+    end
+
+    test "nil returns nil" do
+      assert Gemini.normalize_tool_choice(nil) == nil
+    end
+  end
+
+  describe "json_config_for_settings/1" do
+    test "returns empty map when no JSON keys are set" do
+      assert Gemini.json_config_for_settings(%{}) == %{}
+    end
+
+    test ":json_response true forces application/json mime type" do
+      assert Gemini.json_config_for_settings(%{json_response: true}) == %{
+               "responseMimeType" => "application/json"
+             }
+    end
+
+    test ":json_schema sets schema and forces mime type" do
+      schema = %{"type" => "object", "properties" => %{"x" => %{"type" => "number"}}}
+
+      assert Gemini.json_config_for_settings(%{json_schema: schema}) == %{
+               "responseMimeType" => "application/json",
+               "responseSchema" => schema
+             }
+    end
+
+    test ":json_schema wins over :json_response" do
+      schema = %{"type" => "object"}
+
+      assert %{"responseSchema" => ^schema} =
+               Gemini.json_config_for_settings(%{json_schema: schema, json_response: true})
+    end
+
+    test ":response_format json_schema shape maps through" do
+      schema = %{"type" => "object"}
+
+      assert Gemini.json_config_for_settings(%{
+               response_format: %{type: :json_schema, schema: schema}
+             }) == %{
+               "responseMimeType" => "application/json",
+               "responseSchema" => schema
+             }
+    end
+
+    test ":response_format json_object shape forces mime type only" do
+      assert Gemini.json_config_for_settings(%{response_format: %{type: :json_object}}) == %{
+               "responseMimeType" => "application/json"
+             }
+    end
+  end
+
+  describe "normalize_thinking_config/1" do
+    test "converts Elixir snake_case keys to Vertex camelCase" do
+      assert Gemini.normalize_thinking_config(%{
+               thinking_budget: 1024,
+               include_thoughts: true
+             }) == %{"thinkingBudget" => 1024, "includeThoughts" => true}
+    end
+
+    test "passes through native Vertex shape unchanged" do
+      assert Gemini.normalize_thinking_config(%{
+               "thinkingBudget" => 2048,
+               "includeThoughts" => false
+             }) == %{"thinkingBudget" => 2048, "includeThoughts" => false}
+    end
+
+    test "passes through unknown atom keys as strings" do
+      assert Gemini.normalize_thinking_config(%{custom_field: "x"}) == %{"custom_field" => "x"}
+    end
+
+    test "returns nil for nil input" do
+      assert Gemini.normalize_thinking_config(nil) == nil
+    end
   end
 
   describe "from_messages/1" do

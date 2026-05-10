@@ -182,30 +182,130 @@ defmodule Nous.LLM do
 
   def stream_text(%Model{} = model, prompt, opts) do
     messages = build_messages(prompt, opts)
-    # Note: streaming with tools is not supported yet
-    settings = build_settings(opts, [], model.provider)
+    tools = parse_tools(Keyword.get(opts, :tools, []))
+    settings = build_settings(opts, tools, model.provider)
+    deps = Keyword.get(opts, :deps, %{})
+    ctx = RunContext.new(deps)
     fallback_models = Fallback.parse_fallback_models(Keyword.get(opts, :fallback, []))
     model_chain = Fallback.build_model_chain(model, fallback_models)
 
+    if tools == [] do
+      stream_text_simple(model_chain, model, settings, messages)
+    else
+      {:ok, stream_text_with_tools(model_chain, model, settings, messages, tools, ctx)}
+    end
+  end
+
+  defp stream_text_simple(model_chain, original_model, settings, messages) do
     case Fallback.with_fallback(model_chain, fn target_model ->
-           target_settings = rebuild_llm_settings(target_model, model, settings, [])
+           target_settings = rebuild_llm_settings(target_model, original_model, settings, [])
            get_dispatcher().request_stream(target_model, messages, target_settings)
          end) do
       {:ok, stream} ->
-        # Transform stream to only yield text deltas as strings
-        text_stream =
-          stream
-          |> Stream.filter(fn
-            {:text_delta, _} -> true
-            _ -> false
-          end)
-          |> Stream.map(fn {:text_delta, text} -> text end)
-
-        {:ok, text_stream}
+        {:ok, text_only_stream(stream)}
 
       {:error, _} = error ->
         error
     end
+  end
+
+  defp text_only_stream(stream) do
+    stream
+    |> Stream.filter(fn
+      {:text_delta, _} -> true
+      _ -> false
+    end)
+    |> Stream.map(fn {:text_delta, text} -> text end)
+  end
+
+  # Multi-turn streaming with tool execution. Each turn is consumed eagerly to
+  # extract aggregated tool calls and content; text deltas are still yielded
+  # to the caller as they were produced. After a turn finishes, if any tool
+  # calls were made, they're executed and a follow-up stream is started.
+  defp stream_text_with_tools(model_chain, original_model, settings, initial_messages, tools, ctx) do
+    Stream.resource(
+      fn -> {initial_messages, 0} end,
+      fn
+        :done ->
+          {:halt, :done}
+
+        {_messages, iteration} when iteration >= @max_tool_iterations ->
+          Logger.warning("LLM stream hit max tool iterations (#{@max_tool_iterations}); halting")
+
+          {:halt, :done}
+
+        {messages, iteration} ->
+          case Fallback.with_fallback(model_chain, fn target_model ->
+                 target_settings =
+                   rebuild_llm_settings(target_model, original_model, settings, tools)
+
+                 get_dispatcher().request_stream(target_model, messages, target_settings)
+               end) do
+            {:ok, raw_stream} ->
+              {chunks, tool_calls, content} = aggregate_stream_turn(raw_stream)
+
+              if tool_calls == [] do
+                {chunks, :done}
+              else
+                Logger.debug(
+                  "LLM stream produced #{length(tool_calls)} tool call(s), executing..."
+                )
+
+                assistant_msg = build_streamed_assistant_message(content, tool_calls)
+                tool_results = execute_tool_calls(tool_calls, tools, ctx)
+                new_messages = messages ++ [assistant_msg] ++ tool_results
+                {chunks, {new_messages, iteration + 1}}
+              end
+
+            {:error, _} ->
+              {:halt, :done}
+          end
+      end,
+      fn _ -> :ok end
+    )
+  end
+
+  defp aggregate_stream_turn(stream) do
+    initial = %{chunks: [], tool_calls: [], content: ""}
+
+    result =
+      Enum.reduce(stream, initial, fn
+        {:text_delta, text}, acc ->
+          %{acc | chunks: [text | acc.chunks], content: acc.content <> text}
+
+        {:tool_call_delta, call}, acc ->
+          %{acc | tool_calls: [ensure_tool_call_id(call) | acc.tool_calls]}
+
+        _other, acc ->
+          acc
+      end)
+
+    {Enum.reverse(result.chunks), Enum.reverse(result.tool_calls), result.content}
+  end
+
+  defp ensure_tool_call_id(call) do
+    cond do
+      call["id"] -> call
+      call[:id] -> call
+      true -> Map.put(call, "id", "stream_" <> random_id())
+    end
+  end
+
+  defp random_id do
+    :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
+  end
+
+  defp build_streamed_assistant_message(content, tool_calls) do
+    attrs = %{role: :assistant, tool_calls: tool_calls}
+
+    attrs =
+      case content do
+        "" -> attrs
+        nil -> attrs
+        text -> Map.put(attrs, :content, text)
+      end
+
+    Message.new!(attrs)
   end
 
   # Private helpers
@@ -313,6 +413,10 @@ defmodule Nous.LLM do
 
   defp convert_tools_for_provider(:anthropic, tools) do
     Enum.map(tools, &Nous.ToolSchema.to_anthropic/1)
+  end
+
+  defp convert_tools_for_provider(provider, tools) when provider in [:vertex_ai, :gemini] do
+    Enum.map(tools, &Nous.ToolSchema.to_gemini/1)
   end
 
   defp convert_tools_for_provider(_, tools) do

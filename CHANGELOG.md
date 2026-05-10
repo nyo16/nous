@@ -2,6 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.16.0] - 2026-05-10
+
+A significant Gemini-on-Vertex upgrade. Most of the new surface lands as
+`Nous.Messages.Gemini` helpers + small `build_request_params/3` wiring on
+both `Nous.Providers.VertexAI` and `Nous.Providers.Gemini`, so anything new
+works against either entry point.
+
+### Added
+
+- **Thinking config (request-side).** New `:thinking_config` setting maps to
+  `generationConfig.thinkingConfig`, letting callers set `thinking_budget`
+  and `include_thoughts` on Gemini 2.5/3.x. Both Elixir shape
+  (`%{thinking_budget: 1024, include_thoughts: true}`) and native Vertex
+  shape (`%{"thinkingBudget" => 1024, "includeThoughts" => true}`) are
+  accepted.
+- **`thoughtSignature` round-trip on tool calls.** `Nous.Messages.Gemini`
+  now preserves Vertex's `thoughtSignature` on parsed tool calls (under
+  `tool_call["metadata"]["thought_signature"]`) and echoes it back when
+  serializing assistant turns. Without this, multi-turn thinking + tool
+  loops on Gemini 2.5/3.x degrade or fail because the next turn lacks the
+  required signature. The streaming normalizer also propagates the
+  signature on `{:tool_call_delta, ...}` events.
+- **Structured output (JSON schema).** New `:json_response` and
+  `:json_schema` settings wire to `responseMimeType` /  `responseSchema`
+  in `generationConfig`. The cross-provider `:response_format` shape
+  (`%{type: :json_schema, schema: ...}` and `%{type: :json_object}`) maps
+  through too.
+- **Safety settings.** `:safety_settings` flows to top-level
+  `safetySettings`, with atom-keyed entries auto-stringified.
+- **Tool config / tool choice.** `:tool_config` (raw map) and `:tool_choice`
+  (friendly form) both flow to top-level `toolConfig`. Friendly forms:
+  `:auto`, `:any` / `:required`, `:none`, and `{:any, ["fn_a", ...]}` for
+  `allowedFunctionNames`.
+- **Function calling on Vertex/Gemini actually works.** Function
+  declarations are now serialized in Vertex's `tools[].functionDeclarations`
+  format via `Nous.ToolSchema.to_gemini/1` (which strips OpenAI's `strict`
+  field and unsupported `additionalProperties` from the parameters
+  schema). Previously the high-level `Nous.LLM` path silently dropped
+  tools for these providers.
+- **Native Vertex tools.** New `:native_tools` setting accepts
+  `:google_search`, `:url_context`, `:code_execution` atoms (or
+  `{tool, config}` tuples / raw maps) and adds them as additional entries
+  in the Vertex `tools` array, alongside any function declarations.
+- **Context caching.** `:cached_content` setting maps to top-level
+  `cachedContent`. Pass-through only — create caches via the Vertex REST
+  API for now.
+- **Streaming + tools.** `Nous.LLM.stream_text/3` now honors `:tools`.
+  Tool-call deltas are aggregated per turn (preserving any
+  `thoughtSignature`), tools execute between turns, and the conversation
+  continues until the model stops calling tools or hits
+  `@max_tool_iterations`. Text deltas are still yielded to the caller as
+  they were produced.
+- **More `generationConfig` fields:** `topK` ← `:top_k`, `seed` ← `:seed`,
+  `candidateCount` ← `:candidate_count`, `presencePenalty` ←
+  `:presence_penalty`, `frequencyPenalty` ← `:frequency_penalty`,
+  `responseModalities` ← `:response_modalities`.
+
+### Changed
+
+- **Single timeout source of truth.** Removed the separate
+  `@streaming_timeout` constants from `Nous.Providers.VertexAI` (300s) and
+  `Nous.Providers.Gemini` (120s). Streaming and non-streaming now share
+  the same provider default; the actual timeout used at request time is
+  always `model.receive_timeout`, which flows through
+  `build_provider_opts/1` as `:timeout`. Override via
+  `Model.parse(..., receive_timeout: ms)`.
+
 ## [0.15.8] - 2026-05-06
 
 ### Fixed

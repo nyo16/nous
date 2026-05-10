@@ -59,6 +59,49 @@ defmodule Nous.StreamNormalizer.GeminiTest do
       assert [{:tool_call_delta, %{"name" => "get_time", "arguments" => %{}}}] =
                Gemini.normalize_chunk(chunk)
     end
+
+    test "functionCall with thoughtSignature carries metadata" do
+      chunk = %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [
+                %{
+                  "functionCall" => %{"name" => "search", "args" => %{"q" => "elixir"}},
+                  "thoughtSignature" => "EjQK...sig"
+                }
+              ],
+              "role" => "model"
+            }
+          }
+        ]
+      }
+
+      assert [
+               {:tool_call_delta,
+                %{
+                  "name" => "search",
+                  "arguments" => %{"q" => "elixir"},
+                  "metadata" => %{"thought_signature" => "EjQK...sig"}
+                }}
+             ] = Gemini.normalize_chunk(chunk)
+    end
+
+    test "functionCall without thoughtSignature has no metadata key" do
+      chunk = %{
+        "candidates" => [
+          %{
+            "content" => %{
+              "parts" => [%{"functionCall" => %{"name" => "search", "args" => %{}}}],
+              "role" => "model"
+            }
+          }
+        ]
+      }
+
+      [{:tool_call_delta, delta}] = Gemini.normalize_chunk(chunk)
+      refute Map.has_key?(delta, "metadata")
+    end
   end
 
   describe "normalize_chunk/1 - finish" do

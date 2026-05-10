@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.15.8"
+  @version "0.16.0"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
