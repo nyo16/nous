@@ -19,6 +19,25 @@ All notable changes to this project will be documented in this file.
   `Nous.run/2`, `Nous.generate_text/3`, and `Nous.Agent.run/3` paths
   already returned result tuples and are unaffected.
 
+- **Vertex AI token resolution prefers Goth over `VERTEX_AI_ACCESS_TOKEN`.**
+  When a `:goth` instance is configured (in opts or app config),
+  `Nous.Providers.VertexAI` now uses Goth exclusively for that request,
+  and surfaces Goth failures as `{:error, %{reason: :goth_error, ...}}`.
+  Previously, a Goth failure would silently fall through to the env var,
+  producing confusing 401s when the env var was stale or missing.
+  If you relied on env-var fallback while Goth was misconfigured, you
+  will now see the Goth error directly — that's the intended behavior.
+
+### Fixed
+
+- **Tool args of the wrong type no longer crash `Nous.Tools.StringTools`.**
+  `replace_text`, `split_text`, `count_occurrences`, `contains` previously
+  chained `Map.get(args, "k1") || Map.get(args, "k2") || ""` to support
+  aliased keys. When the LLM handed back a non-string value (e.g.
+  `"pattern" => 123`), the value flowed straight into `String.replace/3`
+  and crashed the tool call. Args are now extracted via a typed helper
+  that falls back to the default when the value isn't a binary.
+
 ## [0.16.0] - 2026-05-10
 
 A significant Gemini-on-Vertex upgrade. Most of the new surface lands as
