@@ -77,16 +77,16 @@ if Code.ensure_loaded?(LlamaCppEx) do
 
     @impl Nous.Provider
     def request(model, messages, settings) do
-      start_time = System.monotonic_time()
       merged_settings = Map.merge(model.default_settings, settings)
 
-      llamacpp_model = merged_settings[:llamacpp_model]
-
-      unless llamacpp_model do
-        raise ArgumentError,
-              "llamacpp provider requires :llamacpp_model option. " <>
-                "Pass it when creating the agent: Nous.new(\"llamacpp:local\", llamacpp_model: llm)"
+      case merged_settings[:llamacpp_model] do
+        nil -> {:error, missing_model_error()}
+        llamacpp_model -> do_request(model, messages, merged_settings, llamacpp_model)
       end
+    end
+
+    defp do_request(model, messages, merged_settings, llamacpp_model) do
+      start_time = System.monotonic_time()
 
       :telemetry.execute(
         [:nous, :provider, :request, :start],
@@ -158,16 +158,16 @@ if Code.ensure_loaded?(LlamaCppEx) do
 
     @impl Nous.Provider
     def request_stream(model, messages, settings) do
-      start_time = System.monotonic_time()
       merged_settings = Map.merge(model.default_settings, settings)
 
-      llamacpp_model = merged_settings[:llamacpp_model]
-
-      unless llamacpp_model do
-        raise ArgumentError,
-              "llamacpp provider requires :llamacpp_model option. " <>
-                "Pass it when creating the agent: Nous.new(\"llamacpp:local\", llamacpp_model: llm)"
+      case merged_settings[:llamacpp_model] do
+        nil -> {:error, missing_model_error()}
+        llamacpp_model -> do_request_stream(model, messages, merged_settings, llamacpp_model)
       end
+    end
+
+    defp do_request_stream(model, messages, merged_settings, llamacpp_model) do
+      start_time = System.monotonic_time()
 
       :telemetry.execute(
         [:nous, :provider, :stream, :start],
@@ -230,6 +230,16 @@ if Code.ensure_loaded?(LlamaCppEx) do
     # (since we override request/3 and request_stream/3 which are their only callers)
     defp default_stream_normalizer, do: Nous.StreamNormalizer.LlamaCpp
     defp build_request_params(_model, _messages, _settings), do: %{}
+
+    defp missing_model_error do
+      Nous.Errors.ProviderError.exception(
+        provider: :llamacpp,
+        message:
+          "llamacpp provider requires :llamacpp_model option. " <>
+            "Pass it when creating the agent: Nous.new(\"llamacpp:local\", llamacpp_model: llm)",
+        details: :missing_llamacpp_model
+      )
+    end
 
     # Convert string-keyed maps from to_openai_format to atom-keyed maps for LlamaCppEx.
     # NEVER call String.to_atom/1 on data flowing from to_openai_format - if the keyset

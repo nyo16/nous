@@ -399,12 +399,8 @@ defmodule Nous.Providers.VertexAI do
     "#{base_url}/publishers/google/models/#{model}:streamGenerateContent?alt=sse"
   end
 
-  # Build headers with Bearer token auth
   defp build_headers(token) do
-    [
-      {"content-type", "application/json"},
-      {"authorization", "Bearer #{token}"}
-    ]
+    HTTP.json_headers() ++ HTTP.bearer_auth_header(token)
   end
 
   # Build default base URL from environment variables
@@ -465,16 +461,29 @@ defmodule Nous.Providers.VertexAI do
     end
   end
 
-  # Resolve access token from multiple sources
+  # Resolve a Vertex AI access token from one of three sources, in
+  # precedence order:
+  #
+  #   1. `:api_key` passed directly in opts — explicit always wins.
+  #   2. `:goth` (in opts or app config) — if a Goth instance is named,
+  #      USE IT exclusively. A Goth failure surfaces here as
+  #      `{:error, %{reason: :goth_error, ...}}` instead of silently
+  #      falling through to a stale `VERTEX_AI_ACCESS_TOKEN` env var.
+  #   3. Env var / app config token (via the macro-injected `api_key/1`).
+  #
+  # The previous ordering put `api_key/1` (which transparently reads the
+  # env var) ahead of Goth. That meant a misconfigured Goth + a stale
+  # env var would produce 401s with no hint that Goth was even tried.
   defp resolve_token(opts) do
     cond do
-      # 1. Direct api_key option
-      token = api_key(opts) ->
+      token = Keyword.get(opts, :api_key) ->
         {:ok, token}
 
-      # 2. Goth integration
       goth_name = goth_name(opts) ->
         fetch_goth_token(goth_name)
+
+      token = api_key(opts) ->
+        {:ok, token}
 
       true ->
         {:error,

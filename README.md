@@ -11,6 +11,32 @@ AI agent framework for Elixir with multi-provider LLM support.
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/nyo16/nous/blob/master/LICENSE)
 [![Status](https://img.shields.io/badge/status-active-brightgreen.svg)](#features)
 
+## What Nous is
+
+A production-grade AI agent framework for the BEAM. Three things you get:
+
+- **One string, 13 providers.** Swap OpenAI for Anthropic, Gemini, Vertex AI,
+  Groq, Mistral, OpenRouter, Together, Ollama, LM Studio, vLLM, SGLang,
+  LlamaCpp, or any custom OpenAI-compatible endpoint by changing
+  `"openai:gpt-4"` to `"anthropic:claude-sonnet-4-5-20250929"`.
+- **OTP-native.** Agents run as supervised processes with crash recovery,
+  streaming uses pull-based backpressure so a fast LLM can't OOM a slow
+  consumer, and fallback chains kick in on transport-layer errors without
+  application code.
+- **Batteries included.** Tool calling, structured output (Ecto schemas),
+  streaming with tool execution, skills, hooks, plugins (HITL, input
+  guards, sub-agent delegation), memory (hybrid keyword + vector),
+  workflows (DAGs), a knowledge base, deep research, evaluation, and a
+  first-class LiveView story.
+
+Think of it as Pydantic AI for Elixir — with first-class OTP supervision,
+streaming backpressure, and 13 LLM providers behind one `provider:model`
+string.
+
+> **Using Claude Code, Cursor, or Copilot to work on a Nous app?**
+> See [AGENTS.md](AGENTS.md) — it documents the public API, security
+> rules, and testing patterns specifically for AI coding agents.
+
 ## Requirements
 
 - **Elixir** 1.18+ (uses built-in `JSON` module)
@@ -23,7 +49,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.15.2"}
+    {:nous, "~> 0.16.1"}
   ]
 end
 ```
@@ -35,61 +61,78 @@ mix deps.get
 
 ## Quick Start
 
-### Simple Text Generation
-
-For quick LLM calls without agents:
+### One-shot text generation
 
 ```elixir
-# One-liner
-{:ok, text} = Nous.generate_text("lmstudio:qwen3", "What is Elixir?")
+{:ok, text} = Nous.generate_text("openai:gpt-4o", "What is Elixir?")
 IO.puts(text)
-
-# With options
-{:ok, text} = Nous.generate_text("openai:gpt-4", "Explain monads",
-  system: "You are a functional programming expert",
-  temperature: 0.7,
-  max_tokens: 500
-)
-
-# Streaming
-{:ok, stream} = Nous.stream_text("lmstudio:qwen3", "Write a haiku")
-stream |> Stream.each(&IO.write/1) |> Stream.run()
-
-# With prompt templates
-alias Nous.PromptTemplate
-
-template = PromptTemplate.from_template("""
-Summarize the following text in <%= @style %> style:
-
-<text>
-<%= @content %>
-</text>
-""")
-
-prompt = PromptTemplate.format(template, %{
-  style: "bullet points",
-  content: "Elixir is a dynamic, functional language for building scalable applications..."
-})
-
-{:ok, summary} = Nous.generate_text("openai:gpt-4", prompt)
 ```
 
-### With Agents
-
-For multi-turn conversations, tools, and complex workflows:
+### Streaming text
 
 ```elixir
-# Create an agent
-agent = Nous.new("lmstudio:qwen3",
-  instructions: "Be helpful and concise."
-)
+{:ok, stream} = Nous.stream_text("anthropic:claude-sonnet-4-5-20250929", "Write a haiku")
+stream |> Stream.each(&IO.write/1) |> Stream.run()
+```
 
-# Run it
-{:ok, result} = Nous.run(agent, "What is Elixir?")
+### An agent with a real tool
 
+Tools are plain functions. The LLM decides when to call them.
+
+```elixir
+get_weather = fn _ctx, %{"city" => city} ->
+  %{city: city, temperature: 72, conditions: "sunny"}
+end
+
+agent =
+  Nous.new("openai:gpt-4o",
+    instructions: "You can check the weather.",
+    tools: [get_weather]
+  )
+
+{:ok, result} = Nous.run(agent, "What's the weather in Tokyo?")
 IO.puts(result.output)
 IO.puts("Tokens: #{result.usage.total_tokens}")
 ```
+
+### Switch providers with one line
+
+```elixir
+agent = Nous.new("lmstudio:qwen3")                         # Local (free)
+agent = Nous.new("openai:gpt-4o")                          # OpenAI
+agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")   # Anthropic
+agent = Nous.new("vertex_ai:gemini-3.1-pro-preview")       # Google Vertex AI
+agent = Nous.new("llamacpp:local", llamacpp_model: llm)    # Local NIF
+
+# Or set a fallback chain:
+agent = Nous.new("openai:gpt-4o",
+  fallback: ["anthropic:claude-sonnet-4-5-20250929", "groq:llama-3.1-70b-versatile"]
+)
+```
+
+For a longer guided tour (multi-tool agents, error handling, persistence,
+observability) see [docs/getting-started.md](docs/getting-started.md).
+
+## Features
+
+One-line index of what's built in. Each item links to its deep dive below
+or out to a focused guide.
+
+- **[Tool calling](#tool-calling)** — Elixir functions or modules the LLM can invoke; concurrent execution, timeouts, validation
+- **[Streaming](#streaming)** — token deltas with optional tool execution, cancellation-safe between chunks
+- **[Structured output](#structured-output)** — return validated Ecto schemas, schemaless types, JSON schema, or `{:one_of, [...]}` choices ([guide](docs/guides/structured_output.md))
+- **[Skills](#skills)** — reusable domain knowledge as modules or markdown files; 21 built-in skills across 7 groups ([guide](docs/guides/skills.md))
+- **[Hooks](#hooks)** — intercept tool calls, requests, and lifecycle events at 6 points ([guide](docs/guides/hooks.md))
+- **[Plugins](#plugin-system)** — composable cross-cutting concerns
+- **[Human-in-the-loop](#human-in-the-loop)** — approval workflows for sensitive tools, sync or async via PubSub
+- **[Input guard](#input-guard)** — pluggable strategies for prompt-injection and jailbreak detection
+- **[Sub-agent delegation](#sub-agent-delegation)** — `delegate_task` / `spawn_agents` for sequential or parallel sub-agents
+- **[Memory](#agent-memory)** — persistent hybrid keyword + vector search; ETS, SQLite, DuckDB, Muninn, Zvec backends ([guide](docs/guides/memory.md))
+- **[Workflow](#workflow-engine)** — executable DAGs of agents, tools, and control flow with branching, cycles, parallelism, pause/resume ([guide](docs/guides/workflows.md))
+- **[Knowledge base](#knowledge-base)** — LLM-compiled wiki with summaries, backlinks, ingestion pipelines ([guide](docs/guides/knowledge_base.md))
+- **[Deep research](#deep-research)** — autonomous multi-step research with citations
+- **[Agent supervision](#agent-supervision--persistence)** — `AgentDynamicSupervisor`, persistence backends, crash recovery
+- **[LiveView integration](#liveview-integration)** — streaming, PubSub fan-out, async approvals ([guide](docs/guides/liveview-integration.md))
 
 ## Supported Providers
 
@@ -110,14 +153,6 @@ IO.puts("Tokens: #{result.usage.total_tokens}")
 | LlamaCpp | `llamacpp:local` + `:llamacpp_model` | ✅ |
 | **Custom** | `custom:model` + `:base_url` | ✅ |
 
-HTTP providers use a pluggable backend on both the non-streaming and
-streaming paths — `Req` (default, on top of Finch) or `hackney 4` —
-selected per-call, via `NOUS_HTTP_BACKEND` / `NOUS_HTTP_STREAM_BACKEND`,
-or via app config. The Hackney streaming backend uses `[{:async, :once}]`
-pull-based mode for strict backpressure (a slow consumer can't grow its
-mailbox under a fast LLM). LlamaCpp runs in-process via NIFs.
-See [HTTP Backend](#http-backend) below for details.
-
 > **Tip**: The named local providers (`lmstudio:`, `vllm:`, `sglang:`,
 > `ollama:`) are the recommended way to talk to local OpenAI-compatible
 > servers — they default to the right port, validate `*_BASE_URL` env vars
@@ -126,45 +161,8 @@ See [HTTP Backend](#http-backend) below for details.
 
 ### Custom Providers
 
-Use the `custom:` prefix to connect to any OpenAI-compatible API endpoint:
+Use the `custom:` prefix for any OpenAI-compatible endpoint:
 
-```elixir
-# Quick example with explicit options
-agent = Nous.new("custom:llama-3.1-70b",
-  base_url: "https://api.groq.com/openai/v1",
-  api_key: System.get_env("GROQ_API_KEY")
-)
-{:ok, result} = Nous.run(agent, "Hello!")
-```
-
-#### Configuration Methods
-
-Configuration is loaded in this precedence (higher overrides lower):
-
-1. **Direct options** (per-request):
-   ```elixir
-   Nous.new("custom:my-model",
-     base_url: "https://api.example.com/v1",
-     api_key: "sk-..."
-   )
-   ```
-
-2. **Environment variables**:
-   ```bash
-   export CUSTOM_BASE_URL="https://api.example.com/v1"
-   export CUSTOM_API_KEY="sk-..."
-   ```
-
-3. **Application config**:
-   ```elixir
-   config :nous, :custom,
-     base_url: "https://api.example.com/v1",
-     api_key: "sk-..."
-   ```
-
-#### Examples by Service
-
-**Groq** (fast inference):
 ```elixir
 agent = Nous.new("custom:llama-3.1-70b",
   base_url: "https://api.groq.com/openai/v1",
@@ -172,354 +170,58 @@ agent = Nous.new("custom:llama-3.1-70b",
 )
 ```
 
-**Together AI** (model variety):
-```elixir
-agent = Nous.new("custom:meta-llama/Llama-3-70b",
-  base_url: "https://api.together.xyz/v1",
-  api_key: System.get_env("TOGETHER_API_KEY")
-)
-```
+Configuration is loaded in this precedence: direct options → env vars
+(`CUSTOM_BASE_URL`, `CUSTOM_API_KEY`) → app config (`config :nous, :custom, ...`).
+Pass vendor-specific top-level body params (`top_k`, `chat_template_kwargs`,
+`repetition_penalty`, `min_p`, `best_of`, `ignore_eos`, etc.) through
+`:extra_body` — it mirrors the OpenAI Python SDK's `extra_body=` argument.
 
-**OpenRouter** (unified API):
-```elixir
-agent = Nous.new("custom:anthropic/claude-3.5-sonnet",
-  base_url: "https://openrouter.ai/api/v1",
-  api_key: System.get_env("OPENROUTER_API_KEY")
-)
-```
-
-**Local Servers** — prefer the named providers below; use `custom:` only when
-your local server isn't one of them.
-
-```elixir
-# Named providers — recommended. Each defaults to the standard port for
-# its server, and the *_BASE_URL env var is validated for SSRF safety.
-agent = Nous.new("lmstudio:qwen3")                          # localhost:1234
-agent = Nous.new("ollama:llama2")                           # localhost:11434
-agent = Nous.new("vllm:meta-llama/Llama-3-8B-Instruct")     # localhost:8000
-agent = Nous.new("sglang:meta-llama/Llama-3-8B-Instruct")   # localhost:30000
-
-# Per-provider overrides via env (or :base_url opt):
-# export LMSTUDIO_BASE_URL="http://10.0.0.5:1234/v1"
-# export VLLM_BASE_URL="http://gpu-host:8000/v1"
-# export SGLANG_BASE_URL="http://gpu-host:30000/v1"
-
-# Fall back to custom: only for non-OpenAI-compatible local servers,
-# or servers without a named provider.
-agent = Nous.new("custom:my-model", base_url: "http://localhost:9999/v1")
-```
-
-> **Note**: The legacy `openai_compatible:` prefix still works for backward compatibility
-> but `custom:` is the recommended approach going forward.
-
-#### Vendor-specific body params (`:extra_body`)
-
-Some OpenAI-compatible servers (vLLM, SGLang, LM Studio, llama.cpp) accept top-level
-JSON keys that aren't part of OpenAI's official schema — `top_k`, `chat_template_kwargs`,
-`repetition_penalty`, `min_p`, `best_of`, `ignore_eos`, etc. Pass them through `:extra_body`,
-which mirrors the OpenAI Python SDK's `extra_body=` argument:
-
-```elixir
-# Disable Qwen3 thinking + tune sampling
-agent = Nous.new("custom:qwen3-vl",
-  base_url: "http://localhost:8000/v1",
-  default_settings: %{
-    temperature: 0.7,
-    extra_body: %{
-      top_k: 20,
-      chat_template_kwargs: %{enable_thinking: false}
-    }
-  })
-
-# Interleaved thinking — preserve thinking blocks across turns
-agent = Nous.new("custom:qwen3-vl",
-  base_url: "http://localhost:8000/v1",
-  default_settings: %{
-    extra_body: %{
-      chat_template_kwargs: %{preserve_thinking: true}
-    }
-  })
-```
-
-Per-call override:
-
-```elixir
-Nous.LLM.complete(model, "hi", extra_body: %{top_k: 20})
-Agent.run(agent, prompt, model_settings: %{extra_body: %{top_k: 20}})
-```
-
-`extra_body` keys are merged at the top level of the request body and override any
-whitelisted keys on collision (escape-hatch semantics). Atom keys are stringified;
-nested map values pass through verbatim.
-
-```elixir
-# Switch providers with one line change
-agent = Nous.new("lmstudio:qwen3")                  # Local (free)
-agent = Nous.new("openai:gpt-4")                    # OpenAI
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")   # Anthropic
-agent = Nous.new("vertex_ai:gemini-3.1-pro-preview")  # Google Vertex AI
-agent = Nous.new("llamacpp:local", llamacpp_model: llm)  # Local NIF
-
-# With automatic fallback on provider failure
-agent = Nous.new("openai:gpt-4",
-  fallback: ["anthropic:claude-sonnet-4-20250514", "groq:llama-3.1-70b-versatile"]
-)
-```
+For full details (per-vendor examples, `extra_body` semantics,
+`openai_compatible:` legacy prefix), see
+[docs/guides/custom_providers.md](docs/guides/custom_providers.md).
 
 ### HTTP Backend
 
-Both the non-streaming and streaming HTTP paths go through pluggable
-backends. Defaults are `Nous.HTTP.Backend.Req` and
-`Nous.HTTP.StreamBackend.Req` (both on Req + Finch).
-`Nous.HTTP.Backend.Hackney` and `Nous.HTTP.StreamBackend.Hackney` are
-shipped as alternatives.
+HTTP providers use a pluggable backend on both the non-streaming and
+streaming paths — `Req` (default, on top of Finch) or `hackney 4` —
+selected per-call, via `NOUS_HTTP_BACKEND` / `NOUS_HTTP_STREAM_BACKEND`,
+or via app config. Hackney streaming uses pull-based `[{:async, :once}]`
+mode for strict backpressure.
 
-#### Non-streaming (`Nous.HTTP.Backend`)
+See [docs/guides/http_backends.md](docs/guides/http_backends.md) for
+configuration, the streaming-backend selection matrix, and pool tuning.
 
-Pick per-call, per-environment, or per-app:
+### Google Vertex AI
 
-```elixir
-# Per-call
-HTTP.post(url, body, headers, backend: Nous.HTTP.Backend.Hackney)
+Vertex AI provides enterprise access to Gemini models with VPC-SC,
+CMEK, IAM, regional/global endpoints, and the latest preview models
+(Gemini 3.1 Pro, 3 Flash, 3.1 Flash-Lite — global endpoint only).
 
-# Env (highest precedence after per-call):
-# NOUS_HTTP_BACKEND=hackney   # also accepts "req" or a fully-qualified
-#                             # custom module name like "MyApp.MyBackend"
-
-# App config
-config :nous, :http_backend, Nous.HTTP.Backend.Hackney
-```
-
-#### Streaming (`Nous.HTTP.StreamBackend`)
-
-Same resolution chain, separate config knob:
-
-```elixir
-# Per-call
-HTTP.stream(url, body, headers,
-  stream_backend: Nous.HTTP.StreamBackend.Hackney)
-
-# Env
-# NOUS_HTTP_STREAM_BACKEND=hackney
-
-# App config
-config :nous, :http_stream_backend, Nous.HTTP.StreamBackend.Hackney
-```
-
-When to pick which streaming backend:
-
-| Backend | Pick it when |
-|---------|--------------|
-| `Nous.HTTP.StreamBackend.Req` *(default)* | One HTTP stack across streaming + non-streaming. Right default for almost every app. Backpressure is bounded by parsing speed, not strict pull pacing — fine for typical LLM workloads where token rate is the bottleneck. |
-| `Nous.HTTP.StreamBackend.Hackney` | Strict pull-based backpressure via `[{:async, :once}]`. Pick this when downstream consumers can block per chunk (LiveView fan-out under load, persistence-on-every-chunk, slow IO). |
-
-Both emit identical normalized event streams (parsed JSON maps,
-`{:stream_done, _}`, `{:stream_error, _}`); switching backends needs no
-other code changes.
-
-#### Hackney pool
-
-Tune the shared hackney `:default` pool from app config (used by both
-the Hackney non-streaming and Hackney streaming backends):
-
-```elixir
-config :nous, :hackney_pool,
-  max_connections: 200,
-  timeout: 1_500   # idle keepalive ms (hackney 4 caps at 2_000)
-```
-
-See [the HTTP backend benchmark report](https://github.com/nyo16/nous/blob/master/docs/benchmarks/http_backend.md)
-for localhost + real-endpoint benchmark numbers and guidance on when
-to switch backends. Headline: stick with the Req defaults unless you
-have a specific reason (strict backpressure, HTTP/3 upgrade, single-HTTP-stack consolidation).
+See [docs/guides/vertex_ai_setup.md](docs/guides/vertex_ai_setup.md) for
+service-account setup, Goth integration, and endpoint selection.
 
 ### Timeouts
 
-Each provider has sensible default timeouts (60s for cloud APIs, 120s for local models). Override per-model with `receive_timeout`:
+Each provider has sensible default timeouts (60s for cloud APIs, 120s
+for local models). Override per-model with `receive_timeout`:
 
 ```elixir
-# Increase timeout for slow models or large responses
-agent = Nous.new("lmstudio:qwen3",
-  receive_timeout: 300_000  # 5 minutes
-)
-
-# Works with any provider
-agent = Nous.new("openai:gpt-4",
-  receive_timeout: 180_000  # 3 minutes
-)
+agent = Nous.new("lmstudio:qwen3", receive_timeout: 300_000)  # 5 minutes
+agent = Nous.new("openai:gpt-4o", receive_timeout: 180_000)   # 3 minutes
 ```
-
-Default timeouts by provider:
 
 | Provider | Default |
 |----------|---------|
 | OpenAI, Anthropic, Gemini, Groq, Mistral, OpenRouter, Together | 60s |
 | LM Studio, Ollama, vLLM, SGLang, LlamaCpp, Custom | 120s |
 
-### Google Vertex AI Setup
-
-Vertex AI provides enterprise access to Gemini models via Google Cloud. It supports
-VPC-SC, CMEK, IAM, regional/global endpoints, and all the latest Gemini models.
-
-#### Supported Models
-
-| Model | Model ID | Endpoint | API Version |
-|-------|----------|----------|-------------|
-| Gemini 3.1 Pro (preview) | `gemini-3.1-pro-preview` | global only | v1beta1 |
-| Gemini 3 Flash (preview) | `gemini-3-flash-preview` | global only | v1beta1 |
-| Gemini 3.1 Flash-Lite (preview) | `gemini-3.1-flash-lite-preview` | global only | v1beta1 |
-| Gemini 2.5 Pro | `gemini-2.5-pro` | regional + global | v1 |
-| Gemini 2.5 Flash | `gemini-2.5-flash` | regional + global | v1 |
-| Gemini 2.0 Flash | `gemini-2.0-flash` | regional + global | v1 |
-
-> **Note:** Preview and experimental models automatically use the `v1beta1` API version.
-> The Gemini 3.x preview models are **global endpoint only** — set `GOOGLE_CLOUD_LOCATION=global`.
-
-#### Regional vs Global Endpoints
-
-Vertex AI offers two endpoint types:
-
-- **Regional** (e.g., `us-central1`, `europe-west1`): Low-latency, data residency guarantees
-  ```
-  https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1
-  ```
-- **Global**: Higher availability, required for Gemini 3.x preview models
-  ```
-  https://aiplatform.googleapis.com/v1beta1/projects/{project}/locations/global
-  ```
-
-The provider automatically selects the correct hostname and API version based on the
-region and model name. Set `GOOGLE_CLOUD_LOCATION=global` for Gemini 3.x preview models.
-
-#### Step 1: Create a Service Account
-
-```bash
-export PROJECT_ID="your-project-id"
-
-# Enable Vertex AI API
-gcloud services enable aiplatform.googleapis.com --project=$PROJECT_ID
-
-# Create service account
-gcloud iam service-accounts create nous-vertex-ai \
-  --display-name="Nous Vertex AI" \
-  --project=$PROJECT_ID
-
-# Grant the Vertex AI User role
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:nous-vertex-ai@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --role="roles/aiplatform.user"
-
-# Download the key file
-gcloud iam service-accounts keys create /tmp/sa-key.json \
-  --iam-account="nous-vertex-ai@${PROJECT_ID}.iam.gserviceaccount.com"
-```
-
-#### Step 2: Set Environment Variables
-
-```bash
-# Load the service account JSON into an env var (recommended — no file path dependency)
-export GOOGLE_CREDENTIALS="$(cat /tmp/sa-key.json)"
-
-# Required: your GCP project ID
-export GOOGLE_CLOUD_PROJECT="your-project-id"
-
-# Required for Gemini 3.x preview models (global endpoint only)
-export GOOGLE_CLOUD_LOCATION="global"
-
-# Or use a regional endpoint for stable models:
-# export GOOGLE_CLOUD_LOCATION="us-central1"
-# export GOOGLE_CLOUD_LOCATION="europe-west1"
-```
-
-Both `GOOGLE_CLOUD_REGION` and `GOOGLE_CLOUD_LOCATION` are supported (consistent with
-other Google Cloud libraries). `GOOGLE_CLOUD_REGION` takes precedence if both are set.
-Defaults to `us-central1` if neither is set.
-
-#### Step 3: Add Goth to Your Application
-
-Goth handles OAuth2 token fetching and auto-refresh from the service account credentials.
-
-```elixir
-# mix.exs
-{:goth, "~> 1.4"}
-```
-
-```elixir
-# application.ex — start Goth in your supervision tree
-credentials = System.get_env("GOOGLE_CREDENTIALS") |> JSON.decode!()
-
-children = [
-  {Goth, name: MyApp.Goth, source: {:service_account, credentials}}
-]
-```
-
-#### Step 4: Configure and Use
-
-```elixir
-# Option A: App config (recommended for production)
-# config/config.exs
-config :nous, :vertex_ai, goth: MyApp.Goth
-
-# Then use it — Goth handles token refresh automatically:
-agent = Nous.new("vertex_ai:gemini-3.1-pro-preview")
-{:ok, result} = Nous.run(agent, "Hello from Vertex AI!")
-```
-
-```elixir
-# Option B: Per-model Goth (useful for multiple projects)
-agent = Nous.new("vertex_ai:gemini-3-flash-preview",
-  default_settings: %{goth: MyApp.Goth}
-)
-```
-
-```elixir
-# Option C: Explicit base_url (for custom endpoint or specific region)
-alias Nous.Providers.VertexAI
-
-agent = Nous.new("vertex_ai:gemini-3.1-pro-preview",
-  base_url: VertexAI.endpoint("my-project", "global", "gemini-3.1-pro-preview"),
-  default_settings: %{goth: MyApp.Goth}
-)
-```
-
-```elixir
-# Option D: Quick testing with gcloud CLI (no Goth needed)
-# export VERTEX_AI_ACCESS_TOKEN="$(gcloud auth print-access-token)"
-agent = Nous.new("vertex_ai:gemini-3.1-pro-preview")
-```
-
-#### Input Validation
-
-The provider validates `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` at request time
-and returns helpful error messages for invalid values instead of opaque DNS or HTTP errors.
-
-#### Examples
-
-- [`examples/providers/vertex_ai.exs`](examples/providers/vertex_ai.exs) — Basic usage with access token
-- [`examples/providers/vertex_ai_goth_test.exs`](examples/providers/vertex_ai_goth_test.exs) — Service account with Goth
-- [`examples/providers/vertex_ai_multi_region.exs`](examples/providers/vertex_ai_multi_region.exs) — Multi-region + v1/v1beta1 demo
-- [`examples/providers/vertex_ai_integration_test.exs`](examples/providers/vertex_ai_integration_test.exs) — Full integration test (Flash + Pro, streaming + non-streaming)
-
-## Features
+## Feature deep dives
 
 ### Tool Calling
 
-Define Elixir functions as tools. The AI calls them automatically when needed.
+Quick Start showed the minimal shape. Beyond that:
 
-```elixir
-get_weather = fn _ctx, %{"city" => city} ->
-  %{city: city, temperature: 72, conditions: "sunny"}
-end
-
-agent = Nous.new("openai:gpt-4",
-  instructions: "You can check the weather.",
-  tools: [get_weather]
-)
-
-{:ok, result} = Nous.run(agent, "What's the weather in Tokyo?")
-```
-
-### Tools with Context
+#### Tools with context
 
 Pass dependencies (user, database, API keys) via context:
 
@@ -536,15 +238,18 @@ agent = Nous.new("openai:gpt-4", tools: [get_balance])
 )
 ```
 
-### Context Continuation
+#### Module-based tools
 
-Continue conversations with full context preservation:
+For better organization and testability, implement `Nous.Tool.Behaviour`
+(returning `metadata/0` and `execute/2`) and pass via
+`Nous.Tool.from_module/1`. See
+[examples/07_module_tools.exs](examples/07_module_tools.exs) for the full
+pattern, and [docs/guides/tool_development.md](docs/guides/tool_development.md)
+for declarative schemas, registries, and testing helpers.
 
-```elixir
-{:ok, result1} = Nous.run(agent, "My name is Alice")
-{:ok, result2} = Nous.run(agent, "What's my name?", context: result1.context)
-# => "Your name is Alice"
-```
+Tools can also update context state for subsequent calls via
+`Nous.Tool.ContextUpdate`. Continue conversations with full context by
+passing `context: result.context` to the next `Nous.run/3`.
 
 ### Streaming
 
@@ -559,12 +264,9 @@ stream
 end)
 ```
 
-### Streaming with Tool Execution
-
 `Nous.run_stream/3` streams text but does **not** execute tools. To get
 per-token deltas *and* tool execution in the same call, pass `stream: true`
-to `Nous.run/3`. The agent loop runs as usual; deltas fire as the model
-produces them.
+to `Nous.run/3`:
 
 ```elixir
 agent = Nous.new("openai:gpt-4", tools: [&MyTools.search/2])
@@ -581,36 +283,35 @@ agent = Nous.new("openai:gpt-4", tools: [&MyTools.search/2])
 ```
 
 Works across providers (OpenAI-compatible, Anthropic, Gemini). Compatible
-with `output_type` for structured output. `cancellation_check` is honored
-between chunks — a flipped flag aborts the run cleanly without partial
-tool execution. See `docs/guides/liveview-integration.md` for the LiveView
-pattern.
+with `output_type`. `cancellation_check` is honored between chunks — a
+flipped flag aborts the run cleanly without partial tool execution. See
+[docs/guides/liveview-integration.md](docs/guides/liveview-integration.md)
+for the LiveView pattern.
 
 ### Fallback Models
 
-Automatically try alternative models when the primary fails (rate limit, server error, timeout):
+Automatically try alternative models when the primary fails (rate limit,
+server error, timeout):
 
 ```elixir
-# Agent with fallback chain
 agent = Nous.new("openai:gpt-4",
-  fallback: ["anthropic:claude-sonnet-4-20250514", "groq:llama-3.1-70b-versatile"],
-  instructions: "Be helpful"
+  fallback: ["anthropic:claude-sonnet-4-20250514", "groq:llama-3.1-70b-versatile"]
 )
 
-{:ok, result} = Nous.run(agent, "Hello")
-
-# Simple LLM API with fallback
+# Also works on the simple LLM API:
 {:ok, text} = Nous.generate_text("openai:gpt-4", "Hello",
   fallback: ["anthropic:claude-sonnet-4-20250514"]
 )
 
-# Also works with streaming
+# And on streaming:
 {:ok, stream} = Nous.stream_text("openai:gpt-4", "Write a haiku",
   fallback: ["groq:llama-3.1-70b-versatile"]
 )
 ```
 
-Fallback triggers on `ProviderError` and `ModelError` only. Application-level errors (validation, max iterations, tool errors) are returned immediately since a different model wouldn't help.
+Fallback triggers on `ProviderError` and `ModelError` only. Application-level
+errors (validation, max iterations, tool errors) return immediately since a
+different model wouldn't help.
 
 ### Callbacks
 
@@ -628,54 +329,6 @@ Monitor execution with callbacks or process messages:
 # Process messages (for LiveView)
 {:ok, result} = Nous.run(agent, "Hello", notify_pid: self())
 # Receives: {:agent_delta, text}, {:tool_call, call}, {:agent_complete, result}
-```
-
-### Module-Based Tools
-
-Define tools as modules for better organization and testability:
-
-```elixir
-defmodule MyTools.Search do
-  @behaviour Nous.Tool.Behaviour
-
-  @impl true
-  def metadata do
-    %{
-      name: "search",
-      description: "Search the web",
-      parameters: %{
-        "type" => "object",
-        "properties" => %{
-          "query" => %{"type" => "string"}
-        },
-        "required" => ["query"]
-      }
-    }
-  end
-
-  @impl true
-  def execute(ctx, %{"query" => query}) do
-    http = ctx.deps[:http_client] || MyApp.HTTP
-    {:ok, http.search(query)}
-  end
-end
-
-agent = Nous.new("openai:gpt-4",
-  tools: [Nous.Tool.from_module(MyTools.Search)]
-)
-```
-
-### Tool Context Updates
-
-Tools can modify context state for subsequent calls:
-
-```elixir
-alias Nous.Tool.ContextUpdate
-
-add_item = fn ctx, %{"item" => item} ->
-  items = ctx.deps[:cart] || []
-  {:ok, %{added: item}, ContextUpdate.set(ContextUpdate.new(), :cart, items ++ [item])}
-end
 ```
 
 ### Structured Output
@@ -703,51 +356,12 @@ agent = Nous.new("openai:gpt-4",
 result.output  #=> %UserInfo{name: "Alice", age: 30}
 ```
 
-Also supports schemaless types (`%{name: :string}`), raw JSON schema, choice constraints,
-and multi-schema selection where the LLM picks the format:
+Also supports schemaless types (`%{name: :string}`), raw JSON schema,
+choice constraints, and multi-schema selection (`{:one_of, [...]}`) where
+the LLM picks the format. Override per-run with `output_type:`.
 
-```elixir
-agent = Nous.new("openai:gpt-4",
-  output_type: {:one_of, [SentimentResult, EntityResult]}
-)
-
-{:ok, result} = Nous.run(agent, "Analyze: 'Great product!'")
-# result.output is a %SentimentResult{} or %EntityResult{} — LLM decides
-```
-
-Override per-run: `Nous.run(agent, prompt, output_type: MySchema)`.
-
-See [Structured Output Guide](docs/guides/structured_output.md) for full documentation.
-
-### Prompt Templates
-
-Build prompts with EEx variable substitution:
-
-```elixir
-alias Nous.PromptTemplate
-
-template = PromptTemplate.from_template(
-  "You are a <%= @role %> who speaks <%= @language %>.",
-  role: :system
-)
-
-message = PromptTemplate.to_message(template, %{role: "teacher", language: "Spanish"})
-{:ok, result} = Nous.run(agent, messages: [message, Message.user("Hello")])
-```
-
-### ReActAgent
-
-For complex multi-step reasoning with planning:
-
-```elixir
-agent = Nous.ReActAgent.new("openai:gpt-4",
-  tools: [&search/2, &calculate/2]
-)
-
-{:ok, result} = Nous.run(agent,
-  "Research the population of Tokyo and calculate its density"
-)
-```
+See [docs/guides/structured_output.md](docs/guides/structured_output.md)
+for full documentation.
 
 ### Skills
 
@@ -762,62 +376,16 @@ agent = Nous.new("openai:gpt-4",
 # Mix module skills, file-based skills, and groups
 agent = Nous.new("openai:gpt-4",
   skills: [MyApp.Skills.Custom, {:group, :testing}],
-  skill_dirs: ["priv/skills/"]  # Scan directories for .md skill files
+  skill_dirs: ["priv/skills/"]
 )
 ```
 
-#### File-Based Skills
+File-based skills are markdown with YAML frontmatter — no Elixir code
+needed. **21 built-in skills** across 7 groups: `:coding`, `:review`,
+`:testing`, `:debug`, `:git`, `:docs`, `:planning`.
 
-Define skills as markdown files with YAML frontmatter — no Elixir code needed:
-
-```markdown
-<!-- priv/skills/api_design.md -->
----
-name: api_design
-description: RESTful API design best practices
-tags: [api, rest, design]
-group: planning
-activation: auto
-priority: 50
----
-
-When designing APIs:
-1. Use nouns for resources, verbs for actions
-2. Version your API (v1, v2)
-3. Use proper HTTP status codes
-4. Paginate list endpoints
-```
-
-Load from files, directories, or parse inline:
-
-```elixir
-alias Nous.Skill.Loader
-
-# Load a single file
-{:ok, skill} = Loader.load_file("priv/skills/api_design.md")
-
-# Load all .md files from a directory (recursive)
-skills = Loader.load_directory("priv/skills/")
-
-# Or let the agent scan directories automatically
-agent = Nous.new("openai:gpt-4",
-  skill_dirs: ["priv/skills/", "~/.nous/skills/"]
-)
-```
-
-**21 built-in skills** across 7 groups:
-
-| Group | Skills |
-|-------|--------|
-| `:coding` | Refactor, ExplainCode, ElixirIdioms, EctoPatterns, OtpPatterns, PhoenixLiveView, PythonFastAPI, PythonTyping, PythonDataScience, PythonUv |
-| `:review` | CodeReview, SecurityScan, PythonSecurity |
-| `:testing` | TestGen, ElixirTesting, PythonTesting |
-| `:debug` | Debug |
-| `:git` | CommitMessage |
-| `:docs` | DocGen |
-| `:planning` | Architect, TaskBreakdown |
-
-Create custom skills as modules or markdown files — see the [Skills Guide](docs/guides/skills.md).
+See [docs/guides/skills.md](docs/guides/skills.md) for built-in skill
+listings, frontmatter spec, custom-skill patterns, and loader usage.
 
 ### Hooks
 
@@ -839,7 +407,10 @@ agent = Nous.new("openai:gpt-4",
 )
 ```
 
-6 lifecycle events: `pre_tool_use`, `post_tool_use`, `pre_request`, `post_response`, `session_start`, `session_end`. Three handler types: function, module, command (via NetRunner). See the [Hooks Guide](docs/guides/hooks.md).
+6 lifecycle events: `pre_tool_use`, `post_tool_use`, `pre_request`,
+`post_response`, `session_start`, `session_end`. Three handler types:
+function, module, command (via NetRunner). See
+[docs/guides/hooks.md](docs/guides/hooks.md).
 
 ### Plugin System
 
@@ -851,8 +422,6 @@ agent = Nous.new("openai:gpt-4",
   plugins: [Nous.Plugins.Summarization, Nous.Plugins.HumanInTheLoop],
   tools: [&MyTools.send_email/2]
 )
-
-{:ok, result} = Nous.run(agent, "Send a welcome email to alice@example.com")
 ```
 
 ### Human-in-the-Loop
@@ -873,27 +442,15 @@ agent = Nous.new("openai:gpt-4",
 )
 ```
 
-#### Async Approval via PubSub
-
-For LiveView or other async approval workflows:
-
-```elixir
-# Configure PubSub once in config/config.exs
-config :nous, pubsub: MyApp.PubSub
-
-# Use async approval handler
-deps = %{hitl_config: %{
-  tools: ["send_email"],
-  handler: Nous.PubSub.Approval.handler(session_id: session_id, timeout: :timer.minutes(5))
-}}
-
-# In LiveView: handle {:approval_required, info} and call
-# Nous.PubSub.Approval.respond(MyApp.PubSub, session_id, tool_call_id, :approve)
-```
+For LiveView or other async approval workflows, configure
+`config :nous, pubsub: MyApp.PubSub` and use
+`Nous.PubSub.Approval.handler/1` — see
+[examples/11_human_in_the_loop.exs](examples/11_human_in_the_loop.exs).
 
 ### Input Guard
 
-Detect and block prompt injection, jailbreak attempts, and other malicious inputs:
+Detect and block prompt injection, jailbreak attempts, and other
+malicious inputs:
 
 ```elixir
 agent = Nous.new("openai:gpt-4",
@@ -909,44 +466,12 @@ agent = Nous.new("openai:gpt-4",
     }
   }
 )
-# => Blocked instantly: "I can't process this request. Pattern matched: instruction override"
 ```
 
-Combine multiple strategies with configurable aggregation:
-
-```elixir
-deps: %{
-  input_guard_config: %{
-    strategies: [
-      {Nous.Plugins.InputGuard.Strategies.Pattern, []},                      # Regex patterns
-      {Nous.Plugins.InputGuard.Strategies.LLMJudge, model: "openai:gpt-4o-mini"},  # LLM classifier
-      {MyApp.InputGuard.Blocklist, words: ["hack", "exploit"]}               # Custom strategy
-    ],
-    aggregation: :any,            # :any | :majority | :all
-    policy: %{suspicious: :warn, blocked: :block},
-    on_violation: &MyApp.log_violation/1
-  }
-}
-```
-
-Create custom strategies by implementing the `Nous.Plugins.InputGuard.Strategy` behaviour:
-
-```elixir
-defmodule MyApp.InputGuard.Blocklist do
-  @behaviour Nous.Plugins.InputGuard.Strategy
-  alias Nous.Plugins.InputGuard.Result
-
-  @impl true
-  def check(input, config, _ctx) do
-    words = Keyword.get(config, :words, [])
-    downcased = String.downcase(input)
-    case Enum.find(words, &String.contains?(downcased, &1)) do
-      nil  -> {:ok, %Result{severity: :safe}}
-      word -> {:ok, %Result{severity: :blocked, reason: "Blocklisted: #{word}", strategy: __MODULE__}}
-    end
-  end
-end
-```
+Combine multiple strategies (`Pattern`, `LLMJudge`, or your own) with
+aggregation (`:any | :majority | :all`) and a policy map. Create custom
+strategies by implementing `Nous.Plugins.InputGuard.Strategy`. See
+[examples/15_input_guard.exs](examples/15_input_guard.exs).
 
 ### Sub-Agent Delegation
 
@@ -974,23 +499,11 @@ agent = Nous.new("openai:gpt-4",
 )
 ```
 
-The `SubAgent` plugin provides two tools:
-- `delegate_task` — run a single sub-agent for sequential delegation
-- `spawn_agents` — run multiple sub-agents concurrently via `Task.Supervisor`
-
-Each sub-agent runs in its own context but inherits parent deps automatically
-(excluding plugin-internal keys). Configure concurrency, timeouts, and
-optionally restrict which deps are shared:
-
-```elixir
-deps: %{
-  sub_agent_templates: templates,
-  database: MyApp.Repo,              # shared with sub-agents automatically
-  parallel_max_concurrency: 3,       # max concurrent sub-agents (default: 5)
-  parallel_timeout: 60_000,          # per-task timeout in ms (default: 120_000)
-  sub_agent_shared_deps: [:database] # optional: restrict to specific keys
-}
-```
+Sub-agents run in their own context but inherit parent deps automatically
+(excluding plugin-internal keys). Configure `parallel_max_concurrency`,
+`parallel_timeout`, and restrict shared deps with
+`sub_agent_shared_deps: [:key1, :key2]` (default `[]` is correct for
+security).
 
 ### Agent Memory
 
@@ -1003,35 +516,19 @@ agent = Nous.new("openai:gpt-4",
   deps: %{memory_config: %{store: Nous.Memory.Store.ETS}}
 )
 
-# Agent can now use remember/recall/forget tools
 {:ok, r1} = Nous.run(agent, "Remember that my favorite color is blue")
 {:ok, r2} = Nous.run(agent, "What is my favorite color?", context: r1.context)
-# => Recalls "blue" from memory
 ```
 
-Add semantic search with embeddings:
+**Store backends:** ETS (zero deps), SQLite (FTS5), DuckDB (FTS + vector),
+Muninn (Tantivy BM25), Zvec (HNSW), Hybrid (Muninn + Zvec).
+**Embedding providers:** Bumblebee (local, offline), OpenAI, Local
+(Ollama/vLLM). **Features:** Memory scoping (agent/user/session/global),
+temporal decay, importance weighting, RRF scoring, configurable
+auto-injection.
 
-```elixir
-agent = Nous.new("openai:gpt-4",
-  plugins: [Nous.Plugins.Memory],
-  deps: %{
-    memory_config: %{
-      store: Nous.Memory.Store.ETS,
-      embedding: Nous.Memory.Embedding.OpenAI,
-      embedding_opts: %{api_key: System.get_env("OPENAI_API_KEY")},
-      auto_inject: true  # Auto-retrieves relevant memories before each request
-    }
-  }
-)
-```
-
-**Store backends:** ETS (zero deps), SQLite (FTS5), DuckDB (FTS + vector), Muninn (Tantivy BM25), Zvec (HNSW), Hybrid (Muninn + Zvec).
-
-**Embedding providers:** Bumblebee (local, offline), OpenAI, Local (Ollama/vLLM).
-
-**Features:** Memory scoping (agent/user/session/global), temporal decay, importance weighting, RRF scoring, configurable auto-injection.
-
-See the [Memory Examples](#memory-examples) section below for complete examples.
+See [docs/guides/memory.md](docs/guides/memory.md) for full configuration
+and the [Memory Examples](#memory-examples) below for runnable scripts.
 
 ### Workflow Engine
 
@@ -1040,7 +537,6 @@ Compose agents, tools, and control flow as executable DAGs:
 ```elixir
 alias Nous.Workflow
 
-# Build a workflow graph
 graph =
   Workflow.new("research_pipeline")
   |> Workflow.add_node(:plan, :agent_step, %{agent: planner, prompt: "Plan research on: ..."})
@@ -1054,59 +550,43 @@ graph =
   |> Workflow.add_node(:review, :human_checkpoint, %{prompt: "Approve report?"})
   |> Workflow.chain([:plan, :search, :synthesize, :review])
 
-# Run it
 {:ok, state} = Workflow.run(graph, %{topic: "AI agents"}, trace: true)
-
-# Visualize
 IO.puts(Workflow.to_mermaid(graph))
 ```
 
-**Supports:** branching, cycles with max-iteration guards, static + dynamic parallelism, pause/resume, hooks, subworkflows, error strategies (retry/skip/fallback), telemetry, tracing, checkpointing. See [examples/18_workflow.exs](examples/18_workflow.exs).
+Supports branching, cycles with max-iteration guards, static and dynamic
+parallelism, pause/resume, hooks, subworkflows, error strategies
+(retry/skip/fallback), telemetry, tracing, and checkpointing. See
+[examples/18_workflow.exs](examples/18_workflow.exs).
 
 ### Knowledge Base
 
-LLM-compiled personal knowledge base — raw documents get ingested, compiled by an LLM into a structured markdown wiki with summaries, backlinks, and cross-references:
+LLM-compiled personal knowledge base — raw documents get ingested,
+compiled by an LLM into a structured markdown wiki with summaries,
+backlinks, and cross-references:
 
 ```elixir
 # Plugin mode — add KB tools to any agent
 agent = Nous.new("openai:gpt-4",
   plugins: [Nous.Plugins.KnowledgeBase],
   deps: %{
-    kb_config: %{
-      store: Nous.KnowledgeBase.Store.ETS,
-      kb_id: "my_kb"
-    }
+    kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}
   }
 )
 
 {:ok, r1} = Nous.run(agent, "Ingest this article about GenServers: ...")
 {:ok, r2} = Nous.run(agent, "What do we know about OTP?", context: r1.context)
-```
 
-For KB-specialized agents with reasoning tools:
-
-```elixir
-agent = Nous.new("openai:gpt-4",
-  behaviour_module: Nous.Agents.KnowledgeBaseAgent,
-  plugins: [Nous.Plugins.KnowledgeBase],
-  deps: %{kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}}
-)
-```
-
-For batch operations, use the workflow API:
-
-```elixir
-# Batch ingest documents
+# Batch operations via the workflow API:
 {:ok, state} = Nous.KnowledgeBase.ingest(
-  [%{title: "Article 1", content: "..."}],
-  kb_config: config
+  [%{title: "Article 1", content: "..."}], kb_config: config
 )
-
-# Run a health check
-{:ok, state} = Nous.KnowledgeBase.health_check(kb_config: config)
 ```
 
-**9 tools:** `kb_search`, `kb_read`, `kb_list`, `kb_ingest`, `kb_add_entry`, `kb_link`, `kb_backlinks`, `kb_health_check`, `kb_generate`. Composes with the Memory plugin. See the [Knowledge Base Guide](docs/guides/knowledge_base.md).
+**9 tools:** `kb_search`, `kb_read`, `kb_list`, `kb_ingest`,
+`kb_add_entry`, `kb_link`, `kb_backlinks`, `kb_health_check`,
+`kb_generate`. Composes with the Memory plugin. See
+[docs/guides/knowledge_base.md](docs/guides/knowledge_base.md).
 
 ### Deep Research
 
@@ -1127,7 +607,6 @@ IO.puts(report.content)  # Markdown report with inline citations
 Production lifecycle management with state persistence:
 
 ```elixir
-# Start a supervised agent with persistence
 {:ok, pid} = Nous.AgentDynamicSupervisor.start_agent(
   agent, session_id: "user-123",
   persistence: Nous.Persistence.ETS,
@@ -1168,13 +647,16 @@ defmodule MyAppWeb.ChatLive do
 end
 ```
 
-See [examples/advanced/liveview_integration.exs](examples/advanced/liveview_integration.exs) for complete patterns.
+See [docs/guides/liveview-integration.md](docs/guides/liveview-integration.md)
+and [examples/advanced/liveview_integration.exs](examples/advanced/liveview_integration.exs)
+for complete patterns including PubSub fan-out, async approvals, and
+hackney backpressure tuning.
 
 ## Examples
 
-**[Full Examples Collection](examples/README.md)** - Focused examples from basics to production.
+**[Full Examples Collection](examples/README.md)** — focused examples from basics to production.
 
-### Core Examples (01-10)
+### Core Examples (01-19)
 
 | Example | Description |
 |---------|-------------|
@@ -1240,7 +722,6 @@ Nous.Telemetry.attach_default_handler()
 Test, benchmark, and optimize your agents:
 
 ```elixir
-# Define tests
 suite = Nous.Eval.Suite.new(
   name: "my_tests",
   default_model: "lmstudio:qwen3",
@@ -1254,25 +735,19 @@ suite = Nous.Eval.Suite.new(
   ]
 )
 
-# Run evaluation
 {:ok, result} = Nous.Eval.run(suite)
 Nous.Eval.Reporter.print(result)
 ```
 
-**Features:**
-- Six built-in evaluators (exact_match, fuzzy_match, contains, tool_usage, schema, llm_judge)
-- Metrics collection (latency, tokens, cost)
-- A/B testing with `Nous.Eval.run_ab/2`
-- Parameter optimization with Bayesian, grid, or random search
-- YAML test suite definitions
+Six built-in evaluators (exact_match, fuzzy_match, contains, tool_usage,
+schema, llm_judge), metrics (latency, tokens, cost), A/B testing via
+`Nous.Eval.run_ab/2`, parameter optimization (Bayesian, grid, random
+search), and YAML test-suite definitions. CLI:
+`mix nous.eval --suite test/eval/suites/basic.yaml`,
+`mix nous.optimize --suite suite.yaml --strategy bayesian --trials 20`.
 
-**CLI:**
-```bash
-mix nous.eval --suite test/eval/suites/basic.yaml
-mix nous.optimize --suite suite.yaml --strategy bayesian --trials 20
-```
-
-See [Evaluation Guide](docs/guides/evaluation.md) for complete documentation.
+See [docs/guides/evaluation.md](docs/guides/evaluation.md) for complete
+documentation.
 
 ## Architecture
 
@@ -1293,156 +768,16 @@ Nous.run/3 → AgentRunner
 └─→ Research (Planner → Searcher → Synthesizer → Reporter)
 ```
 
-## Development
+## Troubleshooting
 
-### Prerequisites
-
-- Erlang/OTP 26+
-- Elixir 1.15+
-
-### Setup
-
-```bash
-git clone https://github.com/nyo16/nous.git
-cd nous
-mix deps.get
-mix compile
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-mix test
-
-# Run a specific test file
-mix test test/nous/decisions_test.exs
-
-# Run tests with verbose output
-mix test --trace
-```
-
-### Code Quality
-
-```bash
-# Check formatting
-mix format --check-formatted
-
-# Run credo linter
-mix credo --strict
-
-# Run dialyzer (first run builds PLT, takes a few minutes)
-mix dialyzer
-
-# All checks at once
-mix compile --warnings-as-errors && mix format --check-formatted && mix credo --strict && mix test
-```
-
-### Configuration
-
-API keys are configured via environment variables:
-
-```bash
-export OPENAI_API_KEY="sk-..."
-export ANTHROPIC_API_KEY="sk-ant-..."
-export GROQ_API_KEY="gsk_..."
-# See config/config.exs for all supported providers
-```
-
-For local models (no API key needed):
-
-```bash
-# LM Studio — start the server, then:
-agent = Nous.new("lmstudio:qwen3")
-
-# Ollama — start the server, then:
-agent = Nous.new("ollama:llama2")
-
-# LlamaCpp — load a GGUF model directly (requires llama_cpp_ex dep):
-:ok = LlamaCppEx.init()
-{:ok, llm} = LlamaCppEx.load_model("model.gguf", n_gpu_layers: -1)
-agent = Nous.new("llamacpp:local", llamacpp_model: llm)
-
-# For thinking models (Qwen3, DeepSeek, etc.), disable <think> tags:
-agent = Nous.new("llamacpp:local",
-  llamacpp_model: llm,
-  model_settings: %{enable_thinking: false}
-)
-```
-
-### Running Examples
-
-```bash
-# Run any example script
-mix run examples/01_hello_world.exs
-
-# Run with a specific provider
-OPENAI_API_KEY=sk-... mix run examples/02_with_tools.exs
-```
-
-### Generating Docs
-
-```bash
-mix docs
-open doc/index.html
-```
-
-### Project Structure
-
-```
-lib/nous/
-├── agent.ex              # Agent struct and builder
-├── agent_runner.ex       # Core execution loop
-├── agent_server.ex       # GenServer wrapper for supervised agents
-├── fallback.ex           # Fallback model chain support
-├── decisions/            # Decision graph (goals, decisions, outcomes)
-│   ├── store/            # Store backends (ETS, DuckDB)
-│   ├── node.ex           # Node struct
-│   ├── edge.ex           # Edge struct
-│   ├── tools.ex          # LLM-callable decision tools
-│   └── context_builder.ex
-├── knowledge_base/       # LLM-compiled wiki knowledge base
-│   ├── store/            # Store backends (ETS)
-│   ├── tools.ex          # 9 KB agent tools
-│   ├── workflows.ex      # DAG pipelines (ingest, update, health, generate)
-│   └── prompts.ex        # LLM prompt templates
-├── memory/               # Persistent memory with hybrid search
-│   ├── store/            # Store backends (ETS, SQLite, DuckDB, etc.)
-│   ├── embedding/        # Embedding providers
-│   └── tools.ex          # LLM-callable memory tools
-├── plugins/              # Agent plugins
-│   ├── decisions.ex      # Decision graph plugin
-│   ├── memory.ex         # Memory plugin
-│   ├── team_tools.ex     # Team communication plugin
-│   ├── sub_agent.ex      # Sub-agent delegation
-│   └── human_in_the_loop.ex
-├── providers/            # LLM provider adapters
-├── teams/                # Multi-agent team orchestration
-│   ├── coordinator.ex    # Team lifecycle management
-│   ├── shared_state.ex   # Per-team shared state (ETS)
-│   ├── rate_limiter.ex   # Budget and rate limiting
-│   ├── role.ex           # Role-based tool scoping
-│   └── comms.ex          # PubSub topic helpers
-├── tool/                 # Tool system
-│   ├── behaviour.ex      # Tool behaviour
-│   ├── schema.ex         # Declarative tool DSL
-│   └── registry.ex       # Tool collection and filtering
-├── research/             # Deep research system
-└── eval/                 # Evaluation framework
-```
+Hit a wall? See [docs/guides/troubleshooting.md](docs/guides/troubleshooting.md)
+for common errors, debug logging, and provider-specific gotchas.
 
 ## Contributing
 
-Contributions welcome! See [CHANGELOG.md](CHANGELOG.md) for recent changes.
-
-```bash
-# Fork, clone, then:
-mix deps.get
-mix test                     # Make sure tests pass
-mix format                   # Format your code
-mix credo --strict           # Check for issues
-# Open a PR against master
-```
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup,
+test commands, code-quality checks, project layout, and the security
+rules that apply to all code in the repo.
 
 ## License
 
@@ -1450,5 +785,7 @@ Apache 2.0 - see [LICENSE](https://github.com/nyo16/nous/blob/master/LICENSE)
 
 ## Credits
 
-- Inspired by [Pydantic AI](https://ai.pydantic.dev/)
+- Inspired by [Pydantic AI](https://ai.pydantic.dev/) — Nous brings the
+  same agent-shaped API to Elixir, layered on OTP for supervision and
+  Phoenix for the UI story.
 - HTTP: [Req](https://github.com/wojtekmach/req) + [Finch](https://github.com/sneako/finch)

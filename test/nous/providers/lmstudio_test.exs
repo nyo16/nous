@@ -93,10 +93,20 @@ defmodule Nous.Providers.LMStudioTest do
       assert {:ok, _} = LMStudio.chat(%{"model" => "m", "messages" => []})
     end
 
-    test "rejects non-http schemes via UrlGuard" do
-      assert_raise ArgumentError, ~r/failed validation/, fn ->
-        LMStudio.chat(%{"model" => "m", "messages" => []}, base_url: "file:///etc/passwd")
-      end
+    test "rejects non-http schemes via UrlGuard as {:error, :invalid_config}" do
+      assert {:error, {:invalid_config, msg}} =
+               LMStudio.chat(%{"model" => "m", "messages" => []},
+                 base_url: "file:///etc/passwd"
+               )
+
+      assert msg =~ "failed validation"
+    end
+
+    test "chat_stream returns {:error, :invalid_config} on bad base_url" do
+      assert {:error, {:invalid_config, _}} =
+               LMStudio.chat_stream(%{"model" => "m", "messages" => []},
+                 base_url: "file:///etc/passwd"
+               )
     end
   end
 end

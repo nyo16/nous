@@ -98,16 +98,20 @@ defmodule Nous.PromptTemplateTest do
   end
 
   describe "security: untrusted template body cannot execute Elixir" do
-    test "format on a hostile template body never invokes EEx" do
+    @tag :tmp_dir
+    test "format on a hostile template body never invokes EEx", %{tmp_dir: tmp_dir} do
       # If from_template/2 had let this through, EEx.eval_string would execute
       # File.write!/2. Since from_template rejects it, no execution happens.
-      hostile = ~S{<%= File.write!("/tmp/nous_pwn_test", "x") %>}
+      # Using @tag :tmp_dir gives a unique async-safe path per test, so this
+      # test can stay parallel and won't leak a sentinel under /tmp.
+      canary = Path.join(tmp_dir, "nous_pwn_canary")
+      hostile = ~s{<%= File.write!(#{inspect(canary)}, "x") %>}
 
       assert_raise ArgumentError, fn ->
         PromptTemplate.from_template(hostile)
       end
 
-      refute File.exists?("/tmp/nous_pwn_test")
+      refute File.exists?(canary)
     end
   end
 end

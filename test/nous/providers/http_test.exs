@@ -280,6 +280,36 @@ defmodule Nous.Providers.HTTPTest do
     end
   end
 
+  describe "json_headers/0" do
+    test "returns content-type application/json" do
+      assert HTTP.json_headers() == [{"content-type", "application/json"}]
+    end
+  end
+
+  describe "organization_header/1" do
+    test "builds openai-organization header" do
+      assert HTTP.organization_header("org-abc") == [{"openai-organization", "org-abc"}]
+    end
+
+    test "returns empty list for nil/empty/non-string" do
+      assert HTTP.organization_header(nil) == []
+      assert HTTP.organization_header("") == []
+      assert HTTP.organization_header(123) == []
+    end
+  end
+
+  describe "openai_project_header/1" do
+    test "builds openai-project header" do
+      assert HTTP.openai_project_header("proj-xyz") == [{"openai-project", "proj-xyz"}]
+    end
+
+    test "returns empty list for nil/empty/non-string" do
+      assert HTTP.openai_project_header(nil) == []
+      assert HTTP.openai_project_header("") == []
+      assert HTTP.openai_project_header(123) == []
+    end
+  end
+
   # ============================================================================
   # Input Validation Tests
   # ============================================================================

@@ -70,12 +70,6 @@ defmodule Nous.Providers.Mistral do
   end
 
   defp build_headers(api_key) do
-    headers = [{"content-type", "application/json"}]
-
-    if api_key && api_key != "" do
-      [{"authorization", "Bearer #{api_key}"} | headers]
-    else
-      headers
-    end
+    HTTP.json_headers() ++ HTTP.bearer_auth_header(api_key)
   end
 end

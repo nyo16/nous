@@ -50,28 +50,34 @@ defmodule Nous.Providers.LMStudio do
 
   @impl Nous.Provider
   def chat(params, opts \\ []) do
-    url = "#{get_base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts))
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    with {:ok, base} <- get_base_url(opts) do
+      url = "#{base}/chat/completions"
+      headers = build_headers(api_key(opts))
+      timeout = Keyword.get(opts, :timeout, @default_timeout)
 
-    HTTP.post(url, params, headers, timeout: timeout)
+      HTTP.post(url, params, headers, timeout: timeout)
+    end
   end
 
   @impl Nous.Provider
   def chat_stream(params, opts \\ []) do
-    url = "#{get_base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts))
-    timeout = Keyword.get(opts, :timeout, @streaming_timeout)
+    with {:ok, base} <- get_base_url(opts) do
+      url = "#{base}/chat/completions"
+      headers = build_headers(api_key(opts))
+      timeout = Keyword.get(opts, :timeout, @streaming_timeout)
 
-    params = Map.put(params, "stream", true)
+      params = Map.put(params, "stream", true)
 
-    HTTP.stream(url, params, headers, timeout: timeout)
+      HTTP.stream(url, params, headers, timeout: timeout)
+    end
   end
 
   # Resolve and validate the base URL. The resolved URL goes through
   # `Nous.Tools.UrlGuard` with `allow_private_hosts: true` (LM Studio is
   # local-by-default) to reject malformed schemes (`file://` etc.) while
-  # still allowing the localhost default.
+  # still allowing the localhost default. Returns `{:ok, base}` on success
+  # or `{:error, {:invalid_config, reason}}` so callers can pattern-match
+  # without rescuing exceptions.
   defp get_base_url(opts) do
     base =
       Keyword.get(opts, :base_url) ||
@@ -80,22 +86,18 @@ defmodule Nous.Providers.LMStudio do
 
     case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: true) do
       {:ok, _uri} ->
-        base
+        {:ok, base}
 
       {:error, reason} ->
-        raise ArgumentError,
-              "LM Studio base_url failed validation: #{reason}. Got: #{inspect(base)}"
+        {:error,
+         {:invalid_config,
+          "LM Studio base_url failed validation: #{reason}. Got: #{inspect(base)}"}}
     end
   end
 
+  # LM Studio doesn't require auth, but we support it if configured.
+  # `HTTP.bearer_auth_header/1` returns `[]` for nil / empty / "not-needed".
   defp build_headers(api_key) do
-    headers = [{"content-type", "application/json"}]
-
-    # LM Studio doesn't require auth, but we support it if configured
-    if api_key && api_key != "" do
-      [{"authorization", "Bearer #{api_key}"} | headers]
-    else
-      headers
-    end
+    HTTP.json_headers() ++ HTTP.bearer_auth_header(api_key)
   end
 end

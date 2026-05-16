@@ -356,6 +356,12 @@ defmodule Nous.Providers.HTTP do
   # ============================================================================
 
   @doc """
+  Base JSON content-type headers. Most providers start their header list here.
+  """
+  @spec json_headers() :: list()
+  def json_headers, do: [{"content-type", "application/json"}]
+
+  @doc """
   Build authorization header for Bearer token auth (OpenAI style).
 
   Returns empty list for nil, empty string, or "not-needed" values.
@@ -384,6 +390,25 @@ defmodule Nous.Providers.HTTP do
   end
 
   def api_key_header(_, _), do: []
+
+  @doc """
+  Build OpenAI-style `openai-organization` header. Returns empty list when nil/empty.
+  """
+  @spec organization_header(String.t() | nil) :: list()
+  def organization_header(nil), do: []
+  def organization_header(""), do: []
+  def organization_header(org) when is_binary(org), do: [{"openai-organization", org}]
+  def organization_header(_), do: []
+
+  @doc """
+  Build OpenAI-style `openai-project` header (project-scoped API keys).
+  Returns empty list when nil/empty.
+  """
+  @spec openai_project_header(String.t() | nil) :: list()
+  def openai_project_header(nil), do: []
+  def openai_project_header(""), do: []
+  def openai_project_header(project) when is_binary(project), do: [{"openai-project", project}]
+  def openai_project_header(_), do: []
 
   @doc false
   # Public for stream-backend reuse. Ensures the request carries

@@ -73,37 +73,30 @@ defmodule Nous.Providers.Anthropic do
     HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
   end
 
-  # Build headers for the request
   defp build_headers(api_key, opts) do
-    headers = [
-      {"content-type", "application/json"},
-      {"anthropic-version", @api_version}
-    ]
+    HTTP.json_headers() ++
+      [{"anthropic-version", @api_version}] ++
+      HTTP.api_key_header(api_key, "x-api-key") ++
+      anthropic_beta_headers(opts)
+  end
 
-    # Add API key authentication
-    headers =
-      if api_key && api_key != "" do
-        [{"x-api-key", api_key} | headers]
-      else
-        headers
-      end
+  # Collect long-context and custom beta features into the single
+  # `anthropic-beta` header. Anthropic accepts a comma-separated list per
+  # header, but emitting one header per beta is just as valid; we use
+  # separate headers so each beta is independently inspectable in logs.
+  defp anthropic_beta_headers(opts) do
+    long_context =
+      if Keyword.get(opts, :enable_long_context, false),
+        do: [{"anthropic-beta", @long_context_beta}],
+        else: []
 
-    # Add beta headers for long context
-    headers =
-      if Keyword.get(opts, :enable_long_context, false) do
-        [{"anthropic-beta", @long_context_beta} | headers]
-      else
-        headers
-      end
-
-    # Add any custom beta features
-    headers =
+    custom =
       case Keyword.get(opts, :beta) do
-        nil -> headers
-        beta when is_binary(beta) -> [{"anthropic-beta", beta} | headers]
-        betas when is_list(betas) -> [{"anthropic-beta", Enum.join(betas, ",")} | headers]
+        nil -> []
+        beta when is_binary(beta) -> [{"anthropic-beta", beta}]
+        betas when is_list(betas) -> [{"anthropic-beta", Enum.join(betas, ",")}]
       end
 
-    headers
+    long_context ++ custom
   end
 end

@@ -22,6 +22,21 @@ defmodule Nous.Tools.StringTools do
       {:ok, result} = Nous.run(agent, "How many characters in 'Hello World'?")
   """
 
+  # Extract a string arg, accepting any of the given keys. Returns the
+  # first value present whose type matches `expected`, or `default`
+  # otherwise. Replaces nil-pun chains like
+  # `Map.get(args, "pattern") || Map.get(args, "old") || ""`, which
+  # silently propagate non-string values from the LLM (e.g. `123`,
+  # `nil`, `[]`) into `String.replace/3` and crash.
+  defp fetch_arg(args, keys, default) when is_list(keys) do
+    Enum.find_value(keys, default, fn key ->
+      case Map.get(args, key) do
+        v when is_binary(v) -> v
+        _ -> nil
+      end
+    end)
+  end
+
   @doc """
   Get the length of a string.
 
@@ -30,7 +45,7 @@ defmodule Nous.Tools.StringTools do
   - text: The string to measure
   """
   def string_length(_ctx, args) do
-    text = Map.get(args, "text", "")
+    text = fetch_arg(args, ["text"], "")
 
     %{
       text: text,
@@ -51,10 +66,9 @@ defmodule Nous.Tools.StringTools do
   - case_sensitive: Whether to match case (default: true)
   """
   def replace_text(_ctx, args) do
-    text = Map.get(args, "text", "")
-    # Support multiple parameter names
-    pattern = Map.get(args, "pattern") || Map.get(args, "old") || ""
-    replacement = Map.get(args, "replacement") || Map.get(args, "new") || ""
+    text = fetch_arg(args, ["text"], "")
+    pattern = fetch_arg(args, ["pattern", "old"], "")
+    replacement = fetch_arg(args, ["replacement", "new"], "")
     case_sensitive = Map.get(args, "case_sensitive", true)
 
     result =
@@ -96,9 +110,8 @@ defmodule Nous.Tools.StringTools do
   - remove_empty: Whether to remove empty strings (default: false)
   """
   def split_text(_ctx, args) do
-    text = Map.get(args, "text", "")
-    # Support multiple parameter names
-    delimiter = Map.get(args, "delimiter") || Map.get(args, "separator") || " "
+    text = fetch_arg(args, ["text"], "")
+    delimiter = fetch_arg(args, ["delimiter", "separator"], " ")
     trim = Map.get(args, "trim", false)
     remove_empty = Map.get(args, "remove_empty", false)
 
@@ -167,9 +180,8 @@ defmodule Nous.Tools.StringTools do
   - case_sensitive: Whether to match case (default: true)
   """
   def count_occurrences(_ctx, args) do
-    text = Map.get(args, "text", "")
-    # Support multiple parameter names
-    pattern = Map.get(args, "pattern") || Map.get(args, "substring") || ""
+    text = fetch_arg(args, ["text"], "")
+    pattern = fetch_arg(args, ["pattern", "substring"], "")
     case_sensitive = Map.get(args, "case_sensitive", true)
 
     count =
@@ -338,9 +350,8 @@ defmodule Nous.Tools.StringTools do
   - case_sensitive: Whether to match case (default: true)
   """
   def contains(_ctx, args) do
-    text = Map.get(args, "text", "")
-    # Support multiple parameter names
-    pattern = Map.get(args, "pattern") || Map.get(args, "substring") || ""
+    text = fetch_arg(args, ["text"], "")
+    pattern = fetch_arg(args, ["pattern", "substring"], "")
     case_sensitive = Map.get(args, "case_sensitive", true)
 
     contains =

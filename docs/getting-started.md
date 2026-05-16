@@ -1,210 +1,188 @@
-# Getting Started with Nous AI
+# Getting Started with Nous
 
-Complete setup guide for the Nous AI framework.
+This guide picks up where the [README Quick Start](../README.md#quick-start)
+leaves off. It assumes you already have Nous installed (`{:nous, "~> 0.16.0"}`)
+and a provider configured (API key set, or a local LM Studio / Ollama / vLLM
+server running).
 
-## Installation
+It covers four real-world building blocks:
 
-Add to your `mix.exs`:
+1. [Building your first multi-tool agent](#building-your-first-multi-tool-agent)
+2. [Handling errors in production](#handling-errors-in-production)
+3. [Persisting agent state](#persisting-agent-state)
+4. [Wiring up callbacks for observability](#wiring-up-callbacks-for-observability)
 
-```elixir
-def deps do
-  [
-    {:nous, "~> 0.9.0"}
-  ]
-end
-```
+Plus two reference patterns at the end:
 
-Then run:
-```bash
-mix deps.get
-```
+- [Error handling](#error-handling)
+- [Conversation state as a GenServer](#conversation-state-as-a-genserver)
 
-## Quick Setup
+## Building your first multi-tool agent
 
-### Option 1: Local AI (Free)
-Perfect for development and testing.
+Most useful agents call more than one tool. The pattern: define each tool
+as a plain function (or a module implementing `Nous.Tool.Behaviour`), then
+pass them into `Nous.new/2`. The LLM picks which to call.
 
-1. **Download LM Studio** from [lmstudio.ai](https://lmstudio.ai/)
-2. **Download a model** (recommended: qwen3-vl-4b-thinking-mlx)
-3. **Start server** in LM Studio (runs on http://localhost:1234)
-4. **Test it works**:
-   ```bash
-   mix run -e "
-   agent = Nous.new(\"lmstudio:qwen3-vl-4b-thinking-mlx")
-   {:ok, result} = Nous.run(agent, \"Hello!\")
-   IO.puts(result.output)
-   "
-   ```
-
-### Option 2: Cloud AI
-Perfect for production and advanced models.
-
-**Anthropic (Recommended):**
-```bash
-export ANTHROPIC_API_KEY="sk-ant-your-key"
-```
-
-**OpenAI:**
-```bash
-export OPENAI_API_KEY="sk-your-key"
-```
-
-**Google Vertex AI:**
-```bash
-export GOOGLE_CLOUD_PROJECT="your-project-id"
-export GOOGLE_CLOUD_REGION="us-central1"  # optional, defaults to us-central1
-# Option A: Use gcloud access token
-export VERTEX_AI_ACCESS_TOKEN="$(gcloud auth print-access-token)"
-# Option B: Use Goth with service account (recommended for production)
-export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service-account.json"
-```
-
-**Test cloud setup:**
-```bash
-mix run -e "
-agent = Nous.new(\"anthropic:claude-sonnet-4-5-20250929\")
-{:ok, result} = Nous.run(agent, \"Hello!\")
-IO.puts(result.output)
-"
-```
-
-## Basic Usage
-
-### Simple Chat Agent
-```elixir
-# Create an agent
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
-  instructions: "You are a helpful assistant"
-)
-
-# Ask questions
-{:ok, result} = Nous.run(agent, "What is Elixir?")
-IO.puts(result.output)
-
-# Check usage
-IO.puts("Tokens used: #{result.usage.total_tokens}")
-```
-
-### Agent with Tools
 ```elixir
 defmodule MyTools do
-  @doc "Get the current weather for a location"
-  def get_weather(_ctx, %{"location" => location}) do
-    "The weather in #{location} is sunny and 72°F"
+  def get_weather(_ctx, %{"city" => city}) do
+    %{city: city, temperature: 72, conditions: "sunny"}
+  end
+
+  def get_forecast(_ctx, %{"city" => city, "days" => days}) do
+    %{city: city, days: days, summary: "mild and dry"}
+  end
+
+  def list_cities(_ctx, _args) do
+    ["Tokyo", "Lisbon", "Berlin", "Buenos Aires"]
   end
 end
 
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
-  instructions: "Use the get_weather tool when asked about weather",
-  tools: [&MyTools.get_weather/2]
-)
+agent =
+  Nous.new("openai:gpt-4o",
+    instructions: """
+    You are a travel assistant. Use the available tools to answer
+    questions about cities. Always cite which tool you used.
+    """,
+    tools: [
+      &MyTools.get_weather/2,
+      &MyTools.get_forecast/2,
+      &MyTools.list_cities/2
+    ]
+  )
 
-{:ok, result} = Nous.run(agent, "What's the weather in Paris?")
-IO.puts(result.output)  # AI automatically calls the weather tool
+{:ok, result} = Nous.run(agent, "What's the weather in Tokyo, and what's the 3-day forecast?")
+IO.puts(result.output)
 ```
 
-### Structured Output
+The agent loop will:
+
+1. Receive your prompt
+2. Decide which tool(s) to call (it can chain multiple in one turn)
+3. Execute them concurrently where safe
+4. Feed the results back to the model
+5. Generate the final answer
+
+For a working version of this pattern see
+[`examples/02_with_tools.exs`](../examples/02_with_tools.exs) and
+[`examples/07_module_tools.exs`](../examples/07_module_tools.exs).
+
+## Handling errors in production
+
+`Nous.run/3` returns `{:ok, result}` or `{:error, reason}`. In production you
+typically want three things on top of that: retries on transient errors,
+provider fallback, and structured logging.
+
+### Provider fallback
+
 ```elixir
-defmodule UserInfo do
-  use Ecto.Schema
-  @primary_key false
-  embedded_schema do
-    field :name, :string
-    field :age, :integer
+agent =
+  Nous.new("openai:gpt-4o",
+    fallback: ["anthropic:claude-sonnet-4-5-20250929", "groq:llama-3.1-70b-versatile"]
+  )
+
+{:ok, result} = Nous.run(agent, "Hello")
+```
+
+Fallback triggers on `ProviderError` and `ModelError` only — application
+errors (validation, max iterations, tool errors) return immediately because
+a different model wouldn't help.
+
+### Retries on transient errors
+
+```elixir
+defmodule Retry do
+  def with_backoff(fun, attempts \\ 3, base \\ 200)
+  def with_backoff(_fun, 0, _base), do: {:error, :exhausted}
+
+  def with_backoff(fun, attempts, base) do
+    case fun.() do
+      {:ok, _} = ok -> ok
+      {:error, %Nous.ProviderError{}} ->
+        Process.sleep(base)
+        with_backoff(fun, attempts - 1, base * 2)
+      {:error, _} = err -> err
+    end
   end
 end
 
-agent = Nous.new("openai:gpt-4o-mini", output_type: UserInfo)
-{:ok, result} = Nous.run(agent, "Generate a user named Alice, age 30")
-# result.output == %UserInfo{name: "Alice", age: 30}
+Retry.with_backoff(fn -> Nous.run(agent, "Hello") end)
 ```
 
-For more details, see the **[Structured Output Guide](structured_output.md)**.
+Working version: [`examples/advanced/error_handling.exs`](../examples/advanced/error_handling.exs).
 
-### Streaming Responses
+## Persisting agent state
+
+For agents that live longer than a single request — chatbots, long-running
+research jobs, anything user-facing — wire them through
+`Nous.AgentDynamicSupervisor` with a persistence backend.
+
 ```elixir
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")
+{:ok, _pid} =
+  Nous.AgentDynamicSupervisor.start_agent(
+    agent,
+    session_id: "user-123",
+    persistence: Nous.Persistence.ETS,
+    name: {:via, Registry, {Nous.AgentRegistry, "user-123"}}
+  )
 
-Nous.run_stream(agent, "Tell me a story")
-|> Enum.each(fn
-  {:text_delta, text} -> IO.write(text)  # Print as it arrives
-  {:finish, result} -> IO.puts("\n✅ Complete")
-end)
+# Context auto-saves; restore on a later run:
+{:ok, context} = Nous.Persistence.ETS.load("user-123")
+{:ok, result} = Nous.run(agent, "Continue our conversation", context: context)
 ```
 
-## Next Steps
+ETS is built in. For SQLite/DuckDB persistence and crash recovery patterns,
+see [`examples/09_agent_server.exs`](../examples/09_agent_server.exs) and the
+[best practices guide](guides/best_practices.md).
 
-### Immediate Next Steps (15 minutes)
-1. **Try examples** → [quickstart examples](../examples/quickstart/README.md)
-2. **Follow tutorials** → [structured learning](../examples/tutorials/README.md)
-3. **Browse by feature** → [reference guides](../examples/reference/README.md)
+## Wiring up callbacks for observability
 
-### Learning Path
-- **Beginner** (15 min) → [01-basics](../examples/tutorials/01-basics/README.md)
-- **Intermediate** (1 hour) → [02-patterns](../examples/tutorials/02-patterns/README.md)
-- **Advanced** (deep dive) → [03-production](../examples/tutorials/03-production/README.md)
-- **Complete projects** → [04-projects](../examples/tutorials/04-projects/README.md)
+Callbacks fire at well-known points in the agent loop. Use them for token
+streaming to a UI, structured logging, metrics, or to bridge into PubSub.
 
-### Production Setup
-- **[Best Practices Guide](guides/best_practices.md)** - Production deployment
-- **[Tool Development Guide](guides/tool_development.md)** - Custom tools
-- **[Troubleshooting Guide](guides/troubleshooting.md)** - Common issues
-
-## Provider Configuration
-
-### All Supported Providers
 ```elixir
-# Local (Free)
-agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx")
-agent = Nous.new("ollama:llama3")
-
-# Cloud
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929")
-agent = Nous.new("openai:gpt-4o")
-agent = Nous.new("gemini:gemini-1.5-pro")
-agent = Nous.new("mistral:mistral-large-latest")
-agent = Nous.new("groq:llama-3.1-70b-versatile")
+{:ok, result} =
+  Nous.run(agent, "Summarize the latest news on Elixir.",
+    callbacks: %{
+      on_llm_new_delta:        fn _event, delta -> IO.write(delta) end,
+      on_llm_new_thinking_delta: fn _event, t -> IO.write(["[think] ", t]) end,
+      on_tool_call:            fn _event, call -> Logger.info("tool: #{call.name}") end,
+      on_tool_response:        fn _event, resp -> Logger.info("result: #{inspect(resp)}") end
+    }
+  )
 ```
 
-### Model Settings
+For LiveView you typically prefer `notify_pid:` over inline callbacks — the
+agent runs in a Task and sends `{:agent_delta, _}` / `{:agent_complete, _}`
+messages to your view process. See
+[`examples/05_callbacks.exs`](../examples/05_callbacks.exs) and
+[`examples/advanced/liveview_integration.exs`](../examples/advanced/liveview_integration.exs).
+
+For metrics, attach to the built-in telemetry events:
+
 ```elixir
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
-  model_settings: %{
-    temperature: 0.7,      # Creativity (0.0 - 1.0)
-    max_tokens: 2000,      # Response length
-    top_p: 0.9            # Nucleus sampling
-  }
-)
+Nous.Telemetry.attach_default_handler()
 ```
 
-## Architecture Overview
-
-### Core Concepts
-- **Agent**: Stateless configuration object (model + instructions + tools)
-- **Tools**: Elixir functions the AI can call
-- **Messages**: Structured conversation history
-- **Streaming**: Real-time response generation
-
-### Key Features
-- **Multi-provider**: Works with 10+ AI providers
-- **Tool calling**: AI can execute Elixir functions
-- **Streaming**: Real-time response generation
-- **Type safety**: Comprehensive type specifications
-- **Production ready**: GenServer, LiveView, distributed systems
+See [`examples/advanced/telemetry.exs`](../examples/advanced/telemetry.exs).
 
 ## Common Patterns
 
 ### Error Handling
+
 ```elixir
 case Nous.run(agent, prompt) do
   {:ok, result} ->
     IO.puts("Success: #{result.output}")
   {:error, reason} ->
-    IO.puts("Error: #{reason}")
+    IO.puts("Error: #{inspect(reason)}")
 end
 ```
 
-### Conversation State
+### Conversation State as a GenServer
+
+When you want a process-local chat session with full conversation history:
+
 ```elixir
 defmodule ChatBot do
   use GenServer
@@ -237,35 +215,15 @@ defmodule ChatBot do
 end
 ```
 
-## Troubleshooting
-
-### Connection Issues
-- **"Connection refused"**: LM Studio not running or wrong port
-- **"401 Unauthorized"**: Check API key is set correctly
-- **"Model not found"**: Verify model name spelling
-
-### Performance
-- **Slow responses**: Try smaller models or local inference
-- **High costs**: Use local models for development
-- **Rate limits**: Implement exponential backoff
-
-### Debug Mode
-```elixir
-# Enable debug logging
-require Logger
-Logger.configure(level: :debug)
-
-# See all agent iterations and tool calls
-{:ok, result} = Nous.run(agent, prompt)
-```
-
-For more help, see the **[Troubleshooting Guide](guides/troubleshooting.md)**.
-
----
+For supervised, crash-recoverable versions of this pattern, see
+[`examples/09_agent_server.exs`](../examples/09_agent_server.exs).
 
 ## What's Next?
 
-- **Hands-on learning** → [Examples](../examples/README.md)
-- **Specific features** → [Reference guides](../examples/reference/README.md)
-- **Production deployment** → [Best practices](guides/best_practices.md)
-- **Custom tools** → [Tool development](guides/tool_development.md)
+- **More examples** → [`examples/`](../examples/) (numbered 01–19, plus
+  `providers/`, `memory/`, `advanced/`, `workflow/`)
+- **Specific features** → [`docs/guides/`](guides/) — tool development,
+  structured output, hooks, skills, memory, workflows, knowledge base,
+  LiveView integration, evaluation
+- **Production deployment** → [Best Practices](guides/best_practices.md)
+- **Troubleshooting** → [Troubleshooting Guide](guides/troubleshooting.md)
