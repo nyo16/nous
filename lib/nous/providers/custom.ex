@@ -142,60 +142,67 @@ defmodule Nous.Providers.Custom do
 
   @impl Nous.Provider
   def chat(params, opts \\ []) do
-    url = "#{get_base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts), opts)
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    with {:ok, base} <- get_base_url(opts) do
+      url = "#{base}/chat/completions"
+      headers = build_headers(api_key(opts), opts)
+      timeout = Keyword.get(opts, :timeout, @default_timeout)
 
-    HTTP.post(url, params, headers, timeout: timeout)
+      HTTP.post(url, params, headers, timeout: timeout)
+    end
   end
 
   @impl Nous.Provider
   def chat_stream(params, opts \\ []) do
-    url = "#{get_base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts), opts)
-    timeout = Keyword.get(opts, :timeout, @streaming_timeout)
-    finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
+    with {:ok, base} <- get_base_url(opts) do
+      url = "#{base}/chat/completions"
+      headers = build_headers(api_key(opts), opts)
+      timeout = Keyword.get(opts, :timeout, @streaming_timeout)
+      finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
 
-    params = Map.put(params, "stream", true)
+      params = Map.put(params, "stream", true)
 
-    HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
+      HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
+    end
   end
 
   # Get base URL from opts, env var, or config (required for custom provider).
   # The custom provider accepts user-supplied base_url, so the URL is
   # validated through UrlGuard for SSRF protection. Set
   # `allow_private_hosts: true` in opts (or :allow_private_hosts in app
-  # config) for local development against private services.
+  # config) for local development against private services. Returns
+  # `{:ok, base}` on success or `{:error, {:invalid_config, reason}}` so
+  # callers can pattern-match without rescuing exceptions.
   defp get_base_url(opts) do
     base =
       Keyword.get(opts, :base_url) ||
         System.get_env("CUSTOM_BASE_URL") ||
         get_in(Application.get_env(:nous, :custom, []), [:base_url])
 
-    if is_nil(base) or base == "" do
-      raise ArgumentError, """
-      Custom provider requires a base_url.
+    cond do
+      is_nil(base) or base == "" ->
+        {:error,
+         {:invalid_config,
+          "Custom provider requires a base_url. Set one of: " <>
+            "Nous.new(\"custom:model\", base_url: \"http://...\"), " <>
+            "CUSTOM_BASE_URL env var, or " <>
+            "config :nous, :custom, base_url: \"http://...\""}}
 
-      Set one of:
-      1. Option: Nous.new("custom:model", base_url: "http://...")
-      2. Environment: export CUSTOM_BASE_URL="http://..."
-      3. Config: config :nous, :custom, base_url: "http://..."
-      """
-    end
+      true ->
+        allow_private =
+          Keyword.get(opts, :allow_private_hosts) ||
+            get_in(Application.get_env(:nous, :custom, []), [:allow_private_hosts]) ||
+            false
 
-    allow_private =
-      Keyword.get(opts, :allow_private_hosts) ||
-        get_in(Application.get_env(:nous, :custom, []), [:allow_private_hosts]) ||
-        false
+        case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: allow_private) do
+          {:ok, _uri} ->
+            {:ok, base}
 
-    case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: allow_private) do
-      {:ok, _uri} ->
-        base
-
-      {:error, reason} ->
-        raise ArgumentError,
+          {:error, reason} ->
+            {:error,
+             {:invalid_config,
               "Custom provider base_url failed SSRF validation: #{reason}. " <>
-                "Set `allow_private_hosts: true` for local dev if intentional."
+                "Set `allow_private_hosts: true` for local dev if intentional."}}
+        end
     end
   end
 

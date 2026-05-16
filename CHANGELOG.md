@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed (breaking)
+
+- **Provider error contracts.** `Nous.Providers.LMStudio`, `Nous.Providers.SGLang`,
+  `Nous.Providers.VLLM`, and `Nous.Providers.Custom` now return
+  `{:error, {:invalid_config, reason}}` instead of raising `ArgumentError`
+  when the resolved `base_url` is missing or fails `Nous.Tools.UrlGuard`
+  validation. `Nous.Providers.LlamaCpp` similarly returns
+  `{:error, %Nous.Errors.ProviderError{}}` instead of raising when the
+  `:llamacpp_model` option is missing.
+
+  Callers that wrapped these calls in `try/rescue ArgumentError` should
+  switch to pattern matching on `{:error, _}`. The high-level
+  `Nous.run/2`, `Nous.generate_text/3`, and `Nous.Agent.run/3` paths
+  already returned result tuples and are unaffected.
+
 ## [0.16.0] - 2026-05-10
 
 A significant Gemini-on-Vertex upgrade. Most of the new surface lands as
