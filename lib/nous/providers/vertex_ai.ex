@@ -399,12 +399,8 @@ defmodule Nous.Providers.VertexAI do
     "#{base_url}/publishers/google/models/#{model}:streamGenerateContent?alt=sse"
   end
 
-  # Build headers with Bearer token auth
   defp build_headers(token) do
-    [
-      {"content-type", "application/json"},
-      {"authorization", "Bearer #{token}"}
-    ]
+    HTTP.json_headers() ++ HTTP.bearer_auth_header(token)
   end
 
   # Build default base URL from environment variables

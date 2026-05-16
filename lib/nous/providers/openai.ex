@@ -136,31 +136,10 @@ defmodule Nous.Providers.OpenAI do
     end
   end
 
-  # Build headers for the request
   defp build_headers(api_key, opts) do
-    headers = [
-      {"content-type", "application/json"}
-    ]
-
-    # Add authorization
-    headers =
-      if api_key && api_key != "" do
-        [{"authorization", "Bearer #{api_key}"} | headers]
-      else
-        headers
-      end
-
-    # Add organization header if provided
-    headers =
-      case Keyword.get(opts, :organization) do
-        nil -> headers
-        org -> [{"openai-organization", org} | headers]
-      end
-
-    # Add project header if provided (for project-scoped API keys)
-    case Keyword.get(opts, :project) do
-      nil -> headers
-      project -> [{"openai-project", project} | headers]
-    end
+    HTTP.json_headers() ++
+      HTTP.bearer_auth_header(api_key) ++
+      HTTP.organization_header(Keyword.get(opts, :organization)) ++
+      HTTP.openai_project_header(Keyword.get(opts, :project))
   end
 end

@@ -197,8 +197,6 @@ defmodule Nous.Providers.Gemini do
     "#{base_url}/models/#{model}:streamGenerateContent?key=#{api_key}"
   end
 
-  # Build headers (no auth header - it's in the URL)
-  defp build_headers do
-    [{"content-type", "application/json"}]
-  end
+  # Auth header is omitted because the API key lives in the URL query string.
+  defp build_headers, do: HTTP.json_headers()
 end

@@ -206,24 +206,11 @@ defmodule Nous.Providers.Custom do
     end
   end
 
-  # Build headers for the request
+  # `HTTP.bearer_auth_header/1` returns `[]` for nil / empty / "not-needed",
+  # so the "not-needed" sentinel for local servers is preserved.
   defp build_headers(api_key, opts) do
-    headers = [
-      {"content-type", "application/json"}
-    ]
-
-    # Add authorization if API key provided (skip for "not-needed" sentinel)
-    headers =
-      if api_key && api_key != "" && api_key != "not-needed" do
-        [{"authorization", "Bearer #{api_key}"} | headers]
-      else
-        headers
-      end
-
-    # Add organization header if provided
-    case Keyword.get(opts, :organization) do
-      nil -> headers
-      org -> [{"openai-organization", org} | headers]
-    end
+    HTTP.json_headers() ++
+      HTTP.bearer_auth_header(api_key) ++
+      HTTP.organization_header(Keyword.get(opts, :organization))
   end
 end

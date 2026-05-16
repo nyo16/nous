@@ -95,14 +95,9 @@ defmodule Nous.Providers.LMStudio do
     end
   end
 
+  # LM Studio doesn't require auth, but we support it if configured.
+  # `HTTP.bearer_auth_header/1` returns `[]` for nil / empty / "not-needed".
   defp build_headers(api_key) do
-    headers = [{"content-type", "application/json"}]
-
-    # LM Studio doesn't require auth, but we support it if configured
-    if api_key && api_key != "" do
-      [{"authorization", "Bearer #{api_key}"} | headers]
-    else
-      headers
-    end
+    HTTP.json_headers() ++ HTTP.bearer_auth_header(api_key)
   end
 end
