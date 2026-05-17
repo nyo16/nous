@@ -326,6 +326,7 @@ defmodule Nous.Agent do
       )
 
   """
+  @deprecated "Prefer Agent.new/2 with the :tools option, or build %Nous.Tool{} directly"
   @spec tool(t(), function(), keyword()) :: t()
   def tool(%__MODULE__{} = agent, tool_fun, opts \\ []) do
     tool = Tool.from_function(tool_fun, opts)

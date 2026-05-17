@@ -25,7 +25,12 @@ defmodule Nous.ToolSchema do
 
   @doc """
   Convert tool to OpenAI function calling schema (string keys).
+
+  Deprecated alias — call `Nous.Tool.to_openai_schema/1` directly. This
+  module's `to_anthropic/1` and `to_gemini/1` are the actively used
+  conversions; `to_openai/1` is only kept for backward compatibility.
   """
+  @deprecated "Use Nous.Tool.to_openai_schema/1 directly"
   @spec to_openai(Tool.t()) :: map()
   def to_openai(tool) do
     Tool.to_openai_schema(tool)
