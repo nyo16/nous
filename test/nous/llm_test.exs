@@ -43,6 +43,16 @@ defmodule Nous.LLMTest do
     end
   end
 
+  defmodule FailingStreamDispatcher do
+    @moduledoc false
+
+    def request(_model, _messages, _settings),
+      do: {:error, %Nous.Errors.ModelError{message: "boom", provider: :test}}
+
+    def request_stream(_model, _messages, _settings),
+      do: {:error, %Nous.Errors.ModelError{message: "boom", provider: :test}}
+  end
+
   setup do
     CapturingDispatcher.configure()
     prev = Application.get_env(:nous, :model_dispatcher)
@@ -113,6 +123,32 @@ defmodule Nous.LLMTest do
 
       [captured] = CapturingDispatcher.get_models()
       assert captured.receive_timeout == 600_000
+    end
+  end
+
+  describe "stream_text/3 with tools surfaces dispatcher errors" do
+    test "emits an {:error, _} event instead of silently halting" do
+      # Before fix: stream_text_with_tools silently :halt'd on Fallback error,
+      # so the consumer saw a clean empty stream with no signal that the LLM
+      # call had failed. Now an {:error, _} event is emitted before halt.
+      Application.put_env(:nous, :model_dispatcher, FailingStreamDispatcher)
+
+      tool = %Nous.Tool{
+        name: "noop",
+        description: "no-op for test",
+        parameters: %{type: "object", properties: %{}},
+        function: fn _, _ -> {:ok, "x"} end,
+        takes_ctx: false
+      }
+
+      {:ok, stream} = Nous.LLM.stream_text("openai:gpt-4", "hi", tools: [tool])
+      events = Enum.to_list(stream)
+
+      assert Enum.any?(events, fn
+               {:error, _} -> true
+               _ -> false
+             end),
+             "stream should emit an {:error, _} event when the dispatcher fails, got: #{inspect(events)}"
     end
   end
 end

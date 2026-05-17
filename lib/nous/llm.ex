@@ -257,8 +257,13 @@ defmodule Nous.LLM do
                 {chunks, {new_messages, iteration + 1}}
               end
 
-            {:error, _} ->
-              {:halt, :done}
+            {:error, reason} ->
+              # Surface the failure as an event before halting. Previously
+              # this silently :halt'd, so a consumer iterating the stream
+              # saw it cleanly terminate with no signal that the LLM call
+              # had actually failed.
+              Logger.warning("LLM stream failed: #{inspect(reason)}; emitting :error event")
+              {[{:error, reason}], :done}
           end
       end,
       fn _ -> :ok end
