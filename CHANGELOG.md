@@ -2,6 +2,121 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed (critical)
+
+- **Gemini/Vertex tool-result roundtrip was broken.** `Nous.Messages.Gemini`
+  was sending the tool call_id (e.g. `"gemini_abc123"`) as the
+  `functionResponse.name`, but Gemini's API requires the original
+  `functionCall.name`. Every Gemini tool roundtrip shipped a malformed
+  payload. `Message.tool/3` now threads the original name through the
+  `:name` field; agent_runner and llm pass it at every call site.
+- **OpenAI tool-call malformed JSON used to be passed to the tool as bogus
+  args.** `Nous.Messages.OpenAI.decode_arguments/1` now returns
+  `{:ok, map()} | {:error, {:invalid_json, raw}}`. Parsers tag the
+  tool_call with `"_invalid_arguments"`; AgentRunner short-circuits with a
+  proper tool-error result so the LLM can retry.
+- **Workflow checkpoint ETS table lost its data when the saving process
+  exited.** The `:nous_workflow_checkpoints` table is now owned by a
+  supervised `TableOwner` under `Nous.Application` (mirrors the existing
+  `Nous.Persistence.ETS` pattern). Every suspended workflow relying on
+  resume is now durable to caller exits.
+- **Memory plugin re-initialized its ETS store on every agent run.**
+  `Nous.Plugins.Memory.init/2` now reuses the existing `store_state` when
+  present; per-run defaults are still refreshed. Avoids
+  `ets_too_many_tables` under load and the silent loss of memories across
+  runs.
+- **`Nous.LLM.stream_text_with_tools` silently halted on dispatcher error.**
+  Now emits an `{:error, reason}` event before halting so consumers can
+  detect LLM failures on the streaming + tools path.
+- **AgentServer subscribed to the wrong PubSub topic.** It used
+  `"agent:#{session_id}"` while `Nous.PubSub.agent_topic/1` returned
+  `"nous:agent:#{session_id}"` — anyone publishing via the helper never
+  reached the server. Now uses the helper.
+- **AgentServer didn't cancel its in-flight task on shutdown.** Streaming
+  LLM calls kept consuming tokens and HTTP connections after the server
+  was already gone. `terminate/2` now sets the cancellation atomic and
+  calls `Task.shutdown`.
+- **Research coordinator crashed on task exit.** `Task.yield` returns
+  `{:exit, reason}` on task crash; the `case` only matched `{:ok, _}` /
+  `nil` and produced `CaseClauseError`. Now handles `{:exit, _}` with
+  `{:error, {:task_exit, _}}`.
+
+### Fixed (important)
+
+- **Anthropic + Gemini usage parsing dropped requests count and cache
+  tokens.** Now sets `requests: 1` (was always 0) and captures
+  Anthropic's `cache_creation_input_tokens` /
+  `cache_read_input_tokens` and Gemini's `cachedContentTokenCount`.
+  `Nous.Usage` gained `cache_creation_input_tokens` and
+  `cache_read_input_tokens` fields, which propagate through `add/2`.
+- **Tool validator dropped the `enum` constraint when `type` was also
+  declared.** `Nous.Tool.Validator.validate_types/2` now runs every
+  constraint independently — a schema `%{"type" => "string", "enum" =>
+  ["a","b"]}` properly rejects values outside the enum.
+- **Hooks can now opt into fail-closed semantics.** `Nous.Hook` gains a
+  `fail_closed: boolean()` field. When set on a hook bound to a blocking
+  event (`:pre_tool_use`, `:pre_request`), runtime errors deny the action
+  instead of silently failing open — so a broken security-gating hook
+  can't be bypassed. Default `false` keeps existing behavior.
+- **Streaming Gemini tool calls had `id: nil`.** Stream and non-stream
+  paths now both synthesize a `"gemini_<base64>"` id.
+- **Bumblebee embedding serialization removed.** `ServingHolder` no longer
+  runs `Nx.Serving.run/2` inside `handle_call`. Concurrent embeddings now
+  go through the serving's own batching mechanism instead of serializing
+  through one process.
+- **Bare `Task.async` migrated to supervised `Task.Supervisor.async_nolink`**
+  in `research/coordinator.ex`, `eval/runner.ex`, `tools/search_scrape.ex`,
+  `plugins/input_guard.ex`, and `http/stream_backend/req.ex` — so a
+  crashed sub-task no longer takes down its caller (and vice-versa), and
+  graceful shutdown can signal in-flight work.
+- **Default Req streaming backend gains backpressure.** The producing
+  Task watches the consumer's `message_queue_len` before each `send/2`;
+  past `@backpressure_high_water` it pauses until the queue drops below
+  `@backpressure_low_water`, and after `@backpressure_max_wait_ms` it
+  emits `{:error, %{reason: :backpressure_overflow}}` and halts. The
+  M-12 risk called out in `mix.exs`.
+- **AgentRegistry partitioned across schedulers** (was `partitions: 1`).
+  High-concurrency LiveView lookups no longer serialize on a single
+  partition.
+- **AgentServer's persistence load moved to `handle_continue`.** `init/1`
+  returns immediately, so `DynamicSupervisor.start_child` (and
+  `Teams.Coordinator.spawn_agent`) no longer wedge waiting for slow
+  persistence backends.
+
+### Changed
+
+- **Telemetry events reconciled.** The documented-but-never-emitted events
+  `[:nous, :agent, :iteration, :start/:stop]`, `[:nous, :context, :update]`,
+  and `[:nous, :callback, :execute]` are now actually emitted. The
+  unreached `[:nous, :provider, :stream, :chunk]` was removed from the
+  docs and default handler (per-chunk telemetry is too hot for the
+  streaming path). Existing-but-undocumented events
+  (`fallback`, `hook`, `skill`, `workflow`) are now documented in the
+  `Nous.Telemetry` moduledoc.
+
+### Deprecated
+
+- `Nous.ToolSchema.to_openai/1` — use `Nous.Tool.to_openai_schema/1`.
+- `Nous.Agent.tool/3` — use `Agent.new/2` with `:tools`, or build a
+  `%Nous.Tool{}` directly.
+- `Nous.Eval.run!/2` — match `Nous.Eval.run/2`'s
+  `{:ok, _} | {:error, _}` result.
+- `Nous.Decisions.path_between/4`, `descendants/3`, `ancestors/3` —
+  call `store_mod.query(state, ..., ...)` directly.
+
+### Internal / Hygiene
+
+- `mix compile --warnings-as-errors` is clean. Removed unreachable
+  `Vertex AI validate_project_id(nil)` clause; tightened
+  `Nous.Research.Planner.plan/2` spec to `{:ok, plan()}` and dropped the
+  unreachable `{:error, _}` clause in `research/coordinator.ex`.
+- `Nous.Workflow.Checkpoint.ETS` and `Nous.Plugins.Memory` now expose
+  proper supervised / reusable lifecycle (see Fixed).
+- `Nous.Memory.Store.SQLite` FTS5 escape now doubles embedded `"`
+  characters per FTS5 syntax — queries containing `"` no longer error.
+
 ## [0.16.1] - 2026-05-15
 
 ### Changed (breaking)
