@@ -157,8 +157,24 @@ defmodule Nous.Tool.ContextUpdate do
   @spec apply(t(), Nous.Agent.Context.t()) :: Nous.Agent.Context.t()
   def apply(%__MODULE__{operations: ops}, %Nous.Agent.Context{} = ctx) do
     new_deps = Enum.reduce(ops, ctx.deps || %{}, &apply_operation/2)
+
+    keys =
+      ops
+      |> Enum.map(&op_key/1)
+      |> Enum.uniq()
+
+    :telemetry.execute(
+      [:nous, :context, :update],
+      %{keys_updated: length(keys)},
+      %{agent_name: ctx.agent_name, keys: keys}
+    )
+
     %{ctx | deps: new_deps}
   end
+
+  defp op_key({_op, key, _value}), do: key
+  defp op_key({_op, key}), do: key
+  defp op_key(_), do: nil
 
   @doc """
   Apply all operations to a RunContext, returning the updated context.

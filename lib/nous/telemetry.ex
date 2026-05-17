@@ -50,10 +50,6 @@ defmodule Nous.Telemetry do
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string}`
 
-    * `[:nous, :provider, :stream, :chunk]` - Dispatched when a stream chunk is received
-      * Measurement: `%{chunk_size: integer}`
-      * Metadata: `%{provider: atom, model_name: string, chunk_type: atom}`
-
     * `[:nous, :provider, :stream, :exception]` - Dispatched when streaming request fails
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string, kind: atom, reason: term}`
@@ -87,6 +83,41 @@ defmodule Nous.Telemetry do
     * `[:nous, :callback, :execute]` - Dispatched when a callback is executed
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{callback_type: atom, agent_name: string}`
+
+  ## Fallback Events
+
+    * `[:nous, :agent, :fallback, :used]` - Dispatched when an iteration switches
+      to a fallback model (sticky-fallback). Use this to alert on provider
+      degradation.
+      * Measurement: `%{system_time: native_time}`
+      * Metadata: `%{agent_name, original_provider, original_model, active_provider, active_model}`
+
+    * `[:nous, :fallback, :activated]` - Dispatched when the fallback chain
+      promotes to the next model after the primary returns an error.
+      * Measurement: depends on the call site
+      * Metadata: includes the active model and the reason for activation
+
+  ## Hook Events
+
+    * `[:nous, :hook, :execute, :start]` / `[:nous, :hook, :execute, :stop]`
+      * Measurement: `%{system_time | duration}`
+      * Metadata: `%{event, hook_name, hook_type, result?}`
+    * `[:nous, :hook, :denied]` - emitted when a blocking hook returns :deny
+      or when a fail_closed hook errors.
+      * Metadata: `%{event, hook_name, hook_type, reason?}`
+
+  ## Skill Events
+
+    * `[:nous, :skill, :activate]` / `[:nous, :skill, :deactivate]`
+      * Metadata: `%{skill_name, agent_name}`
+
+  ## Workflow Events
+
+    * `[:nous, :workflow, :run, :start]` / `[:nous, :workflow, :run, :stop]`
+      / `[:nous, :workflow, :run, :exception]`
+    * `[:nous, :workflow, :node, :start]` / `[:nous, :workflow, :node, :stop]`
+      / `[:nous, :workflow, :node, :exception]`
+      * See `Nous.Workflow.Telemetry` for full measurement/metadata payloads.
 
   All times are in `:native` time unit. Use `System.convert_time_unit/3` to
   convert to desired unit.
@@ -174,7 +205,6 @@ defmodule Nous.Telemetry do
       [:nous, :provider, :request, :exception],
       [:nous, :provider, :stream, :start],
       [:nous, :provider, :stream, :connected],
-      [:nous, :provider, :stream, :chunk],
       [:nous, :provider, :stream, :exception],
       # Tool events
       [:nous, :tool, :execute, :start],
@@ -313,14 +343,6 @@ defmodule Nous.Telemetry do
     Logger.debug(
       "[Nous] Agent #{metadata.agent_name} iteration #{metadata.iteration} completed in #{duration_ms}ms" <>
         " (#{metadata.tool_calls} tool calls)#{continue_msg}"
-    )
-  end
-
-  # Stream chunk event
-  defp handle_event([:nous, :provider, :stream, :chunk], measurements, metadata, _config) do
-    Logger.debug(
-      "[Nous] Stream chunk from #{metadata.provider}:#{metadata.model_name} " <>
-        "(#{measurements.chunk_size} bytes, type: #{metadata.chunk_type})"
     )
   end
 
