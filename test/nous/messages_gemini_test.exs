@@ -330,6 +330,23 @@ defmodule Nous.MessagesGeminiTest do
       assert part["functionResponse"]["response"] == %{"temp" => 22}
     end
 
+    test "functionResponse.name uses :name field, not tool_call_id" do
+      # Gemini's API requires functionResponse.name to equal the original
+      # functionCall.name. The call_id is opaque and may be a random string.
+      messages = [
+        Message.new!(%{
+          role: :tool,
+          content: ~s({"temp": 22}),
+          tool_call_id: "gemini_abc123",
+          name: "get_weather"
+        })
+      ]
+
+      {_sys, [msg]} = Gemini.to_format(messages)
+      [part] = msg["parts"]
+      assert part["functionResponse"]["name"] == "get_weather"
+    end
+
     test "wraps plain text tool result" do
       messages = [
         Message.new!(%{

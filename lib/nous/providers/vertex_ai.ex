@@ -422,15 +422,9 @@ defmodule Nous.Providers.VertexAI do
     end
   end
 
-  # Validates a GCP project ID matches the expected format.
-  defp validate_project_id(nil) do
-    {:error,
-     %{
-       reason: :invalid_project_id,
-       message: "GOOGLE_CLOUD_PROJECT is not set."
-     }}
-  end
-
+  # Validates a GCP project ID matches the expected format. The `if project`
+  # guard in build_default_base_url/1 already filters out nil/false, so this
+  # function only ever sees a non-nil binary.
   defp validate_project_id(project) do
     if Regex.match?(~r/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/, project) do
       {:ok, project}

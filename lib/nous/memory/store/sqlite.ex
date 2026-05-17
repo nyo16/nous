@@ -217,11 +217,14 @@ if Code.ensure_loaded?(Exqlite) do
       LIMIT ?#{map_size(scope) + 2}
       """
 
-      # Escape FTS5 special characters by wrapping each term in double quotes
+      # Escape FTS5 special characters by wrapping each term in double quotes.
+      # FTS5 inside-quotes escape rule: an embedded `"` is written as `""`.
+      # Without this, a search term like `say "hi"` produced invalid FTS5
+      # syntax and the call errored.
       escaped_query =
         query
         |> String.split(~r/\s+/, trim: true)
-        |> Enum.map(&"\"#{&1}\"")
+        |> Enum.map(fn term -> "\"" <> String.replace(term, "\"", "\"\"") <> "\"" end)
         |> Enum.join(" ")
 
       params = scope_params ++ [escaped_query, limit]

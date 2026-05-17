@@ -135,6 +135,8 @@ defmodule Nous.Agent.Callbacks do
   """
   @spec execute(Context.t(), event(), payload()) :: :ok
   def execute(%Context{} = ctx, event, payload) when is_atom(event) do
+    start_time = System.monotonic_time()
+
     # 1. Execute map-based callback if present
     execute_callback(ctx.callbacks, event, payload)
 
@@ -143,6 +145,12 @@ defmodule Nous.Agent.Callbacks do
 
     # 3. Broadcast via PubSub if configured
     broadcast_event(ctx, event, payload)
+
+    :telemetry.execute(
+      [:nous, :callback, :execute],
+      %{duration: System.monotonic_time() - start_time},
+      %{callback_type: event, agent_name: ctx.agent_name}
+    )
 
     :ok
   end

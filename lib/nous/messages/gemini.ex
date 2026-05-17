@@ -175,8 +175,15 @@ defmodule Nous.Messages.Gemini do
     %{"role" => "model", "parts" => Enum.reverse(parts)}
   end
 
-  defp message_to_gemini(%Message{role: :tool, content: content, tool_call_id: tool_call_id}) do
-    # Gemini handles tool results as user messages with functionResponse
+  defp message_to_gemini(%Message{
+         role: :tool,
+         content: content,
+         tool_call_id: tool_call_id,
+         name: name
+       }) do
+    # Gemini's API requires functionResponse.name to match the original
+    # functionCall.name. Prefer the explicit :name field; fall back to
+    # tool_call_id only for legacy callers that didn't set it.
     response =
       case JSON.decode(content) do
         {:ok, decoded} -> decoded
@@ -189,7 +196,7 @@ defmodule Nous.Messages.Gemini do
       "parts" => [
         %{
           "functionResponse" => %{
-            "name" => tool_call_id,
+            "name" => name || tool_call_id,
             "response" => response
           }
         }
@@ -244,6 +251,15 @@ defmodule Nous.Messages.Gemini do
     %{"text" => ContentPart.to_text([part])}
   end
 
+  # Two parsers exist intentionally:
+  # - parse_content/1 is for API responses (from_response/1) and returns
+  #   ContentPart structs that are later consolidated; whitespace-only text
+  #   parts are dropped because Gemini emits them between tool calls.
+  # - parse_parts/1 is for round-tripping Gemini-format messages back into
+  #   our Message struct (from_messages/1) and returns plain joined strings.
+  # Do not consolidate these: from_response needs structured parts so the
+  # downstream tool-call/text ordering is preserved; from_messages flattens
+  # to text because the on-disk format is already user-edited.
   defp parse_content(parts_data) when is_list(parts_data) do
     {content_parts, reasoning_content, tool_calls} =
       Enum.reduce(parts_data, {[], [], []}, fn item, {parts, reasoning, tools} ->
@@ -514,9 +530,11 @@ defmodule Nous.Messages.Gemini do
   @spec parse_usage(map() | nil) :: Usage.t()
   def parse_usage(usage_data) when is_map(usage_data) do
     %Usage{
+      requests: 1,
       input_tokens: Map.get(usage_data, "promptTokenCount", 0),
       output_tokens: Map.get(usage_data, "candidatesTokenCount", 0),
-      total_tokens: Map.get(usage_data, "totalTokenCount", 0)
+      total_tokens: Map.get(usage_data, "totalTokenCount", 0),
+      cache_read_input_tokens: Map.get(usage_data, "cachedContentTokenCount", 0)
     }
   end
 

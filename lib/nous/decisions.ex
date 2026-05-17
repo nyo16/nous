@@ -178,6 +178,7 @@ defmodule Nous.Decisions do
       {:ok, path} = Nous.Decisions.path_between(Store.ETS, state, from_id, to_id)
 
   """
+  @deprecated "Call store_mod.query(state, :path_between, ...) directly"
   @spec path_between(module(), term(), String.t(), String.t()) :: {:ok, [Node.t()]}
   def path_between(store_mod, state, from_id, to_id) do
     store_mod.query(state, :path_between, from_id: from_id, to_id: to_id)
@@ -191,6 +192,7 @@ defmodule Nous.Decisions do
       {:ok, descendants} = Nous.Decisions.descendants(Store.ETS, state, node_id)
 
   """
+  @deprecated "Call store_mod.query(state, :descendants, ...) directly"
   @spec descendants(module(), term(), String.t()) :: {:ok, [Node.t()]}
   def descendants(store_mod, state, node_id) do
     store_mod.query(state, :descendants, node_id: node_id)
@@ -204,6 +206,7 @@ defmodule Nous.Decisions do
       {:ok, ancestors} = Nous.Decisions.ancestors(Store.ETS, state, node_id)
 
   """
+  @deprecated "Call store_mod.query(state, :ancestors, ...) directly"
   @spec ancestors(module(), term(), String.t()) :: {:ok, [Node.t()]}
   def ancestors(store_mod, state, node_id) do
     store_mod.query(state, :ancestors, node_id: node_id)

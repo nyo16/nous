@@ -18,7 +18,11 @@ defmodule Nous.Application do
         # ETS persistence table owner - keeps the :nous_persistence table
         # alive across transient agent processes. Without this the table
         # dies with whichever process happens to call save/load first.
-        Nous.Persistence.ETS
+        Nous.Persistence.ETS,
+        # Same ownership pattern for the workflow checkpoint table — without
+        # a supervised owner, suspended workflows could vanish whenever the
+        # process that saved them exited.
+        Nous.Workflow.Checkpoint.ETS
       ] ++ optional_bumblebee_children()
 
     # Tuned restart limits to match AgentDynamicSupervisor - default 3-in-5

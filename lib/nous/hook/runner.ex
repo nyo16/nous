@@ -109,8 +109,25 @@ defmodule Nous.Hook.Runner do
           "Hook #{inspect(hook.name || hook.type)} errored on #{event}: #{inspect(reason)}"
         )
 
-        # Errors in hooks don't block — fail open
-        run_blocking(rest, event, payload)
+        # By default errors fail OPEN (continue to the next hook). When the
+        # hook opts in with `fail_closed: true` we treat the error as :deny
+        # — so a broken security-gating hook can't be silently bypassed.
+        if hook.fail_closed do
+          :telemetry.execute(
+            [:nous, :hook, :denied],
+            %{},
+            %{
+              event: event,
+              hook_name: hook.name,
+              hook_type: hook.type,
+              reason: {:fail_closed, reason}
+            }
+          )
+
+          {:deny, "hook errored (fail_closed): #{inspect(reason)}"}
+        else
+          run_blocking(rest, event, payload)
+        end
     end
   end
 
@@ -190,12 +207,12 @@ defmodule Nous.Hook.Runner do
   # caller-controllable handler value became RCE through shell expansion.
   # Lists bypass the shell entirely.
   defp execute_hook(
-         %Hook{type: :command, handler: [program | _] = argv, timeout: timeout},
+         %Hook{type: :command, handler: [program | _] = argv} = hook,
          event,
          payload
        )
        when is_binary(program) do
-    execute_command_hook(argv, event, payload, timeout)
+    execute_command_hook(argv, event, payload, hook.timeout, hook.fail_closed)
   end
 
   defp execute_hook(%Hook{type: :command, handler: handler}, _event, _payload) do
@@ -215,7 +232,7 @@ defmodule Nous.Hook.Runner do
 
   # Execute a command hook via NetRunner. The argv list is passed
   # directly - no shell, no expansion.
-  defp execute_command_hook(argv, event, payload, timeout) do
+  defp execute_command_hook(argv, event, payload, timeout, fail_closed) do
     json_input =
       JSON.encode!(%{
         event: event,
@@ -237,8 +254,14 @@ defmodule Nous.Hook.Runner do
         {output, exit_code} ->
           Logger.warning("Command hook exited with code #{exit_code}: #{String.trim(output)}")
 
-          # Non-0/2 exit codes fail open
-          :allow
+          # Non-0/2 exit codes default to fail OPEN for backward compat;
+          # set fail_closed: true on the hook to treat them as :deny so a
+          # crashing security-gating hook can't be silently bypassed.
+          if fail_closed do
+            {:deny, "command hook exited with code #{exit_code} (fail_closed)"}
+          else
+            :allow
+          end
       end
     rescue
       e ->

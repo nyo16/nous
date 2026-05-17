@@ -127,12 +127,42 @@ if Code.ensure_loaded?(Bumblebee) do
 
     @doc "Run the serving on a single text input."
     def run(pid, text, timeout) do
-      GenServer.call(pid, {:run, text}, timeout)
+      # Fetch the serving struct via a cheap GenServer.call (returns the
+      # already-loaded reference, no inference inside the GenServer), then
+      # run Nx.Serving.run/2 in the CALLER process. This avoids serializing
+      # every embedding through the single holder process — Nx.Serving is
+      # designed to batch concurrent calls itself.
+      with {:ok, serving} <- get_serving(pid, timeout) do
+        try do
+          result = Nx.Serving.run(serving, text)
+          {:ok, result.embedding |> Nx.to_flat_list()}
+        rescue
+          e -> {:error, Exception.message(e)}
+        end
+      end
     end
 
     @doc "Run the serving on a batch of text inputs."
     def run_batch(pid, texts, timeout) do
-      GenServer.call(pid, {:run_batch, texts}, timeout)
+      with {:ok, serving} <- get_serving(pid, timeout) do
+        try do
+          results = Nx.Serving.run(serving, texts)
+
+          embeddings =
+            results.embedding
+            |> Nx.to_batched(1)
+            |> Enum.map(&Nx.to_flat_list/1)
+
+          {:ok, embeddings}
+        rescue
+          e -> {:error, Exception.message(e)}
+        end
+      end
+    end
+
+    @doc false
+    def get_serving(pid, timeout \\ 5_000) do
+      GenServer.call(pid, :get_serving, timeout)
     end
 
     @impl true
@@ -170,30 +200,11 @@ if Code.ensure_loaded?(Bumblebee) do
     end
 
     @impl true
-    def handle_call({:run, text}, _from, %{serving: serving} = state) do
-      try do
-        result = Nx.Serving.run(serving, text)
-        embedding = result.embedding |> Nx.to_flat_list()
-        {:reply, {:ok, embedding}, state}
-      rescue
-        e -> {:reply, {:error, Exception.message(e)}, state}
-      end
-    end
-
-    @impl true
-    def handle_call({:run_batch, texts}, _from, %{serving: serving} = state) do
-      try do
-        results = Nx.Serving.run(serving, texts)
-
-        embeddings =
-          results.embedding
-          |> Nx.to_batched(1)
-          |> Enum.map(&Nx.to_flat_list/1)
-
-        {:reply, {:ok, embeddings}, state}
-      rescue
-        e -> {:reply, {:error, Exception.message(e)}, state}
-      end
+    def handle_call(:get_serving, _from, %{serving: serving} = state) do
+      # Cheap accessor — returns the already-loaded Nx.Serving struct so
+      # callers run inference in parallel rather than serializing through
+      # this process. See run/3 / run_batch/3 above.
+      {:reply, {:ok, serving}, state}
     end
   end
 else

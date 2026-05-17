@@ -256,8 +256,11 @@ defmodule Nous.AgentServer do
     inactivity_timeout = Keyword.get(opts, :inactivity_timeout, @default_inactivity_timeout)
     persistence = Keyword.get(opts, :persistence)
 
-    # Subscribe to messages for this session
-    topic = "agent:#{session_id}"
+    # Subscribe to messages for this session. Use the helper so the topic
+    # matches what publishers via Nous.PubSub.agent_topic/1 send to —
+    # previously this was a bare "agent:#{id}" string while the helper
+    # returned "nous:agent:#{id}", so external publishers never reached us.
+    topic = Nous.PubSub.agent_topic(session_id)
     Nous.PubSub.subscribe(pubsub, topic)
 
     # Create agent based on type
@@ -282,28 +285,20 @@ defmodule Nous.AgentServer do
           )
       end
 
-    # Initialize context - try loading from persistence first
+    # Start with a fresh context; restore persisted state in handle_continue
+    # so init/1 doesn't block on persistence I/O. Without this, the parent
+    # DynamicSupervisor (and any caller blocked on start_child — notably
+    # Teams.Coordinator's spawn_agent handle_call) waits the full load time.
     initial_deps = Map.get(agent_config, :deps, %{})
 
     context =
-      case maybe_load_context(persistence, session_id) do
-        {:ok, loaded_ctx} ->
-          Logger.info("Restored persisted context for session: #{session_id}")
-          # Merge initial deps back in (they may contain runtime values like PIDs)
-          loaded_ctx
-          |> Context.merge_deps(initial_deps)
-          |> Context.patch_dangling_tool_calls()
-          |> Map.merge(%{pubsub: pubsub, pubsub_topic: topic})
-
-        _ ->
-          Context.new(
-            deps: initial_deps,
-            system_prompt: Map.get(agent_config, :instructions, ""),
-            agent_name: "agent_server_#{session_id}",
-            pubsub: pubsub,
-            pubsub_topic: topic
-          )
-      end
+      Context.new(
+        deps: initial_deps,
+        system_prompt: Map.get(agent_config, :instructions, ""),
+        agent_name: "agent_server_#{session_id}",
+        pubsub: pubsub,
+        pubsub_topic: topic
+      )
 
     Logger.info("AgentServer started for session: #{session_id}")
 
@@ -334,7 +329,28 @@ defmodule Nous.AgentServer do
       persistence: persistence
     }
 
-    {:ok, state}
+    {:ok, state, {:continue, :load_persisted_context}}
+  end
+
+  @impl true
+  def handle_continue(:load_persisted_context, state) do
+    case maybe_load_context(state.persistence, state.session_id) do
+      {:ok, loaded_ctx} ->
+        Logger.info("Restored persisted context for session: #{state.session_id}")
+
+        # Merge initial deps back in (they may contain runtime values like PIDs)
+        # and patch any dangling tool calls left over from an interrupted run.
+        new_context =
+          loaded_ctx
+          |> Context.merge_deps(state.context.deps)
+          |> Context.patch_dangling_tool_calls()
+          |> Map.merge(%{pubsub: state.pubsub, pubsub_topic: state.topic})
+
+        {:noreply, %{state | context: new_context}}
+
+      _ ->
+        {:noreply, state}
+    end
   end
 
   @impl true
@@ -412,7 +428,21 @@ defmodule Nous.AgentServer do
     state =
       if state.current_task do
         case Task.shutdown(state.current_task, 2_000) do
-          _ -> :ok
+          {:ok, _result} ->
+            :ok
+
+          nil ->
+            # task did not respond to graceful shutdown within timeout
+            :ok
+
+          {:exit, reason} ->
+            # Task crashed during shutdown. Log so it isn't silently
+            # swallowed — debugging mid-run crashes was painful when
+            # this clause was `_ -> :ok`.
+            Logger.warning(
+              "AgentServer task exited during reset for session " <>
+                "#{state.session_id}: #{inspect(reason)}"
+            )
         end
 
         %{state | current_task: nil}
@@ -654,6 +684,17 @@ defmodule Nous.AgentServer do
   @impl true
   def terminate(reason, state) do
     Logger.info("AgentServer terminating for session #{state.session_id}: #{inspect(reason)}")
+
+    # Cancel any in-flight task on shutdown. Without this, an LLM stream
+    # started under this server would keep consuming tokens (and HTTP
+    # connections) until it hit max_iterations, even though the server is
+    # going away. Setting the cancelled atomic also lets the runner's
+    # cancellation checks short-circuit if it's still running.
+    if state.current_task do
+      :atomics.put(state.cancelled_ref, 1, 1)
+      _ = Task.shutdown(state.current_task, 1_000)
+    end
+
     :ok
   end
 

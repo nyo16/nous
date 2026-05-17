@@ -101,43 +101,66 @@ defmodule Nous.Plugins.Memory do
     config = ctx.deps[:memory_config] || %{}
     store_mod = config[:store]
 
-    unless store_mod do
-      Logger.warning(
-        "Nous.Plugins.Memory: No :store configured in deps[:memory_config]. " <>
-          "Memory tools will not function."
-      )
+    cond do
+      is_nil(store_mod) ->
+        Logger.warning(
+          "Nous.Plugins.Memory: No :store configured in deps[:memory_config]. " <>
+            "Memory tools will not function."
+        )
 
-      ctx
-    else
-      store_opts = Map.get(config, :store_opts, [])
-      store_opts = if is_map(store_opts), do: Map.to_list(store_opts), else: store_opts
+        ctx
 
-      case store_mod.init(store_opts) do
-        {:ok, store_state} ->
-          updated_config =
-            config
-            |> Map.put(:store_state, store_state)
-            |> Map.put_new(:auto_inject, true)
-            |> Map.put_new(:inject_strategy, :first_only)
-            |> Map.put_new(:inject_limit, 5)
-            |> Map.put_new(:inject_min_score, 0.3)
-            |> Map.put_new(:decay_lambda, 0.001)
-            |> Map.put_new(:default_search_scope, :agent)
-            |> Map.put(:_inject_done, false)
-            |> Map.put_new(:auto_update_memory, false)
-            |> Map.put_new(:auto_update_every, 1)
-            |> Map.put_new(:reflection_max_tokens, 1000)
-            |> Map.put_new(:reflection_max_messages, 20)
-            |> Map.put_new(:reflection_max_memories, 50)
-            |> Map.put_new(:_run_count, 0)
+      Map.has_key?(config, :store_state) ->
+        # Plugin.init/2 is called on every agent run; calling store_mod.init/1
+        # again would create a fresh ETS table (or DB handle) per run, silently
+        # discarding everything stored on previous runs and leaking the prior
+        # table. Reuse the existing store_state and refresh per-run defaults.
+        updated_config =
+          config
+          |> apply_defaults()
+          |> Map.put(:_inject_done, false)
 
-          %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
+        %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
 
-        {:error, reason} ->
-          Logger.error("Nous.Plugins.Memory: Store init failed: #{inspect(reason)}")
-          ctx
-      end
+      true ->
+        do_init_store(store_mod, config, ctx)
     end
+  end
+
+  defp do_init_store(store_mod, config, ctx) do
+    store_opts = Map.get(config, :store_opts, [])
+    store_opts = if is_map(store_opts), do: Map.to_list(store_opts), else: store_opts
+
+    case store_mod.init(store_opts) do
+      {:ok, store_state} ->
+        updated_config =
+          config
+          |> Map.put(:store_state, store_state)
+          |> apply_defaults()
+          |> Map.put(:_inject_done, false)
+
+        %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
+
+      {:error, reason} ->
+        Logger.error("Nous.Plugins.Memory: Store init failed: #{inspect(reason)}")
+        ctx
+    end
+  end
+
+  defp apply_defaults(config) do
+    config
+    |> Map.put_new(:auto_inject, true)
+    |> Map.put_new(:inject_strategy, :first_only)
+    |> Map.put_new(:inject_limit, 5)
+    |> Map.put_new(:inject_min_score, 0.3)
+    |> Map.put_new(:decay_lambda, 0.001)
+    |> Map.put_new(:default_search_scope, :agent)
+    |> Map.put_new(:auto_update_memory, false)
+    |> Map.put_new(:auto_update_every, 1)
+    |> Map.put_new(:reflection_max_tokens, 1000)
+    |> Map.put_new(:reflection_max_messages, 20)
+    |> Map.put_new(:reflection_max_memories, 50)
+    |> Map.put_new(:_run_count, 0)
   end
 
   @impl true

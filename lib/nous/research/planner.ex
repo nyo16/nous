@@ -28,7 +28,11 @@ defmodule Nous.Research.Planner do
 
   Uses an LLM to decompose the query into searchable sub-questions.
   """
-  @spec plan(String.t(), keyword()) :: {:ok, plan()} | {:error, term()}
+  # Always returns {:ok, _}: planning failures fall back to a single-step
+  # plan using the original query as-is. The error branch in the
+  # LLM-call case below logs the underlying reason and then wraps the
+  # query as a one-step plan.
+  @spec plan(String.t(), keyword()) :: {:ok, plan()}
   def plan(query, opts \\ []) do
     model = Keyword.get(opts, :model, "openai:gpt-4o-mini")
     strategy = Keyword.get(opts, :strategy, :parallel)

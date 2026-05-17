@@ -175,8 +175,9 @@ defmodule Nous.Plugins.InputGuard do
   end
 
   defp run_strategies(strategies, input, ctx, false = _short_circuit) do
-    strategies
-    |> Task.async_stream(
+    Task.Supervisor.async_stream_nolink(
+      Nous.TaskSupervisor,
+      strategies,
       fn {mod, opts} -> safe_check(mod, input, opts, ctx) end,
       timeout: 30_000,
       on_timeout: :kill_task

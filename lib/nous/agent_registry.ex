@@ -2,7 +2,15 @@ defmodule Nous.AgentRegistry do
   @moduledoc "Registry for looking up agent processes by session ID."
 
   def child_spec(_opts) do
-    Registry.child_spec(keys: :unique, name: __MODULE__)
+    # Partition across schedulers so high-concurrency lookups (e.g. a
+    # LiveView fan-in calling Nous.AgentRegistry.lookup/1 from many sockets)
+    # don't serialize on a single ETS-backed partition. Registry defaults to
+    # partitions: 1 which becomes a contention point at scale.
+    Registry.child_spec(
+      keys: :unique,
+      name: __MODULE__,
+      partitions: System.schedulers_online()
+    )
   end
 
   def via_tuple(session_id) do

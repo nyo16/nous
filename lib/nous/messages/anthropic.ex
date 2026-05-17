@@ -291,11 +291,18 @@ defmodule Nous.Messages.Anthropic do
   """
   @spec parse_usage(map() | nil) :: Usage.t()
   def parse_usage(usage_data) when is_map(usage_data) do
+    input = Map.get(usage_data, "input_tokens", 0)
+    output = Map.get(usage_data, "output_tokens", 0)
+    cache_creation = Map.get(usage_data, "cache_creation_input_tokens", 0)
+    cache_read = Map.get(usage_data, "cache_read_input_tokens", 0)
+
     %Usage{
-      input_tokens: Map.get(usage_data, "input_tokens", 0),
-      output_tokens: Map.get(usage_data, "output_tokens", 0),
-      total_tokens:
-        Map.get(usage_data, "input_tokens", 0) + Map.get(usage_data, "output_tokens", 0)
+      requests: 1,
+      input_tokens: input,
+      output_tokens: output,
+      total_tokens: input + output,
+      cache_creation_input_tokens: cache_creation,
+      cache_read_input_tokens: cache_read
     }
   end
 

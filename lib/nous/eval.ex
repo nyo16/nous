@@ -128,6 +128,7 @@ defmodule Nous.Eval do
   @doc """
   Run an evaluation suite, raising on error.
   """
+  @deprecated "Match on Nous.Eval.run/2's {:ok, _} | {:error, _} result instead"
   @spec run!(Suite.t(), keyword()) :: map()
   def run!(%Suite{} = suite, opts \\ []) do
     case run(suite, opts) do

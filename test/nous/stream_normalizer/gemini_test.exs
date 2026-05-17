@@ -305,7 +305,15 @@ defmodule Nous.StreamNormalizer.GeminiTest do
       events = Gemini.normalize_chunk(chunk)
 
       assert {:text_delta, "hi"} in events
-      assert {:usage, %Nous.Usage{input_tokens: 4, output_tokens: 2, total_tokens: 6}} in events
+
+      assert Enum.any?(events, fn
+               {:usage,
+                %Nous.Usage{requests: 1, input_tokens: 4, output_tokens: 2, total_tokens: 6}} ->
+                 true
+
+               _ ->
+                 false
+             end)
     end
 
     test "missing usageMetadata produces no usage event" do

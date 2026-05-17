@@ -76,7 +76,7 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulatorTest do
       assert [%{"arguments" => %{}}] = Accumulator.finalize(acc)
     end
 
-    test "malformed JSON falls back to error map with raw payload" do
+    test "malformed JSON tags tool call with _invalid_arguments and empty args" do
       acc =
         Accumulator.feed(Accumulator.new(), [
           %{
@@ -86,8 +86,12 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulatorTest do
           }
         ])
 
-      assert [%{"arguments" => %{"error" => "Invalid JSON arguments", "raw" => "{invalid"}}] =
-               Accumulator.finalize(acc)
+      assert [
+               %{
+                 "arguments" => %{},
+                 "_invalid_arguments" => "{invalid"
+               }
+             ] = Accumulator.finalize(acc)
     end
 
     test "atom-keyed fragments are accepted" do
@@ -191,15 +195,18 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulatorTest do
   end
 
   describe "Gemini shape" do
-    test "already-complete functionCall is passed through" do
+    test "already-complete functionCall synthesizes an id matching the non-streaming format" do
       acc =
         Accumulator.feed(Accumulator.new(), %{
           "name" => "search",
           "arguments" => %{"query" => "elixir"}
         })
 
-      assert [%{"id" => nil, "name" => "search", "arguments" => %{"query" => "elixir"}}] =
+      assert [%{"id" => id, "name" => "search", "arguments" => %{"query" => "elixir"}}] =
                Accumulator.finalize(acc)
+
+      assert is_binary(id) and String.starts_with?(id, "gemini_"),
+             "streaming Gemini tool calls should carry a synthesized gemini_* id like the non-streaming parser"
     end
 
     test "multiple sequential calls preserve arrival order" do

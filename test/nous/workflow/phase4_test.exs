@@ -235,5 +235,27 @@ defmodule Nous.Workflow.Phase4Test do
       Store.delete(cp.run_id)
       assert {:error, :not_found} = Store.load(cp.run_id)
     end
+
+    test "checkpoint survives crash of the saving process" do
+      # Before fix: the ETS table was owned by whichever process first called
+      # Store.save/init. When that process died, the table died with it and
+      # init/0 silently recreated an empty one — silently losing every
+      # suspended workflow that depended on resume.
+      state = Nous.Workflow.State.new(%{x: 42})
+      cp = Checkpoint.new(%{workflow_id: "wf_crash", node_id: "n", state: state})
+
+      task =
+        Task.async(fn ->
+          :ok = Store.save(cp)
+          cp.run_id
+        end)
+
+      run_id = Task.await(task)
+      # Task is dead now. If the ETS table was owned by it, the table is gone.
+      refute Process.alive?(task.pid)
+
+      assert {:ok, loaded} = Store.load(run_id)
+      assert loaded.state.data.x == 42
+    end
   end
 end

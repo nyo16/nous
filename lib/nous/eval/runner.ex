@@ -154,8 +154,9 @@ defmodule Nous.Eval.Runner do
   defp run_parallel(%Suite{} = suite, opts, parallelism, setup_result) do
     opts = Keyword.put(opts, :setup_result, setup_result)
 
-    suite.test_cases
-    |> Task.async_stream(
+    Task.Supervisor.async_stream_nolink(
+      Nous.TaskSupervisor,
+      suite.test_cases,
       fn test_case ->
         execute_test_case(test_case, suite, opts)
       end,
@@ -272,15 +273,19 @@ defmodule Nous.Eval.Runner do
         timeout: timeout
       ]
 
-      # Run with timeout protection
+      # Run with timeout protection under the application TaskSupervisor so
+      # an eval crash doesn't take down the parent eval runner.
       task =
-        Task.async(fn ->
+        Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
           Nous.run(agent, test_case.input, run_opts)
         end)
 
       case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
         {:ok, result} ->
           result
+
+        {:exit, reason} ->
+          {:error, {:task_exit, reason}}
 
         nil ->
           {:error, :timeout}

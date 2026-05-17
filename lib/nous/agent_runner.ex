@@ -487,181 +487,222 @@ defmodule Nous.AgentRunner do
       error = Errors.MaxIterationsExceeded.exception(max_iterations: ctx.max_iterations)
       {:error, error}
     else
-      # Get tools from behaviour + plugins
-      tools = behaviour.get_tools(agent)
-      plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
-      all_tools = tools ++ plugin_tools
+      iteration_start = System.monotonic_time()
 
-      # Apply plugin system prompt fragments only on first iteration
-      ctx = if ctx.iteration == 0, do: apply_plugin_system_prompts(agent, ctx), else: ctx
-
-      # Run plugin before_request hooks
-      {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
-
-      # Run pre_request hooks (can block the LLM call)
-      pre_request_result =
-        Hook.Runner.run(ctx.hook_registry, :pre_request, %{
+      :telemetry.execute(
+        [:nous, :agent, :iteration, :start],
+        %{system_time: System.system_time()},
+        %{
           agent_name: agent.name,
-          tool_count: length(all_tools),
-          iteration: ctx.iteration
-        })
+          iteration: ctx.iteration,
+          max_iterations: ctx.max_iterations
+        }
+      )
 
-      # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the LLM call
-      if ctx.needs_response and pre_request_result != :deny do
-        # Build messages via behaviour
-        messages = behaviour.build_messages(agent, ctx)
+      result = do_iteration_body(agent, behaviour, ctx)
 
-        # Add tools to model settings if any
-        model_settings =
-          if Enum.empty?(all_tools) do
-            agent.model_settings
-          else
-            Logger.debug(
-              "Converting #{length(all_tools)} tools for provider: #{agent.model.provider}"
-            )
+      iteration_duration = System.monotonic_time() - iteration_start
 
-            tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
-            Map.put(agent.model_settings, :tools, tool_schemas)
+      iteration_meta = %{
+        agent_name: agent.name,
+        iteration: ctx.iteration,
+        tool_calls:
+          case result do
+            {:ok, %{usage: %{tool_calls: tc}}} -> tc
+            _ -> 0
+          end,
+        needs_response:
+          case result do
+            {:ok, %{needs_response: nr}} -> nr
+            _ -> false
           end
+      }
 
-        # Inject structured output settings
-        model_settings =
-          if agent.output_type != :string do
-            inject_structured_output_settings(agent, model_settings, all_tools)
-          else
-            model_settings
-          end
+      :telemetry.execute(
+        [:nous, :agent, :iteration, :stop],
+        %{duration: iteration_duration},
+        iteration_meta
+      )
 
-        # Apply before_request callback if implemented
-        model_settings =
-          Behaviour.call(
-            behaviour,
-            :before_request,
-            [agent, ctx, Keyword.new(model_settings)],
-            Keyword.new(model_settings)
+      result
+    end
+  end
+
+  defp do_iteration_body(agent, behaviour, ctx) do
+    # Get tools from behaviour + plugins
+    tools = behaviour.get_tools(agent)
+    plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
+    all_tools = tools ++ plugin_tools
+
+    # Apply plugin system prompt fragments only on first iteration
+    ctx = if ctx.iteration == 0, do: apply_plugin_system_prompts(agent, ctx), else: ctx
+
+    # Run plugin before_request hooks
+    {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
+
+    # Run pre_request hooks (can block the LLM call)
+    pre_request_result =
+      Hook.Runner.run(ctx.hook_registry, :pre_request, %{
+        agent_name: agent.name,
+        tool_count: length(all_tools),
+        iteration: ctx.iteration
+      })
+
+    # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the LLM call
+    if ctx.needs_response and pre_request_result != :deny do
+      # Build messages via behaviour
+      messages = behaviour.build_messages(agent, ctx)
+
+      # Add tools to model settings if any
+      model_settings =
+        if Enum.empty?(all_tools) do
+          agent.model_settings
+        else
+          Logger.debug(
+            "Converting #{length(all_tools)} tools for provider: #{agent.model.provider}"
           )
-          |> Map.new()
 
-        # Make model request (with fallback chain if configured).
-        #
-        # Sticky-fallback: if a previous iteration already promoted to a
-        # fallback model (recorded in ctx.deps[:active_model]), call into
-        # request_with_fallback with that model first to avoid retrying
-        # a known-bad primary on every iteration.
-        request_agent =
-          case get_in(ctx.deps, [:active_model]) do
-            nil -> agent
-            am -> %{agent | model: am}
-          end
-
-        Logger.debug(
-          "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
-        )
-
-        request_result =
-          if ctx.stream do
-            stream_request_with_fallback(
-              request_agent,
-              messages,
-              model_settings,
-              all_tools,
-              ctx
-            )
-          else
-            request_with_fallback(request_agent, messages, model_settings, all_tools)
-          end
-
-        case request_result do
-          {:ok, response, active_model} ->
-            # Track active_model in ctx for downstream telemetry / observability,
-            # but do NOT mutate agent.model. Mutating made the start-of-run
-            # telemetry tag with one provider and the stop with another, with
-            # no fallback_used indicator - operational metrics drifted apart
-            # for any agent that ever fell back.
-            ctx =
-              if active_model != agent.model do
-                :telemetry.execute(
-                  [:nous, :agent, :fallback, :used],
-                  %{system_time: System.system_time()},
-                  %{
-                    agent_name: agent.name,
-                    original_provider: agent.model.provider,
-                    original_model: agent.model.model,
-                    active_provider: active_model.provider,
-                    active_model: active_model.model
-                  }
-                )
-
-                %{ctx | deps: Map.put(ctx.deps, :active_model, active_model)}
-              else
-                ctx
-              end
-
-            # Update usage
-            usage_update = response.metadata.usage || %{}
-            ctx = Context.add_usage(ctx, usage_update)
-            ctx = Context.increment_iteration(ctx)
-
-            # Get total tokens safely from struct or map
-            tokens_added =
-              case usage_update do
-                %{total_tokens: t} when is_integer(t) -> t
-                _ -> 0
-              end
-
-            Logger.debug(
-              "Model response received (tokens: +#{tokens_added}, total: #{ctx.usage.total_tokens})"
-            )
-
-            # Execute callback
-            Callbacks.execute(ctx, :on_llm_new_message, response)
-
-            # Run plugin after_response hooks
-            ctx = Plugin.run_after_response(agent.plugins, agent, response, ctx)
-
-            # Run post_response hooks
-            Hook.Runner.run(ctx.hook_registry, :post_response, %{
-              agent_name: agent.name,
-              iteration: ctx.iteration
-            })
-
-            # Process response via behaviour - this handles tool calls and updates needs_response
-            ctx = behaviour.process_response(agent, response, ctx)
-
-            # Check if we need to handle tool calls (behaviour may have set this up)
-            ctx =
-              if Message.has_tool_calls?(response) do
-                handle_tool_calls(agent, behaviour, ctx, response, all_tools)
-              else
-                ctx
-              end
-
-            # Continue loop
-            execute_loop(agent, behaviour, ctx)
-
-          {:error, reason} ->
-            Logger.error("""
-            Model request failed in iteration #{ctx.iteration + 1}
-              Agent: #{agent.name}
-              Model: #{agent.model.provider}:#{agent.model.model}
-              Reason: #{inspect(reason)}
-            """)
-
-            # Try error handler if implemented
-            case Behaviour.call(behaviour, :handle_error, [agent, reason, ctx], {:error, reason}) do
-              {:retry, new_ctx} ->
-                execute_loop(agent, behaviour, new_ctx)
-
-              {:continue, new_ctx} ->
-                execute_loop(agent, behaviour, new_ctx)
-
-              {:error, _} = err ->
-                err
-            end
+          tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
+          Map.put(agent.model_settings, :tools, tool_schemas)
         end
-      else
-        {:ok, ctx}
+
+      # Inject structured output settings
+      model_settings =
+        if agent.output_type != :string do
+          inject_structured_output_settings(agent, model_settings, all_tools)
+        else
+          model_settings
+        end
+
+      # Apply before_request callback if implemented
+      model_settings =
+        Behaviour.call(
+          behaviour,
+          :before_request,
+          [agent, ctx, Keyword.new(model_settings)],
+          Keyword.new(model_settings)
+        )
+        |> Map.new()
+
+      # Make model request (with fallback chain if configured).
+      #
+      # Sticky-fallback: if a previous iteration already promoted to a
+      # fallback model (recorded in ctx.deps[:active_model]), call into
+      # request_with_fallback with that model first to avoid retrying
+      # a known-bad primary on every iteration.
+      request_agent =
+        case get_in(ctx.deps, [:active_model]) do
+          nil -> agent
+          am -> %{agent | model: am}
+        end
+
+      Logger.debug(
+        "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
+      )
+
+      request_result =
+        if ctx.stream do
+          stream_request_with_fallback(
+            request_agent,
+            messages,
+            model_settings,
+            all_tools,
+            ctx
+          )
+        else
+          request_with_fallback(request_agent, messages, model_settings, all_tools)
+        end
+
+      case request_result do
+        {:ok, response, active_model} ->
+          # Track active_model in ctx for downstream telemetry / observability,
+          # but do NOT mutate agent.model. Mutating made the start-of-run
+          # telemetry tag with one provider and the stop with another, with
+          # no fallback_used indicator - operational metrics drifted apart
+          # for any agent that ever fell back.
+          ctx =
+            if active_model != agent.model do
+              :telemetry.execute(
+                [:nous, :agent, :fallback, :used],
+                %{system_time: System.system_time()},
+                %{
+                  agent_name: agent.name,
+                  original_provider: agent.model.provider,
+                  original_model: agent.model.model,
+                  active_provider: active_model.provider,
+                  active_model: active_model.model
+                }
+              )
+
+              %{ctx | deps: Map.put(ctx.deps, :active_model, active_model)}
+            else
+              ctx
+            end
+
+          # Update usage
+          usage_update = response.metadata.usage || %{}
+          ctx = Context.add_usage(ctx, usage_update)
+          ctx = Context.increment_iteration(ctx)
+
+          # Get total tokens safely from struct or map
+          tokens_added =
+            case usage_update do
+              %{total_tokens: t} when is_integer(t) -> t
+              _ -> 0
+            end
+
+          Logger.debug(
+            "Model response received (tokens: +#{tokens_added}, total: #{ctx.usage.total_tokens})"
+          )
+
+          # Execute callback
+          Callbacks.execute(ctx, :on_llm_new_message, response)
+
+          # Run plugin after_response hooks
+          ctx = Plugin.run_after_response(agent.plugins, agent, response, ctx)
+
+          # Run post_response hooks
+          Hook.Runner.run(ctx.hook_registry, :post_response, %{
+            agent_name: agent.name,
+            iteration: ctx.iteration
+          })
+
+          # Process response via behaviour - this handles tool calls and updates needs_response
+          ctx = behaviour.process_response(agent, response, ctx)
+
+          # Check if we need to handle tool calls (behaviour may have set this up)
+          ctx =
+            if Message.has_tool_calls?(response) do
+              handle_tool_calls(agent, behaviour, ctx, response, all_tools)
+            else
+              ctx
+            end
+
+          # Continue loop
+          execute_loop(agent, behaviour, ctx)
+
+        {:error, reason} ->
+          Logger.error("""
+          Model request failed in iteration #{ctx.iteration + 1}
+            Agent: #{agent.name}
+            Model: #{agent.model.provider}:#{agent.model.model}
+            Reason: #{inspect(reason)}
+          """)
+
+          # Try error handler if implemented
+          case Behaviour.call(behaviour, :handle_error, [agent, reason, ctx], {:error, reason}) do
+            {:retry, new_ctx} ->
+              execute_loop(agent, behaviour, new_ctx)
+
+            {:continue, new_ctx} ->
+              execute_loop(agent, behaviour, new_ctx)
+
+            {:error, _} = err ->
+              err
+          end
       end
+    else
+      {:ok, ctx}
     end
   end
 
@@ -709,100 +750,40 @@ defmodule Nous.AgentRunner do
 
             cleaned_name = clean_tool_name(call_name)
 
-            # Run pre_tool_use hooks first (can block or modify args)
-            hook_payload = %{
-              tool_name: cleaned_name,
-              tool_id: call_id,
-              arguments: call_arguments
-            }
+            # Short-circuit on tool_call whose arguments JSON failed to parse.
+            # The provider marshalling tagged it with "_invalid_arguments" so
+            # we surface a clean tool-error result and let the LLM retry —
+            # rather than invoking the tool with bogus/empty args.
+            invalid_args =
+              Map.get(call, "_invalid_arguments") || Map.get(call, :_invalid_arguments)
 
-            case Hook.Runner.run(acc_ctx.hook_registry, :pre_tool_use, hook_payload) do
-              :deny ->
-                Logger.info("Tool '#{cleaned_name}' denied by hook")
-                result_msg = Message.tool(call_id, "Tool call was denied by hook.")
-                {[result_msg | results], acc_ctx}
+            if is_binary(invalid_args) do
+              Logger.warning(
+                "Tool '#{cleaned_name}' called with malformed arguments JSON: #{invalid_args}"
+              )
 
-              {:deny, reason} ->
-                Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
-                result_msg = Message.tool(call_id, "Tool call was denied by hook: #{reason}")
-                {[result_msg | results], acc_ctx}
+              result_msg =
+                Message.tool(
+                  call_id,
+                  "Error: tool arguments were not valid JSON. Please retry with a JSON object.",
+                  name: cleaned_name
+                )
 
-              {:modify, %{arguments: new_args}} ->
-                # Hook modified the arguments — continue with modified call
-                modified_call = put_tool_field(call, :arguments, new_args)
-                tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
-
-                case check_tool_approval(tool, modified_call, acc_ctx) do
-                  :reject ->
-                    result_msg =
-                      Message.tool(call_id, "Tool call was rejected by approval handler.")
-
-                    {[result_msg | results], acc_ctx}
-
-                  {:edit, edited_args} ->
-                    edited_call = put_tool_field(modified_call, :arguments, edited_args)
-
-                    {result_msg, acc_ctx} =
-                      execute_and_record_tool(
-                        tools,
-                        edited_call,
-                        run_ctx,
-                        behaviour,
-                        agent,
-                        acc_ctx
-                      )
-
-                    {[result_msg | results], acc_ctx}
-
-                  :approve ->
-                    {result_msg, acc_ctx} =
-                      execute_and_record_tool(
-                        tools,
-                        modified_call,
-                        run_ctx,
-                        behaviour,
-                        agent,
-                        acc_ctx
-                      )
-
-                    {[result_msg | results], acc_ctx}
-                end
-
-              _ ->
-                # :allow or other — proceed to approval check
-                tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
-
-                case check_tool_approval(tool, call, acc_ctx) do
-                  :reject ->
-                    Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
-
-                    result_msg =
-                      Message.tool(call_id, "Tool call was rejected by approval handler.")
-
-                    {[result_msg | results], acc_ctx}
-
-                  {:edit, new_args} ->
-                    Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
-                    edited_call = put_tool_field(call, :arguments, new_args)
-
-                    {result_msg, acc_ctx} =
-                      execute_and_record_tool(
-                        tools,
-                        edited_call,
-                        run_ctx,
-                        behaviour,
-                        agent,
-                        acc_ctx
-                      )
-
-                    {[result_msg | results], acc_ctx}
-
-                  :approve ->
-                    {result_msg, acc_ctx} =
-                      execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
-
-                    {[result_msg | results], acc_ctx}
-                end
+              {[result_msg | results], acc_ctx}
+            else
+              run_tool_with_hooks(
+                call,
+                call_id,
+                call_name,
+                cleaned_name,
+                call_arguments,
+                tools,
+                run_ctx,
+                behaviour,
+                agent,
+                acc_ctx,
+                results
+              )
             end
           end)
 
@@ -815,6 +796,128 @@ defmodule Nous.AgentRunner do
           Context.add_tool_call(acc, call)
         end)
       end
+    end
+  end
+
+  # Run hooks + execute the tool call, returning the {results, acc_ctx} pair
+  # that the outer Enum.reduce expects. Extracted to keep the main loop
+  # legible after the invalid-args short-circuit was added.
+  defp run_tool_with_hooks(
+         call,
+         call_id,
+         _call_name,
+         cleaned_name,
+         call_arguments,
+         tools,
+         run_ctx,
+         behaviour,
+         agent,
+         acc_ctx,
+         results
+       ) do
+    hook_payload = %{
+      tool_name: cleaned_name,
+      tool_id: call_id,
+      arguments: call_arguments
+    }
+
+    case Hook.Runner.run(acc_ctx.hook_registry, :pre_tool_use, hook_payload) do
+      :deny ->
+        Logger.info("Tool '#{cleaned_name}' denied by hook")
+
+        result_msg =
+          Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)
+
+        {[result_msg | results], acc_ctx}
+
+      {:deny, reason} ->
+        Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
+
+        result_msg =
+          Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)
+
+        {[result_msg | results], acc_ctx}
+
+      {:modify, %{arguments: new_args}} ->
+        # Hook modified the arguments — continue with modified call
+        modified_call = put_tool_field(call, :arguments, new_args)
+        tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
+
+        case check_tool_approval(tool, modified_call, acc_ctx) do
+          :reject ->
+            result_msg =
+              Message.tool(call_id, "Tool call was rejected by approval handler.",
+                name: cleaned_name
+              )
+
+            {[result_msg | results], acc_ctx}
+
+          {:edit, edited_args} ->
+            edited_call = put_tool_field(modified_call, :arguments, edited_args)
+
+            {result_msg, acc_ctx} =
+              execute_and_record_tool(
+                tools,
+                edited_call,
+                run_ctx,
+                behaviour,
+                agent,
+                acc_ctx
+              )
+
+            {[result_msg | results], acc_ctx}
+
+          :approve ->
+            {result_msg, acc_ctx} =
+              execute_and_record_tool(
+                tools,
+                modified_call,
+                run_ctx,
+                behaviour,
+                agent,
+                acc_ctx
+              )
+
+            {[result_msg | results], acc_ctx}
+        end
+
+      _ ->
+        # :allow or other — proceed to approval check
+        tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
+
+        case check_tool_approval(tool, call, acc_ctx) do
+          :reject ->
+            Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
+
+            result_msg =
+              Message.tool(call_id, "Tool call was rejected by approval handler.",
+                name: cleaned_name
+              )
+
+            {[result_msg | results], acc_ctx}
+
+          {:edit, new_args} ->
+            Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
+            edited_call = put_tool_field(call, :arguments, new_args)
+
+            {result_msg, acc_ctx} =
+              execute_and_record_tool(
+                tools,
+                edited_call,
+                run_ctx,
+                behaviour,
+                agent,
+                acc_ctx
+              )
+
+            {[result_msg | results], acc_ctx}
+
+          :approve ->
+            {result_msg, acc_ctx} =
+              execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
+
+            {[result_msg | results], acc_ctx}
+        end
     end
   end
 
@@ -835,7 +938,7 @@ defmodule Nous.AgentRunner do
              result: result_msg.content
            }) do
         {:modify, %{result: new_result}} ->
-          Message.tool(call_id, new_result)
+          Message.tool(call_id, new_result, name: cleaned_name)
 
         _ ->
           result_msg
@@ -938,7 +1041,7 @@ defmodule Nous.AgentRunner do
         {error_msg, %{}}
       end
 
-    {Message.tool(call_id, result), context_updates}
+    {Message.tool(call_id, result, name: cleaned_name), context_updates}
   end
 
   # Apply plugin system prompt fragments to context
