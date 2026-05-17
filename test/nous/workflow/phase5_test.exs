@@ -263,5 +263,43 @@ defmodule Nous.Workflow.Phase5Test do
       scratch = Scratch.new()
       assert Scratch.cleanup(scratch) == :ok
     end
+
+    test "scratch ETS table is cleaned up even when a node raises" do
+      # Before fix: if execute_loop raised mid-workflow, the
+      # `unless suspended?, do: maybe_cleanup_scratch(...)` line never ran,
+      # so the :"nous_scratch_<id>" table leaked. Long-running supervisors
+      # that retry on failure would eventually OOM via ets_too_many_tables.
+      alias Nous.Workflow
+      alias Nous.Workflow.Graph
+
+      graph =
+        Graph.new("leak_check")
+        |> Graph.add_node(:boom, :transform, tf(fn _ -> raise "boom" end))
+        |> Graph.set_entry(:boom)
+
+      # Count :nous_scratch_* ETS tables before and after a workflow that
+      # raises with `scratch: true`. They must match.
+      scratch_table_count = fn ->
+        :ets.all()
+        |> Enum.count(fn t ->
+          case :ets.info(t, :name) do
+            name when is_atom(name) ->
+              name |> Atom.to_string() |> String.starts_with?("nous_scratch_")
+
+            _ ->
+              false
+          end
+        end)
+      end
+
+      before_count = scratch_table_count.()
+
+      assert {:error, _} = Workflow.run(graph, %{}, scratch: true)
+
+      after_count = scratch_table_count.()
+
+      assert after_count == before_count,
+             "scratch ETS table leaked when the workflow raised"
+    end
   end
 end

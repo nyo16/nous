@@ -77,36 +77,59 @@ defmodule Nous.Workflow.Checkpoint.ETS do
   @moduledoc """
   ETS-backed checkpoint store. Suitable for development and testing.
 
-  Note: Data is lost on process/node restart. For production, use a
-  persistent backend.
+  The table is owned by a supervised TableOwner GenServer started under the
+  Nous application supervisor. Without it the table would die with whichever
+  transient process happened to create it first, silently losing every
+  suspended workflow that relied on resume.
+
+  Note: Data is lost on node restart. For production, use a persistent
+  backend.
   """
 
   @behaviour Nous.Workflow.Checkpoint.Store
 
   @table :nous_workflow_checkpoints
 
-  @doc """
-  Initialize the ETS table. Call once at application start.
-  """
-  @spec init() :: :ok
-  def init do
-    if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :set, :public])
+  defmodule TableOwner do
+    @moduledoc false
+    use GenServer
+
+    def start_link(_opts) do
+      GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
     end
 
-    :ok
+    @impl true
+    def init(:ok) do
+      table_name = :nous_workflow_checkpoints
+
+      table =
+        case :ets.whereis(table_name) do
+          :undefined ->
+            :ets.new(table_name, [:named_table, :set, :public, read_concurrency: true])
+
+          _ref ->
+            table_name
+        end
+
+      {:ok, %{table: table}}
+    end
+  end
+
+  @doc false
+  def child_spec(_opts) do
+    %{id: __MODULE__, start: {TableOwner, :start_link, [[]]}, type: :worker}
   end
 
   @impl true
   def save(checkpoint) do
-    init()
+    ensure_table()
     :ets.insert(@table, {checkpoint.run_id, checkpoint})
     :ok
   end
 
   @impl true
   def load(run_id) do
-    init()
+    ensure_table()
 
     case :ets.lookup(@table, run_id) do
       [{^run_id, checkpoint}] -> {:ok, checkpoint}
@@ -116,7 +139,7 @@ defmodule Nous.Workflow.Checkpoint.ETS do
 
   @impl true
   def list(workflow_id) do
-    init()
+    ensure_table()
 
     checkpoints =
       :ets.tab2list(@table)
@@ -129,8 +152,24 @@ defmodule Nous.Workflow.Checkpoint.ETS do
 
   @impl true
   def delete(run_id) do
-    init()
+    ensure_table()
     :ets.delete(@table, run_id)
     :ok
+  end
+
+  # Fallback for callers used before the supervisor started the owner
+  # (mainly ad-hoc tests). Production code goes through TableOwner.
+  defp ensure_table do
+    case :ets.whereis(@table) do
+      :undefined ->
+        try do
+          :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
+        rescue
+          ArgumentError -> :ok
+        end
+
+      _ref ->
+        :ok
+    end
   end
 end
