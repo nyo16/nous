@@ -256,8 +256,11 @@ defmodule Nous.AgentServer do
     inactivity_timeout = Keyword.get(opts, :inactivity_timeout, @default_inactivity_timeout)
     persistence = Keyword.get(opts, :persistence)
 
-    # Subscribe to messages for this session
-    topic = "agent:#{session_id}"
+    # Subscribe to messages for this session. Use the helper so the topic
+    # matches what publishers via Nous.PubSub.agent_topic/1 send to —
+    # previously this was a bare "agent:#{id}" string while the helper
+    # returned "nous:agent:#{id}", so external publishers never reached us.
+    topic = Nous.PubSub.agent_topic(session_id)
     Nous.PubSub.subscribe(pubsub, topic)
 
     # Create agent based on type
@@ -412,7 +415,21 @@ defmodule Nous.AgentServer do
     state =
       if state.current_task do
         case Task.shutdown(state.current_task, 2_000) do
-          _ -> :ok
+          {:ok, _result} ->
+            :ok
+
+          nil ->
+            # task did not respond to graceful shutdown within timeout
+            :ok
+
+          {:exit, reason} ->
+            # Task crashed during shutdown. Log so it isn't silently
+            # swallowed — debugging mid-run crashes was painful when
+            # this clause was `_ -> :ok`.
+            Logger.warning(
+              "AgentServer task exited during reset for session " <>
+                "#{state.session_id}: #{inspect(reason)}"
+            )
         end
 
         %{state | current_task: nil}
@@ -654,6 +671,17 @@ defmodule Nous.AgentServer do
   @impl true
   def terminate(reason, state) do
     Logger.info("AgentServer terminating for session #{state.session_id}: #{inspect(reason)}")
+
+    # Cancel any in-flight task on shutdown. Without this, an LLM stream
+    # started under this server would keep consuming tokens (and HTTP
+    # connections) until it hit max_iterations, even though the server is
+    # going away. Setting the cancelled atomic also lets the runner's
+    # cancellation checks short-circuit if it's still running.
+    if state.current_task do
+      :atomics.put(state.cancelled_ref, 1, 1)
+      _ = Task.shutdown(state.current_task, 1_000)
+    end
+
     :ok
   end
 
