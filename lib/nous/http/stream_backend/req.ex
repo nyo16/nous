@@ -11,14 +11,27 @@ defmodule Nous.HTTP.StreamBackend.Req do
 
   Req's `:into` callback runs in the spawned `Task`. Forwarding to the
   consumer process is `send/2`, so a fast producer + slow consumer can
-  grow the consumer's mailbox unboundedly. This is acceptable for
-  typical LLM workloads where token-generation rate is the bottleneck
-  and consumers are parsing-bound (parsing throttles naturally).
+  grow the consumer's mailbox.
 
-  Callers whose downstream consumers can block per chunk (LiveView
-  fan-out under load, persistence-on-every-chunk, slow IO) should use
-  `Nous.HTTP.StreamBackend.Hackney` instead, which provides strict
-  pull-based backpressure via `:hackney`'s `{:async, :once}` mode.
+  The producer task watches the consumer's mailbox via
+  `Process.info(parent, :message_queue_len)`. When the queue length
+  crosses `@backpressure_high_water` (default 1_000 chunks) the task
+  busy-waits in 5ms increments until it drops below
+  `@backpressure_low_water` (default 100). This gives Req's `:into`
+  callback natural backpressure — the producing socket doesn't read
+  more bytes while we're waiting — without requiring the consumer to
+  switch to the Hackney backend.
+
+  If the consumer is *truly* unresponsive (the mailbox stays high for
+  longer than `:backpressure_max_wait_ms`), the task emits
+  `{:backpressure_overflow, %{queue_len: n}}` and aborts the stream
+  rather than wedging forever.
+
+  Callers whose downstream consumers reliably block per chunk
+  (LiveView fan-out under load, persistence-on-every-chunk, slow IO)
+  can still prefer `Nous.HTTP.StreamBackend.Hackney`, which provides
+  strict pull-based backpressure via `:hackney`'s `{:async, :once}`
+  mode.
 
   ## TLS verification
 
@@ -36,6 +49,12 @@ defmodule Nous.HTTP.StreamBackend.Req do
   # between chunks long enough to trip a tighter timeout. Per-call
   # `:timeout` opt overrides.
   @default_timeout 180_000
+
+  # Backpressure watermarks (see @moduledoc). Tuned so that an under-load
+  # LiveView consumer pauses the producer rather than OOMing.
+  @backpressure_high_water 1_000
+  @backpressure_low_water 100
+  @backpressure_max_wait_ms 30_000
 
   @impl Nous.HTTP.StreamBackend
   def stream(url, body, headers, opts \\ [])
@@ -84,13 +103,26 @@ defmodule Nous.HTTP.StreamBackend.Req do
           receive_timeout: timeout,
           finch: finch_name,
           into: fn {:data, chunk}, {req, resp} ->
-            if resp.status in 200..299 do
-              send(parent, {ref, {:chunk, chunk}})
-              {:cont, {req, resp}}
-            else
-              # Non-2xx: accumulate body locally so the post-call status
-              # check has the full error body to report. Do not forward.
-              {:cont, {req, %{resp | body: (resp.body || "") <> chunk}}}
+            cond do
+              resp.status not in 200..299 ->
+                # Non-2xx: accumulate body locally so the post-call status
+                # check has the full error body to report. Do not forward.
+                {:cont, {req, %{resp | body: (resp.body || "") <> chunk}}}
+
+              true ->
+                case await_consumer_capacity(parent) do
+                  :ok ->
+                    send(parent, {ref, {:chunk, chunk}})
+                    {:cont, {req, resp}}
+
+                  {:error, :backpressure_timeout, queue_len} ->
+                    send(
+                      parent,
+                      {ref, {:error, %{reason: :backpressure_overflow, queue_len: queue_len}}}
+                    )
+
+                    {:halt, {req, resp}}
+                end
             end
           end
         )
@@ -118,6 +150,43 @@ defmodule Nous.HTTP.StreamBackend.Req do
           send(parent, {ref, {:error, reason}})
       end
     end)
+  end
+
+  # Block the producer task while the consumer's mailbox is above the
+  # high-water mark, releasing once it drops back below the low-water mark.
+  # Returns :ok when capacity is available, or {:error, :backpressure_timeout, queue_len}
+  # if the consumer doesn't drain within @backpressure_max_wait_ms.
+  defp await_consumer_capacity(parent) do
+    case message_queue_len(parent) do
+      n when n < @backpressure_high_water ->
+        :ok
+
+      _ ->
+        wait_for_drain(parent, System.monotonic_time(:millisecond))
+    end
+  end
+
+  defp wait_for_drain(parent, started_at) do
+    case message_queue_len(parent) do
+      n when n < @backpressure_low_water ->
+        :ok
+
+      n ->
+        if System.monotonic_time(:millisecond) - started_at > @backpressure_max_wait_ms do
+          {:error, :backpressure_timeout, n}
+        else
+          Process.sleep(5)
+          wait_for_drain(parent, started_at)
+        end
+    end
+  end
+
+  defp message_queue_len(pid) do
+    case Process.info(pid, :message_queue_len) do
+      {:message_queue_len, n} -> n
+      # parent already gone — let the next send/2 fail and surface that
+      nil -> 0
+    end
   end
 
   # Get the next batch of events.
