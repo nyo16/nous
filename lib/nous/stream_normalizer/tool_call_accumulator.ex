@@ -99,10 +99,13 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulator do
 
   def feed(acc, %{"_phase" => :stop, "_index" => _index}), do: acc
 
-  # Gemini: already-complete tool call
+  # Gemini: already-complete tool call. Gemini's API does not return tool-call
+  # IDs, so we synthesize one in the same `"gemini_<base64>"` shape as the
+  # non-streaming parser (`Nous.Messages.Gemini.generate_tool_call_id/0`) to
+  # keep stream and non-stream paths consistent for downstream linking.
   def feed(acc, %{"name" => name, "arguments" => arguments}) when is_map(arguments) do
     call = %{
-      "id" => Map.get(acc, "id"),
+      "id" => generate_gemini_id(),
       "name" => name,
       "arguments" => arguments
     }
@@ -142,15 +145,20 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulator do
 
   defp feed_openai_one(_, acc), do: acc
 
+  defp generate_gemini_id do
+    "gemini_" <> (:crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false))
+  end
+
   @doc """
   Finalize the accumulator into a list of tool calls in the unified shape:
 
       [%{"id" => id_or_nil, "name" => name, "arguments" => decoded_map}, ...]
 
   OpenAI and Anthropic argument buffers are JSON-decoded via
-  `Nous.Messages.OpenAI.decode_arguments/1` (which logs a warning and falls
-  back to `%{"error" => "Invalid JSON arguments", "raw" => raw}` on
-  malformed JSON). Gemini calls already carry decoded `arguments`.
+  `Nous.Messages.OpenAI.decode_arguments/1`. On malformed JSON the tool call
+  is tagged with `"_invalid_arguments" => raw` so the agent runner can emit
+  a clean tool-error result instead of invoking the tool with bogus args.
+  Gemini calls already carry decoded `arguments`.
 
   Order: OpenAI calls sorted by index, then Anthropic calls sorted by
   `_index`, then Gemini calls in arrival order. In practice only one of the
@@ -167,11 +175,15 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulator do
     map
     |> Enum.sort_by(fn {index, _} -> index end)
     |> Enum.map(fn {_index, %{id: id, name: name, args_io: args_io}} ->
-      %{
-        "id" => id,
-        "name" => name,
-        "arguments" => OpenAIMessages.decode_arguments(IO.iodata_to_binary(args_io))
-      }
+      raw = IO.iodata_to_binary(args_io)
+
+      case OpenAIMessages.decode_arguments(raw) do
+        {:ok, decoded} ->
+          %{"id" => id, "name" => name, "arguments" => decoded}
+
+        {:error, {:invalid_json, raw}} ->
+          %{"id" => id, "name" => name, "arguments" => %{}, "_invalid_arguments" => raw}
+      end
     end)
   end
 end

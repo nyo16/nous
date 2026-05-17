@@ -424,20 +424,21 @@ defmodule Nous.Agent.Context do
   """
   @spec patch_dangling_tool_calls(t()) :: t()
   def patch_dangling_tool_calls(%__MODULE__{messages: messages} = ctx) do
-    # Collect all tool_call IDs from assistant messages
-    tool_call_ids =
+    # Build id -> name map from assistant tool_calls (name needed so providers
+    # like Gemini can populate functionResponse.name correctly).
+    tool_call_names =
       messages
       |> Enum.filter(&(&1.role == :assistant))
       |> Enum.flat_map(fn msg ->
         (msg.tool_calls || [])
         |> Enum.map(fn call ->
-          Map.get(call, :id) || Map.get(call, "id")
+          {Map.get(call, :id) || Map.get(call, "id"),
+           Map.get(call, :name) || Map.get(call, "name")}
         end)
-        |> Enum.reject(&is_nil/1)
+        |> Enum.reject(fn {id, _} -> is_nil(id) end)
       end)
-      |> MapSet.new()
+      |> Map.new()
 
-    # Collect all tool result IDs
     tool_result_ids =
       messages
       |> Enum.filter(&(&1.role == :tool))
@@ -445,16 +446,18 @@ defmodule Nous.Agent.Context do
       |> Enum.reject(&is_nil/1)
       |> MapSet.new()
 
-    # Find unmatched tool calls
-    dangling_ids = MapSet.difference(tool_call_ids, tool_result_ids)
+    dangling_ids = MapSet.difference(MapSet.new(Map.keys(tool_call_names)), tool_result_ids)
 
     if MapSet.size(dangling_ids) == 0 do
       ctx
     else
-      # Inject synthetic tool results for dangling calls
       synthetic_results =
         Enum.map(dangling_ids, fn id ->
-          Message.tool(id, "Tool call was interrupted and not executed. Please retry if needed.")
+          Message.tool(
+            id,
+            "Tool call was interrupted and not executed. Please retry if needed.",
+            name: Map.get(tool_call_names, id)
+          )
         end)
 
       %{ctx | messages: messages ++ synthetic_results}

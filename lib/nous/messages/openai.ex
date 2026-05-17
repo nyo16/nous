@@ -211,36 +211,41 @@ defmodule Nous.Messages.OpenAI do
     name = Map.get(func, "name") || Map.get(func, :name)
     arguments = Map.get(func, "arguments") || Map.get(func, :arguments)
 
-    %{
-      "id" => id,
-      "name" => name,
-      "arguments" => decode_arguments(arguments)
-    }
+    case decode_arguments(arguments) do
+      {:ok, decoded} ->
+        %{"id" => id, "name" => name, "arguments" => decoded}
+
+      {:error, {:invalid_json, raw}} ->
+        %{"id" => id, "name" => name, "arguments" => %{}, "_invalid_arguments" => raw}
+    end
   end
 
   @doc """
   Decode an OpenAI tool-call `arguments` JSON string into a map.
 
-  Falls back to `%{"error" => "Invalid JSON arguments", "raw" => raw}` and logs a
-  warning when the JSON is malformed. Used by both the non-streaming response
-  parser and the streaming `ToolCallAccumulator`.
+  Returns `{:ok, map()}` on success, `{:error, {:invalid_json, raw}}` on
+  malformed JSON or non-object payload. Used by both the non-streaming
+  response parser and the streaming `ToolCallAccumulator`; callers tag the
+  tool_call with `"_invalid_arguments"` so the agent runner can surface a
+  proper error tool result instead of invoking the tool with bogus args.
   """
-  @spec decode_arguments(String.t() | nil) :: map()
-  def decode_arguments(nil), do: %{}
-  def decode_arguments(""), do: %{}
+  @spec decode_arguments(String.t() | nil) ::
+          {:ok, map()} | {:error, {:invalid_json, String.t()}}
+  def decode_arguments(nil), do: {:ok, %{}}
+  def decode_arguments(""), do: {:ok, %{}}
 
   def decode_arguments(arguments) when is_binary(arguments) do
     case JSON.decode(arguments) do
       {:ok, decoded_args} when is_map(decoded_args) ->
-        decoded_args
+        {:ok, decoded_args}
 
       {:ok, other} ->
         Logger.warning("Tool arguments decoded to non-map: #{inspect(other)}")
-        %{"error" => "Invalid JSON arguments", "raw" => arguments}
+        {:error, {:invalid_json, arguments}}
 
       {:error, _} ->
         Logger.warning("Failed to decode tool arguments: #{inspect(arguments)}")
-        %{"error" => "Invalid JSON arguments", "raw" => arguments}
+        {:error, {:invalid_json, arguments}}
     end
   end
 

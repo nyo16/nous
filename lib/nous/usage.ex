@@ -19,7 +19,9 @@ defmodule Nous.Usage do
           tool_calls: non_neg_integer(),
           input_tokens: non_neg_integer(),
           output_tokens: non_neg_integer(),
-          total_tokens: non_neg_integer()
+          total_tokens: non_neg_integer(),
+          cache_creation_input_tokens: non_neg_integer(),
+          cache_read_input_tokens: non_neg_integer()
         }
 
   @enforce_keys []
@@ -27,7 +29,9 @@ defmodule Nous.Usage do
             tool_calls: 0,
             input_tokens: 0,
             output_tokens: 0,
-            total_tokens: 0
+            total_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0
 
   @doc """
   Create a new empty usage tracker.
@@ -61,7 +65,10 @@ defmodule Nous.Usage do
       tool_calls: u1.tool_calls + u2.tool_calls,
       input_tokens: u1.input_tokens + u2.input_tokens,
       output_tokens: u1.output_tokens + u2.output_tokens,
-      total_tokens: u1.total_tokens + u2.total_tokens
+      total_tokens: u1.total_tokens + u2.total_tokens,
+      cache_creation_input_tokens:
+        u1.cache_creation_input_tokens + u2.cache_creation_input_tokens,
+      cache_read_input_tokens: u1.cache_read_input_tokens + u2.cache_read_input_tokens
     }
   end
 

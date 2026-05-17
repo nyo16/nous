@@ -360,7 +360,7 @@ defmodule Nous.LLM do
           "Error: Unknown tool '#{name}'"
         end
 
-      Message.tool(id, result)
+      Message.tool(id, result, name: name)
     end)
   end
 

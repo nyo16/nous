@@ -585,8 +585,8 @@ defmodule Nous.MessagesGenericHelpersTest do
       assert [tool_call] = tool_calls
       assert tool_call["id"] == "call_invalid"
       assert tool_call["name"] == "test_tool"
-      assert tool_call["arguments"]["error"] == "Invalid JSON arguments"
-      assert tool_call["arguments"]["raw"] == "invalid json {"
+      assert tool_call["arguments"] == %{}
+      assert tool_call["_invalid_arguments"] == "invalid json {"
     end
 
     test "handles complex multi-modal content" do

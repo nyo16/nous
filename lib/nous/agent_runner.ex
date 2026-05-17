@@ -709,100 +709,40 @@ defmodule Nous.AgentRunner do
 
             cleaned_name = clean_tool_name(call_name)
 
-            # Run pre_tool_use hooks first (can block or modify args)
-            hook_payload = %{
-              tool_name: cleaned_name,
-              tool_id: call_id,
-              arguments: call_arguments
-            }
+            # Short-circuit on tool_call whose arguments JSON failed to parse.
+            # The provider marshalling tagged it with "_invalid_arguments" so
+            # we surface a clean tool-error result and let the LLM retry —
+            # rather than invoking the tool with bogus/empty args.
+            invalid_args =
+              Map.get(call, "_invalid_arguments") || Map.get(call, :_invalid_arguments)
 
-            case Hook.Runner.run(acc_ctx.hook_registry, :pre_tool_use, hook_payload) do
-              :deny ->
-                Logger.info("Tool '#{cleaned_name}' denied by hook")
-                result_msg = Message.tool(call_id, "Tool call was denied by hook.")
-                {[result_msg | results], acc_ctx}
+            if is_binary(invalid_args) do
+              Logger.warning(
+                "Tool '#{cleaned_name}' called with malformed arguments JSON: #{invalid_args}"
+              )
 
-              {:deny, reason} ->
-                Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
-                result_msg = Message.tool(call_id, "Tool call was denied by hook: #{reason}")
-                {[result_msg | results], acc_ctx}
+              result_msg =
+                Message.tool(
+                  call_id,
+                  "Error: tool arguments were not valid JSON. Please retry with a JSON object.",
+                  name: cleaned_name
+                )
 
-              {:modify, %{arguments: new_args}} ->
-                # Hook modified the arguments — continue with modified call
-                modified_call = put_tool_field(call, :arguments, new_args)
-                tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
-
-                case check_tool_approval(tool, modified_call, acc_ctx) do
-                  :reject ->
-                    result_msg =
-                      Message.tool(call_id, "Tool call was rejected by approval handler.")
-
-                    {[result_msg | results], acc_ctx}
-
-                  {:edit, edited_args} ->
-                    edited_call = put_tool_field(modified_call, :arguments, edited_args)
-
-                    {result_msg, acc_ctx} =
-                      execute_and_record_tool(
-                        tools,
-                        edited_call,
-                        run_ctx,
-                        behaviour,
-                        agent,
-                        acc_ctx
-                      )
-
-                    {[result_msg | results], acc_ctx}
-
-                  :approve ->
-                    {result_msg, acc_ctx} =
-                      execute_and_record_tool(
-                        tools,
-                        modified_call,
-                        run_ctx,
-                        behaviour,
-                        agent,
-                        acc_ctx
-                      )
-
-                    {[result_msg | results], acc_ctx}
-                end
-
-              _ ->
-                # :allow or other — proceed to approval check
-                tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
-
-                case check_tool_approval(tool, call, acc_ctx) do
-                  :reject ->
-                    Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
-
-                    result_msg =
-                      Message.tool(call_id, "Tool call was rejected by approval handler.")
-
-                    {[result_msg | results], acc_ctx}
-
-                  {:edit, new_args} ->
-                    Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
-                    edited_call = put_tool_field(call, :arguments, new_args)
-
-                    {result_msg, acc_ctx} =
-                      execute_and_record_tool(
-                        tools,
-                        edited_call,
-                        run_ctx,
-                        behaviour,
-                        agent,
-                        acc_ctx
-                      )
-
-                    {[result_msg | results], acc_ctx}
-
-                  :approve ->
-                    {result_msg, acc_ctx} =
-                      execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
-
-                    {[result_msg | results], acc_ctx}
-                end
+              {[result_msg | results], acc_ctx}
+            else
+              run_tool_with_hooks(
+                call,
+                call_id,
+                call_name,
+                cleaned_name,
+                call_arguments,
+                tools,
+                run_ctx,
+                behaviour,
+                agent,
+                acc_ctx,
+                results
+              )
             end
           end)
 
@@ -815,6 +755,128 @@ defmodule Nous.AgentRunner do
           Context.add_tool_call(acc, call)
         end)
       end
+    end
+  end
+
+  # Run hooks + execute the tool call, returning the {results, acc_ctx} pair
+  # that the outer Enum.reduce expects. Extracted to keep the main loop
+  # legible after the invalid-args short-circuit was added.
+  defp run_tool_with_hooks(
+         call,
+         call_id,
+         _call_name,
+         cleaned_name,
+         call_arguments,
+         tools,
+         run_ctx,
+         behaviour,
+         agent,
+         acc_ctx,
+         results
+       ) do
+    hook_payload = %{
+      tool_name: cleaned_name,
+      tool_id: call_id,
+      arguments: call_arguments
+    }
+
+    case Hook.Runner.run(acc_ctx.hook_registry, :pre_tool_use, hook_payload) do
+      :deny ->
+        Logger.info("Tool '#{cleaned_name}' denied by hook")
+
+        result_msg =
+          Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)
+
+        {[result_msg | results], acc_ctx}
+
+      {:deny, reason} ->
+        Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
+
+        result_msg =
+          Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)
+
+        {[result_msg | results], acc_ctx}
+
+      {:modify, %{arguments: new_args}} ->
+        # Hook modified the arguments — continue with modified call
+        modified_call = put_tool_field(call, :arguments, new_args)
+        tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
+
+        case check_tool_approval(tool, modified_call, acc_ctx) do
+          :reject ->
+            result_msg =
+              Message.tool(call_id, "Tool call was rejected by approval handler.",
+                name: cleaned_name
+              )
+
+            {[result_msg | results], acc_ctx}
+
+          {:edit, edited_args} ->
+            edited_call = put_tool_field(modified_call, :arguments, edited_args)
+
+            {result_msg, acc_ctx} =
+              execute_and_record_tool(
+                tools,
+                edited_call,
+                run_ctx,
+                behaviour,
+                agent,
+                acc_ctx
+              )
+
+            {[result_msg | results], acc_ctx}
+
+          :approve ->
+            {result_msg, acc_ctx} =
+              execute_and_record_tool(
+                tools,
+                modified_call,
+                run_ctx,
+                behaviour,
+                agent,
+                acc_ctx
+              )
+
+            {[result_msg | results], acc_ctx}
+        end
+
+      _ ->
+        # :allow or other — proceed to approval check
+        tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
+
+        case check_tool_approval(tool, call, acc_ctx) do
+          :reject ->
+            Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
+
+            result_msg =
+              Message.tool(call_id, "Tool call was rejected by approval handler.",
+                name: cleaned_name
+              )
+
+            {[result_msg | results], acc_ctx}
+
+          {:edit, new_args} ->
+            Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
+            edited_call = put_tool_field(call, :arguments, new_args)
+
+            {result_msg, acc_ctx} =
+              execute_and_record_tool(
+                tools,
+                edited_call,
+                run_ctx,
+                behaviour,
+                agent,
+                acc_ctx
+              )
+
+            {[result_msg | results], acc_ctx}
+
+          :approve ->
+            {result_msg, acc_ctx} =
+              execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx)
+
+            {[result_msg | results], acc_ctx}
+        end
     end
   end
 
@@ -835,7 +897,7 @@ defmodule Nous.AgentRunner do
              result: result_msg.content
            }) do
         {:modify, %{result: new_result}} ->
-          Message.tool(call_id, new_result)
+          Message.tool(call_id, new_result, name: cleaned_name)
 
         _ ->
           result_msg
@@ -938,7 +1000,7 @@ defmodule Nous.AgentRunner do
         {error_msg, %{}}
       end
 
-    {Message.tool(call_id, result), context_updates}
+    {Message.tool(call_id, result, name: cleaned_name), context_updates}
   end
 
   # Apply plugin system prompt fragments to context
