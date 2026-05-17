@@ -116,29 +116,16 @@ defmodule Nous.Tool.Validator do
   @spec validate_types(map(), map()) :: :ok | {:error, {:type_mismatch, list()}}
   def validate_types(args, properties) when is_map(args) and is_map(properties) do
     errors =
-      args
-      |> Enum.reduce([], fn {key, value}, acc ->
+      Enum.reduce(args, [], fn {key, value}, acc ->
         case Map.get(properties, key) do
           nil ->
             # Unknown keys are allowed (additionalProperties: true by default)
             acc
 
-          %{"type" => expected_type} ->
-            if matches_type?(value, expected_type) do
-              acc
-            else
-              [{key, expected_type, typeof(value)} | acc]
-            end
-
-          %{"enum" => allowed_values} ->
-            if value in allowed_values do
-              acc
-            else
-              [{key, "enum:#{inspect(allowed_values)}", inspect(value)} | acc]
-            end
+          schema when is_map(schema) ->
+            check_schema(key, value, schema, acc)
 
           _other ->
-            # Schema without type constraint
             acc
         end
       end)
@@ -149,6 +136,36 @@ defmodule Nous.Tool.Validator do
       {:error, {:type_mismatch, Enum.reverse(errors)}}
     end
   end
+
+  # Apply ALL constraints present on a property schema, not just the first
+  # one matched. Previously `%{"type" => _}` matched before `%{"enum" => _}`,
+  # so a schema like `%{"type" => "string", "enum" => ["a","b"]}` validated
+  # only the type and silently dropped the enum constraint.
+  defp check_schema(key, value, schema, acc) do
+    acc
+    |> maybe_check_type(key, value, schema)
+    |> maybe_check_enum(key, value, schema)
+  end
+
+  defp maybe_check_type(acc, key, value, %{"type" => expected_type}) do
+    if matches_type?(value, expected_type) do
+      acc
+    else
+      [{key, expected_type, typeof(value)} | acc]
+    end
+  end
+
+  defp maybe_check_type(acc, _key, _value, _schema), do: acc
+
+  defp maybe_check_enum(acc, key, value, %{"enum" => allowed_values}) do
+    if value in allowed_values do
+      acc
+    else
+      [{key, "enum:#{inspect(allowed_values)}", inspect(value)} | acc]
+    end
+  end
+
+  defp maybe_check_enum(acc, _key, _value, _schema), do: acc
 
   @doc """
   Check if a value matches a JSON schema type.

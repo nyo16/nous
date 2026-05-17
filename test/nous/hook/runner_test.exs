@@ -12,7 +12,8 @@ defmodule Nous.Hook.RunnerTest do
       matcher: Keyword.get(opts, :matcher),
       priority: Keyword.get(opts, :priority, 100),
       timeout: Keyword.get(opts, :timeout, 10_000),
-      name: Keyword.get(opts, :name)
+      name: Keyword.get(opts, :name),
+      fail_closed: Keyword.get(opts, :fail_closed, false)
     }
   end
 
@@ -112,10 +113,20 @@ defmodule Nous.Hook.RunnerTest do
       assert Runner.run(registry, :pre_tool_use, %{tool_name: "test", arguments: %{}}) == :allow
     end
 
-    test "errors fail open" do
+    test "errors fail open by default" do
       hook = make_hook(:pre_tool_use, fn _, _ -> raise "boom" end)
       registry = Registry.from_hooks([hook])
       assert Runner.run(registry, :pre_tool_use, %{tool_name: "test"}) == :allow
+    end
+
+    test "errors fail closed when fail_closed: true" do
+      # Security-sensitive hooks opt in to fail-closed so a crashing
+      # deny-hook can't be silently bypassed.
+      hook = make_hook(:pre_tool_use, fn _, _ -> raise "boom" end, fail_closed: true)
+      registry = Registry.from_hooks([hook])
+
+      assert {:deny, reason} = Runner.run(registry, :pre_tool_use, %{tool_name: "test"})
+      assert reason =~ "fail_closed"
     end
   end
 

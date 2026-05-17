@@ -75,7 +75,8 @@ defmodule Nous.Hook do
           handler: (event(), map() -> result()) | module() | String.t(),
           priority: integer(),
           timeout: non_neg_integer(),
-          name: String.t() | nil
+          name: String.t() | nil,
+          fail_closed: boolean()
         }
 
   @enforce_keys [:event, :type, :handler]
@@ -86,7 +87,14 @@ defmodule Nous.Hook do
     type: :function,
     matcher: nil,
     priority: 100,
-    timeout: 10_000
+    timeout: 10_000,
+    # When set on a hook bound to a blocking event (:pre_tool_use, :pre_request),
+    # runtime errors (raised exceptions, timeouts, non-0/2 exit codes from
+    # command hooks) deny the action instead of allowing it. Defaults to
+    # false to preserve existing fail-open behavior; set to true on hooks
+    # that gate security-sensitive operations so a broken hook can't
+    # silently bypass the check.
+    fail_closed: false
   ]
 
   @doc """
