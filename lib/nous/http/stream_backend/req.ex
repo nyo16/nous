@@ -72,7 +72,11 @@ defmodule Nous.HTTP.StreamBackend.Req do
   end
 
   defp start_request_task(url, body, headers, timeout, finch_name, parent, ref) do
-    Task.async(fn ->
+    # Run under Nous.TaskSupervisor (async_nolink) so the streaming task
+    # is supervised — graceful shutdown gets a chance to send :EXIT, and
+    # neither the producer task nor the consuming caller takes the other
+    # down on crash. The consumer monitors the task pid for completion.
+    Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
       result =
         Req.post(url,
           json: body,

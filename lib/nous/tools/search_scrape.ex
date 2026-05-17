@@ -44,9 +44,9 @@ defmodule Nous.Tools.SearchScrape do
       %{results: [], error: "No URLs provided"}
     else
       results =
-        urls
-        |> Enum.take(concurrency)
-        |> Task.async_stream(
+        Task.Supervisor.async_stream_nolink(
+          Nous.TaskSupervisor,
+          Enum.take(urls, concurrency),
           fn url -> fetch_and_summarize(ctx, url, query) end,
           max_concurrency: concurrency,
           timeout: timeout,

@@ -60,14 +60,14 @@ defmodule Nous.Research.Coordinator do
 
     timeout = Keyword.get(opts, :timeout, :timer.minutes(10))
 
-    # Run with timeout
-    task =
-      Task.async(fn ->
-        research_loop(state)
-      end)
+    # Run with timeout under the application TaskSupervisor so the work
+    # doesn't bring down its caller (and vice-versa) on crash, and so app
+    # shutdown can send graceful exits to in-flight research.
+    task = Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn -> research_loop(state) end)
 
     case Task.yield(task, timeout) || Task.shutdown(task) do
       {:ok, result} -> result
+      {:exit, reason} -> {:error, {:task_exit, reason}}
       nil -> {:error, :timeout}
     end
   end
@@ -75,23 +75,15 @@ defmodule Nous.Research.Coordinator do
   defp research_loop(state) do
     notify(state, {:research_progress, %{phase: :planning, iteration: state.iteration}})
 
-    # Phase 1: Plan
-    case plan_phase(state) do
-      {:ok, plan, state} ->
-        # Check HITL checkpoint for plan
-        case check_plan_approval(plan, state) do
-          :approve ->
-            execute_plan(plan, state)
+    # Phase 1: Plan. plan_phase/1 (and Planner.plan/2) currently always
+    # return {:ok, _} — planning errors are absorbed into a single-step
+    # fallback plan inside Planner.plan/2.
+    {:ok, plan, state} = plan_phase(state)
 
-          {:edit, modified_plan} ->
-            execute_plan(modified_plan, state)
-
-          :reject ->
-            {:error, :plan_rejected}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
+    case check_plan_approval(plan, state) do
+      :approve -> execute_plan(plan, state)
+      {:edit, modified_plan} -> execute_plan(modified_plan, state)
+      :reject -> {:error, :plan_rejected}
     end
   end
 
@@ -186,8 +178,9 @@ defmodule Nous.Research.Coordinator do
 
   defp search_parallel(steps, model, search_tool, deps, state) do
     results =
-      steps
-      |> Task.async_stream(
+      Task.Supervisor.async_stream_nolink(
+        Nous.TaskSupervisor,
+        steps,
         fn step ->
           notify(state, {:research_finding, %{query: step.query, phase: :searching}})
 
