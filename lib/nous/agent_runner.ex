@@ -361,7 +361,7 @@ defmodule Nous.AgentRunner do
   defp blocked_stream(ctx) do
     blocked_text =
       case List.last(ctx.messages) do
-        %Message{} = msg -> Message.extract_text(msg) || ""
+        %Message{content: content} when is_binary(content) -> content
         _ -> ""
       end
 
@@ -1221,7 +1221,11 @@ defmodule Nous.AgentRunner do
   defp estimate_request_tokens(messages) do
     chars =
       Enum.reduce(messages, 0, fn msg, acc ->
-        acc + byte_size(Message.extract_text(msg) || "")
+        # Only binary content contributes to the rough estimate; a message with
+        # nil content (tool-call-only) or list content (multimodal) is skipped
+        # rather than crashing Message.extract_text/1 (no nil clause).
+        text = if is_binary(msg.content), do: msg.content, else: ""
+        acc + byte_size(text)
       end)
 
     max(div(chars, 4), 1)
