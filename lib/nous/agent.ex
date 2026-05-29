@@ -46,7 +46,8 @@ defmodule Nous.Agent do
           skills: [module() | String.t() | Nous.Skill.t() | {:group, atom()}],
           end_strategy: :early | :exhaustive,
           enable_todos: boolean(),
-          behaviour_module: module() | nil
+          behaviour_module: module() | nil,
+          permissions: Nous.Permissions.Policy.t() | nil
         }
 
   @enforce_keys [:model]
@@ -67,7 +68,8 @@ defmodule Nous.Agent do
     hooks: [],
     skills: [],
     end_strategy: :early,
-    enable_todos: false
+    enable_todos: false,
+    permissions: nil
   ]
 
   @doc """
@@ -96,6 +98,9 @@ defmodule Nous.Agent do
     * `:behaviour_module` - Custom agent behaviour module (default: BasicAgent)
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
       when the primary model fails with a provider/model error
+    * `:permissions` - Optional `Nous.Permissions.Policy` enforced at runtime:
+      blocked tools are removed from the model's tool list and approval-required
+      tools must pass the approval handler (see `Nous.Permissions`)
 
   ## Examples
 
@@ -144,7 +149,8 @@ defmodule Nous.Agent do
       skills:
         merge_skill_dirs(Keyword.get(opts, :skills, []), Keyword.get(opts, :skill_dirs, [])),
       end_strategy: Keyword.get(opts, :end_strategy, :early),
-      behaviour_module: Keyword.get(opts, :behaviour_module)
+      behaviour_module: Keyword.get(opts, :behaviour_module),
+      permissions: Keyword.get(opts, :permissions)
     }
   end
 

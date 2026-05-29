@@ -666,13 +666,28 @@ defmodule Nous.Agent.Context do
     }
   end
 
+  # Credential-shaped dep keys that must never be written to the persistence
+  # backend. Persistence auto-saves the context after every response, and the
+  # ETS backend table is :public, so a plain-string api_key in deps would leak.
+  @sensitive_dep_key_substrings ~w(
+    api_key apikey token secret password passwd authorization
+    credential private_key access_key auth_token bearer
+  )
+
   defp serialize_deps(deps) when is_map(deps) do
     deps
-    |> Enum.reject(fn {_k, v} -> is_function(v) or is_pid(v) or is_port(v) end)
+    |> Enum.reject(fn {k, v} ->
+      is_function(v) or is_pid(v) or is_port(v) or sensitive_dep_key?(k)
+    end)
     |> Map.new()
   end
 
   defp serialize_deps(_), do: %{}
+
+  defp sensitive_dep_key?(key) do
+    name = key |> to_string() |> String.downcase()
+    Enum.any?(@sensitive_dep_key_substrings, &String.contains?(name, &1))
+  end
 
   defp deserialize_usage(data) when is_map(data) do
     data = atomize_keys(data)

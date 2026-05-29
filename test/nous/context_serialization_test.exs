@@ -29,6 +29,30 @@ defmodule Nous.Agent.ContextSerializationTest do
       assert data.needs_response == true
     end
 
+    test "redacts credential-shaped deps keys" do
+      # Persistence auto-saves the context (and the ETS backend is shared), so
+      # secret-shaped deps must not be written.
+      ctx =
+        Context.new(
+          deps: %{
+            :database => SomeRepo,
+            :api_key => "sk-secret",
+            "AUTH_TOKEN" => "t0ken",
+            :user_password => "hunter2",
+            :region => "us-east-1"
+          }
+        )
+
+      data = Context.serialize(ctx)
+
+      refute Map.has_key?(data.deps, :api_key)
+      refute Map.has_key?(data.deps, "AUTH_TOKEN")
+      refute Map.has_key?(data.deps, :user_password)
+      # Non-sensitive deps are preserved.
+      assert data.deps[:database] == SomeRepo
+      assert data.deps[:region] == "us-east-1"
+    end
+
     test "serializes messages" do
       ctx =
         Context.new()

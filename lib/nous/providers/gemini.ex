@@ -33,8 +33,9 @@ defmodule Nous.Providers.Gemini do
 
   ## Note on Authentication
 
-  Unlike OpenAI/Anthropic which use headers, Gemini uses query parameter auth:
-  `?key=API_KEY`
+  The API key is sent via the `x-goog-api-key` request header (not the URL
+  query string), so it does not leak into proxy/load-balancer access logs,
+  tracing spans, or redirect logs.
 
   ## Thinking (Gemini 2.5/3.x)
 
@@ -158,8 +159,8 @@ defmodule Nous.Providers.Gemini do
     model = Map.get(params, "model") || Map.get(params, :model) || "gemini-2.0-flash-exp"
     api_key = api_key(opts)
 
-    url = build_url(base_url(opts), model, api_key, :generate)
-    headers = build_headers()
+    url = build_url(base_url(opts), model, :generate)
+    headers = build_headers(api_key)
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     # Remove model from params (it's in the URL)
@@ -173,8 +174,8 @@ defmodule Nous.Providers.Gemini do
     model = Map.get(params, "model") || Map.get(params, :model) || "gemini-2.0-flash-exp"
     api_key = api_key(opts)
 
-    url = build_url(base_url(opts), model, api_key, :stream)
-    headers = build_headers()
+    url = build_url(base_url(opts), model, :stream)
+    headers = build_headers(api_key)
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
 
@@ -188,15 +189,18 @@ defmodule Nous.Providers.Gemini do
     )
   end
 
-  # Build URL with model and API key in query params
-  defp build_url(base_url, model, api_key, :generate) do
-    "#{base_url}/models/#{model}:generateContent?key=#{api_key}"
+  # Build URL with model. The API key is sent via the x-goog-api-key header
+  # (see build_headers/1), NOT the query string — URLs leak into proxy/LB access
+  # logs, APM spans, and redirect logs, so a key in the query is a secret leak.
+  defp build_url(base_url, model, :generate) do
+    "#{base_url}/models/#{model}:generateContent"
   end
 
-  defp build_url(base_url, model, api_key, :stream) do
-    "#{base_url}/models/#{model}:streamGenerateContent?key=#{api_key}"
+  defp build_url(base_url, model, :stream) do
+    "#{base_url}/models/#{model}:streamGenerateContent"
   end
 
-  # Auth header is omitted because the API key lives in the URL query string.
-  defp build_headers, do: HTTP.json_headers()
+  defp build_headers(api_key) do
+    [{"x-goog-api-key", api_key} | HTTP.json_headers()]
+  end
 end

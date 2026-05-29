@@ -147,7 +147,7 @@ defmodule Nous.Plugins.InputGuard do
     short_circuit = Map.get(config, :short_circuit, false)
 
     results = run_strategies(strategies, input, ctx, short_circuit)
-    aggregated = aggregate(results, config)
+    aggregated = aggregate(results, length(strategies), config)
 
     # Fire on_violation callback if flagged
     if aggregated.severity != :safe do
@@ -205,14 +205,14 @@ defmodule Nous.Plugins.InputGuard do
       :error
   end
 
-  defp aggregate([], _config), do: %Result{severity: :safe}
+  defp aggregate([], _configured_count, _config), do: %Result{severity: :safe}
 
-  defp aggregate(results, config) do
+  defp aggregate(results, configured_count, config) do
     mode = Map.get(config, :aggregation, :any)
-    do_aggregate(results, mode)
+    do_aggregate(results, configured_count, mode)
   end
 
-  defp do_aggregate(results, :any) do
+  defp do_aggregate(results, _configured_count, :any) do
     # Return the most severe result
     results
     |> Enum.sort_by(&severity_rank/1, :desc)
@@ -223,28 +223,37 @@ defmodule Nous.Plugins.InputGuard do
     end
   end
 
-  defp do_aggregate(results, :majority) do
+  defp do_aggregate(results, configured_count, :majority) do
+    # Denominator is the number of CONFIGURED strategies, not survivors —
+    # otherwise an attacker who makes benign strategies error/time-out shrinks
+    # the vote and flips the outcome.
     flagged = Enum.count(results, &(&1.severity != :safe))
-    total = length(results)
 
-    if flagged > total / 2 do
-      results
-      |> Enum.reject(&(&1.severity == :safe))
-      |> Enum.sort_by(&severity_rank/1, :desc)
-      |> List.first()
+    if flagged > configured_count / 2 do
+      most_severe(results)
     else
       %Result{severity: :safe}
     end
   end
 
-  defp do_aggregate(results, :all) do
-    if Enum.all?(results, &(&1.severity != :safe)) do
-      results
-      |> Enum.sort_by(&severity_rank/1, :desc)
-      |> List.first()
+  defp do_aggregate(results, configured_count, :all) do
+    # Require EVERY configured strategy to have run AND flagged. A dropped or
+    # errored strategy means unanimity can't be confirmed, so don't block.
+    flagged = Enum.count(results, &(&1.severity != :safe))
+
+    if flagged == configured_count and length(results) == configured_count do
+      most_severe(results)
     else
       %Result{severity: :safe}
     end
+  end
+
+  defp most_severe(results) do
+    results
+    |> Enum.reject(&(&1.severity == :safe))
+    |> Enum.sort_by(&severity_rank/1, :desc)
+    |> List.first()
+    |> Kernel.||(%Result{severity: :safe})
   end
 
   defp severity_rank(%Result{severity: :safe}), do: 0

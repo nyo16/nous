@@ -34,6 +34,7 @@ defmodule Nous.AgentRunner do
     Messages,
     ModelDispatcher,
     OutputSchema,
+    Permissions,
     Plugin,
     RunContext,
     Tool,
@@ -294,44 +295,85 @@ defmodule Nous.AgentRunner do
     # Build context
     ctx = build_context(agent, prompt, opts)
 
-    # Get behaviour and tools
+    # Get behaviour
     behaviour = Behaviour.get_module(agent)
+
+    # Run the plugin pipeline so input guards / memory / system-prompt plugins
+    # apply to streaming too. Previously run_stream skipped this entirely, so an
+    # InputGuard configured on the agent silently provided ZERO protection for
+    # streamed requests — a security control that varied by transport.
+    ctx = Plugin.run_init(agent.plugins, agent, ctx)
+
     tools = behaviour.get_tools(agent)
+    plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
+    all_tools = tools ++ plugin_tools
 
-    # Build messages
-    messages = behaviour.build_messages(agent, ctx)
+    ctx = if ctx.iteration == 0, do: apply_plugin_system_prompts(agent, ctx), else: ctx
+    {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
+    all_tools = maybe_filter_by_policy(agent.permissions, all_tools)
 
-    # Add tools to settings if any
-    model_settings =
-      if Enum.empty?(tools) do
-        agent.model_settings
-      else
-        tool_schemas = convert_tools_for_provider(agent.model.provider, tools)
-        Map.put(agent.model_settings, :tools, tool_schemas)
+    if ctx.needs_response do
+      # Build messages via behaviour (reflects any plugin context changes)
+      messages = behaviour.build_messages(agent, ctx)
+
+      # Add tools to settings if any
+      model_settings =
+        if Enum.empty?(all_tools) do
+          agent.model_settings
+        else
+          tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
+          Map.put(agent.model_settings, :tools, tool_schemas)
+        end
+
+      # Inject structured output settings for streaming
+      model_settings =
+        if agent.output_type != :string do
+          inject_structured_output_settings(agent, model_settings, all_tools)
+        else
+          model_settings
+        end
+
+      # Request stream from model (with fallback chain if configured)
+      case stream_with_fallback(agent, messages, model_settings, all_tools) do
+        {:ok, stream} ->
+          # Wrap stream to execute callbacks, then accumulate result
+          wrapped_stream =
+            stream
+            |> wrap_stream_with_callbacks(ctx)
+            |> wrap_stream_with_result()
+
+          {:ok, wrapped_stream}
+
+        error ->
+          error
       end
-
-    # Inject structured output settings for streaming
-    model_settings =
-      if agent.output_type != :string do
-        inject_structured_output_settings(agent, model_settings, tools)
-      else
-        model_settings
-      end
-
-    # Request stream from model (with fallback chain if configured)
-    case stream_with_fallback(agent, messages, model_settings, tools) do
-      {:ok, stream} ->
-        # Wrap stream to execute callbacks, then accumulate result
-        wrapped_stream =
-          stream
-          |> wrap_stream_with_callbacks(ctx)
-          |> wrap_stream_with_result()
-
-        {:ok, wrapped_stream}
-
-      error ->
-        error
+    else
+      # A plugin (e.g. InputGuard) halted the request before any LLM call.
+      # Emit the guard's message as a terminal stream instead of streaming a
+      # model response.
+      {:ok, blocked_stream(ctx)}
     end
+  end
+
+  # Build a one-shot stream carrying the guard/plugin block message, so callers
+  # get the same {:text_delta, _} / {:finish, _} / {:complete, _} event shape
+  # they would from a real stream — without ever calling the model.
+  defp blocked_stream(ctx) do
+    blocked_text =
+      case List.last(ctx.messages) do
+        %Message{} = msg -> Message.extract_text(msg) || ""
+        _ -> ""
+      end
+
+    events =
+      if blocked_text == "",
+        do: [{:finish, "stop"}],
+        else: [{:text_delta, blocked_text}, {:finish, "stop"}]
+
+    events
+    |> Stream.map(& &1)
+    |> wrap_stream_with_callbacks(ctx)
+    |> wrap_stream_with_result()
   end
 
   # Private functions
@@ -539,6 +581,11 @@ defmodule Nous.AgentRunner do
 
     # Run plugin before_request hooks
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
+
+    # Enforce the permission policy: blocked tools are removed from the set the
+    # model ever sees (and therefore can't be called). Approval is enforced
+    # separately at execution time (see enforce_policy_approval/2).
+    all_tools = maybe_filter_by_policy(agent.permissions, all_tools)
 
     # Run pre_request hooks (can block the LLM call)
     pre_request_result =
@@ -883,7 +930,10 @@ defmodule Nous.AgentRunner do
 
       _ ->
         # :allow or other — proceed to approval check
-        tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
+        tool =
+          tools
+          |> Enum.find(fn t -> t.name == cleaned_name end)
+          |> enforce_policy_approval(agent.permissions)
 
         case check_tool_approval(tool, call, acc_ctx) do
           :reject ->
@@ -1084,6 +1134,27 @@ defmodule Nous.AgentRunner do
       {:delete, key}, acc ->
         Map.delete(acc, key)
     end)
+  end
+
+  # Mark a tool as approval-required when the permission policy says so, so the
+  # per-tool flag and the policy compose (either one forces the approval gate).
+  defp enforce_policy_approval(nil, _policy), do: nil
+  defp enforce_policy_approval(%Tool{} = tool, nil), do: tool
+
+  defp enforce_policy_approval(%Tool{requires_approval: true} = tool, _policy), do: tool
+
+  defp enforce_policy_approval(%Tool{} = tool, %Permissions.Policy{} = policy) do
+    if Permissions.requires_approval?(policy, tool.name) do
+      %{tool | requires_approval: true}
+    else
+      tool
+    end
+  end
+
+  defp maybe_filter_by_policy(nil, tools), do: tools
+
+  defp maybe_filter_by_policy(%Permissions.Policy{} = policy, tools) do
+    Permissions.filter_tools(policy, tools)
   end
 
   # Check if a tool call requires approval and invoke the handler.

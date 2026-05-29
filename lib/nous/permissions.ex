@@ -93,10 +93,19 @@ defmodule Nous.Permissions do
       )
 
   """
+  @valid_modes [:default, :permissive, :strict]
+
   @spec build_policy(keyword()) :: Policy.t()
   def build_policy(opts \\ []) do
+    mode = Keyword.get(opts, :mode, :default)
+
+    unless mode in @valid_modes do
+      raise ArgumentError,
+            "invalid policy mode #{inspect(mode)}; expected one of #{inspect(@valid_modes)}"
+    end
+
     %Policy{
-      mode: Keyword.get(opts, :mode, :default),
+      mode: mode,
       deny_names: opts |> Keyword.get(:deny, []) |> Enum.map(&String.downcase/1) |> MapSet.new(),
       deny_prefixes: opts |> Keyword.get(:deny_prefixes, []) |> Enum.map(&String.downcase/1),
       allow_names:
@@ -139,6 +148,7 @@ defmodule Nous.Permissions do
         tool_name
       ) do
     name = String.downcase(tool_name)
+    has_allowlist? = MapSet.size(allow_names) > 0 or allow_prefixes != []
 
     cond do
       MapSet.member?(deny_names, name) ->
@@ -147,17 +157,29 @@ defmodule Nous.Permissions do
       Enum.any?(deny_prefixes, &String.starts_with?(name, String.downcase(&1))) ->
         true
 
+      has_allowlist? ->
+        # An allowlist means deny-by-default in EVERY mode. Previously the
+        # allow lists were only consulted in :strict mode, so
+        # build_policy(allow: ["x"]) on the (default) :default mode silently
+        # allowed every tool — a fail-open footgun.
+        not allowed?(name, allow_names, allow_prefixes)
+
       mode == :strict ->
-        # Deny-by-default in strict mode: only tools explicitly allowed
-        # via :allow_names / :allow_prefixes pass the filter. This closes
-        # the gap where strict_policy() with empty deny lists silently
-        # exposed every tool at the filter layer.
-        not (MapSet.member?(allow_names, name) or
-               Enum.any?(allow_prefixes, &String.starts_with?(name, String.downcase(&1))))
+        # strict + no allowlist = deny everything.
+        true
+
+      mode in [:default, :permissive] ->
+        false
 
       true ->
-        false
+        # Unknown/invalid mode: fail closed.
+        true
     end
+  end
+
+  defp allowed?(name, allow_names, allow_prefixes) do
+    MapSet.member?(allow_names, name) or
+      Enum.any?(allow_prefixes, &String.starts_with?(name, String.downcase(&1)))
   end
 
   @doc """
@@ -181,6 +203,10 @@ defmodule Nous.Permissions do
   def requires_approval?(%Policy{mode: :default, approval_required: required}, tool_name) do
     MapSet.member?(required, String.downcase(tool_name))
   end
+
+  # Unknown/invalid mode: fail closed (require approval) rather than crash, so
+  # blocked?/2 and requires_approval?/2 stay consistent under a bad mode.
+  def requires_approval?(%Policy{}, _tool_name), do: true
 
   @doc """
   Filters a list of `Nous.Tool` structs, removing blocked tools.

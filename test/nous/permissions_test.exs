@@ -158,4 +158,43 @@ defmodule Nous.PermissionsTest do
       assert hd(blocked).name == "bash"
     end
   end
+
+  describe "allowlist enforcement across modes" do
+    test "allow list is deny-by-default in :default mode (not just :strict)" do
+      # Regression: allow lists were only honored in :strict, so
+      # build_policy(allow: [...]) on the default mode allowed everything.
+      policy = Permissions.build_policy(allow: ["file_read"])
+
+      refute Permissions.blocked?(policy, "file_read")
+      assert Permissions.blocked?(policy, "bash")
+    end
+
+    test "allow_prefixes are honored in :default mode" do
+      policy = Permissions.build_policy(allow_prefixes: ["file_"])
+
+      refute Permissions.blocked?(policy, "file_write")
+      assert Permissions.blocked?(policy, "bash")
+    end
+
+    test "deny still wins over allow" do
+      policy = Permissions.build_policy(allow: ["bash"], deny: ["bash"])
+      assert Permissions.blocked?(policy, "bash")
+    end
+  end
+
+  describe "mode validation and fail-closed" do
+    test "build_policy rejects an unknown mode" do
+      assert_raise ArgumentError, fn -> Permissions.build_policy(mode: :strick) end
+    end
+
+    test "blocked?/2 fails closed for an unknown mode" do
+      policy = %Policy{mode: :bogus}
+      assert Permissions.blocked?(policy, "anything")
+    end
+
+    test "requires_approval?/2 fails closed for an unknown mode" do
+      policy = %Policy{mode: :bogus}
+      assert Permissions.requires_approval?(policy, "anything")
+    end
+  end
 end

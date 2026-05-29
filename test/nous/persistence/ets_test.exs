@@ -4,11 +4,8 @@ defmodule Nous.Persistence.ETSTest do
   alias Nous.Persistence.ETS
 
   setup do
-    # Clean up the ETS table between tests
-    if :ets.whereis(:nous_persistence) != :undefined do
-      :ets.delete_all_objects(:nous_persistence)
-    end
-
+    # Clean up the ETS table between tests via the owner (table is :protected).
+    ETS.clear()
     :ok
   end
 
@@ -68,16 +65,16 @@ defmodule Nous.Persistence.ETSTest do
     end
   end
 
-  describe "lazy table creation" do
-    test "creates table on first use" do
-      # Delete the table if it exists
-      if :ets.whereis(:nous_persistence) != :undefined do
-        :ets.delete(:nous_persistence)
-      end
-
-      # First operation should create the table
+  describe "table ownership" do
+    test "save/load operate against the supervised owner's protected table" do
       assert :ok = ETS.save("test", %{version: 1})
+      assert {:ok, %{version: 1}} = ETS.load("test")
       assert :ets.whereis(:nous_persistence) != :undefined
+    end
+
+    test "table is :protected (not writable by arbitrary processes)" do
+      # A foreign process must not be able to write/delete directly.
+      assert :protected = :ets.info(:nous_persistence, :protection)
     end
   end
 end

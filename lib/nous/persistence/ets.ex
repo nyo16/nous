@@ -29,24 +29,50 @@ defmodule Nous.Persistence.ETS do
     @moduledoc false
     use GenServer
 
+    @table :nous_persistence
+
     def start_link(_opts) do
       GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
     end
 
     @impl true
     def init(:ok) do
-      table_name = :nous_persistence
-
       table =
-        case :ets.whereis(table_name) do
+        case :ets.whereis(@table) do
           :undefined ->
-            :ets.new(table_name, [:named_table, :set, :public, read_concurrency: true])
+            # :protected — only this owner process writes; any process may read.
+            # Previously :public let any in-node process read/overwrite another
+            # session's serialized context (and persisted deps).
+            :ets.new(@table, [:named_table, :set, :protected, read_concurrency: true])
 
           _ref ->
-            table_name
+            @table
         end
 
       {:ok, %{table: table}}
+    end
+
+    @impl true
+    def handle_call({:save, session_id, data}, _from, %{table: table} = state) do
+      reply =
+        try do
+          true = :ets.insert(table, {session_id, data})
+          :ok
+        rescue
+          e -> {:error, {:ets_insert_failed, Exception.message(e)}}
+        end
+
+      {:reply, reply, state}
+    end
+
+    def handle_call({:delete, session_id}, _from, %{table: table} = state) do
+      :ets.delete(table, session_id)
+      {:reply, :ok, state}
+    end
+
+    def handle_call(:clear, _from, %{table: table} = state) do
+      :ets.delete_all_objects(table)
+      {:reply, :ok, state}
     end
   end
 
@@ -57,14 +83,7 @@ defmodule Nous.Persistence.ETS do
 
   @impl true
   def save(session_id, data) when is_binary(session_id) and is_map(data) do
-    ensure_table()
-
-    try do
-      true = :ets.insert(@table, {session_id, data})
-      :ok
-    rescue
-      e -> {:error, {:ets_insert_failed, Exception.message(e)}}
-    end
+    GenServer.call(owner(), {:save, session_id, data})
   end
 
   @impl true
@@ -79,9 +98,7 @@ defmodule Nous.Persistence.ETS do
 
   @impl true
   def delete(session_id) when is_binary(session_id) do
-    ensure_table()
-    :ets.delete(@table, session_id)
-    :ok
+    GenServer.call(owner(), {:delete, session_id})
   end
 
   @impl true
@@ -91,21 +108,31 @@ defmodule Nous.Persistence.ETS do
     {:ok, keys}
   end
 
-  # Fallback for callers used before the supervisor started the owner
-  # (mainly ad-hoc tests). Production code goes through TableOwner.
-  defp ensure_table do
-    case :ets.whereis(@table) do
-      :undefined ->
-        try do
-          :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
-        rescue
-          ArgumentError ->
-            # Another process created the table between whereis and new
-            :ok
+  @doc """
+  Remove all persisted sessions. Routed through the owner (the table is
+  `:protected`, so only the owner may write). Useful for tests.
+  """
+  def clear do
+    GenServer.call(owner(), :clear)
+  end
+
+  # The table is owned by the supervised TableOwner (started in
+  # Nous.Application). Resolve it, starting one on demand for ad-hoc callers
+  # that run before/without the supervisor (mainly tests).
+  defp owner do
+    case Process.whereis(TableOwner) do
+      nil ->
+        case TableOwner.start_link([]) do
+          {:ok, pid} -> pid
+          {:error, {:already_started, pid}} -> pid
         end
 
-      _ref ->
-        :ok
+      pid ->
+        pid
     end
   end
+
+  # Reads are allowed from any process under :protected; just make sure the
+  # owner (and therefore the table) exists.
+  defp ensure_table, do: owner()
 end
