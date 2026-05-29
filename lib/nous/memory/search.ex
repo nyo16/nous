@@ -102,7 +102,12 @@ defmodule Nous.Memory.Search do
       if Enum.empty?(vector_results) do
         text_results
       else
-        Scoring.rrf_merge(text_results, vector_results)
+        # RRF scores are tiny (peak ~2/61 ≈ 0.033). Feeding them straight into
+        # composite_score/min_score made relevance negligible and broke min_score
+        # thresholds tuned for the text-only (jaro 0-1) scale. Rescale to 0-1.
+        text_results
+        |> Scoring.rrf_merge(vector_results)
+        |> normalize_relevance()
       end
 
     # Step 4: Apply temporal decay to relevance, then composite scoring
@@ -133,6 +138,20 @@ defmodule Nous.Memory.Search do
       |> Enum.take(limit)
 
     {:ok, results}
+  end
+
+  # Rescale relevance scores so the top result maps to 1.0 (preserving relative
+  # gaps), bringing RRF output onto the same 0-1 scale as text-only relevance.
+  defp normalize_relevance([]), do: []
+
+  defp normalize_relevance(scored) do
+    max = scored |> Enum.map(fn {_entry, score} -> score end) |> Enum.max()
+
+    if max > 0 do
+      Enum.map(scored, fn {entry, score} -> {entry, score / max} end)
+    else
+      scored
+    end
   end
 
   defp normalize_scope(:global), do: %{}

@@ -208,4 +208,50 @@ defmodule Nous.Plugins.TeamToolsTest do
       assert %Context{} = result
     end
   end
+
+  describe "shared_state passed as a registered NAME (regression)" do
+    # Nous.Teams.Supervisor wires shared_state into deps as a registered atom
+    # name, not a pid. is_pid/1 was false for the name, silently disabling
+    # region locking / discovery sharing for every team built via the public API.
+    setup %{team_id: team_id} do
+      name = :"tt_named_#{team_id}"
+      start_supervised!({SharedState, team_id: team_id, name: name}, id: :"named_ss_#{team_id}")
+
+      ctx =
+        Context.new(deps: %{team_id: team_id, agent_name: "bob", shared_state_pid: name})
+
+      %{named_ctx: ctx}
+    end
+
+    test "claim_region resolves the name and actually claims", %{named_ctx: ctx} do
+      assert %{status: "claimed"} =
+               TeamTools.claim_region(ctx, %{
+                 "file" => "a.ex",
+                 "start_line" => 1,
+                 "end_line" => 5
+               })
+    end
+
+    test "a second overlapping claim by another agent conflicts (lock engaged)",
+         %{named_ctx: ctx, team_id: team_id} do
+      assert %{status: "claimed"} =
+               TeamTools.claim_region(ctx, %{
+                 "file" => "a.ex",
+                 "start_line" => 1,
+                 "end_line" => 10
+               })
+
+      other_ctx = Context.new(deps: %{deps_of(ctx) | agent_name: "carol"})
+      _ = team_id
+
+      assert %{status: "conflict"} =
+               TeamTools.claim_region(other_ctx, %{
+                 "file" => "a.ex",
+                 "start_line" => 5,
+                 "end_line" => 8
+               })
+    end
+  end
+
+  defp deps_of(%Context{deps: deps}), do: deps
 end

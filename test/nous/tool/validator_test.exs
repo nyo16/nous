@@ -51,4 +51,46 @@ defmodule Nous.Tool.ValidatorTest do
       assert :ok = Validator.validate_types(%{"undeclared" => 123}, props)
     end
   end
+
+  describe "nested schema validation" do
+    test "validates nested object property types (path-qualified)" do
+      props = %{
+        "filter" => %{
+          "type" => "object",
+          "properties" => %{"min" => %{"type" => "integer"}}
+        }
+      }
+
+      assert {:error, {:type_mismatch, errors}} =
+               Validator.validate_types(%{"filter" => %{"min" => "nope"}}, props)
+
+      keys = Enum.map(errors, fn {k, _, _} -> k end)
+      assert "filter.min" in keys
+    end
+
+    test "validates array item types (path-qualified)" do
+      props = %{
+        "tags" => %{"type" => "array", "items" => %{"type" => "string"}}
+      }
+
+      assert {:error, {:type_mismatch, errors}} =
+               Validator.validate_types(%{"tags" => ["ok", 123]}, props)
+
+      keys = Enum.map(errors, fn {k, _, _} -> k end)
+      assert "tags[1]" in keys
+    end
+
+    test "accepts well-typed nested data" do
+      props = %{
+        "filter" => %{
+          "type" => "object",
+          "properties" => %{"min" => %{"type" => "integer"}}
+        },
+        "tags" => %{"type" => "array", "items" => %{"type" => "string"}}
+      }
+
+      assert :ok =
+               Validator.validate_types(%{"filter" => %{"min" => 1}, "tags" => ["a", "b"]}, props)
+    end
+  end
 end

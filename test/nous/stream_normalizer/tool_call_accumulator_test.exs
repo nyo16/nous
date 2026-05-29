@@ -242,6 +242,34 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulatorTest do
     end
   end
 
+  describe "Gemini metadata (thought_signature)" do
+    test "preserves the thought_signature metadata on the finalized call" do
+      # Regression: the Gemini feed clause rebuilt the call without "metadata",
+      # dropping the Vertex thought_signature needed for multi-turn thinking.
+      acc =
+        Accumulator.new()
+        |> Accumulator.feed(%{
+          "name" => "search",
+          "arguments" => %{"q" => "hi"},
+          "metadata" => %{"thought_signature" => "sig123"}
+        })
+
+      assert [
+               %{
+                 "name" => "search",
+                 "arguments" => %{"q" => "hi"},
+                 "metadata" => %{"thought_signature" => "sig123"}
+               }
+             ] = Accumulator.finalize(acc)
+    end
+
+    test "a call without metadata stays metadata-free" do
+      acc = Accumulator.feed(Accumulator.new(), %{"name" => "n", "arguments" => %{}})
+      assert [call] = Accumulator.finalize(acc)
+      refute Map.has_key?(call, "metadata")
+    end
+  end
+
   describe "empty / mixed" do
     test "empty accumulator finalizes to empty list" do
       assert [] = Accumulator.finalize(Accumulator.new())

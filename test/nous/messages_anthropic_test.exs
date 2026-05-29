@@ -18,6 +18,36 @@ defmodule Nous.MessagesAnthropicTest do
       assert msg.content == "Final answer"
       assert msg.reasoning_content == "This is my reasoning"
     end
+
+    test "joins multiple text blocks instead of crashing" do
+      # Regression: 2+ text blocks hit the catch-all that returned a list into
+      # the :string content field, raising Ecto.InvalidChangesetError.
+      response = %{
+        "content" => [
+          %{"type" => "text", "text" => "Hello "},
+          %{"type" => "text", "text" => "World"}
+        ],
+        "model" => "claude-3-7-sonnet"
+      }
+
+      assert %Message{role: :assistant, content: "Hello World"} =
+               Anthropic.from_response(response)
+    end
+
+    test "joins multiple thinking blocks into reasoning_content" do
+      response = %{
+        "content" => [
+          %{"type" => "thinking", "thinking" => "step 1 ", "signature" => "s1"},
+          %{"type" => "thinking", "thinking" => "step 2", "signature" => "s2"},
+          %{"type" => "text", "text" => "Answer"}
+        ],
+        "model" => "claude-3-7-sonnet"
+      }
+
+      msg = Anthropic.from_response(response)
+      assert msg.content == "Answer"
+      assert msg.reasoning_content == "step 1 step 2"
+    end
   end
 
   describe "to_format/1" do

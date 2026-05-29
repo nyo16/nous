@@ -150,6 +150,55 @@ defmodule Nous.ToolExecutor do
     catch
       :exit, {:timeout, _} ->
         handle_timeout(tool, attempt, start_time)
+
+      # A tool that throws or exits (e.g. a GenServer.call to a dead/overloaded
+      # server -> exit {:noproc/:timeout, _}, or a bare throw) is neither an
+      # exception nor the specific timeout exit above. Without this clause it
+      # propagated uncaught and crashed the whole agent run instead of becoming
+      # a retryable {:error, _}.
+      kind, reason ->
+        handle_caught(tool, arguments, ctx, attempt, start_time, kind, reason, __STACKTRACE__)
+    end
+  end
+
+  # Normalize a non-exception throw/exit into the same retry + ToolError flow as
+  # raised exceptions.
+  defp handle_caught(tool, arguments, ctx, attempt, start_time, kind, reason, stacktrace) do
+    duration = System.monotonic_time() - start_time
+    duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
+    :telemetry.execute(
+      [:nous, :tool, :execute, :exception],
+      %{duration: duration},
+      %{
+        tool_name: tool.name,
+        attempt: attempt + 1,
+        will_retry: attempt < tool.retries,
+        kind: kind,
+        reason: reason,
+        stacktrace: stacktrace
+      }
+    )
+
+    if attempt < tool.retries do
+      Logger.warning(
+        "Tool '#{tool.name}' #{kind} (attempt #{attempt + 1}/#{tool.retries + 1}), will retry: " <>
+          "#{inspect(reason)} (#{duration_ms}ms)"
+      )
+
+      do_execute(tool, arguments, %{ctx | retry: attempt + 1}, attempt + 1)
+    else
+      Logger.error(
+        "Tool '#{tool.name}' #{kind} after all #{tool.retries + 1} attempt(s): #{inspect(reason)}"
+      )
+
+      {:error,
+       Errors.ToolError.exception(
+         tool_name: tool.name,
+         attempt: attempt + 1,
+         original_error: {kind, reason},
+         message: "Tool execution #{kind}: #{inspect(reason)}"
+       )}
     end
   end
 

@@ -153,6 +153,37 @@ defmodule Nous.Workflow.Phase3Test do
       assert length(state.errors) > 0
     end
 
+    test "a timed-out branch keeps its branch_id (not 'unknown')" do
+      # Regression: the {:exit, _} path (crash/timeout) hardcoded the branch id
+      # as "unknown", losing failure attribution. zip_input_on_exit recovers it.
+      graph =
+        Graph.new("timeout_attrib")
+        |> Graph.add_node(
+          :fan_out,
+          :parallel,
+          %{
+            branches: [:fast, :slow],
+            merge: :list_collect,
+            on_branch_error: :continue_others,
+            result_key: :results
+          },
+          timeout: 50
+        )
+        |> Graph.add_node(:fast, :transform, tf(fn _data -> %{ok: true} end))
+        |> Graph.add_node(
+          :slow,
+          :transform,
+          tf(fn _data ->
+            Process.sleep(300)
+            %{ok: true}
+          end)
+        )
+
+      assert {:ok, state} = Workflow.run(graph)
+      assert Enum.any?(state.errors, fn {id, _reason} -> id == "slow" end)
+      refute Enum.any?(state.errors, fn {id, _reason} -> id == "unknown" end)
+    end
+
     test "fails fast on branch failure with fail_fast" do
       graph =
         Graph.new("fail_fast_parallel")

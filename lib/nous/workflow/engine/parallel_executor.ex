@@ -61,7 +61,10 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
         end,
         max_concurrency: max_concurrency,
         timeout: timeout,
-        on_timeout: :kill_task
+        on_timeout: :kill_task,
+        # Carry the input (branch_id) on crash/timeout exits so failures keep
+        # their attribution instead of being recorded as "unknown".
+        zip_input_on_exit: true
       )
       |> Enum.map(fn
         {:ok, {branch_id, {:ok, _result, updated_state}}} ->
@@ -71,8 +74,8 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
         {:ok, {branch_id, {:error, reason}}} ->
           {:error, branch_id, reason}
 
-        {:exit, reason} ->
-          {:error, "unknown", {:exit, reason}}
+        {:exit, {branch_id, reason}} ->
+          {:error, branch_id, {:exit, reason}}
       end)
 
     {successes, failures} =
@@ -161,7 +164,8 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
           end,
           max_concurrency: max_concurrency,
           timeout: timeout,
-          on_timeout: :kill_task
+          on_timeout: :kill_task,
+          zip_input_on_exit: true
         )
         |> Enum.reduce({[], []}, fn
           {:ok, {index, {:ok, result}}}, {succ, fail} ->
@@ -170,8 +174,10 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
           {:ok, {index, {:error, reason}}}, {succ, fail} ->
             {succ, [{index, reason} | fail]}
 
-          {:exit, reason}, {succ, fail} ->
-            {succ, [{:exit, reason} | fail]}
+          # zip_input_on_exit gives back {input, reason}; the input is the
+          # {item, index} tuple, so we recover the failed item's index.
+          {:exit, {{_item, index}, reason}}, {succ, fail} ->
+            {succ, [{index, {:exit, reason}} | fail]}
         end)
 
       {successes, all_failures} = results
@@ -190,11 +196,11 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
           |> State.update_data(&Map.put(&1, result_key, successful_results))
           |> State.put_result(node.id, successful_results)
 
-        # Record errors
+        # Record errors keyed by the failing item's index for attribution.
         updated_state =
           Enum.reduce(all_failures, updated_state, fn
-            {_index, reason}, acc ->
-              State.put_error(acc, "#{node.id}_item", reason)
+            {index, reason}, acc ->
+              State.put_error(acc, "#{node.id}_item_#{index}", reason)
           end)
 
         {:ok, successful_results, updated_state}

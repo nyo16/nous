@@ -378,7 +378,7 @@ defmodule Nous.AgentRunner do
 
   # Private functions
 
-  # Apply per-run overrides for output_type and structured_output
+  # Apply per-run overrides for output_type, structured_output and model_settings
   defp apply_runtime_overrides(agent, opts) do
     agent
     |> then(fn a ->
@@ -391,6 +391,15 @@ defmodule Nous.AgentRunner do
       case Keyword.fetch(opts, :structured_output) do
         {:ok, so} -> %{a | structured_output: so}
         :error -> a
+      end
+    end)
+    |> then(fn a ->
+      # :model_settings is documented as a per-run override but was never read.
+      # Merge over the agent's settings so callers can tune temperature/max_tokens
+      # for a single run.
+      case Keyword.fetch(opts, :model_settings) do
+        {:ok, ms} when is_map(ms) -> %{a | model_settings: Map.merge(a.model_settings, ms)}
+        _ -> a
       end
     end)
   end
@@ -647,18 +656,23 @@ defmodule Nous.AgentRunner do
         "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
       )
 
+      # Enforce a team RateLimiter when one is wired into deps: reserve before
+      # the call, reconcile actual usage after (or release on error). A denied
+      # acquire surfaces as a normal {:error, reason} request result.
       request_result =
-        if ctx.stream do
-          stream_request_with_fallback(
-            request_agent,
-            messages,
-            model_settings,
-            all_tools,
-            ctx
-          )
-        else
-          request_with_fallback(request_agent, messages, model_settings, all_tools)
-        end
+        acquire_and_request(resolve_rate_limiter(ctx), request_agent, messages, fn ->
+          if ctx.stream do
+            stream_request_with_fallback(
+              request_agent,
+              messages,
+              model_settings,
+              all_tools,
+              ctx
+            )
+          else
+            request_with_fallback(request_agent, messages, model_settings, all_tools)
+          end
+        end)
 
       case request_result do
         {:ok, response, active_model} ->
@@ -1155,6 +1169,62 @@ defmodule Nous.AgentRunner do
 
   defp maybe_filter_by_policy(%Permissions.Policy{} = policy, tools) do
     Permissions.filter_tools(policy, tools)
+  end
+
+  # --- Rate limiting (team agents) ---------------------------------------------
+
+  defp acquire_and_request(nil, _agent, _messages, request_fun), do: request_fun.()
+
+  defp acquire_and_request(pid, agent, messages, request_fun) do
+    tokens = estimate_request_tokens(messages)
+
+    case Nous.Teams.RateLimiter.acquire(pid, agent.name, tokens) do
+      {:ok, ref} ->
+        result = request_fun.()
+        record_or_release_rate_limit(pid, agent.name, ref, result)
+        result
+
+      {:error, _reason} = err ->
+        err
+    end
+  end
+
+  defp record_or_release_rate_limit(pid, name, ref, {:ok, response, _model}) do
+    usage = (response.metadata && response.metadata.usage) || %{}
+    tokens = Map.get(usage, :total_tokens) || Map.get(usage, "total_tokens") || 0
+    Nous.Teams.RateLimiter.record_usage(pid, name, %{tokens: tokens, cost: 0.0, reservation: ref})
+  end
+
+  defp record_or_release_rate_limit(pid, _name, ref, _other) do
+    Nous.Teams.RateLimiter.release(pid, ref)
+  end
+
+  defp resolve_rate_limiter(ctx) do
+    resolve_alive_process(ctx.deps[:rate_limiter_pid])
+  end
+
+  defp resolve_alive_process(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: pid, else: nil
+  end
+
+  defp resolve_alive_process(name) when is_atom(name) and not is_nil(name) do
+    case GenServer.whereis(name) do
+      pid when is_pid(pid) -> if Process.alive?(pid), do: pid, else: nil
+      _ -> nil
+    end
+  end
+
+  defp resolve_alive_process(_), do: nil
+
+  # Rough input-token estimate (≈4 chars/token) for the pre-call reservation;
+  # reconciled to actual usage by record_usage after the response.
+  defp estimate_request_tokens(messages) do
+    chars =
+      Enum.reduce(messages, 0, fn msg, acc ->
+        acc + byte_size(Message.extract_text(msg) || "")
+      end)
+
+    max(div(chars, 4), 1)
   end
 
   # Check if a tool call requires approval and invoke the handler.

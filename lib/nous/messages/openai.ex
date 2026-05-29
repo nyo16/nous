@@ -207,7 +207,10 @@ defmodule Nous.Messages.OpenAI do
 
   defp parse_tool_call(tool_call) when is_map(tool_call) do
     id = Map.get(tool_call, "id") || Map.get(tool_call, :id)
-    func = Map.get(tool_call, "function") || Map.get(tool_call, :function)
+    # Default to %{} — an OpenAI-compatible backend may emit a tool_call without
+    # the "function" wrapper; Map.get(nil, _) would raise BadMapError and crash
+    # the whole response parse. Mirrors the streaming accumulator's guard.
+    func = Map.get(tool_call, "function") || Map.get(tool_call, :function) || %{}
     name = Map.get(func, "name") || Map.get(func, :name)
     arguments = Map.get(func, "arguments") || Map.get(func, :arguments)
 

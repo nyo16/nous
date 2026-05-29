@@ -103,12 +103,14 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulator do
   # IDs, so we synthesize one in the same `"gemini_<base64>"` shape as the
   # non-streaming parser (`Nous.Messages.Gemini.generate_tool_call_id/0`) to
   # keep stream and non-stream paths consistent for downstream linking.
-  def feed(acc, %{"name" => name, "arguments" => arguments}) when is_map(arguments) do
-    call = %{
-      "id" => generate_gemini_id(),
-      "name" => name,
-      "arguments" => arguments
-    }
+  def feed(acc, %{"name" => name, "arguments" => arguments} = fragment) when is_map(arguments) do
+    call =
+      %{
+        "id" => generate_gemini_id(),
+        "name" => name,
+        "arguments" => arguments
+      }
+      |> maybe_put_metadata(Map.get(fragment, "metadata"))
 
     %{acc | gemini: [call | acc.gemini]}
   end
@@ -148,6 +150,12 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulator do
   defp generate_gemini_id do
     "gemini_" <> (:crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false))
   end
+
+  # Carry the Gemini/Vertex thought_signature through. Without this, streamed
+  # tool calls lost the signature the non-streaming path preserves, breaking
+  # multi-turn thinking parity for 2.5 thinking models.
+  defp maybe_put_metadata(call, nil), do: call
+  defp maybe_put_metadata(call, metadata), do: Map.put(call, "metadata", metadata)
 
   @doc """
   Finalize the accumulator into a list of tool calls in the unified shape:

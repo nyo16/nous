@@ -104,7 +104,6 @@ defmodule Nous.AgentServer do
   require Logger
 
   alias Nous.Agent.Context
-  alias Nous.Message
 
   @type agent_config :: %{
           model: String.t(),
@@ -388,12 +387,12 @@ defmodule Nous.AgentServer do
     # Broadcast that we're processing
     broadcast(state, {:agent_status, :thinking})
 
-    # Add user message to context
-    context = Context.add_message(state.context, Message.user(message))
-
-    # Reset cancelled flag for new execution and reset inactivity timer
+    # NOTE: do NOT add the user message to the context here. do_agent_run passes
+    # `message` as the prompt to AgentRunner.run/3, whose build_context appends
+    # it exactly once. Adding it here too doubled the user message in every turn
+    # (wasted tokens + corrupted saved history). The post-run context (which
+    # includes the message + response) is stored back via :agent_response_ready.
     :atomics.put(state.cancelled_ref, 1, 0)
-    state = %{state | context: context}
     state = reset_inactivity_timer(state)
 
     # Run agent asynchronously and track the task

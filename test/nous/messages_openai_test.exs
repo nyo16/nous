@@ -53,5 +53,21 @@ defmodule Nous.MessagesOpenAITest do
       assert call["arguments"] == %{}
       assert call["_invalid_arguments"] == "{not json"
     end
+
+    test "does not crash on a tool_call missing the function wrapper" do
+      # Regression: Map.get(nil, "name") raised BadMapError, aborting the whole
+      # response parse. A non-conformant OpenAI-compatible backend can emit this.
+      response = %{
+        "choices" => [
+          %{"message" => %{"role" => "assistant", "tool_calls" => [%{"id" => "call_x"}]}}
+        ],
+        "model" => "gpt-4"
+      }
+
+      msg = OpenAI.from_response(response)
+      [call] = msg.tool_calls
+      assert call["id"] == "call_x"
+      assert call["arguments"] == %{}
+    end
   end
 end

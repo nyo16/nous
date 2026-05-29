@@ -7,16 +7,18 @@ defmodule Nous.Teams.RateLimiter do
 
   ## Architecture
 
-  Each team optionally gets its own `RateLimiter` GenServer. Agents call
-  `acquire/3` BEFORE making an LLM request to atomically reserve an
-  estimated token count + 1 request slot. After the call completes, the
-  agent calls `record_usage/3` with the reservation ref to reconcile
-  actual vs estimated; if the call errored before completing, the agent
-  calls `release/2` to refund the reservation.
+  Each team optionally gets its own `RateLimiter` GenServer. The agent runner
+  calls `acquire/3` BEFORE making an LLM request (when a limiter is wired into
+  the agent's deps as `:rate_limiter_pid`) to atomically reserve an estimated
+  token count + 1 request slot. After the call completes, it calls
+  `record_usage/3` with the reservation ref to reconcile actual vs estimated;
+  if the call errored before completing, it calls `release/2` to refund.
 
-  Pre-deduction is what makes the limiter race-safe under concurrent
-  acquires (M-9): without it, two callers could both see "budget remaining"
-  before either's usage was recorded.
+  Pre-deduction makes the **token (tpm) and request (rpm)** limits race-safe
+  under concurrent acquires (M-9). Note: the **cost budget** is reconciled
+  post-hoc — `acquire/3` reserves 0 cost (the runtime has no per-token cost
+  model), so N concurrent in-flight calls can overshoot the dollar budget by
+  the cost of those calls. tpm/rpm are the hard concurrency guards.
 
   ## Quick Start
 
