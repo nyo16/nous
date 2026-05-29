@@ -335,11 +335,15 @@ defmodule Nous.Agent do
 
   # Private functions
 
-  @spec parse_tools([function() | Tool.t()]) :: [Tool.t()]
+  @spec parse_tools([function() | module() | Tool.t()]) :: [Tool.t()]
   defp parse_tools(tools) do
     Enum.map(tools, fn
       %Tool{} = tool -> tool
       fun when is_function(fun) -> Tool.from_function(fun)
+      # Accept bare behaviour modules (e.g. `tools: [Nous.Tools.Bash]`), as the
+      # README/AGENTS docs show. Routing through from_module/1 also preserves
+      # metadata flags like requires_approval.
+      mod when is_atom(mod) -> Tool.from_module(mod)
     end)
   end
 

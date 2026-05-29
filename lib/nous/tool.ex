@@ -207,7 +207,11 @@ defmodule Nous.Tool do
       retries: Keyword.get(opts, :retries, 1),
       timeout: Keyword.get(opts, :timeout, 30_000),
       validate_args: Keyword.get(opts, :validate_args, true),
-      requires_approval: Keyword.get(opts, :requires_approval, false),
+      # Fall back to the module's metadata like name/description/parameters do.
+      # Hardcoding `false` here silently dropped `requires_approval: true` from
+      # tools like Bash/FileWrite, defeating the agent_runner approval gate.
+      requires_approval:
+        Keyword.get(opts, :requires_approval, Map.get(metadata, :requires_approval, false)),
       module: module,
       category: Keyword.get(opts, :category, Map.get(metadata, :category)),
       tags: Keyword.get(opts, :tags, Map.get(metadata, :tags, []))

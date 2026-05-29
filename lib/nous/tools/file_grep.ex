@@ -54,7 +54,7 @@ defmodule Nous.Tools.FileGrep do
         if rg_available?() do
           run_rg(pattern, safe_path, glob, output_mode)
         else
-          run_elixir_grep(pattern, safe_path, glob, output_mode)
+          run_elixir_grep(pattern, safe_path, glob, output_mode, ctx)
         end
 
       {:error, reason} ->
@@ -75,11 +75,16 @@ defmodule Nous.Tools.FileGrep do
   defp rg_available?, do: not is_nil(rg_path())
 
   defp run_rg(pattern, path, glob, output_mode) do
+    # SECURITY: the LLM controls `pattern`/`glob`. Pass the pattern with an
+    # explicit `--regexp` flag (rg consumes the following token as its value
+    # even if it starts with `-`) and terminate option parsing with `--` before
+    # the positional `path`. Without this, a pattern like `-f/etc/passwd` or
+    # `--pre=/bin/sh` would be reinterpreted as an rg flag and escape PathGuard.
     args =
-      [pattern, path] ++
+      ["--regexp", pattern] ++
         mode_flag(output_mode) ++
         glob_flag(glob) ++
-        ["--max-count", "#{@default_limit}"]
+        ["--max-count", "#{@default_limit}", "--", path]
 
     rg = rg_path()
 
@@ -106,10 +111,10 @@ defmodule Nous.Tools.FileGrep do
   defp glob_flag(nil), do: []
   defp glob_flag(glob), do: ["--glob", glob]
 
-  defp run_elixir_grep(pattern, path, glob, output_mode) do
+  defp run_elixir_grep(pattern, path, glob, output_mode, ctx) do
     case Regex.compile(pattern) do
       {:ok, regex} ->
-        files = find_files(path, glob)
+        files = find_files(path, glob, ctx)
         results = search_files(files, regex, output_mode)
         result = Enum.join(results, "\n")
         {:ok, if(result == "", do: "No matches found", else: result)}
@@ -119,18 +124,26 @@ defmodule Nous.Tools.FileGrep do
     end
   end
 
-  defp find_files(path, nil) do
+  # Re-validate every matched file against the workspace root (mirrors
+  # Nous.Tools.FileGlob). `Path.wildcard` follows directory symlinks and the
+  # `glob` arg is LLM-controlled, so a wildcard result can otherwise resolve
+  # outside the root.
+  defp find_files(path, nil, ctx) do
     if File.regular?(path) do
       [path]
     else
       Path.wildcard(Path.join(path, "**/*"))
-      |> Enum.filter(&File.regular?/1)
+      |> Enum.filter(&within_workspace?(&1, ctx))
     end
   end
 
-  defp find_files(path, glob) do
+  defp find_files(path, glob, ctx) do
     Path.wildcard(Path.join(path, glob))
-    |> Enum.filter(&File.regular?/1)
+    |> Enum.filter(&within_workspace?(&1, ctx))
+  end
+
+  defp within_workspace?(file, ctx) do
+    File.regular?(file) and match?({:ok, _}, Nous.Tools.PathGuard.validate(file, ctx))
   end
 
   defp search_files(files, regex, output_mode) do

@@ -139,7 +139,11 @@ defmodule Nous.Tool.Behaviour do
   """
   @spec implements?(module()) :: boolean()
   def implements?(module) when is_atom(module) do
-    function_exported?(module, :execute, 2)
+    # Ensure the module is loaded first — function_exported?/3 returns false for
+    # a not-yet-loaded module, so without this from_module/2 spuriously claimed
+    # built-in tools (Bash, FileRead, …) don't implement the behaviour depending
+    # on load order.
+    Code.ensure_loaded?(module) and function_exported?(module, :execute, 2)
   end
 
   @doc """

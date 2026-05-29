@@ -101,6 +101,9 @@ defmodule Nous.HTTP.StreamBackend.Req do
           json: body,
           headers: headers,
           receive_timeout: timeout,
+          # redirect: false — provider APIs don't 3xx; Req's unvalidated follow
+          # would be an SSRF bounce. See Nous.HTTP.Backend.Req.
+          redirect: false,
           finch: finch_name,
           into: fn {:data, chunk}, {req, resp} ->
             cond do

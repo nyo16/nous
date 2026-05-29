@@ -27,10 +27,15 @@ defmodule Nous.HTTP.Backend.Req do
     # timeouts are pool-level when using a named Finch pool. If callers
     # need a custom connect timeout, configure it on the Finch pool
     # itself (`Nous.Application` starts `Nous.Finch`).
+    # redirect: false — LLM provider APIs never legitimately 3xx, and Req's
+    # default follow (max_redirects: 10) does NOT re-validate the target, which
+    # would let a compromised/MITM'd upstream bounce the request (and any
+    # forwarded context) to an internal/metadata address. See UrlGuard.
     case Req.post(url,
            json: body,
            headers: headers,
            receive_timeout: timeout,
+           redirect: false,
            finch: finch_name
          ) do
       {:ok, %Req.Response{status: status, body: response_body}} when status in 200..299 ->

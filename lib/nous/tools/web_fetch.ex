@@ -64,16 +64,13 @@ if Code.ensure_loaded?(Floki) do
     end
 
     defp fetch_url(url) do
-      with {:ok, _uri} <- Nous.Tools.UrlGuard.validate(url) do
-        try do
-          # max_redirects: 0 - we follow manually because Req's automatic
-          # follow does NOT re-validate the redirect target, leaving an
-          # SSRF-via-public-bounce hole (a public host that 302s to an
-          # internal IP).
-          do_get(url, 0)
-        rescue
-          e -> {:error, "Request error: #{Exception.message(e)}"}
-        end
+      try do
+        # max_redirects: 0 - we follow manually because Req's automatic follow
+        # does NOT re-validate the redirect target, leaving an SSRF-via-public-
+        # bounce hole. do_get/2 validates AND pins every hop (see below).
+        do_get(url, 0)
+      rescue
+        e -> {:error, "Request error: #{Exception.message(e)}"}
       end
     end
 
@@ -84,42 +81,60 @@ if Code.ensure_loaded?(Floki) do
     end
 
     defp do_get(url, depth) do
-      case Req.get(url,
-             connect_options: [timeout: 10_000],
-             receive_timeout: 15_000,
-             max_redirects: 0,
-             redirect: false,
-             headers: [
-               {"user-agent",
-                "Mozilla/5.0 (compatible; NousBot/1.0; +https://github.com/nyo16/nous)"},
-               {"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
-             ]
-           ) do
-        {:ok, %{status: status, body: body}} when status in 200..299 ->
-          {:ok, body}
+      with {:ok, uri, pin_ip} <- Nous.Tools.UrlGuard.validate_pinned(url) do
+        {request_url, connect_opts} = pin_connection(url, uri, pin_ip)
 
-        {:ok, %{status: status, headers: headers}} when status in 300..399 ->
-          # Re-validate the redirect target via UrlGuard before following.
-          location = location_header(headers)
+        case Req.get(request_url,
+               connect_options: connect_opts,
+               receive_timeout: 15_000,
+               max_redirects: 0,
+               redirect: false,
+               headers: [
+                 {"user-agent",
+                  "Mozilla/5.0 (compatible; NousBot/1.0; +https://github.com/nyo16/nous)"},
+                 {"accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+               ]
+             ) do
+          {:ok, %{status: status, body: body}} when status in 200..299 ->
+            {:ok, body}
 
-          case location do
-            nil ->
-              {:error, "HTTP #{status} but no Location header"}
+          {:ok, %{status: status, headers: headers}} when status in 300..399 ->
+            location = location_header(headers)
 
-            target ->
-              absolute = URI.merge(URI.parse(url), URI.parse(target)) |> URI.to_string()
+            case location do
+              nil ->
+                {:error, "HTTP #{status} but no Location header"}
 
-              with {:ok, _} <- Nous.Tools.UrlGuard.validate(absolute) do
+              target ->
+                # Recurse with the original hostname URL; do_get re-validates and
+                # re-pins the new hop.
+                absolute = URI.merge(URI.parse(url), URI.parse(target)) |> URI.to_string()
                 do_get(absolute, depth + 1)
-              end
-          end
+            end
 
-        {:ok, %{status: status}} ->
-          {:error, "HTTP #{status}"}
+          {:ok, %{status: status}} ->
+            {:error, "HTTP #{status}"}
 
-        {:error, reason} ->
-          {:error, "Request failed: #{inspect(reason)}"}
+          {:error, reason} ->
+            {:error, "Request failed: #{inspect(reason)}"}
+        end
       end
+    end
+
+    # Pin the connection to the IP UrlGuard validated, closing the DNS-rebinding
+    # window (guard resolves one IP, Req would otherwise re-resolve another).
+    # We connect to the IP literal but pass the original hostname to Mint for the
+    # Host header, SNI, and TLS certificate verification (Req `:hostname` opt).
+    defp pin_connection(url, _uri, nil), do: {url, [timeout: 10_000]}
+
+    defp pin_connection(_url, %URI{} = uri, ip) do
+      ip_str = ip |> :inet.ntoa() |> to_string()
+      host_for_url = if tuple_size(ip) == 8, do: "[#{ip_str}]", else: ip_str
+      authority = if uri.port, do: "#{host_for_url}:#{uri.port}", else: host_for_url
+      path = uri.path || "/"
+      query = if uri.query, do: "?#{uri.query}", else: ""
+      pinned = "#{uri.scheme}://#{authority}#{path}#{query}"
+      {pinned, [timeout: 10_000, hostname: uri.host]}
     end
 
     # Req returns headers as a string-keyed map of String -> [String].
