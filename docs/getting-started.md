@@ -84,9 +84,9 @@ agent =
 {:ok, result} = Nous.run(agent, "Hello")
 ```
 
-Fallback triggers on `ProviderError` and `ModelError` only — application
-errors (validation, max iterations, tool errors) return immediately because
-a different model wouldn't help.
+Fallback triggers on `Nous.Errors.ProviderError` and `Nous.Errors.ModelError`
+only — application errors (validation, max iterations, tool errors) return
+immediately because a different model wouldn't help.
 
 ### Retries on transient errors
 
@@ -98,7 +98,7 @@ defmodule Retry do
   def with_backoff(fun, attempts, base) do
     case fun.() do
       {:ok, _} = ok -> ok
-      {:error, %Nous.ProviderError{}} ->
+      {:error, %Nous.Errors.ProviderError{}} ->
         Process.sleep(base)
         with_backoff(fun, attempts - 1, base * 2)
       {:error, _} = err -> err
@@ -118,16 +118,18 @@ research jobs, anything user-facing — wire them through
 `Nous.AgentDynamicSupervisor` with a persistence backend.
 
 ```elixir
+# start_agent/3 takes the session_id, an agent_config MAP, then options. The
+# supervisor registers the via-tuple for you (no :name option needed).
 {:ok, _pid} =
   Nous.AgentDynamicSupervisor.start_agent(
-    agent,
-    session_id: "user-123",
-    persistence: Nous.Persistence.ETS,
-    name: {:via, Registry, {Nous.AgentRegistry, "user-123"}}
+    "user-123",
+    %{model: "openai:gpt-4o", instructions: "Be helpful"},
+    persistence: Nous.Persistence.ETS
   )
 
-# Context auto-saves; restore on a later run:
-{:ok, context} = Nous.Persistence.ETS.load("user-123")
+# Context auto-saves as a serialized map; deserialize it to restore on a later run:
+{:ok, data} = Nous.Persistence.ETS.load("user-123")
+{:ok, context} = Nous.Agent.Context.deserialize(data)
 {:ok, result} = Nous.run(agent, "Continue our conversation", context: context)
 ```
 
@@ -201,14 +203,14 @@ defmodule ChatBot do
   end
 
   def handle_call({:ask, question}, _from, state) do
-    # Add question to conversation history
-    messages = state.messages ++ [%{role: "user", content: question}]
+    # History is a list of %Nous.Message{} structs (not bare maps).
+    messages = state.messages ++ [Nous.Message.user(question)]
 
-    # Get response from agent
-    {:ok, result} = Nous.run(state.agent, messages)
+    # Pass the history under the :messages key — a bare list is not valid input.
+    {:ok, result} = Nous.run(state.agent, messages: messages)
 
     # Update conversation history
-    new_messages = messages ++ [%{role: "assistant", content: result.output}]
+    new_messages = messages ++ [Nous.Message.assistant(result.output)]
 
     {:reply, result.output, %{state | messages: new_messages}}
   end

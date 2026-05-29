@@ -20,9 +20,9 @@ A production-grade AI agent framework for the BEAM. Three things you get:
   LlamaCpp, or any custom OpenAI-compatible endpoint by changing
   `"openai:gpt-4"` to `"anthropic:claude-sonnet-4-5-20250929"`.
 - **OTP-native.** Agents run as supervised processes with crash recovery,
-  streaming uses pull-based backpressure so a fast LLM can't OOM a slow
-  consumer, and fallback chains kick in on transport-layer errors without
-  application code.
+  streaming can use pull-based backpressure (opt into the Hackney backend) so a
+  fast LLM can't OOM a slow consumer, and fallback chains kick in on
+  transport-layer errors without application code.
 - **Batteries included.** Tool calling, structured output (Ecto schemas),
   streaming with tool execution, skills, hooks, plugins (HITL, input
   guards, sub-agent delegation), memory (hybrid keyword + vector),
@@ -478,25 +478,25 @@ strategies by implementing `Nous.Plugins.InputGuard.Strategy`. See
 Enable agents to delegate tasks to specialized child agents:
 
 ```elixir
-agent = Nous.new("openai:gpt-4",
-  plugins: [Nous.Plugins.SubAgent],
-  deps: %{sub_agent_templates: %{
-    "researcher" => Agent.new("openai:gpt-4o-mini",
-      instructions: "Research topics thoroughly"
-    ),
-    "coder" => Agent.new("openai:gpt-4",
-      instructions: "Write clean Elixir code"
-    )
-  }}
-)
+agent = Nous.new("openai:gpt-4", plugins: [Nous.Plugins.SubAgent])
+
+# Plugin config lives in deps, which is passed to Nous.run/3 (NOT Nous.new/2 —
+# the agent struct has no :deps field, so it would be silently ignored there).
+deps = %{
+  sub_agent_templates: %{
+    "researcher" => Agent.new("openai:gpt-4o-mini", instructions: "Research topics thoroughly"),
+    "coder" => Agent.new("openai:gpt-4", instructions: "Write clean Elixir code")
+  }
+}
 
 # delegate_task — single sub-agent for focused work
-{:ok, result} = Nous.run(agent, "Research Elixir GenServers, then write an example")
+{:ok, result} = Nous.run(agent, "Research Elixir GenServers, then write an example", deps: deps)
 
 # spawn_agents — multiple sub-agents in parallel
-{:ok, result} = Nous.run(agent,
-  "Compare GenServer vs Agent vs ETS for caching. Research each in parallel."
-)
+{:ok, result} =
+  Nous.run(agent, "Compare GenServer vs Agent vs ETS for caching. Research each in parallel.",
+    deps: deps
+  )
 ```
 
 Sub-agents run in their own context but inherit parent deps automatically
@@ -510,14 +510,14 @@ security).
 Persistent memory across conversations with hybrid text + vector search:
 
 ```elixir
-# Minimal setup — ETS store, keyword-only search, zero deps
-agent = Nous.new("openai:gpt-4",
-  plugins: [Nous.Plugins.Memory],
-  deps: %{memory_config: %{store: Nous.Memory.Store.ETS}}
-)
+# Minimal setup — ETS store, keyword-only search.
+agent = Nous.new("openai:gpt-4", plugins: [Nous.Plugins.Memory])
 
-{:ok, r1} = Nous.run(agent, "Remember that my favorite color is blue")
-{:ok, r2} = Nous.run(agent, "What is my favorite color?", context: r1.context)
+# Plugin config goes in deps on Nous.run/3 (not Nous.new/2).
+deps = %{memory_config: %{store: Nous.Memory.Store.ETS}}
+
+{:ok, r1} = Nous.run(agent, "Remember that my favorite color is blue", deps: deps)
+{:ok, r2} = Nous.run(agent, "What is my favorite color?", deps: deps, context: r1.context)
 ```
 
 **Store backends:** ETS (zero deps), SQLite (FTS5), DuckDB (FTS + vector),
@@ -567,15 +567,13 @@ backlinks, and cross-references:
 
 ```elixir
 # Plugin mode — add KB tools to any agent
-agent = Nous.new("openai:gpt-4",
-  plugins: [Nous.Plugins.KnowledgeBase],
-  deps: %{
-    kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}
-  }
-)
+agent = Nous.new("openai:gpt-4", plugins: [Nous.Plugins.KnowledgeBase])
 
-{:ok, r1} = Nous.run(agent, "Ingest this article about GenServers: ...")
-{:ok, r2} = Nous.run(agent, "What do we know about OTP?", context: r1.context)
+# Plugin config goes in deps on Nous.run/3 (not Nous.new/2).
+deps = %{kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}}
+
+{:ok, r1} = Nous.run(agent, "Ingest this article about GenServers: ...", deps: deps)
+{:ok, r2} = Nous.run(agent, "What do we know about OTP?", deps: deps, context: r1.context)
 
 # Batch operations via the workflow API:
 {:ok, state} = Nous.KnowledgeBase.ingest(
