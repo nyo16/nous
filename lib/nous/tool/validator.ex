@@ -145,7 +145,37 @@ defmodule Nous.Tool.Validator do
     acc
     |> maybe_check_type(key, value, schema)
     |> maybe_check_enum(key, value, schema)
+    |> maybe_check_nested(key, value, schema)
   end
+
+  # Recurse into nested object properties and array items so nested type/enum
+  # constraints are enforced. Previously only top-level types were checked, so
+  # a wrong-typed nested field or array element passed validation and reached
+  # the tool. (Nested `required` is not enforced — the Schema DSL can't express
+  # nested schemas, so this only affects hand-written :parameters maps.)
+  defp maybe_check_nested(acc, key, value, %{"type" => "object", "properties" => props})
+       when is_map(value) and is_map(props) do
+    Enum.reduce(value, acc, fn {sub_key, sub_value}, inner ->
+      case Map.get(props, sub_key) do
+        sub_schema when is_map(sub_schema) ->
+          check_schema("#{key}.#{sub_key}", sub_value, sub_schema, inner)
+
+        _ ->
+          inner
+      end
+    end)
+  end
+
+  defp maybe_check_nested(acc, key, value, %{"type" => "array", "items" => item_schema})
+       when is_list(value) and is_map(item_schema) do
+    value
+    |> Enum.with_index()
+    |> Enum.reduce(acc, fn {element, index}, inner ->
+      check_schema("#{key}[#{index}]", element, item_schema, inner)
+    end)
+  end
+
+  defp maybe_check_nested(acc, _key, _value, _schema), do: acc
 
   defp maybe_check_type(acc, key, value, %{"type" => expected_type}) do
     if matches_type?(value, expected_type) do

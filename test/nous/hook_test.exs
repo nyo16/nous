@@ -40,6 +40,18 @@ defmodule Nous.HookTest do
       assert hook.priority == 10
       assert hook.name == "test"
     end
+
+    test "fail_closed defaults to false" do
+      hook = Hook.new(:pre_tool_use, handler: fn _, _ -> :allow end)
+      assert hook.fail_closed == false
+    end
+
+    test "fail_closed can be enabled via opts" do
+      # Regression: new/2 ignored :fail_closed, so a security-gating hook could
+      # not opt into fail-closed through the documented constructor.
+      hook = Hook.new(:pre_tool_use, handler: fn _, _ -> :allow end, fail_closed: true)
+      assert hook.fail_closed == true
+    end
   end
 
   describe "blocking_event?/1" do

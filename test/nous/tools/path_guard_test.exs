@@ -54,5 +54,28 @@ defmodule Nous.Tools.PathGuardTest do
       # Should accept current-directory paths by default.
       assert {:ok, _} = PathGuard.validate("mix.exs", %{deps: %{}})
     end
+
+    test "rejects an INTERMEDIATE directory symlink that escapes the workspace",
+         %{root: root, ctx: ctx} do
+      # link -> /etc, accessed as link/hosts. The leaf (`hosts`) is a regular
+      # file, not a symlink, so the old leaf-only lstat check missed this.
+      File.ln_s!("/etc", Path.join(root, "linkdir"))
+
+      assert {:error, reason} = PathGuard.validate("linkdir/hosts", ctx)
+      assert reason =~ "symlink"
+    end
+
+    test "allows a symlink that stays inside the workspace", %{root: root, ctx: ctx} do
+      File.mkdir_p!(Path.join(root, "real"))
+      File.write!(Path.join(root, "real/data.txt"), "x")
+      File.ln_s!(Path.join(root, "real"), Path.join(root, "inside_link"))
+
+      assert {:ok, _} = PathGuard.validate("inside_link/data.txt", ctx)
+    end
+
+    test "allows creating a new (non-existent) nested file inside the workspace",
+         %{ctx: ctx} do
+      assert {:ok, _} = PathGuard.validate("newdir/sub/newfile.txt", ctx)
+    end
   end
 end

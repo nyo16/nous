@@ -273,8 +273,9 @@ defmodule Nous.Plugins.TeamTools do
 
     discovery = %{topic: topic, content: content}
 
-    if is_pid(shared_state) and Process.alive?(shared_state) do
-      SharedState.share_discovery(shared_state, from, discovery)
+    case resolve_alive(shared_state) do
+      nil -> :ok
+      pid -> SharedState.share_discovery(pid, from, discovery)
     end
 
     Comms.broadcast_team(pubsub, team_id, {:discovery, from, discovery})
@@ -286,18 +287,20 @@ defmodule Nous.Plugins.TeamTools do
   def list_team(ctx, _args) do
     coordinator = ctx.deps[:team_coordinator_pid]
 
-    if is_pid(coordinator) and Process.alive?(coordinator) do
-      agents = Coordinator.list_agents(coordinator)
+    case resolve_alive(coordinator) do
+      nil ->
+        %{team_id: ctx.deps[:team_id], agents: [], note: "coordinator unavailable"}
 
-      %{
-        team_id: ctx.deps[:team_id],
-        agents:
-          Enum.map(agents, fn a ->
-            %{name: a.name, status: a.status}
-          end)
-      }
-    else
-      %{team_id: ctx.deps[:team_id], agents: [], note: "coordinator unavailable"}
+      pid ->
+        agents = Coordinator.list_agents(pid)
+
+        %{
+          team_id: ctx.deps[:team_id],
+          agents:
+            Enum.map(agents, fn a ->
+              %{name: a.name, status: a.status}
+            end)
+        }
     end
   end
 
@@ -306,16 +309,39 @@ defmodule Nous.Plugins.TeamTools do
     agent_name = ctx.deps[:agent_name]
     shared_state = ctx.deps[:shared_state_pid]
 
-    if is_pid(shared_state) and Process.alive?(shared_state) do
-      case SharedState.claim_region(shared_state, agent_name, file, start_line, end_line) do
-        :ok ->
-          %{status: "claimed", file: file, start_line: start_line, end_line: end_line}
+    case resolve_alive(shared_state) do
+      nil ->
+        %{status: "error", message: "shared state unavailable"}
 
-        {:error, :conflict} ->
-          %{status: "conflict", file: file, message: "Region overlaps with another agent's claim"}
-      end
-    else
-      %{status: "error", message: "shared state unavailable"}
+      pid ->
+        case SharedState.claim_region(pid, agent_name, file, start_line, end_line) do
+          :ok ->
+            %{status: "claimed", file: file, start_line: start_line, end_line: end_line}
+
+          {:error, :conflict} ->
+            %{
+              status: "conflict",
+              file: file,
+              message: "Region overlaps with another agent's claim"
+            }
+        end
     end
   end
+
+  # SharedState/RateLimiter/Coordinator may be threaded into deps as a registered
+  # NAME (atom) by Nous.Teams.Supervisor, not a pid. is_pid/1 was false for the
+  # name, silently disabling region locking & discovery sharing. Resolve names to
+  # a live pid (and pass pids through unchanged).
+  defp resolve_alive(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: pid, else: nil
+  end
+
+  defp resolve_alive(name) when is_atom(name) and not is_nil(name) do
+    case GenServer.whereis(name) do
+      pid when is_pid(pid) -> if Process.alive?(pid), do: pid, else: nil
+      _ -> nil
+    end
+  end
+
+  defp resolve_alive(_), do: nil
 end

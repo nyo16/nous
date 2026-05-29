@@ -75,7 +75,7 @@ defmodule Nous.Plugins.InputGuard.Strategies.Pattern do
   def check(input, config, _ctx) do
     patterns = resolve_patterns(config)
 
-    case find_match(input, patterns) do
+    case find_match(normalize(input), patterns) do
       nil ->
         {:ok, %Result{severity: :safe, strategy: __MODULE__}}
 
@@ -106,4 +106,18 @@ defmodule Nous.Plugins.InputGuard.Strategies.Pattern do
       Regex.match?(regex, input)
     end)
   end
+
+  # Defeat trivial Unicode evasion before matching: NFKC folds full-width /
+  # compatibility homoglyphs to their ASCII form, and we strip zero-width and
+  # bidi/format control characters that can split tokens (e.g. "ig​nore").
+  defp normalize(input) when is_binary(input) do
+    input
+    |> String.normalize(:nfkc)
+    |> String.replace(
+      ~r/[\x{00AD}\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2060}-\x{2064}\x{FEFF}]/u,
+      ""
+    )
+  end
+
+  defp normalize(input), do: input
 end

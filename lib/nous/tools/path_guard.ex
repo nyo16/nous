@@ -101,28 +101,58 @@ defmodule Nous.Tools.PathGuard do
   end
 
   defp ensure_no_symlink_escape(expanded, root) do
-    # Walk every component of the expanded path; if any is a symlink whose
-    # *target* escapes the root, refuse. We use lstat to NOT follow the
-    # link on the final component, then read_link to inspect the target.
-    case File.lstat(expanded) do
-      {:ok, %{type: :symlink}} ->
-        case File.read_link(expanded) do
-          {:ok, target} ->
-            target_abs = Path.expand(target, Path.dirname(expanded))
-
-            if String.starts_with?(target_abs, root <> "/") or target_abs == root do
-              :ok
-            else
-              {:error,
-               "symlink #{inspect(expanded)} points outside workspace root; refusing to follow"}
-            end
-
-          _ ->
-            :ok
-        end
-
-      _ ->
+    # Resolve symlinks across EVERY component (not just the leaf), then compare
+    # the canonical path against the canonical root. The previous version only
+    # lstat'd the final component, so an *intermediate* directory symlink
+    # (e.g. `link -> /etc`, accessed as `link/passwd`) escaped the jail because
+    # Path.expand never resolves symlinks. Resolving the root too makes the
+    # comparison robust to symlinked roots (e.g. macOS `/tmp -> /private/tmp`).
+    with {:ok, real_root} <- resolve_real(root),
+         {:ok, real_path} <- resolve_real(expanded) do
+      if real_path == real_root or String.starts_with?(real_path, real_root <> "/") do
         :ok
+      else
+        {:error,
+         "path #{inspect(expanded)} resolves outside the workspace root via a symlink; refusing to follow"}
+      end
+    else
+      {:error, :symlink_loop} ->
+        {:error, "path #{inspect(expanded)} contains a symlink loop; refusing"}
+    end
+  end
+
+  # Best-effort realpath: resolves symlinks for the portion of the path that
+  # exists, component by component. Non-existent trailing components cannot be
+  # symlinks, so they are appended verbatim (this lets FileWrite create new
+  # files/dirs while still catching an escaping symlink anywhere above them).
+  @max_symlink_depth 40
+
+  defp resolve_real(path) do
+    resolve_components(Path.split(Path.expand(path)), "/", 0)
+  end
+
+  defp resolve_components(_remaining, _resolved, depth) when depth > @max_symlink_depth do
+    {:error, :symlink_loop}
+  end
+
+  defp resolve_components([], resolved, _depth), do: {:ok, resolved}
+
+  defp resolve_components(["/" | rest], resolved, depth),
+    do: resolve_components(rest, resolved, depth)
+
+  defp resolve_components([comp | rest], resolved, depth) do
+    candidate = Path.join(resolved, comp)
+
+    case File.read_link(candidate) do
+      {:ok, target} ->
+        # Resolve the link target against the directory holding the link
+        # (absolute targets ignore the base), then continue resolving the
+        # remaining components from the resolved target.
+        resolved_target = Path.expand(target, resolved)
+        resolve_components(Path.split(resolved_target) ++ rest, "/", depth + 1)
+
+      _not_a_symlink ->
+        resolve_components(rest, candidate, depth + 1)
     end
   end
 end

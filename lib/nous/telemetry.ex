@@ -276,7 +276,7 @@ defmodule Nous.Telemetry do
 
     Logger.error(
       "[Nous] Provider #{metadata.provider}:#{metadata.model_name} failed after #{duration_ms}ms: " <>
-        "#{inspect(metadata.reason)}"
+        summarize_reason(metadata.reason)
     )
   end
 
@@ -297,7 +297,7 @@ defmodule Nous.Telemetry do
 
     Logger.error(
       "[Nous] Stream #{metadata.provider}:#{metadata.model_name} failed after #{duration_ms}ms: " <>
-        "#{inspect(metadata.reason)}"
+        summarize_reason(metadata.reason)
     )
   end
 
@@ -366,4 +366,21 @@ defmodule Nous.Telemetry do
   defp handle_event(_event, _measurements, _metadata, _config) do
     :ok
   end
+
+  # Reduce a provider error to a bounded, header/body-light summary. The raw
+  # term is an HTTP error map (%{status, body, headers}) whose body can be large
+  # and echo provider-side context; logging it verbatim is a log-volume and
+  # reconnaissance risk. Drop headers, cap the body snippet.
+  defp summarize_reason(%{status: status} = err) do
+    "status=#{status}#{body_snippet(Map.get(err, :body))}"
+  end
+
+  defp summarize_reason(reason) when is_exception(reason), do: Exception.message(reason)
+
+  defp summarize_reason(reason) do
+    reason |> inspect(limit: 5, printable_limit: 200) |> String.slice(0, 300)
+  end
+
+  defp body_snippet(body) when is_binary(body), do: " body=#{String.slice(body, 0, 200)}"
+  defp body_snippet(_), do: ""
 end

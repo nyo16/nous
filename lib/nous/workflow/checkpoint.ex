@@ -98,20 +98,32 @@ defmodule Nous.Workflow.Checkpoint.ETS do
       GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
     end
 
+    @table :nous_workflow_checkpoints
+
     @impl true
     def init(:ok) do
-      table_name = :nous_workflow_checkpoints
-
       table =
-        case :ets.whereis(table_name) do
+        case :ets.whereis(@table) do
           :undefined ->
-            :ets.new(table_name, [:named_table, :set, :public, read_concurrency: true])
+            # :protected — only this owner writes; any process may read.
+            :ets.new(@table, [:named_table, :set, :protected, read_concurrency: true])
 
           _ref ->
-            table_name
+            @table
         end
 
       {:ok, %{table: table}}
+    end
+
+    @impl true
+    def handle_call({:save, run_id, checkpoint}, _from, %{table: table} = state) do
+      :ets.insert(table, {run_id, checkpoint})
+      {:reply, :ok, state}
+    end
+
+    def handle_call({:delete, run_id}, _from, %{table: table} = state) do
+      :ets.delete(table, run_id)
+      {:reply, :ok, state}
     end
   end
 
@@ -122,9 +134,7 @@ defmodule Nous.Workflow.Checkpoint.ETS do
 
   @impl true
   def save(checkpoint) do
-    ensure_table()
-    :ets.insert(@table, {checkpoint.run_id, checkpoint})
-    :ok
+    GenServer.call(owner(), {:save, checkpoint.run_id, checkpoint})
   end
 
   @impl true
@@ -152,24 +162,25 @@ defmodule Nous.Workflow.Checkpoint.ETS do
 
   @impl true
   def delete(run_id) do
-    ensure_table()
-    :ets.delete(@table, run_id)
-    :ok
+    GenServer.call(owner(), {:delete, run_id})
   end
 
-  # Fallback for callers used before the supervisor started the owner
-  # (mainly ad-hoc tests). Production code goes through TableOwner.
-  defp ensure_table do
-    case :ets.whereis(@table) do
-      :undefined ->
-        try do
-          :ets.new(@table, [:named_table, :set, :public, read_concurrency: true])
-        rescue
-          ArgumentError -> :ok
+  # The table is owned by the supervised TableOwner (started in
+  # Nous.Application). Resolve it, starting one on demand for ad-hoc callers
+  # that run before/without the supervisor (mainly tests). Reads are allowed
+  # from any process under :protected.
+  defp owner do
+    case Process.whereis(TableOwner) do
+      nil ->
+        case TableOwner.start_link([]) do
+          {:ok, pid} -> pid
+          {:error, {:already_started, pid}} -> pid
         end
 
-      _ref ->
-        :ok
+      pid ->
+        pid
     end
   end
+
+  defp ensure_table, do: owner()
 end

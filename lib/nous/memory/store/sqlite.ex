@@ -205,7 +205,12 @@ if Code.ensure_loaded?(Exqlite) do
       scope = Keyword.get(opts, :scope, %{})
       limit = Keyword.get(opts, :limit, 10)
 
-      {scope_sql, scope_params} = build_scope_clause(scope, 1)
+      # scope_params come FIRST in the params list below, so the scope clause
+      # must number from ?1 (offset 0), matching search_vector/list. The previous
+      # offset of 1 numbered the clauses ?2.. while the values were bound at
+      # ?1.., so the scope filter compared the wrong columns and silently voided
+      # agent/user/session-scoped FTS recall.
+      {scope_sql, scope_params} = build_scope_clause(scope, 0)
 
       sql = """
       SELECT m.*, bm25(memories_fts) AS rank

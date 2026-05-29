@@ -8,23 +8,23 @@ defmodule Nous.Plugins.Memory do
 
   ## Usage
 
+  `:deps` is passed to `Nous.run/3`, NOT `Nous.new/2` (the agent struct has no
+  `:deps` field, so config given to `new/2` is silently ignored).
+
       # Minimal — ETS store, keyword-only search
-      agent = Agent.new("openai:gpt-4",
-        plugins: [Nous.Plugins.Memory],
-        deps: %{memory_config: %{store: Nous.Memory.Store.ETS}}
-      )
+      agent = Agent.new("openai:gpt-4", plugins: [Nous.Plugins.Memory])
+      deps = %{memory_config: %{store: Nous.Memory.Store.ETS}}
+      {:ok, result} = Nous.run(agent, "Remember my name is Sam", deps: deps)
 
       # With embeddings for semantic search
-      agent = Agent.new("openai:gpt-4",
-        plugins: [Nous.Plugins.Memory],
-        deps: %{
-          memory_config: %{
-            store: Nous.Memory.Store.ETS,
-            embedding: Nous.Memory.Embedding.OpenAI,
-            embedding_opts: %{api_key: "sk-..."}
-          }
+      deps = %{
+        memory_config: %{
+          store: Nous.Memory.Store.ETS,
+          embedding: Nous.Memory.Embedding.OpenAI,
+          embedding_opts: %{api_key: "sk-..."}
         }
-      )
+      }
+      {:ok, result} = Nous.run(agent, "...", deps: deps)
 
   ## Configuration (via `deps[:memory_config]`)
 

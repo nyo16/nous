@@ -148,14 +148,7 @@ defmodule Nous.Plugins.Summarization do
       messages
       |> Enum.map(fn msg ->
         role = msg.role |> to_string() |> String.capitalize()
-        content = msg.content || ""
-
-        truncated =
-          if String.length(content) > 500,
-            do: String.slice(content, 0, 500) <> "...",
-            else: content
-
-        "#{role}: #{truncated}"
+        "#{role}: #{summarizable_content(msg)}"
       end)
       |> Enum.join("\n")
 
@@ -186,6 +179,20 @@ defmodule Nous.Plugins.Summarization do
     rescue
       e -> {:error, Exception.message(e)}
     end
+  end
+
+  # Tool results frequently carry credentials/PII (e.g. from MCP servers).
+  # Don't feed their raw content into the summary (which becomes a durable
+  # system message); emit a structural marker instead. User/assistant prose is
+  # kept (truncated) since it's the substance the summary must preserve.
+  defp summarizable_content(%{role: :tool}), do: "[tool result omitted]"
+
+  defp summarizable_content(msg) do
+    content = msg.content || ""
+
+    if String.length(content) > 500,
+      do: String.slice(content, 0, 500) <> "...",
+      else: content
   end
 
   defp put_in_deps(ctx, key, value) do

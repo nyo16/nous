@@ -19,6 +19,8 @@ defmodule Nous.Tools.SearchScrape do
 
   @default_concurrency 5
   @default_timeout 10_000
+  # Upper bound on URLs fetched per call so a model can't request unbounded work.
+  @max_urls 50
 
   @doc """
   Fetch and summarize content from multiple URLs in parallel.
@@ -35,10 +37,15 @@ defmodule Nous.Tools.SearchScrape do
   A list of results with url, title, summary, key_facts, and relevance.
   """
   def scrape_results(ctx, args) do
-    urls = Map.get(args, "urls", [])
+    all_urls = Map.get(args, "urls", [])
     query = Map.get(args, "query", "")
-    concurrency = Map.get(args, "concurrency", @default_concurrency)
-    timeout = Map.get(args, "timeout", @default_timeout)
+    # concurrency/timeout are LLM-supplied; clamp to sane integers (a non-integer
+    # would otherwise crash async_stream).
+    concurrency = clamp_int(Map.get(args, "concurrency", @default_concurrency), 1, 20)
+    timeout = clamp_int(Map.get(args, "timeout", @default_timeout), 1_000, 120_000)
+    # Process ALL urls (capped), throttling parallelism via max_concurrency.
+    # Previously Enum.take(urls, concurrency) silently fetched only the first few.
+    urls = Enum.take(all_urls, @max_urls)
 
     if Enum.empty?(urls) do
       %{results: [], error: "No URLs provided"}
@@ -46,7 +53,7 @@ defmodule Nous.Tools.SearchScrape do
       results =
         Task.Supervisor.async_stream_nolink(
           Nous.TaskSupervisor,
-          Enum.take(urls, concurrency),
+          urls,
           fn url -> fetch_and_summarize(ctx, url, query) end,
           max_concurrency: concurrency,
           timeout: timeout,
@@ -58,13 +65,22 @@ defmodule Nous.Tools.SearchScrape do
         end)
         |> Enum.reject(&is_nil/1)
 
-      %{
+      base = %{
         results: results,
         total_fetched: length(results),
         total_requested: length(urls)
       }
+
+      if length(all_urls) > @max_urls do
+        Map.put(base, :note, "Only the first #{@max_urls} URLs were fetched")
+      else
+        base
+      end
     end
   end
+
+  defp clamp_int(value, lo, hi) when is_integer(value), do: value |> max(lo) |> min(hi)
+  defp clamp_int(_value, lo, _hi), do: lo
 
   defp fetch_and_summarize(ctx, url, query) do
     case WebFetch.do_fetch(url) do

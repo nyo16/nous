@@ -60,19 +60,38 @@ defmodule Nous.Tools.UrlGuard do
     blocklist. Defaults to false.
   """
   @spec validate(String.t(), keyword()) :: {:ok, URI.t()} | {:error, String.t()}
-  def validate(url, opts \\ [])
+  def validate(url, opts \\ []) do
+    with {:ok, uri, _addrs} <- do_validate(url, opts), do: {:ok, uri}
+  end
 
-  def validate(url, _opts) when not is_binary(url) do
+  @doc """
+  Like `validate/2`, but also returns one validated IP address to **pin** the
+  subsequent connection to — closing the DNS-rebinding TOCTOU window where the
+  guard resolves one IP and the HTTP client independently resolves another.
+
+  Returns `{:ok, %URI{}, ip_tuple}` (or `{:ok, %URI{}, nil}` when host checking
+  was skipped via `allow_private_hosts: true`). Because validation rejects the
+  URL if *any* resolved address is blocked, the returned address is always safe.
+  """
+  @spec validate_pinned(String.t(), keyword()) ::
+          {:ok, URI.t(), :inet.ip_address() | nil} | {:error, String.t()}
+  def validate_pinned(url, opts \\ []) do
+    with {:ok, uri, addrs} <- do_validate(url, opts) do
+      {:ok, uri, List.first(addrs)}
+    end
+  end
+
+  defp do_validate(url, _opts) when not is_binary(url) do
     {:error, "URL must be a string"}
   end
 
-  def validate(url, opts) do
+  defp do_validate(url, opts) do
     allow_private = Keyword.get(opts, :allow_private_hosts, false)
 
     with {:ok, uri} <- parse(url),
          :ok <- check_scheme(uri),
-         :ok <- check_host(uri, allow_private) do
-      {:ok, uri}
+         {:ok, addrs} <- resolve_and_check(uri, allow_private) do
+      {:ok, uri, addrs}
     end
   end
 
@@ -100,16 +119,17 @@ defmodule Nous.Tools.UrlGuard do
     end
   end
 
-  defp check_host(_uri, true), do: :ok
+  # allow_private_hosts: skip resolution/blocklist entirely (local dev only).
+  defp resolve_and_check(_uri, true), do: {:ok, []}
 
-  defp check_host(%URI{host: host}, false) do
+  defp resolve_and_check(%URI{host: host}, false) do
     case resolve_host(host) do
       {:ok, addrs} ->
         if Enum.any?(addrs, &address_blocked?/1) do
           {:error,
            "URL resolves to a private/loopback/link-local address; refusing to fetch (#{host})"}
         else
-          :ok
+          {:ok, addrs}
         end
 
       {:error, reason} ->
@@ -118,18 +138,31 @@ defmodule Nous.Tools.UrlGuard do
   end
 
   # Resolve a host name to its IP addresses. If the input is already an IP
-  # literal, just parse it.
+  # literal, just parse it. For names we resolve BOTH families (A + AAAA):
+  # the HTTP client may connect over IPv6, so validating only IPv4 left a
+  # dual-stack bypass (benign A record, internal AAAA record).
   defp resolve_host(host) do
-    case :inet.parse_address(String.to_charlist(host)) do
+    charlist = String.to_charlist(host)
+
+    case :inet.parse_address(charlist) do
       {:ok, addr} ->
         {:ok, [addr]}
 
       {:error, _} ->
-        # Not a literal; do a DNS lookup
-        case :inet.getaddrs(String.to_charlist(host), :inet) do
-          {:ok, addrs} -> {:ok, addrs}
-          {:error, _} = err -> err
+        v4 = getaddrs(charlist, :inet)
+        v6 = getaddrs(charlist, :inet6)
+
+        case v4 ++ v6 do
+          [] -> {:error, :nxdomain}
+          addrs -> {:ok, addrs}
         end
+    end
+  end
+
+  defp getaddrs(charlist, family) do
+    case :inet.getaddrs(charlist, family) do
+      {:ok, addrs} -> addrs
+      {:error, _} -> []
     end
   end
 
@@ -143,14 +176,33 @@ defmodule Nous.Tools.UrlGuard do
     end)
   end
 
-  # IPv6 - block loopback (::1) and unique local (fc00::/7) at minimum.
-  defp address_blocked?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  # IPv4-mapped IPv6 (::ffff:a.b.c.d) — normalize to the embedded v4 and reuse
+  # the comprehensive v4 blocklist (otherwise ::ffff:169.254.169.254 reached
+  # cloud metadata).
+  defp address_blocked?({0, 0, 0, 0, 0, 0xFFFF, g, h}) do
+    address_blocked?(embedded_v4(g, h))
+  end
 
-  defp address_blocked?({a, _, _, _, _, _, _, _})
-       when band(a, 0xFE00) == 0xFC00,
-       do: true
+  # NAT64 well-known prefix 64:ff9b::/96 — embeds a v4 address in the low 32 bits.
+  defp address_blocked?({0x64, 0xFF9B, 0, 0, 0, 0, g, h}) do
+    address_blocked?(embedded_v4(g, h))
+  end
+
+  # IPv6 loopback (::1) and unspecified (::).
+  defp address_blocked?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp address_blocked?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
+
+  # Unique-local fc00::/7.
+  defp address_blocked?({a, _, _, _, _, _, _, _}) when band(a, 0xFE00) == 0xFC00, do: true
+
+  # Link-local fe80::/10 (the IPv6 analogue of 169.254.0.0/16).
+  defp address_blocked?({a, _, _, _, _, _, _, _}) when band(a, 0xFFC0) == 0xFE80, do: true
 
   defp address_blocked?(_), do: false
+
+  defp embedded_v4(g, h) do
+    {band(bsr(g, 8), 0xFF), band(g, 0xFF), band(bsr(h, 8), 0xFF), band(h, 0xFF)}
+  end
 
   defp ip_to_int({a, b, c, d}), do: bsl(a, 24) + bsl(b, 16) + bsl(c, 8) + d
 end

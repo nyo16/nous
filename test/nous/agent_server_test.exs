@@ -14,11 +14,8 @@ defmodule Nous.AgentServerTest do
   }
 
   setup do
-    # Ensure persistence ETS table is clean
-    if :ets.whereis(:nous_persistence) != :undefined do
-      :ets.delete_all_objects(:nous_persistence)
-    end
-
+    # Ensure persistence ETS table is clean (table is :protected; clear via owner)
+    PersistenceETS.clear()
     :ok
   end
 

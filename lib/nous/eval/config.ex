@@ -150,8 +150,10 @@ defmodule Nous.Eval.Config do
     provider_key = extract_provider(provider)
     rates = Map.get(config.cost_config, provider_key, %{input: 0.0, output: 0.0})
 
-    input_cost = input_tokens / 1000 * rates.input
-    output_cost = output_tokens / 1000 * rates.output
+    # Read via Map.get so a partial custom cost_config entry (e.g. only :input)
+    # degrades to 0.0 instead of raising KeyError on rates.output.
+    input_cost = input_tokens / 1000 * Map.get(rates, :input, 0.0)
+    output_cost = output_tokens / 1000 * Map.get(rates, :output, 0.0)
 
     Float.round(input_cost + output_cost, 6)
   end
@@ -161,16 +163,33 @@ defmodule Nous.Eval.Config do
   defp env_string(key), do: System.get_env(key)
 
   defp env_integer(key) do
+    # Integer.parse so a malformed value (e.g. "60s") falls back to the default
+    # via the || chain instead of raising ArgumentError on every config read.
     case System.get_env(key) do
-      nil -> nil
-      val -> String.to_integer(val)
+      nil ->
+        nil
+
+      val ->
+        case Integer.parse(val) do
+          {n, ""} -> n
+          _ -> nil
+        end
     end
   end
 
   defp merge_cost_config(nil), do: %__MODULE__{}.cost_config
 
   defp merge_cost_config(custom) do
-    Map.merge(%__MODULE__{}.cost_config, custom)
+    # Deep-merge per-provider rate maps so a partial custom entry (e.g. only
+    # :input for one provider) doesn't wipe the built-in :output rate.
+    Map.merge(%__MODULE__{}.cost_config, custom, fn
+      _provider, default_rates, custom_rates
+      when is_map(default_rates) and is_map(custom_rates) ->
+        Map.merge(default_rates, custom_rates)
+
+      _provider, _default_rates, custom_rates ->
+        custom_rates
+    end)
   end
 
   defp extract_provider(model_string) when is_binary(model_string) do

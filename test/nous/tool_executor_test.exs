@@ -57,6 +57,12 @@ defmodule Nous.ToolExecutorTest do
       end
     end
 
+    # Tool that throws (not a raised exception)
+    def throwing_tool(_ctx, _args), do: throw(:boom)
+
+    # Tool that exits with a non-timeout reason
+    def exiting_tool(_ctx, _args), do: exit(:kaboom)
+
     # Tool with complex validation
     def validation_tool(ctx, args) do
       with {:ok, name} <- Map.fetch(args, "name"),
@@ -722,6 +728,26 @@ defmodule Nous.ToolExecutorTest do
         assert result.success == true
         # Succeeded on 6th attempt (retry 5)
         assert result.succeeded_on_attempt == 6
+      end)
+    end
+  end
+
+  describe "non-exception failures (throw/exit)" do
+    test "a tool that throws is caught and returned as an error, not propagated" do
+      tool = Tool.from_function(&TestTools.throwing_tool/2, name: "thrower", retries: 0)
+      ctx = RunContext.new(%{})
+
+      capture_log(fn ->
+        assert {:error, %Errors.ToolError{}} = ToolExecutor.execute(tool, %{}, ctx)
+      end)
+    end
+
+    test "a tool that exits (non-timeout) is caught and returned as an error" do
+      tool = Tool.from_function(&TestTools.exiting_tool/2, name: "exiter", retries: 0)
+      ctx = RunContext.new(%{})
+
+      capture_log(fn ->
+        assert {:error, %Errors.ToolError{}} = ToolExecutor.execute(tool, %{}, ctx)
       end)
     end
   end

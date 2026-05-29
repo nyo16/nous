@@ -146,7 +146,9 @@ defmodule Nous.Teams.SharedState do
     }
 
     [{:discoveries, discoveries}] = :ets.lookup(state.table, :discoveries)
-    :ets.insert(state.table, {:discoveries, discoveries ++ [entry]})
+    # Prepend (O(1)) instead of `++ [entry]` (O(n)); get_discoveries reverses
+    # to restore insertion order. Avoids O(n^2) growth as discoveries accumulate.
+    :ets.insert(state.table, {:discoveries, [entry | discoveries]})
 
     {:reply, :ok, state}
   end
@@ -154,7 +156,7 @@ defmodule Nous.Teams.SharedState do
   @impl true
   def handle_call(:get_discoveries, _from, state) do
     [{:discoveries, discoveries}] = :ets.lookup(state.table, :discoveries)
-    {:reply, discoveries, state}
+    {:reply, Enum.reverse(discoveries), state}
   end
 
   @impl true

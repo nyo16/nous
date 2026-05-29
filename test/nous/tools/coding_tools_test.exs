@@ -289,5 +289,37 @@ defmodule Nous.Tools.CodingToolsTest do
         _ -> flunk("Expected {:error, _} but got #{inspect(result)}")
       end
     end
+
+    # SECURITY: the LLM controls `pattern`/`glob`. Without a `--` terminator and
+    # `--regexp`, rg reinterprets a leading-dash pattern as a flag (e.g. `-f`
+    # reads patterns from an arbitrary file; `--pre` runs a preprocessor),
+    # escaping the PathGuard workspace jail.
+    test "rg flag injection in pattern cannot read files outside the workspace" do
+      assert {:ok, output} =
+               FileGrep.execute(ctx(), %{"pattern" => "-f/etc/passwd", "path" => @test_dir})
+
+      refute output =~ "root:"
+      assert output =~ "No matches"
+    end
+
+    test "rg --pre preprocessor injection is neutralized" do
+      result = FileGrep.execute(ctx(), %{"pattern" => "--pre=/bin/cat", "path" => @test_dir})
+
+      case result do
+        {:ok, output} -> refute output =~ "root:"
+        {:error, _} -> :ok
+      end
+    end
+
+    test "glob flag injection is consumed as a value, not a flag" do
+      result =
+        FileGrep.execute(ctx(), %{
+          "pattern" => "World",
+          "path" => @test_dir,
+          "glob" => "--debug"
+        })
+
+      assert match?({:ok, _}, result) or match?({:error, _}, result)
+    end
   end
 end

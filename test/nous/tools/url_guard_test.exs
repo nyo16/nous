@@ -46,12 +46,55 @@ defmodule Nous.Tools.UrlGuardTest do
       assert {:error, _} = UrlGuard.validate("http://[::1]/")
     end
 
+    test "rejects IPv6 unspecified ::" do
+      assert {:error, _} = UrlGuard.validate("http://[::]/")
+    end
+
+    test "rejects IPv4-mapped IPv6 pointing at cloud metadata" do
+      # ::ffff:169.254.169.254 must normalize to the v4 blocklist, not slip
+      # through the IPv6 catch-all.
+      assert {:error, reason} = UrlGuard.validate("http://[::ffff:169.254.169.254]/")
+      assert reason =~ "private/loopback/link-local"
+    end
+
+    test "rejects IPv4-mapped IPv6 loopback" do
+      assert {:error, _} = UrlGuard.validate("http://[::ffff:127.0.0.1]/")
+    end
+
+    test "rejects IPv6 link-local fe80::/10" do
+      assert {:error, _} = UrlGuard.validate("http://[fe80::1]/")
+    end
+
+    test "rejects NAT64-embedded metadata (64:ff9b::169.254.169.254)" do
+      assert {:error, _} = UrlGuard.validate("http://[64:ff9b::a9fe:a9fe]/")
+    end
+
     test "allows private hosts when allow_private_hosts: true" do
       assert {:ok, _} = UrlGuard.validate("http://127.0.0.1/", allow_private_hosts: true)
     end
 
     test "non-binary input is rejected" do
       assert {:error, _} = UrlGuard.validate(123)
+    end
+  end
+
+  describe "validate_pinned/2 (DNS-rebinding defense)" do
+    test "returns a validated IP to pin the connection to" do
+      assert {:ok, %URI{host: "1.1.1.1"}, {1, 1, 1, 1}} =
+               UrlGuard.validate_pinned("https://1.1.1.1/foo")
+    end
+
+    test "rejects a blocked address (no IP returned to pin)" do
+      assert {:error, _} = UrlGuard.validate_pinned("http://169.254.169.254/")
+    end
+
+    test "rejects IPv4-mapped IPv6 metadata via pinned path too" do
+      assert {:error, _} = UrlGuard.validate_pinned("http://[::ffff:169.254.169.254]/")
+    end
+
+    test "skips resolution and returns nil IP when allow_private_hosts: true" do
+      assert {:ok, %URI{}, nil} =
+               UrlGuard.validate_pinned("http://127.0.0.1/", allow_private_hosts: true)
     end
   end
 end

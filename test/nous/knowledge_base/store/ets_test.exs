@@ -133,6 +133,27 @@ defmodule Nous.KnowledgeBase.Store.ETSTest do
     test "returns error for non-existent slug", %{state: state} do
       assert {:error, :not_found} = ETS.fetch_entry_by_slug(state, "nonexistent")
     end
+
+    test "slug index follows a title (slug) change on update", %{state: state} do
+      entry = Entry.new(%{title: "Old Title", content: "c"})
+      {:ok, _} = ETS.store_entry(state, entry)
+      assert {:ok, _} = ETS.fetch_entry_by_slug(state, "old-title")
+
+      {:ok, _} = ETS.update_entry(state, entry.id, %{title: "New Title", slug: "new-title"})
+
+      assert {:error, :not_found} = ETS.fetch_entry_by_slug(state, "old-title")
+      assert {:ok, fetched} = ETS.fetch_entry_by_slug(state, "new-title")
+      assert fetched.id == entry.id
+    end
+
+    test "slug index is removed when the entry is deleted", %{state: state} do
+      entry = Entry.new(%{title: "Doomed Entry", content: "c"})
+      {:ok, _} = ETS.store_entry(state, entry)
+      assert {:ok, _} = ETS.fetch_entry_by_slug(state, "doomed-entry")
+
+      {:ok, _} = ETS.delete_entry(state, entry.id)
+      assert {:error, :not_found} = ETS.fetch_entry_by_slug(state, "doomed-entry")
+    end
   end
 
   describe "update_entry/3" do

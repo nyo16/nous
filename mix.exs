@@ -385,7 +385,7 @@ defmodule Nous.MixProject do
       # the default Hex package set would otherwise bundle, bloating the
       # tarball by 100MB+.
       files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md AGENTS.md),
-      licenses: ["MIT"],
+      licenses: ["Apache-2.0"],
       links: %{
         "GitHub" => @source_url,
         "Changelog" => "#{@source_url}/blob/master/CHANGELOG.md"

@@ -17,7 +17,7 @@ Multi-provider LLM framework for Elixir/OTP. Provides:
   generic `custom:` adapter for any OpenAI-compatible endpoint
 - **Tool system** — file ops, bash, web fetch + search, plus easy custom tools
 - **Pluggable HTTP backend** (Req default, hackney alternative)
-- **Streaming with backpressure** (hackney `:async, :once` pull mode)
+- **Streaming** (Req default; opt into the hackney `:async, :once` pull-mode backend for strict backpressure)
 
 ## Minimal API surface (start here)
 
@@ -121,36 +121,36 @@ Nous.new("openai:gpt-4o",
 
 ```elixir
 defmodule MyApp.WeatherTool do
-  use Nous.Tool
+  @behaviour Nous.Tool.Behaviour
 
   @impl Nous.Tool.Behaviour
-  def name, do: "get_weather"
-
-  @impl Nous.Tool.Behaviour
-  def description, do: "Get current weather for a city"
-
-  @impl Nous.Tool.Behaviour
-  def parameters do
+  def metadata do
     %{
-      "type" => "object",
-      "properties" => %{
-        "city" => %{"type" => "string", "description" => "City name"}
-      },
-      "required" => ["city"]
+      name: "get_weather",
+      description: "Get current weather for a city",
+      parameters: %{
+        "type" => "object",
+        "properties" => %{
+          "city" => %{"type" => "string", "description" => "City name"}
+        },
+        "required" => ["city"]
+      }
     }
   end
 
+  # Context comes FIRST, args second.
   @impl Nous.Tool.Behaviour
-  def execute(%{"city" => city}, _ctx) do
+  def execute(_ctx, %{"city" => city}) do
     {:ok, "Weather in #{city}: 72°F, sunny"}
   end
 end
 ```
 
-Pass it in the `tools:` list. The `_ctx` arg gives access to `deps`,
-the workspace root, and the approval handler. Use `Nous.Tool.Validator`
-for input validation — it runs automatically when `validate_args: true`
-(the default).
+Pass the module in the `tools:` list (`tools: [MyApp.WeatherTool]`) — bare
+behaviour modules are converted via `Nous.Tool.from_module/1` automatically.
+The `_ctx` arg gives access to `deps`, the workspace root, and the approval
+handler. Use `Nous.Tool.Validator` for input validation — it runs automatically
+when `validate_args: true` (the default).
 
 ## HTTP backend (don't change unless you need to)
 
@@ -160,7 +160,7 @@ faster under parallel batching than the alternative. Override only if:
 - You need HTTP/3 → `NOUS_HTTP_BACKEND=hackney`
 - You want one HTTP family across streaming + non-streaming → same
 
-Pool config (hackney pool, used by streaming + Hackney backend):
+Pool config (hackney pool, used by the Hackney backend):
 
 ```elixir
 config :nous, :hackney_pool,
@@ -168,9 +168,12 @@ config :nous, :hackney_pool,
   timeout: 1_500   # idle keepalive ms (hackney 4 caps at 2_000)
 ```
 
-Streaming **always** uses hackney's pull-based `:async, :once` mode for
-backpressure (slow consumer can't OOM under fast LLM). This is structural,
-not configurable. See `docs/benchmarks/http_backend.md`.
+Streaming defaults to `Nous.HTTP.StreamBackend.Req` (push-based with a
+best-effort mailbox-watching backpressure guard). For STRICT pull-based
+backpressure (`:async, :once` — a slow consumer can't OOM under a fast LLM),
+opt into the Hackney stream backend via `config :nous, :http_stream_backend,
+Nous.HTTP.StreamBackend.Hackney`, `NOUS_HTTP_STREAM_BACKEND=hackney`, or the
+per-call `stream_backend:` option. See `docs/benchmarks/http_backend.md`.
 
 ## Critical rules (security & correctness)
 
@@ -214,8 +217,10 @@ end)
 |> Stream.run()
 ```
 
-The hackney backpressure means the stream paces itself to match LiveView's
-diff/push throughput — no mailbox accumulation.
+For strict backpressure under LiveView fan-out (so the stream paces itself to
+match diff/push throughput with no mailbox accumulation), opt into the Hackney
+stream backend (see the HTTP backend section); the default Req stream backend
+uses a best-effort mailbox-watching guard.
 
 ### Tool-using agent loop
 

@@ -148,7 +148,10 @@ defmodule Nous.Hook do
       matcher: Keyword.get(opts, :matcher),
       priority: Keyword.get(opts, :priority, 100),
       timeout: Keyword.get(opts, :timeout, 10_000),
-      name: Keyword.get(opts, :name)
+      name: Keyword.get(opts, :name),
+      # Reachable via the constructor so a security-gating hook can opt into
+      # fail-closed (a crashing/timing-out hook on a blocking event denies).
+      fail_closed: Keyword.get(opts, :fail_closed, false)
     }
   end
 end

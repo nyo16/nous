@@ -4,8 +4,72 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- **RCE approval gate could be silently bypassed.** `Nous.Tool.from_module/2`
+  hardcoded `requires_approval: false` instead of reading it from the tool's
+  metadata, so `Bash`/`FileWrite` registered via the standard path ran without
+  the human-approval gate — one prompt-injected document from RCE. It now falls
+  back to metadata like name/description/parameters. (Also fixed:
+  `Nous.Tool.Behaviour.implements?/1` ensures the module is loaded before
+  checking, and `Agent.new/2` accepts bare behaviour modules in `:tools`.)
+- **FileGrep ripgrep flag injection.** LLM-controlled `pattern`/`glob` reached
+  `rg` with no `--` option terminator, so values like `-f/etc/passwd` or
+  `--pre=…` read files (or ran a preprocessor) outside the workspace. Pattern is
+  now passed via `--regexp`, glob via `--glob`, with `--` before the positional
+  path; the pure-Elixir fallback re-validates every matched file (mirrors
+  `FileGlob`).
+- **PathGuard intermediate-directory symlink escape.** Only the final path
+  component was `lstat`'d, so a directory symlink (`link -> /etc`, accessed as
+  `link/passwd`) escaped the workspace jail. `Nous.Tools.PathGuard` now resolves
+  symlinks across every existing component (realpath) and compares the canonical
+  path against the canonical root (also robust to symlinked roots like macOS
+  `/tmp`).
+- **SSRF hardening in `Nous.Tools.UrlGuard`.** Now blocks IPv4-mapped IPv6
+  (`::ffff:169.254.169.254`), NAT64 (`64:ff9b::/96`), link-local `fe80::/10`,
+  and `::`, and resolves both A and AAAA records (dual-stack bypass). New
+  `validate_pinned/2` returns a validated IP; `Nous.Tools.WebFetch` pins the
+  connection to it (preserving Host header, SNI, and cert verification) to close
+  the DNS-rebinding TOCTOU. The Req provider backends pass `redirect: false`.
+- **Permission policy is now actually enforced.** `Nous.Permissions.Policy`
+  (via a new `:permissions` option on `Agent.new/2`) filters blocked tools out
+  of the tool list the model sees and forces the approval gate for
+  approval-required tools — previously the engine was never consulted at
+  runtime. `blocked?/2` now honors allow lists in every mode (deny-by-default),
+  `build_policy/1` rejects unknown modes, and both predicates fail closed on an
+  unknown mode.
+- **InputGuard no longer bypassed for streaming.** `Nous.AgentRunner.run_stream/3`
+  runs the plugin pipeline and short-circuits to a terminal blocked stream
+  before any LLM call. The LLMJudge strategy fences untrusted input in a random
+  boundary, parses only the first `VERDICT` line, and can fail closed on an
+  unparseable response; the Pattern strategy NFKC-normalizes and strips
+  zero-width/bidi characters; `:majority`/`:all` aggregation counts the
+  configured strategies so killing one can't flip the vote.
+- **Secret & data-exposure hygiene.** Credential-shaped `deps` keys
+  (`api_key`/`token`/`secret`/…) are no longer written by persistence; Gemini
+  sends its key via the `x-goog-api-key` header instead of the URL query string;
+  the default telemetry handler logs a bounded status+body summary instead of
+  the raw upstream error term; the persistence and workflow-checkpoint ETS
+  tables are `:protected` (owner writes, any process reads) instead of `:public`.
+
 ### Fixed (critical)
 
+- **Anthropic responses with 2+ text or thinking blocks crashed the turn.**
+  `consolidate_content_parts/1` returned a list into the `:string` content
+  field, raising `Ecto.InvalidChangesetError` on common multi-block responses
+  (text around a tool_use, multi-paragraph answers). Now joins homogeneous
+  blocks into a string (mirrors the Gemini path).
+- **AgentServer added the user message to the context twice per turn.** The
+  message was added in `handle_cast` and again by `AgentRunner.build_context`,
+  doubling the prompt sent to the model and corrupting saved history. Now added
+  exactly once.
+- **`Nous.LLM` streaming-with-tools never reassembled tool-call fragments.**
+  It treated each `{:tool_call_delta, _}` as complete — crashing for OpenAI
+  (Access on a list) and invoking tools with nil args for Anthropic. Now feeds
+  fragments through `Nous.StreamNormalizer.ToolCallAccumulator`.
+- **OpenAI `parse_tool_call/1` crashed on a tool_call missing `"function"`.**
+  `Map.get(nil, "name")` raised `BadMapError`, aborting the whole response
+  parse on non-conformant OpenAI-compatible backends. Defaults to `%{}` now.
 - **Gemini/Vertex tool-result roundtrip was broken.** `Nous.Messages.Gemini`
   was sending the tool call_id (e.g. `"gemini_abc123"`) as the
   `functionResponse.name`, but Gemini's API requires the original
@@ -84,6 +148,39 @@ All notable changes to this project will be documented in this file.
   returns immediately, so `DynamicSupervisor.start_child` (and
   `Teams.Coordinator.spawn_agent`) no longer wedge waiting for slow
   persistence backends.
+- **Team region locking and discovery sharing were silently inert.**
+  `Nous.Teams.Supervisor` wires `SharedState` into agent deps as a registered
+  atom name, but `Nous.Plugins.TeamTools` gated on `is_pid/1` — false for the
+  name — so `claim_region`/`share_discovery` no-op'd for every team built via
+  the public API. The guards now resolve a registered name to a live pid.
+- **A tool that `throw`s or `exit`s (non-timeout) crashed the whole agent run.**
+  `Nous.ToolExecutor` only caught `:exit, {:timeout, _}`; it now catches any
+  `throw`/`exit` and converts it to a retryable `ToolError`.
+- **Streaming Gemini/Vertex tool calls dropped `thought_signature`.** The
+  accumulator rebuilt the call without `metadata`, breaking multi-turn thinking
+  parity for 2.5 thinking models. The signature is now carried through.
+- **Documented per-run `:model_settings` override was ignored.** `AgentRunner`
+  now merges `opts[:model_settings]` over the agent's settings for that run.
+- **`Nous.Teams.RateLimiter` was never invoked**, so `budget`/`rpm`/`tpm` had no
+  effect. It is now wired into the agent request path (reserve → reconcile →
+  release) when a limiter is in deps; rpm/tpm/request limits are enforced (the
+  cost budget is reconciled post-hoc — see the moduledoc).
+- **Crashed/timed-out parallel workflow branches were attributed to
+  `"unknown"`.** `Nous.Workflow.Engine.ParallelExecutor` now uses
+  `zip_input_on_exit` so failures keep their branch id / item index.
+- **SQLite memory scoped FTS recall was silently broken** (a parameter
+  off-by-one bound the scope filter to the wrong columns); the **Hybrid store**
+  now over-fetches a larger candidate pool when a scope is applied (so in-scope
+  results aren't crowded out); and **memory search normalizes RRF scores to
+  0–1** so `min_score` behaves consistently between text-only and hybrid modes.
+- **Tool argument validator now recurses** into nested object properties and
+  array items (was top-level types only).
+- **Eval config robustness.** `NOUS_EVAL_*` integer env vars parse via
+  `Integer.parse` (no crash on a bad value) and a partial custom `cost_config`
+  deep-merges instead of raising `KeyError`.
+- **`Nous.Tools.SearchScrape` processed only the first `concurrency` URLs.**
+  It now fetches all URLs (capped and throttled by `max_concurrency`) and clamps
+  LLM-supplied `concurrency`/`timeout`.
 
 ### Changed
 
@@ -95,6 +192,35 @@ All notable changes to this project will be documented in this file.
   streaming path). Existing-but-undocumented events
   (`fallback`, `hook`, `skill`, `workflow`) are now documented in the
   `Nous.Telemetry` moduledoc.
+- **`Agent.new/2` accepts bare tool modules** in `:tools` (e.g.
+  `tools: [Nous.Tools.Bash]`), converted via `Nous.Tool.from_module/1`.
+- **`Nous.Permissions.blocked?/2` allow-list semantics.** A non-empty
+  `allow_names`/`allow_prefixes` is now deny-by-default in every mode (was only
+  honored in `:strict`); `build_policy/1` raises on an unknown `:mode`.
+- **`Nous.Hook.new/2` accepts `:fail_closed`** so security-gating hooks can opt
+  into fail-closed via the documented constructor (not only a struct literal).
+- **License metadata corrected** to `Apache-2.0` in `mix.exs` (was `MIT`) to
+  match the bundled `LICENSE` and README.
+- **Docs:** fixed non-compiling/silently-broken examples — README plugin
+  configs now pass `:deps` to `Nous.run/3` (not `Nous.new/2`, which ignores it);
+  getting-started uses `Nous.Errors.ProviderError`, the correct
+  `AgentDynamicSupervisor.start_agent/3` arity, `Context.deserialize/1`, and
+  `%Nous.Message{}` for the chatbot example; AGENTS.md custom-tool example uses
+  `@behaviour`/`metadata/0`/`execute(ctx, args)` and corrects the streaming
+  backpressure claim (Req is the default; Hackney is the opt-in pull-based
+  backend).
+
+### Performance
+
+- **Removed O(n²) list accumulation on hot loops.** `Nous.Teams.RateLimiter`'s
+  sliding window and `Nous.Teams.SharedState`'s discovery list now prepend
+  (O(1)) instead of `++ [entry]` (O(n)).
+- **KnowledgeBase ETS store keeps a `slug -> id` index**, so
+  `fetch_entry_by_slug/2` is O(1) instead of a full table scan + struct rebuild
+  on every `kb_read`/`kb_backlinks`/`kb_link` call.
+- **Decisions ETS store builds an edge adjacency index once per BFS traversal**
+  (`descendants`/`ancestors`/`path_between`) instead of scanning the whole edge
+  table per visited node — O(V+E) instead of O(V·E).
 
 ### Deprecated
 

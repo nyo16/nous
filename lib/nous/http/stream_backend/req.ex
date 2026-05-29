@@ -101,13 +101,24 @@ defmodule Nous.HTTP.StreamBackend.Req do
           json: body,
           headers: headers,
           receive_timeout: timeout,
+          # redirect: false — provider APIs don't 3xx; Req's unvalidated follow
+          # would be an SSRF bounce. See Nous.HTTP.Backend.Req.
+          redirect: false,
           finch: finch_name,
           into: fn {:data, chunk}, {req, resp} ->
             cond do
               resp.status not in 200..299 ->
-                # Non-2xx: accumulate body locally so the post-call status
-                # check has the full error body to report. Do not forward.
-                {:cont, {req, %{resp | body: (resp.body || "") <> chunk}}}
+                # Non-2xx: accumulate body locally so the post-call status check
+                # has the error body to report. Cap it at max_buffer_size so a
+                # malicious/broken endpoint can't OOM us with an unbounded error
+                # body (the success path already enforces this cap).
+                new_body = (resp.body || "") <> chunk
+
+                if byte_size(new_body) > HTTP.max_buffer_size() do
+                  {:halt, {req, %{resp | body: new_body}}}
+                else
+                  {:cont, {req, %{resp | body: new_body}}}
+                end
 
               true ->
                 case await_consumer_capacity(parent) do

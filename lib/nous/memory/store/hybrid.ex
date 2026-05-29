@@ -142,7 +142,7 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
       limit = Keyword.get(opts, :limit, 10)
       min_score = Keyword.get(opts, :min_score, 0.0)
 
-      with {:ok, results} <- Muninn.search(index, query, limit: limit * 2) do
+      with {:ok, results} <- Muninn.search(index, query, limit: candidate_limit(limit, scope)) do
         scored_entries =
           results
           |> Enum.flat_map(fn %{id: id, score: score} ->
@@ -166,7 +166,8 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
       limit = Keyword.get(opts, :limit, 10)
       min_score = Keyword.get(opts, :min_score, 0.0)
 
-      with {:ok, results} <- Zvec.search(collection, embedding, limit: limit * 2) do
+      with {:ok, results} <-
+             Zvec.search(collection, embedding, limit: candidate_limit(limit, scope)) do
         scored_entries =
           results
           |> Enum.flat_map(fn %{id: id, score: score} ->
@@ -213,6 +214,13 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
     defp all_entries(table) do
       :ets.tab2list(table) |> Enum.map(fn {_id, entry} -> entry end)
     end
+
+    # The index can't filter by scope (it only indexes id/content), so scope is
+    # applied AFTER fetching. Over-fetch a generous candidate pool when scoped so
+    # in-scope results aren't crowded out by higher-ranked out-of-scope hits in
+    # a shared multi-tenant store.
+    defp candidate_limit(limit, scope) when map_size(scope) == 0, do: limit * 2
+    defp candidate_limit(limit, _scope), do: min(max(limit * 20, 200), 1000)
 
     defp filter_by_scope(entries, scope) when map_size(scope) == 0, do: entries
 

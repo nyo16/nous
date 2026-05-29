@@ -31,6 +31,7 @@ defmodule Nous.LLM do
   """
 
   alias Nous.{Fallback, Model, ModelDispatcher, Message, Tool, ToolExecutor, RunContext, Messages}
+  alias Nous.StreamNormalizer.ToolCallAccumulator
 
   # Get the model dispatcher, allowing dependency injection for testing
   defp get_dispatcher do
@@ -271,21 +272,31 @@ defmodule Nous.LLM do
   end
 
   defp aggregate_stream_turn(stream) do
-    initial = %{chunks: [], tool_calls: [], content: ""}
+    initial = %{chunks: [], tool_acc: ToolCallAccumulator.new(), content: ""}
 
     result =
       Enum.reduce(stream, initial, fn
         {:text_delta, text}, acc ->
           %{acc | chunks: [text | acc.chunks], content: acc.content <> text}
 
-        {:tool_call_delta, call}, acc ->
-          %{acc | tool_calls: [ensure_tool_call_id(call) | acc.tool_calls]}
+        {:tool_call_delta, fragment}, acc ->
+          # Tool-call deltas are PARTIAL provider-specific fragments (OpenAI
+          # emits a list with split arguments JSON; Anthropic emits tagged
+          # start/partial/stop fragments). Feed them through the accumulator —
+          # treating each as a complete call crashed OpenAI (Access on a list)
+          # and produced nil-arg calls on Anthropic.
+          %{acc | tool_acc: ToolCallAccumulator.feed(acc.tool_acc, fragment)}
 
         _other, acc ->
           acc
       end)
 
-    {Enum.reverse(result.chunks), Enum.reverse(result.tool_calls), result.content}
+    tool_calls =
+      result.tool_acc
+      |> ToolCallAccumulator.finalize()
+      |> Enum.map(&ensure_tool_call_id/1)
+
+    {Enum.reverse(result.chunks), tool_calls, result.content}
   end
 
   defp ensure_tool_call_id(call) do
