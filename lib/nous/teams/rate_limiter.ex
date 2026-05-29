@@ -363,7 +363,10 @@ defmodule Nous.Teams.RateLimiter do
     }
 
     if token_delta != 0 or request_delta != 0 do
-      %{state | window: state.window ++ [{ts, token_delta, request_delta}]}
+      # Prepend (O(1)) instead of append (O(n)). The window is order-independent
+      # — window_totals/1 folds it and prune_window/1 filters it — so prepending
+      # is semantically identical and avoids O(n^2) accumulation under load.
+      %{state | window: [{ts, token_delta, request_delta} | state.window]}
     else
       state
     end

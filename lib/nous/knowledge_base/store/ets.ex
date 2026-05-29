@@ -14,7 +14,8 @@ defmodule Nous.KnowledgeBase.Store.ETS do
   @type state :: %{
           documents: :ets.table(),
           entries: :ets.table(),
-          links: :ets.table()
+          links: :ets.table(),
+          slugs: :ets.table()
         }
 
   @impl true
@@ -22,7 +23,10 @@ defmodule Nous.KnowledgeBase.Store.ETS do
     state = %{
       documents: :ets.new(:kb_documents, [:set, :public]),
       entries: :ets.new(:kb_entries, [:set, :public]),
-      links: :ets.new(:kb_links, [:set, :public])
+      links: :ets.new(:kb_links, [:set, :public]),
+      # slug -> id secondary index so fetch_entry_by_slug is O(1) instead of a
+      # full table scan (slug lookup is a hot path: kb_read/backlinks/link).
+      slugs: :ets.new(:kb_slugs, [:set, :public])
     }
 
     {:ok, state}
@@ -86,7 +90,17 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
   @impl true
   def store_entry(state, %Entry{} = entry) do
+    # Keep the slug index consistent if this id is re-stored with a new slug.
+    case fetch_entry(state, entry.id) do
+      {:ok, %Entry{slug: old_slug}} when old_slug != entry.slug ->
+        :ets.delete(state.slugs, old_slug)
+
+      _ ->
+        :ok
+    end
+
     :ets.insert(state.entries, {entry.id, entry})
+    :ets.insert(state.slugs, {entry.slug, entry.id})
     {:ok, state}
   end
 
@@ -100,14 +114,10 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
   @impl true
   def fetch_entry_by_slug(state, slug) do
-    result =
-      state.entries
-      |> all_records()
-      |> Enum.find(fn entry -> entry.slug == slug end)
-
-    case result do
-      nil -> {:error, :not_found}
-      entry -> {:ok, entry}
+    case :ets.lookup(state.slugs, slug) do
+      # fetch_entry handles a stale index (id deleted) by returning :not_found.
+      [{^slug, id}] -> fetch_entry(state, id)
+      [] -> {:error, :not_found}
     end
   end
 
@@ -118,6 +128,12 @@ defmodule Nous.KnowledgeBase.Store.ETS do
         now = DateTime.utc_now()
         updated = struct(entry, Map.put(updates, :updated_at, now))
         :ets.insert(state.entries, {id, updated})
+
+        if updated.slug != entry.slug do
+          :ets.delete(state.slugs, entry.slug)
+          :ets.insert(state.slugs, {updated.slug, id})
+        end
+
         {:ok, state}
 
       error ->
@@ -127,6 +143,11 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
   @impl true
   def delete_entry(state, id) do
+    case fetch_entry(state, id) do
+      {:ok, entry} -> :ets.delete(state.slugs, entry.slug)
+      _ -> :ok
+    end
+
     :ets.delete(state.entries, id)
     {:ok, state}
   end

@@ -158,25 +158,28 @@ defmodule Nous.Decisions.Store.ETS do
   end
 
   # BFS to find a path between two nodes, returning nodes along the path.
+  # Build the edge adjacency index ONCE per traversal (was: a full edge-table
+  # scan per visited node, giving O(V*E)).
   defp bfs_path(state, from_id, to_id) do
     case get_node(state, from_id) do
       {:ok, start_node} ->
-        do_bfs_path(state, [[start_node]], to_id, MapSet.new([from_id]))
+        adj = build_adjacency(state)
+        do_bfs_path(state, adj, [[start_node]], to_id, MapSet.new([from_id]))
 
       {:error, :not_found} ->
         []
     end
   end
 
-  defp do_bfs_path(_state, [], _to_id, _visited), do: []
+  defp do_bfs_path(_state, _adj, [], _to_id, _visited), do: []
 
-  defp do_bfs_path(state, [current_path | rest], to_id, visited) do
+  defp do_bfs_path(state, adj, [current_path | rest], to_id, visited) do
     current_node = hd(current_path)
 
     if current_node.id == to_id do
       Enum.reverse(current_path)
     else
-      {:ok, edges} = get_edges(state, current_node.id, :outgoing)
+      edges = edges_for(adj, current_node.id, :outgoing)
 
       {new_paths, new_visited} =
         Enum.reduce(edges, {[], visited}, fn edge, {paths, vis} ->
@@ -193,19 +196,20 @@ defmodule Nous.Decisions.Store.ETS do
           end
         end)
 
-      do_bfs_path(state, rest ++ Enum.reverse(new_paths), to_id, new_visited)
+      do_bfs_path(state, adj, rest ++ Enum.reverse(new_paths), to_id, new_visited)
     end
   end
 
   # BFS to find all reachable nodes in a given direction.
   defp bfs_reachable(state, start_id, direction) do
-    do_bfs_reachable(state, [start_id], direction, MapSet.new([start_id]), [])
+    adj = build_adjacency(state)
+    do_bfs_reachable(state, adj, [start_id], direction, MapSet.new([start_id]), [])
   end
 
-  defp do_bfs_reachable(_state, [], _direction, _visited, acc), do: Enum.reverse(acc)
+  defp do_bfs_reachable(_state, _adj, [], _direction, _visited, acc), do: Enum.reverse(acc)
 
-  defp do_bfs_reachable(state, [current_id | rest], direction, visited, acc) do
-    {:ok, edges} = get_edges(state, current_id, direction)
+  defp do_bfs_reachable(state, adj, [current_id | rest], direction, visited, acc) do
+    edges = edges_for(adj, current_id, direction)
 
     neighbor_ids =
       Enum.map(edges, fn edge ->
@@ -230,6 +234,21 @@ defmodule Nous.Decisions.Store.ETS do
         end
       end)
 
-    do_bfs_reachable(state, new_queue, direction, new_visited, new_acc)
+    do_bfs_reachable(state, adj, new_queue, direction, new_visited, new_acc)
+  end
+
+  # Index every edge once into outgoing (by from_id) and incoming (by to_id)
+  # adjacency maps so a traversal is O(V+E) instead of O(V*E).
+  defp build_adjacency(%{edges: edges}) do
+    all = all_edges(edges)
+
+    %{
+      outgoing: Enum.group_by(all, & &1.from_id),
+      incoming: Enum.group_by(all, & &1.to_id)
+    }
+  end
+
+  defp edges_for(adjacency, node_id, direction) do
+    adjacency |> Map.fetch!(direction) |> Map.get(node_id, [])
   end
 end
