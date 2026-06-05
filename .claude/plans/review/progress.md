@@ -1,7 +1,12 @@
 # Progress — Audit-Pass Follow-up (/phx:full)
 
 Branch: `fix/audit-pass-followup` (off master)
-State: REVIEWING (implementation complete, verified green)
+State: COMPLETED (implemented, verified, reviewed, compounded)
+
+## Review result
+- security-analyzer: all 5 areas CORRECT, no BLOCKER/WARNING (1 low SUGGESTION = documented TOCTOU residual).
+- elixir-reviewer: both initial "BLOCKERs" self-reclassified to CORRECT; net 1 WARNING (fail-open observability) + 1 comment fix — both applied (commit: review fixes).
+- Solutions captured: .claude/solutions/audit-pass-followup.md
 
 ## Verification (final, all green)
 - compile --warnings-as-errors: PASS
