@@ -33,10 +33,15 @@ defmodule Nous.AgentRuntimeFixesTest do
   end
 
   setup do
-    {:ok, _} =
-      Elixir.Agent.start_link(fn -> %{messages: [], settings: %{}} end,
-        name: CapturingDispatcher.Store
-      )
+    # start_supervised! tears the Agent down with the test, even on failure.
+    # The old bare start_link leaked the named Agent on a crash, so a later run
+    # raised {:already_started, _}.
+    start_supervised!(%{
+      id: CapturingDispatcher.Store,
+      start:
+        {Elixir.Agent, :start_link,
+         [fn -> %{messages: [], settings: %{}} end, [name: CapturingDispatcher.Store]]}
+    })
 
     Application.put_env(:nous, :model_dispatcher, CapturingDispatcher)
     on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
@@ -79,6 +84,11 @@ defmodule Nous.AgentRuntimeFixesTest do
 
   defp wait_for_assistant(pid, attempts \\ 100)
 
+  # The run executes in a Task that posts {:agent_response_ready} back to the
+  # server from a DIFFERENT process, so there is no FIFO ordering we can lean on
+  # and PubSub is disabled in tests (config :nous, :pubsub is unset). Polling
+  # get_history until the cross-process state converges is the correct tool
+  # here; the bound (100 * 20ms) only governs the failure deadline.
   defp wait_for_assistant(_pid, 0), do: flunk("agent never produced an assistant response")
 
   defp wait_for_assistant(pid, attempts) do

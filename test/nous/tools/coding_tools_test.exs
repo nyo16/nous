@@ -312,14 +312,20 @@ defmodule Nous.Tools.CodingToolsTest do
     end
 
     test "glob flag injection is consumed as a value, not a flag" do
-      result =
-        FileGrep.execute(ctx(), %{
-          "pattern" => "World",
-          "path" => @test_dir,
-          "glob" => "--debug"
-        })
+      # "--debug" must be passed as the VALUE of --glob, not interpreted as an
+      # rg flag. As a glob it matches no file in @test_dir, so the search yields
+      # no matches. If it leaked through as a flag, rg would instead search all
+      # files and find "World" (or error on an unknown flag) — either of which
+      # this assertion now catches.
+      assert {:ok, output} =
+               FileGrep.execute(ctx(), %{
+                 "pattern" => "World",
+                 "path" => @test_dir,
+                 "glob" => "--debug"
+               })
 
-      assert match?({:ok, _}, result) or match?({:error, _}, result)
+      assert output =~ "No matches"
+      refute output =~ "World"
     end
   end
 end

@@ -56,7 +56,12 @@ defmodule Nous.Persistence.ETSTest do
       ETS.save("session_c", %{version: 1})
 
       {:ok, sessions} = ETS.list()
-      assert Enum.sort(sessions) == ["session_a", "session_b", "session_c"]
+      # Assert membership, not exact equality: :nous_persistence is a supervised
+      # singleton table, so another test sharing it could otherwise make an
+      # exact-list assertion flaky.
+      assert "session_a" in sessions
+      assert "session_b" in sessions
+      assert "session_c" in sessions
     end
 
     test "returns empty list when no sessions exist" do

@@ -1,5 +1,7 @@
 defmodule Nous.Tools.PathGuardTest do
-  use ExUnit.Case, async: false
+  # async: true is safe — each test gets a unique tmp workspace
+  # (System.unique_integer) and touches no shared/global state.
+  use ExUnit.Case, async: true
 
   alias Nous.Tools.PathGuard
 
