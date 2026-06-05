@@ -54,15 +54,12 @@ defmodule Nous.Persistence.ETS do
 
     @impl true
     def handle_call({:save, session_id, data}, _from, %{table: table} = state) do
-      reply =
-        try do
-          true = :ets.insert(table, {session_id, data})
-          :ok
-        rescue
-          e -> {:error, {:ets_insert_failed, Exception.message(e)}}
-        end
-
-      {:reply, reply, state}
+      # :ets.insert/2 into this owner's validated :protected table cannot fail in
+      # normal operation (it only raises on a bad table reference). Don't wrap it
+      # in try/rescue — that would mask a genuine bug (wrong table) as a confusing
+      # {:ets_insert_failed, _}. Let it crash so the supervisor restarts clean.
+      true = :ets.insert(table, {session_id, data})
+      {:reply, :ok, state}
     end
 
     def handle_call({:delete, session_id}, _from, %{table: table} = state) do

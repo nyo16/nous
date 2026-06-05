@@ -187,7 +187,9 @@ defmodule Nous.Teams.SharedState do
         expires_at: expires_at
       }
 
-      :ets.insert(state.table, {:claims, claims ++ [new_claim]})
+      # Prepend (O(1)) instead of `++ [new_claim]` (O(n)); get_claims reverses
+      # to restore insertion order. Matches the share_discovery fix above.
+      :ets.insert(state.table, {:claims, [new_claim | claims]})
 
       # Cancel any existing expiry timer for this agent+file
       state = cancel_timer(state, claim_key)
@@ -215,7 +217,9 @@ defmodule Nous.Teams.SharedState do
   @impl true
   def handle_call(:get_claims, _from, state) do
     [{:claims, claims}] = :ets.lookup(state.table, :claims)
-    {:reply, claims, state}
+    # claims are stored most-recent-first (O(1) prepend); reverse to hand back
+    # in insertion order.
+    {:reply, Enum.reverse(claims), state}
   end
 
   @impl true

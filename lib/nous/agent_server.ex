@@ -541,26 +541,36 @@ defmodule Nous.AgentServer do
         server = self()
 
         Task.Supervisor.start_child(Nous.TaskSupervisor, fn ->
-          result =
-            with {:ok, data} <- backend.load(session_id),
-                 {:ok, ctx} <- Context.deserialize(data) do
-              ctx =
-                ctx
-                |> Context.merge_deps(merge_deps)
-                |> Context.patch_dangling_tool_calls()
+          try do
+            result =
+              with {:ok, data} <- backend.load(session_id),
+                   {:ok, ctx} <- Context.deserialize(data) do
+                ctx =
+                  ctx
+                  |> Context.merge_deps(merge_deps)
+                  |> Context.patch_dangling_tool_calls()
 
-              {:ok, ctx}
+                {:ok, ctx}
+              end
+
+            case result do
+              {:ok, ctx} ->
+                # Hand the context back to the server before replying so the
+                # next call sees the new state.
+                :ok = GenServer.cast(server, {:_apply_loaded_context, ctx})
+                GenServer.reply(from, :ok)
+
+              {:error, reason} ->
+                GenServer.reply(from, {:error, reason})
             end
-
-          case result do
-            {:ok, ctx} ->
-              # Hand the context back to the server before replying so the
-              # next call sees the new state.
-              :ok = GenServer.cast(server, {:_apply_loaded_context, ctx})
-              GenServer.reply(from, :ok)
-
-            {:error, reason} ->
-              GenServer.reply(from, {:error, reason})
+          rescue
+            # The caller is blocked in GenServer.call/3. If backend.load or
+            # deserialize RAISES (rather than returning {:error, _}), an
+            # unguarded task crash would never reply, wedging the caller until
+            # its call timeout. Always answer.
+            e -> GenServer.reply(from, {:error, Exception.message(e)})
+          catch
+            kind, reason -> GenServer.reply(from, {:error, {kind, reason}})
           end
         end)
 
@@ -650,6 +660,19 @@ defmodule Nous.AgentServer do
       # to a newer task, do not clear it.
       {:noreply, state}
     end
+  end
+
+  @impl true
+  def handle_info({ref, _result}, %{current_task: %Task{ref: ref}} = state)
+      when is_reference(ref) do
+    # async_nolink delivers the task's RETURN value as {ref, result} on success.
+    # run_agent_and_respond communicates via explicit send/2 (not its return
+    # value), so this message is informational only. Absorb it here (and stop
+    # monitoring) instead of letting it fall through to the catch-all, which
+    # would otherwise grow a spurious log line per completed run if anyone adds
+    # logging there. The matching :DOWN below clears current_task.
+    Process.demonitor(ref, [:flush])
+    {:noreply, %{state | current_task: nil}}
   end
 
   @impl true
