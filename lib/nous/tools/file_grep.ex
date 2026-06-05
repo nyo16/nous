@@ -111,13 +111,31 @@ defmodule Nous.Tools.FileGrep do
   defp glob_flag(nil), do: []
   defp glob_flag(glob), do: ["--glob", glob]
 
+  # The pure-Elixir fallback runs an LLM-controlled regex (`:re` has no ReDoS
+  # backstop) over file contents. Bound the worst case with a hard timeout so a
+  # catastrophically-backtracking pattern aborts instead of hanging the agent.
+  # (The preferred rg engine is immune; this only guards the fallback path.)
+  @elixir_grep_timeout 5_000
+
   defp run_elixir_grep(pattern, path, glob, output_mode, ctx) do
     case Regex.compile(pattern) do
       {:ok, regex} ->
-        files = find_files(path, glob, ctx)
-        results = search_files(files, regex, output_mode)
-        result = Enum.join(results, "\n")
-        {:ok, if(result == "", do: "No matches found", else: result)}
+        task =
+          Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
+            files = find_files(path, glob, ctx)
+            results = search_files(files, regex, output_mode)
+            Enum.join(results, "\n")
+          end)
+
+        case Task.yield(task, @elixir_grep_timeout) || Task.shutdown(task, :brutal_kill) do
+          {:ok, result} ->
+            {:ok, if(result == "", do: "No matches found", else: result)}
+
+          _ ->
+            {:error,
+             "search timed out after #{@elixir_grep_timeout}ms (the pattern may be " <>
+               "pathological); install ripgrep for a fast, ReDoS-immune engine"}
+        end
 
       {:error, {reason, _}} ->
         {:error, "Invalid regex: #{reason}"}

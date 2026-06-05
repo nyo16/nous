@@ -109,18 +109,33 @@ defmodule Nous.ToolExecutorTest do
       GenServer.start_link(__MODULE__, [], name: __MODULE__)
     end
 
+    @events [
+      [:nous, :tool, :execute, :start],
+      [:nous, :tool, :execute, :stop],
+      [:nous, :tool, :execute, :exception]
+    ]
+
     def init([]) do
-      events = [
-        [:nous, :tool, :execute, :start],
-        [:nous, :tool, :execute, :stop],
-        [:nous, :tool, :execute, :exception]
-      ]
+      # Trap exits so terminate/2 runs on supervisor shutdown and detaches our
+      # handlers. Handler IDs are unique per instance (System.unique_integer):
+      # static "test-#{event}" IDs collided when this async module's instances
+      # overlapped, and nothing ever detached them, leaking handlers across runs.
+      Process.flag(:trap_exit, true)
+      prefix = "test-#{System.unique_integer([:positive])}"
 
-      for event <- events do
-        :telemetry.attach("test-#{inspect(event)}", event, &__MODULE__.handle_event/4, nil)
-      end
+      handler_ids =
+        for event <- @events do
+          id = "#{prefix}-#{inspect(event)}"
+          :telemetry.attach(id, event, &__MODULE__.handle_event/4, nil)
+          id
+        end
 
-      {:ok, []}
+      {:ok, %{events: [], handler_ids: handler_ids}}
+    end
+
+    def terminate(_reason, %{handler_ids: handler_ids}) do
+      Enum.each(handler_ids, &:telemetry.detach/1)
+      :ok
     end
 
     def handle_event(event, measurements, metadata, _config) do
@@ -135,16 +150,16 @@ defmodule Nous.ToolExecutorTest do
       GenServer.call(__MODULE__, :clear_events)
     end
 
-    def handle_call(:get_events, _from, events) do
-      {:reply, Enum.reverse(events), events}
+    def handle_call(:get_events, _from, %{events: events} = state) do
+      {:reply, Enum.reverse(events), state}
     end
 
-    def handle_call(:clear_events, _from, _events) do
-      {:reply, :ok, []}
+    def handle_call(:clear_events, _from, state) do
+      {:reply, :ok, %{state | events: []}}
     end
 
-    def handle_cast({:event, event, measurements, metadata}, events) do
-      {:noreply, [{event, measurements, metadata} | events]}
+    def handle_cast({:event, event, measurements, metadata}, %{events: events} = state) do
+      {:noreply, %{state | events: [{event, measurements, metadata} | events]}}
     end
   end
 

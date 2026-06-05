@@ -2,9 +2,30 @@ defmodule Nous.KnowledgeBase.Store.ETS do
   @moduledoc """
   ETS-backed knowledge base store implementation.
 
-  Uses three unnamed ETS tables (documents, entries, links) so multiple
+  Uses four unnamed ETS tables (documents, entries, links, slugs) so multiple
   instances can coexist. Text search uses `String.jaro_distance/2` for
   fuzzy matching on entry content and title.
+
+  ## Ownership & lifetime (read before "fixing" the `:public` tables)
+
+  This store is **intentionally ephemeral and run-scoped**. `init/1` returns the
+  table references inside `state`, which the caller threads through `ctx.deps`
+  for the life of a knowledge-base session — there is no global registration and
+  no supervised owner. When the process holding `state` exits, ETS reclaims the
+  tables; that is the designed lifetime, not a leak. Persistence across runs is
+  the job of a different `Nous.KnowledgeBase.Store` implementation, not this one.
+
+  The tables are `:public` on purpose: a single KB session is driven from several
+  processes (the agent loop plus tool-execution tasks all receive the same
+  `state` and read/write it), so a `:protected` table — writable only by the
+  process that called `init/1` — would break those cross-process writes. Access
+  is gated by *possession of the table reference*, which never leaves the
+  session's `ctx`, rather than by an ETS access mode.
+
+  Writes (e.g. `store_entry/2`) are sequences of individual ETS operations, not
+  transactions. Operation order is chosen so a torn write degrades safely (a
+  stale slug → a miss), but if you need cross-write atomicity, route writes
+  through a serializing owner process instead of using this store directly.
   """
 
   @behaviour Nous.KnowledgeBase.Store
@@ -90,17 +111,24 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
   @impl true
   def store_entry(state, %Entry{} = entry) do
-    # Keep the slug index consistent if this id is re-stored with a new slug.
-    case fetch_entry(state, entry.id) do
-      {:ok, %Entry{slug: old_slug}} when old_slug != entry.slug ->
-        :ets.delete(state.slugs, old_slug)
+    # Read the previous slug (if this id is being re-stored under a new one)
+    # BEFORE overwriting, so we can retire the stale index entry.
+    old_slug =
+      case fetch_entry(state, entry.id) do
+        {:ok, %Entry{slug: prev}} when prev != entry.slug -> prev
+        _ -> nil
+      end
 
-      _ ->
-        :ok
-    end
-
+    # These are separate ETS ops, not a transaction (see the moduledoc on the
+    # per-run ownership model). Ordering bounds the damage of a torn write:
+    # write the entry, then point the new slug at it, then drop the old slug —
+    # so a live slug never references a missing id. fetch_entry_by_slug/2 also
+    # tolerates a stale slug, degrading a torn write to a miss, never a wrong
+    # entry.
     :ets.insert(state.entries, {entry.id, entry})
     :ets.insert(state.slugs, {entry.slug, entry.id})
+    if old_slug, do: :ets.delete(state.slugs, old_slug)
+
     {:ok, state}
   end
 

@@ -131,15 +131,17 @@ defmodule Nous.AgentServerTest do
       # cancelled task arrives. Without generation tagging this would
       # clobber the cleared context.
       AgentServer.clear_history(pid)
-      Process.sleep(20)
 
       stale_ctx =
         Context.new(system_prompt: "Be helpful")
         |> Context.add_message(Message.user("STALE - should be discarded"))
 
       send(pid, {:agent_response_ready, 0, stale_ctx, nil})
-      Process.sleep(50)
 
+      # No sleeps: clear_history (cast) and the response_ready (info) are sent
+      # from this process in order, so FIFO message delivery guarantees the
+      # generation is bumped before the stale reply is handled. get_context is a
+      # call, so it is processed after both — its return proves they ran.
       ctx = AgentServer.get_context(pid)
       assert ctx.messages == [], "stale response from gen 0 should not have re-populated context"
       GenServer.stop(pid)
@@ -165,15 +167,12 @@ defmodule Nous.AgentServerTest do
       ctx = Context.add_message(ctx, Message.assistant("Hi!"))
       send(pid, {:agent_response_ready, 0, ctx, nil})
 
-      # Give the GenServer time to process
-      Process.sleep(50)
-
-      # Verify messages were added
+      # get_history is a call, processed after the response_ready info message
+      # (FIFO from this process) — no sleep needed.
       assert length(AgentServer.get_history(pid)) == 2
 
       # Clear history
       AgentServer.clear_history(pid)
-      Process.sleep(50)
 
       # Messages should be empty, deps preserved
       ctx = AgentServer.get_context(pid)
@@ -199,7 +198,10 @@ defmodule Nous.AgentServerTest do
       ctx = AgentServer.get_context(pid)
       ctx = Context.add_message(ctx, Message.user("Pre-clear"))
       send(pid, {:agent_response_ready, 0, ctx, nil})
-      Process.sleep(50)
+      # Flush: get_context (a call) returns only after response_ready is handled,
+      # and the save inside that handler is a synchronous call to PersistenceETS,
+      # so the persisted row is guaranteed written once this returns.
+      _ = AgentServer.get_context(pid)
 
       # Verify it was saved with messages
       {:ok, data} = PersistenceETS.load(session_id)
@@ -207,7 +209,7 @@ defmodule Nous.AgentServerTest do
 
       # Clear
       AgentServer.clear_history(pid)
-      Process.sleep(50)
+      _ = AgentServer.get_context(pid)
 
       # Persistence should now have empty messages
       {:ok, data} = PersistenceETS.load(session_id)
@@ -350,7 +352,10 @@ defmodule Nous.AgentServerTest do
         |> Context.add_message(Message.assistant("Hi!"))
 
       send(pid, {:agent_response_ready, 0, ctx, nil})
-      Process.sleep(50)
+      # Flush via a call; the save inside the response_ready handler is a
+      # synchronous PersistenceETS call, so the row is written by the time this
+      # returns.
+      _ = AgentServer.get_context(pid)
 
       # Context should be persisted
       {:ok, data} = PersistenceETS.load(session_id)
@@ -389,8 +394,13 @@ defmodule Nous.AgentServerTest do
           inactivity_timeout: :infinity
         )
 
-      Process.sleep(200)
+      # Assert the server does NOT terminate within the window. refute_receive
+      # is deterministic where a bare sleep is not: it fails fast if a :DOWN
+      # arrives and otherwise blocks exactly the timeout.
+      ref = Process.monitor(pid)
+      refute_receive {:DOWN, ^ref, :process, ^pid, _}, 200
       assert Process.alive?(pid)
+      Process.demonitor(ref, [:flush])
       GenServer.stop(pid)
     end
   end
@@ -418,7 +428,10 @@ defmodule Nous.AgentServerTest do
       send(pid, {:agent_task_completed, :error})
       send(pid, {:unknown_event, "ignored"})
 
-      Process.sleep(50)
+      # A call serializes after all the info messages above; if any had crashed
+      # the server, this would exit. Returning a context proves it processed them
+      # all and is alive — deterministic, no sleep.
+      assert AgentServer.get_context(pid)
       assert Process.alive?(pid)
       GenServer.stop(pid)
     end

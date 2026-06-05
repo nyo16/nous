@@ -69,6 +69,27 @@ defmodule Nous.Tools.UrlGuardTest do
       assert {:error, _} = UrlGuard.validate("http://[64:ff9b::a9fe:a9fe]/")
     end
 
+    test "rejects alternate-encoding IP forms for loopback/metadata" do
+      # Classic SSRF bypasses: the host is an obfuscated encoding of a blocked
+      # address. The BEAM resolver expands decimal/hex/octal integer hosts to
+      # their real address, which then trips the private/loopback blocklist; the
+      # %2F form fails to resolve. All must be refused, never fetched.
+      bypasses = [
+        # 0x7f000001 -> 127.0.0.1 (hex)
+        "http://0x7f000001/",
+        # 2130706433 -> 127.0.0.1 (decimal)
+        "http://2130706433/",
+        # 0177.0.0.1 -> 127.0.0.1 (octal first octet)
+        "http://0177.0.0.1/",
+        # url-encoded slash smuggled into the metadata authority
+        "http://169.254.169.254%2F"
+      ]
+
+      for url <- bypasses do
+        assert {:error, _} = UrlGuard.validate(url), "expected #{url} to be refused"
+      end
+    end
+
     test "allows private hosts when allow_private_hosts: true" do
       assert {:ok, _} = UrlGuard.validate("http://127.0.0.1/", allow_private_hosts: true)
     end

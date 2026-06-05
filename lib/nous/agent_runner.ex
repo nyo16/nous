@@ -371,7 +371,6 @@ defmodule Nous.AgentRunner do
         else: [{:text_delta, blocked_text}, {:finish, "stop"}]
 
     events
-    |> Stream.map(& &1)
     |> wrap_stream_with_callbacks(ctx)
     |> wrap_stream_with_result()
   end
@@ -1178,15 +1177,39 @@ defmodule Nous.AgentRunner do
   defp acquire_and_request(pid, agent, messages, request_fun) do
     tokens = estimate_request_tokens(messages)
 
-    case Nous.Teams.RateLimiter.acquire(pid, agent.name, tokens) do
+    case safe_acquire(pid, agent.name, tokens) do
       {:ok, ref} ->
         result = request_fun.()
         record_or_release_rate_limit(pid, agent.name, ref, result)
         result
 
+      {:error, :rate_limiter_unavailable} ->
+        # The limiter died between resolution and acquire (or is overloaded and
+        # timed out). Fail OPEN — skipping a rate check is far better than
+        # crashing the whole agent run on a {:noproc, _}/timeout exit. Surface it
+        # though: a silent fail-open would let a dead limiter allow unlimited
+        # traffic with no signal until cost/token metrics spiked.
+        Logger.warning(
+          "RateLimiter unavailable for agent #{inspect(agent.name)}; failing open (request not rate-limited)"
+        )
+
+        :telemetry.execute([:nous, :rate_limiter, :unavailable], %{count: 1}, %{
+          agent: agent.name
+        })
+
+        request_fun.()
+
       {:error, _reason} = err ->
         err
     end
+  end
+
+  # The resolved limiter pid can die before/while we call it (TOCTOU). Catch the
+  # exit instead of leaking a {:noproc, _}/timeout into the agent loop.
+  defp safe_acquire(pid, name, tokens) do
+    Nous.Teams.RateLimiter.acquire(pid, name, tokens)
+  catch
+    :exit, _ -> {:error, :rate_limiter_unavailable}
   end
 
   defp record_or_release_rate_limit(pid, name, ref, {:ok, response, _model}) do
@@ -1203,15 +1226,14 @@ defmodule Nous.AgentRunner do
     resolve_alive_process(ctx.deps[:rate_limiter_pid])
   end
 
-  defp resolve_alive_process(pid) when is_pid(pid) do
-    if Process.alive?(pid), do: pid, else: nil
-  end
+  # No Process.alive?/1 pre-check: it only narrows — never closes — the race
+  # before acquire, and a stale `true` is indistinguishable from a live pid. The
+  # authoritative guard is safe_acquire/3, which catches the exit if the pid is
+  # already dead. Here we just resolve a name to its currently-registered pid.
+  defp resolve_alive_process(pid) when is_pid(pid), do: pid
 
   defp resolve_alive_process(name) when is_atom(name) and not is_nil(name) do
-    case GenServer.whereis(name) do
-      pid when is_pid(pid) -> if Process.alive?(pid), do: pid, else: nil
-      _ -> nil
-    end
+    GenServer.whereis(name)
   end
 
   defp resolve_alive_process(_), do: nil
@@ -1274,7 +1296,14 @@ defmodule Nous.AgentRunner do
   # Get tool call field - handles both atom and string keys
   # OpenAI-compatible APIs return string keys, our internal format uses atoms
   defp get_tool_field(call, field) when is_atom(field) do
-    Map.get(call, field) || Map.get(call, to_string(field))
+    # Use fetch, not `||`: a legitimately-falsy value under the atom key
+    # (e.g. arguments: false / 0 / "") must win over the string-key fallback
+    # instead of being coalesced away. Keys are atom-OR-string per provider, so
+    # a present atom key is authoritative even when its value is falsy.
+    case Map.fetch(call, field) do
+      {:ok, value} -> value
+      :error -> Map.get(call, to_string(field))
+    end
   end
 
   # Set tool call field - handles both atom and string keys
@@ -1408,10 +1437,13 @@ defmodule Nous.AgentRunner do
       %{text: [], thinking: [], completed: false, sentinel: sentinel},
       fn
         {:text_delta, text} = event, acc ->
-          {[event], %{acc | text: [acc.text | text]}}
+          # Prepend each chunk (O(1)) to a flat proper list; build_stream_result
+          # reverses before IO.iodata_to_binary/1. The old `[acc.text | text]`
+          # built a right-nested improper list whose depth grew with the stream.
+          {[event], %{acc | text: [text | acc.text]}}
 
         {:thinking_delta, text} = event, acc ->
-          {[event], %{acc | thinking: [acc.thinking | text]}}
+          {[event], %{acc | thinking: [text | acc.thinking]}}
 
         {:finish, reason} = event, acc ->
           result = build_stream_result(acc, reason)
@@ -1443,12 +1475,14 @@ defmodule Nous.AgentRunner do
   end
 
   defp build_stream_result(acc, reason) do
+    # acc.text/acc.thinking are chunks in reverse arrival order (prepended);
+    # reverse to restore order before flattening to a binary.
     result = %{
-      output: IO.iodata_to_binary(acc.text),
+      output: acc.text |> Enum.reverse() |> IO.iodata_to_binary(),
       finish_reason: reason
     }
 
-    thinking = IO.iodata_to_binary(acc.thinking)
+    thinking = acc.thinking |> Enum.reverse() |> IO.iodata_to_binary()
 
     if thinking != "",
       do: Map.put(result, :thinking, thinking),

@@ -83,7 +83,12 @@ defmodule Nous.PermissionsEnforcementTest do
 
   describe "policy filters tools the model can see" do
     setup do
-      {:ok, _} = Elixir.Agent.start_link(fn -> %{} end, name: CapturingDispatcher.Store)
+      # Supervised so a crash can't leak the named Agent into the next run.
+      start_supervised!(%{
+        id: CapturingDispatcher.Store,
+        start: {Elixir.Agent, :start_link, [fn -> %{} end, [name: CapturingDispatcher.Store]]}
+      })
+
       Application.put_env(:nous, :model_dispatcher, CapturingDispatcher)
       on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
       :ok
@@ -128,7 +133,10 @@ defmodule Nous.PermissionsEnforcementTest do
       assert {:ok, result} = AgentRunner.run(agent, "go")
 
       # The tool must NOT have executed (default-deny without a handler).
-      refute_received :tool_ran
+      # refute_receive (with a window) rather than refute_received: execution is
+      # synchronous today, but a future async tool path could land :tool_ran
+      # just after run/2 returns, making an instant mailbox check pass vacuously.
+      refute_receive :tool_ran, 100
       assert result.output =~ "final answer"
     end
   end

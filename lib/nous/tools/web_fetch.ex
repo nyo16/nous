@@ -81,9 +81,8 @@ if Code.ensure_loaded?(Floki) do
     end
 
     defp do_get(url, depth) do
-      with {:ok, uri, pin_ip} <- Nous.Tools.UrlGuard.validate_pinned(url) do
-        {request_url, connect_opts} = pin_connection(url, uri, pin_ip)
-
+      with {:ok, uri, pin_ip} <- Nous.Tools.UrlGuard.validate_pinned(url),
+           {:ok, {request_url, connect_opts}} <- pin_connection(url, uri, pin_ip) do
         case Req.get(request_url,
                connect_options: connect_opts,
                receive_timeout: 15_000,
@@ -125,7 +124,15 @@ if Code.ensure_loaded?(Floki) do
     # window (guard resolves one IP, Req would otherwise re-resolve another).
     # We connect to the IP literal but pass the original hostname to Mint for the
     # Host header, SNI, and TLS certificate verification (Req `:hostname` opt).
-    defp pin_connection(url, _uri, nil), do: {url, [timeout: 10_000]}
+    #
+    # A nil pin means host validation was skipped (only possible via
+    # `allow_private_hosts: true`, which web_fetch never sets). Fail CLOSED
+    # rather than fetching with the raw hostname + no pin — an unpinned fetch
+    # would silently reopen the DNS-rebinding window if that flag is ever
+    # wired through here. Thread an explicit opt instead if private-host
+    # fetching is genuinely wanted.
+    defp pin_connection(_url, _uri, nil),
+      do: {:error, "refusing to fetch without a pinned IP (host validation was skipped)"}
 
     defp pin_connection(_url, %URI{} = uri, ip) do
       ip_str = ip |> :inet.ntoa() |> to_string()
@@ -134,7 +141,7 @@ if Code.ensure_loaded?(Floki) do
       path = uri.path || "/"
       query = if uri.query, do: "?#{uri.query}", else: ""
       pinned = "#{uri.scheme}://#{authority}#{path}#{query}"
-      {pinned, [timeout: 10_000, hostname: uri.host]}
+      {:ok, {pinned, [timeout: 10_000, hostname: uri.host]}}
     end
 
     # Req returns headers as a string-keyed map of String -> [String].
