@@ -230,9 +230,19 @@ defmodule Nous.Eval.Runner do
   defp to_keyword_list(list) when is_list(list), do: list
 
   defp to_keyword_list(map) when is_map(map) do
-    Enum.map(map, fn
-      {k, v} when is_binary(k) -> {String.to_atom(k), v}
-      {k, v} when is_atom(k) -> {k, v}
+    # agent_config keys can come from arbitrary YAML. Convert to atoms ONLY if
+    # the atom already exists in the BEAM; unknown keys are dropped rather than
+    # created, so a YAML file cannot exhaust the global atom table (DoS).
+    Enum.flat_map(map, fn
+      {k, v} when is_atom(k) ->
+        [{k, v}]
+
+      {k, v} when is_binary(k) ->
+        try do
+          [{String.to_existing_atom(k), v}]
+        rescue
+          ArgumentError -> []
+        end
     end)
   end
 

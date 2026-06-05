@@ -14,7 +14,13 @@ defmodule Nous.Tools.PathGuardTest do
   describe "validate/2" do
     test "accepts a path inside the workspace", %{root: root, ctx: ctx} do
       assert {:ok, abs} = PathGuard.validate("ok.txt", ctx)
-      assert abs == Path.join(root, "ok.txt")
+      # validate/2 returns the canonical (symlink-resolved) path, which may
+      # differ from Path.join(root, _) on systems where the tmp dir is itself
+      # symlinked (e.g. macOS /var -> /private/var). Assert it points at the
+      # right file rather than at a literal unresolved path.
+      assert Path.basename(abs) == "ok.txt"
+      assert File.read!(abs) == "ok"
+      assert {:ok, abs} == PathGuard.validate(Path.join(root, "ok.txt"), ctx)
     end
 
     test "accepts an absolute path inside the workspace", %{root: root, ctx: ctx} do

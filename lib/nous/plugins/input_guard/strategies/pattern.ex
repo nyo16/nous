@@ -5,6 +5,19 @@ defmodule Nous.Plugins.InputGuard.Strategies.Pattern do
   Ships with default patterns for common injection techniques including instruction
   override, role reassignment, DAN jailbreaks, and prompt extraction attempts.
 
+  > #### Best-effort, not authorization {: .warning}
+  >
+  > This strategy is **defense-in-depth**, not a security boundary. Regex
+  > matching over natural language is trivially evaded — by synonyms,
+  > rephrasing, leetspeak, whitespace/zero-width splitting, translation, or
+  > encoding — and the default patterns only catch well-known phrasings.
+  >
+  > A `:safe` result means "no known-bad pattern matched", NOT "this input is
+  > trusted". Never gate a security or authorization decision on it. Treat
+  > retrieved/tool/user content as untrusted regardless of what this strategy
+  > returns, and rely on real controls (sandboxing, permissions, output
+  > validation) for actual enforcement.
+
   ## Configuration
 
     * `:patterns` — Full override of the default pattern list. Each entry is a

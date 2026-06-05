@@ -9,6 +9,17 @@ defmodule Nous.ToolExecutor do
   - Handling timeouts
   - Processing ContextUpdate returns
   - Logging execution
+
+  ## Telemetry & sensitive data
+
+  The `[:nous, :tool, :execute, :exception]` event carries the raw `:reason`
+  (the exception/exit term) and full `:stacktrace` in its metadata so local
+  handlers can debug failures. A tool that fails while holding a secret (an API
+  key in an error message, a token in a struct field) can therefore surface
+  that secret in the event. This is safe for in-process handlers but **any
+  subscriber that forwards these events off-box (Sentry, Honeycomb, log
+  shippers) MUST scrub `:reason`/`:stacktrace` first.** The emitter intentionally
+  does not redact, to preserve debuggability for trusted handlers.
   """
 
   alias Nous.{Tool, RunContext, Errors}

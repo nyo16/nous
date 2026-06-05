@@ -231,8 +231,7 @@ defmodule Nous.Eval.Evaluators.Schema do
     else
       missing =
         Enum.filter(required, fn field ->
-          field = if is_binary(field), do: String.to_atom(field), else: field
-          value = Map.get(struct, field)
+          value = Map.get(struct, safe_field_atom(field))
           is_nil(value) or value == ""
         end)
 
@@ -252,7 +251,7 @@ defmodule Nous.Eval.Evaluators.Schema do
     else
       mismatches =
         Enum.reduce(expected_values, [], fn {field, expected}, acc ->
-          field = if is_binary(field), do: String.to_atom(field), else: field
+          field = safe_field_atom(field)
           actual = Map.get(struct, field)
 
           if actual == expected do
@@ -269,4 +268,19 @@ defmodule Nous.Eval.Evaluators.Schema do
       end
     end
   end
+
+  # Field names in `required_fields` / `field_values` come from arbitrary YAML.
+  # Resolve to an EXISTING atom only (struct keys are always existing atoms);
+  # unknown names fall back to the raw binary, which `Map.get/2` treats as a
+  # missing/mismatched field. NEVER use String.to_atom/1 - that would let a
+  # YAML file exhaust the global atom table (DoS).
+  defp safe_field_atom(field) when is_atom(field), do: field
+
+  defp safe_field_atom(field) when is_binary(field) do
+    String.to_existing_atom(field)
+  rescue
+    ArgumentError -> field
+  end
+
+  defp safe_field_atom(field), do: field
 end
