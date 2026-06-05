@@ -38,3 +38,6 @@ nous-*.tar
 *.swp
 *.swo
 *~
+
+# Claude Code / agent workflow artifacts (local only)
+.claude/
