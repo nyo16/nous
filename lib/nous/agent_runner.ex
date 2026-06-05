@@ -1186,7 +1186,17 @@ defmodule Nous.AgentRunner do
       {:error, :rate_limiter_unavailable} ->
         # The limiter died between resolution and acquire (or is overloaded and
         # timed out). Fail OPEN — skipping a rate check is far better than
-        # crashing the whole agent run on a {:noproc, _}/timeout exit.
+        # crashing the whole agent run on a {:noproc, _}/timeout exit. Surface it
+        # though: a silent fail-open would let a dead limiter allow unlimited
+        # traffic with no signal until cost/token metrics spiked.
+        Logger.warning(
+          "RateLimiter unavailable for agent #{inspect(agent.name)}; failing open (request not rate-limited)"
+        )
+
+        :telemetry.execute([:nous, :rate_limiter, :unavailable], %{count: 1}, %{
+          agent: agent.name
+        })
+
         request_fun.()
 
       {:error, _reason} = err ->

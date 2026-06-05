@@ -667,10 +667,11 @@ defmodule Nous.AgentServer do
       when is_reference(ref) do
     # async_nolink delivers the task's RETURN value as {ref, result} on success.
     # run_agent_and_respond communicates via explicit send/2 (not its return
-    # value), so this message is informational only. Absorb it here (and stop
-    # monitoring) instead of letting it fall through to the catch-all, which
-    # would otherwise grow a spurious log line per completed run if anyone adds
-    # logging there. The matching :DOWN below clears current_task.
+    # value), so this message is informational only. Absorb it here (and flush
+    # the now-redundant monitor) instead of letting it fall through to the
+    # catch-all. This clause handles NORMAL completion; the :DOWN clause below
+    # now only fires when the task crashes before returning a value (abnormal
+    # exit), since [:flush] purges the :DOWN for the normal-exit case.
     Process.demonitor(ref, [:flush])
     {:noreply, %{state | current_task: nil}}
   end
