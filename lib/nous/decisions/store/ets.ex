@@ -5,6 +5,18 @@ defmodule Nous.Decisions.Store.ETS do
   Uses two unnamed ETS tables (one for nodes, one for edges) so multiple
   instances can coexist. Graph queries use in-memory BFS traversal.
 
+  ## Ownership & lifetime
+
+  Like `Nous.KnowledgeBase.Store.ETS`, this store is **intentionally
+  run-scoped**: `init/1` hands the table references back in `state`, the caller
+  threads them through `ctx` for the session, and the tables are reclaimed when
+  the owning process exits. There is no supervised owner and no cross-run
+  persistence — that is the design, not a leak. The tables are `:public` so the
+  several processes that share a session's `state` (agent loop + tool tasks) can
+  all write; access is gated by possession of the table reference, which stays
+  inside `ctx`. Reach for a serializing owner process if you need cross-write
+  atomicity or a lifetime longer than the session.
+
   ## Quick Start
 
       {:ok, state} = Nous.Decisions.Store.ETS.init([])
