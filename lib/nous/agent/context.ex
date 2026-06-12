@@ -183,6 +183,9 @@ defmodule Nous.Agent.Context do
 
   """
   @spec add_message(t(), Message.t()) :: t()
+  # NOTE: `messages` is appended-to (`++ [message]`), which is O(n) per call —
+  # acceptable for single appends, but use `add_messages/2` for bulk inserts;
+  # it concatenates once instead of re-walking the list per message.
   def add_message(%__MODULE__{} = ctx, %Message{} = message) do
     updated_messages = ctx.messages ++ [message]
 
@@ -204,7 +207,12 @@ defmodule Nous.Agent.Context do
   """
   @spec add_messages(t(), [Message.t()]) :: t()
   def add_messages(%__MODULE__{} = ctx, messages) when is_list(messages) do
-    Enum.reduce(messages, ctx, &add_message(&2, &1))
+    # Concatenate the whole batch ONCE (O(n+m)) instead of `++ [msg]` per
+    # message (O(n*m)). `needs_response` is then folded over just the new
+    # messages — identical result to the old per-item reduce, since
+    # update_needs_response depends only on each message's role.
+    ctx = %{ctx | messages: ctx.messages ++ messages}
+    Enum.reduce(messages, ctx, fn msg, acc -> update_needs_response(acc, msg) end)
   end
 
   @doc """

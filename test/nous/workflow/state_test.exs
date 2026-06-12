@@ -30,7 +30,8 @@ defmodule Nous.Workflow.StateTest do
     test "updates timestamp" do
       state = State.new()
       original_time = state.updated_at
-      Process.sleep(1)
+      # No sleep needed: the assertion accepts :eq, so a same-instant update
+      # still passes; put_result must only never move the timestamp backwards.
       updated = State.put_result(state, "node", :ok)
       assert DateTime.compare(updated.updated_at, original_time) in [:gt, :eq]
     end

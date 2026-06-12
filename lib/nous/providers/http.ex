@@ -117,7 +117,7 @@ defmodule Nous.Providers.HTTP do
     case System.get_env("NOUS_HTTP_BACKEND") do
       nil -> app_or_default()
       "req" -> Nous.HTTP.Backend.Req
-      "hackney" -> Nous.HTTP.Backend.Hackney
+      "hackney" -> hackney_backend_or_fallback(Nous.HTTP.Backend.Hackney, &app_or_default/0)
       other -> resolve_custom_backend(other, :post, 4, &app_or_default/0)
     end
   end
@@ -188,10 +188,37 @@ defmodule Nous.Providers.HTTP do
 
   defp configured_stream_backend do
     case System.get_env("NOUS_HTTP_STREAM_BACKEND") do
-      nil -> stream_app_or_default()
-      "req" -> Nous.HTTP.StreamBackend.Req
-      "hackney" -> Nous.HTTP.StreamBackend.Hackney
-      other -> resolve_custom_backend(other, :stream, 4, &stream_app_or_default/0)
+      nil ->
+        stream_app_or_default()
+
+      "req" ->
+        Nous.HTTP.StreamBackend.Req
+
+      "hackney" ->
+        hackney_backend_or_fallback(Nous.HTTP.StreamBackend.Hackney, &stream_app_or_default/0)
+
+      other ->
+        resolve_custom_backend(other, :stream, 4, &stream_app_or_default/0)
+    end
+  end
+
+  # The hackney backends are opt-in: hackney is an optional dep. If a user
+  # selects it (env var / config) without adding `{:hackney, "~> 4.0"}`, fall
+  # back to the default backend with a loud warning instead of raising
+  # UndefinedFunctionError on the first request.
+  defp hackney_backend_or_fallback(hackney_backend, fallback) do
+    if Code.ensure_loaded?(:hackney) do
+      hackney_backend
+    else
+      require Logger
+
+      Logger.warning(
+        "NOUS_HTTP_BACKEND/stream backend set to hackney, but :hackney is not " <>
+          "available. Add {:hackney, \"~> 4.0\"} to your deps to use it. " <>
+          "Falling back to the default backend."
+      )
+
+      fallback.()
     end
   end
 
@@ -247,9 +274,15 @@ defmodule Nous.Providers.HTTP do
   def parse_sse_buffer(_), do: {[], ""}
 
   defp do_parse_sse_buffer(buffer) when is_binary(buffer) do
-    # Split on double newlines (SSE event separator)
-    # Handle both \n\n and \r\n\r\n
-    parts = String.split(buffer, ~r/\r?\n\r?\n/)
+    # Split on the SSE event separator (blank line). Use `:binary.split` with a
+    # precompiled pattern instead of a regex: on a large buffer that holds an
+    # incomplete event (big tool-call args / thinking block spanning many
+    # chunks) this is re-run per chunk, and the Boyer-Moore binary matcher is
+    # dramatically cheaper than the regex engine. The two patterns cover the
+    # only real SSE separators — `\r\n\r\n` contains no `\n\n` substring, so
+    # there is no ambiguous overlap. (A stateful tail-only rescan would also
+    # cut the cumulative O(n²), but that needs call-site scan-offset tracking.)
+    parts = :binary.split(buffer, ["\r\n\r\n", "\n\n"], [:global])
 
     case parts do
       [incomplete] ->

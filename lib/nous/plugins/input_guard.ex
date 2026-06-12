@@ -54,6 +54,17 @@ defmodule Nous.Plugins.InputGuard do
       `:all` only if every strategy flags.
     * `:short_circuit` — When `true`, stops running strategies on first `:blocked` result.
       Default: `false`
+    * `:fail_closed` — How to treat strategies that error or time out ("dropped"
+      strategies). When `true`, a dropped strategy upgrades an otherwise-`:safe`
+      verdict to `:suspicious`, so a crashed/timed-out detector can't silently
+      let input through. Defaults to `true` when `aggregation: :any` (where a
+      single surviving detector decides), `false` for `:majority`/`:all` (which
+      already count dropped strategies against the configured denominator).
+      Dropped strategies always emit a `Logger` warning and a
+      `[:nous, :input_guard, :strategy_dropped]` telemetry event.
+    * `:strategy_timeout` — Per-strategy timeout in ms for the parallel
+      (non-short-circuit) path; a strategy exceeding it is killed and counts
+      as dropped. Default: `30_000`
     * `:on_violation` — Optional callback function `fn result -> ... end` called when
       input is flagged.
     * `:skip_empty` — Skip checking empty or whitespace-only messages. Default: `true`
@@ -146,8 +157,13 @@ defmodule Nous.Plugins.InputGuard do
     strategies = Map.get(config, :strategies, [{__MODULE__.Strategies.Pattern, []}])
     short_circuit = Map.get(config, :short_circuit, false)
 
-    results = run_strategies(strategies, input, ctx, short_circuit)
-    aggregated = aggregate(results, length(strategies), config)
+    timeout = Map.get(config, :strategy_timeout, 30_000)
+    {results, dropped} = run_strategies(strategies, input, ctx, short_circuit, timeout)
+
+    aggregated =
+      results
+      |> aggregate(length(strategies), config)
+      |> apply_fail_closed(dropped, config)
 
     # Fire on_violation callback if flagged
     if aggregated.severity != :safe do
@@ -158,36 +174,90 @@ defmodule Nous.Plugins.InputGuard do
     Policy.apply(aggregated, ctx, tools, config)
   end
 
-  defp run_strategies(strategies, input, ctx, true = _short_circuit) do
-    Enum.reduce_while(strategies, [], fn {mod, opts}, acc ->
-      case safe_check(mod, input, opts, ctx) do
-        {:ok, %Result{severity: :blocked} = result} ->
-          {:halt, [result | acc]}
+  # Both variants return {results, dropped_count}. A "dropped" strategy is one
+  # that errored or timed out — it produced no verdict, which must not be
+  # mistaken for a :safe verdict (see apply_fail_closed/3). Strategies skipped
+  # by short-circuiting after a :blocked result are NOT drops.
+  defp run_strategies(strategies, input, ctx, true = _short_circuit, _timeout) do
+    {results, dropped} =
+      Enum.reduce_while(strategies, {[], 0}, fn {mod, opts}, {acc, dropped} ->
+        case safe_check(mod, input, opts, ctx) do
+          {:ok, %Result{severity: :blocked} = result} ->
+            {:halt, {[result | acc], dropped}}
 
-        {:ok, result} ->
-          {:cont, [result | acc]}
+          {:ok, result} ->
+            {:cont, {[result | acc], dropped}}
 
-        :error ->
-          {:cont, acc}
-      end
-    end)
-    |> Enum.reverse()
+          :error ->
+            {:cont, {acc, dropped + 1}}
+        end
+      end)
+
+    {Enum.reverse(results), dropped}
   end
 
-  defp run_strategies(strategies, input, ctx, false = _short_circuit) do
-    Task.Supervisor.async_stream_nolink(
-      Nous.TaskSupervisor,
-      strategies,
-      fn {mod, opts} -> safe_check(mod, input, opts, ctx) end,
-      timeout: 30_000,
-      on_timeout: :kill_task
+  defp run_strategies(strategies, input, ctx, false = _short_circuit, timeout) do
+    {results, dropped} =
+      Task.Supervisor.async_stream_nolink(
+        Nous.TaskSupervisor,
+        strategies,
+        fn {mod, opts} -> safe_check(mod, input, opts, ctx) end,
+        timeout: timeout,
+        on_timeout: :kill_task
+      )
+      |> Enum.zip(strategies)
+      |> Enum.reduce({[], 0}, fn
+        {{:ok, {:ok, result}}, _strategy}, {acc, dropped} ->
+          {[result | acc], dropped}
+
+        {{:ok, :error}, _strategy}, {acc, dropped} ->
+          # safe_check already logged the failure in-process
+          {acc, dropped + 1}
+
+        {{:exit, reason}, {mod, _opts}}, {acc, dropped} ->
+          # Timeout kills bypass safe_check's rescue — log here
+          Logger.warning(
+            "InputGuard: Strategy #{inspect(mod)} dropped (exit: #{inspect(reason)})"
+          )
+
+          {acc, dropped + 1}
+      end)
+
+    {Enum.reverse(results), dropped}
+  end
+
+  # A dropped strategy produced no verdict. Under :any aggregation a single
+  # surviving detector decides, so a crashed/timed-out detector silently
+  # letting input through is a fail-open hole — upgrade :safe to :suspicious
+  # unless the user explicitly opted out. :majority/:all already count drops
+  # against the configured denominator, so they default to fail-open-tolerant.
+  defp apply_fail_closed(aggregated, 0, _config), do: aggregated
+
+  defp apply_fail_closed(aggregated, dropped, config) do
+    mode = Map.get(config, :aggregation, :any)
+    fail_closed = Map.get(config, :fail_closed, mode == :any)
+
+    :telemetry.execute([:nous, :input_guard, :strategy_dropped], %{count: dropped}, %{
+      aggregation: mode,
+      fail_closed: fail_closed
+    })
+
+    Logger.warning(
+      "InputGuard: #{dropped} strateg#{if dropped == 1, do: "y", else: "ies"} dropped " <>
+        "(error/timeout); fail_closed=#{fail_closed}"
     )
-    |> Enum.reduce([], fn
-      {:ok, {:ok, result}}, acc -> [result | acc]
-      {:ok, :error}, acc -> acc
-      {:exit, _reason}, acc -> acc
-    end)
-    |> Enum.reverse()
+
+    if fail_closed and aggregated.severity == :safe do
+      %Result{
+        severity: :suspicious,
+        reason:
+          "#{dropped} input-guard strateg#{if dropped == 1, do: "y", else: "ies"} " <>
+            "did not complete (error or timeout); failing closed",
+        metadata: %{dropped_strategies: dropped, fail_closed: true}
+      }
+    else
+      aggregated
+    end
   end
 
   defp safe_check(mod, input, opts, ctx) do

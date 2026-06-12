@@ -176,6 +176,89 @@ defmodule Nous.Eval.Optimizer.Parameter do
   end
 
   @doc """
+  Build a parameter from a plain data map (e.g. decoded from YAML/JSON).
+
+  This is the safe alternative to evaluating an `.exs` parameter file: it
+  constructs parameters from pure data, never executing code. Keys may be
+  strings or atoms. The `:condition` feature (which needs a function) is NOT
+  supported here — declare conditional parameters in code if you need them.
+
+  ## Expected shape
+
+      %{"type" => "float", "name" => "temperature", "min" => 0.0, "max" => 1.0,
+        "step" => 0.1}
+      %{"type" => "integer", "name" => "max_tokens", "min" => 256, "max" => 2048,
+        "step" => 256}
+      %{"type" => "choice", "name" => "model", "choices" => ["gpt-4", "gpt-4o"]}
+      %{"type" => "bool", "name" => "use_cot", "default" => true}
+
+  Returns `{:ok, t()}` or `{:error, reason}`.
+  """
+  @spec from_map(map()) :: {:ok, t()} | {:error, String.t()}
+  def from_map(map) when is_map(map) do
+    get = fn key -> map[key] || map[to_string(key)] end
+
+    with {:ok, type} <- fetch_type(get.(:type)),
+         {:ok, name} <- fetch_name(get.(:name)) do
+      build_from_data(type, name, get)
+    end
+  end
+
+  def from_map(other), do: {:error, "expected a parameter map, got: #{inspect(other)}"}
+
+  defp fetch_type(type) when type in ["float", "integer", "choice", "bool"],
+    do: {:ok, String.to_existing_atom(type)}
+
+  defp fetch_type(type) when type in [:float, :integer, :choice, :bool], do: {:ok, type}
+  defp fetch_type(other), do: {:error, "invalid parameter type: #{inspect(other)}"}
+
+  # Parameter names are config keys (e.g. :temperature, :max_tokens) matched
+  # against agent settings; to_existing_atom keeps a hostile params file from
+  # minting arbitrary atoms while still accepting the known knobs.
+  defp fetch_name(name) when is_binary(name) do
+    {:ok, String.to_existing_atom(name)}
+  rescue
+    ArgumentError -> {:error, "unknown parameter name: #{inspect(name)}"}
+  end
+
+  defp fetch_name(name) when is_atom(name) and not is_nil(name), do: {:ok, name}
+  defp fetch_name(other), do: {:error, "invalid parameter name: #{inspect(other)}"}
+
+  defp build_from_data(:float, name, get) do
+    opts = data_opts(get, [:step, :default, :log_scale])
+    {:ok, float(name, get.(:min), get.(:max), opts)}
+  end
+
+  defp build_from_data(:integer, name, get) do
+    opts = data_opts(get, [:step, :default])
+    {:ok, integer(name, get.(:min), get.(:max), opts)}
+  end
+
+  defp build_from_data(:choice, name, get) do
+    case get.(:choices) do
+      choices when is_list(choices) and choices != [] ->
+        {:ok, choice(name, choices, data_opts(get, [:default]))}
+
+      other ->
+        {:error,
+         "choice parameter #{inspect(name)} needs a non-empty :choices list, got: #{inspect(other)}"}
+    end
+  end
+
+  defp build_from_data(:bool, name, get) do
+    {:ok, bool(name, data_opts(get, [:default]))}
+  end
+
+  defp data_opts(get, keys) do
+    Enum.flat_map(keys, fn key ->
+      case get.(key) do
+        nil -> []
+        val -> [{key, val}]
+      end
+    end)
+  end
+
+  @doc """
   Get all possible values for a parameter (for grid search).
   """
   @spec values(t()) :: [term()]

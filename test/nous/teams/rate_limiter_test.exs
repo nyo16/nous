@@ -28,11 +28,9 @@ defmodule Nous.Teams.RateLimiterTest do
     test "acquire fails when team budget exceeded", %{team_id: team_id} do
       {:ok, pid} = start_supervised({RateLimiter, team_id: team_id, budget: 1.0})
 
-      # Record usage that exceeds budget
+      # Record usage that exceeds budget. record_usage is a cast and acquire is
+      # a call — the call is FIFO-ordered after the cast, so no sleep is needed.
       RateLimiter.record_usage(pid, "alice", %{tokens: 1000, cost: 1.5, requests: 1})
-
-      # Allow cast to process
-      Process.sleep(10)
 
       assert {:error, :budget_exceeded} = RateLimiter.acquire(pid, "alice", 100)
     end
@@ -42,7 +40,6 @@ defmodule Nous.Teams.RateLimiterTest do
         start_supervised({RateLimiter, team_id: team_id, budget: 100.0, per_agent_budget: 1.0})
 
       RateLimiter.record_usage(pid, "alice", %{tokens: 500, cost: 1.5, requests: 1})
-      Process.sleep(10)
 
       assert {:error, :budget_exceeded} = RateLimiter.acquire(pid, "alice", 100)
     end
@@ -52,7 +49,6 @@ defmodule Nous.Teams.RateLimiterTest do
         start_supervised({RateLimiter, team_id: team_id, budget: 100.0, per_agent_budget: 2.0})
 
       RateLimiter.record_usage(pid, "alice", %{tokens: 500, cost: 1.5, requests: 1})
-      Process.sleep(10)
 
       # Alice is under per-agent budget, bob has no usage
       assert {:ok, _ref_a} = RateLimiter.acquire(pid, "alice", 100)
@@ -66,7 +62,6 @@ defmodule Nous.Teams.RateLimiterTest do
 
       RateLimiter.record_usage(pid, "alice", %{tokens: 500, cost: 0.5, requests: 1})
       RateLimiter.record_usage(pid, "bob", %{tokens: 300, cost: 0.3, requests: 2})
-      Process.sleep(10)
 
       status = RateLimiter.get_status(pid)
       assert_in_delta status.budget_remaining, 99.2, 0.01
@@ -82,7 +77,6 @@ defmodule Nous.Teams.RateLimiterTest do
 
       RateLimiter.record_usage(pid, "alice", %{tokens: 100, cost: 0.1, requests: 1})
       RateLimiter.record_usage(pid, "alice", %{tokens: 200, cost: 0.2, requests: 1})
-      Process.sleep(10)
 
       status = RateLimiter.get_status(pid)
       assert status.agents["alice"].tokens == 300
@@ -98,7 +92,6 @@ defmodule Nous.Teams.RateLimiterTest do
       # Record 2 requests within the window
       RateLimiter.record_usage(pid, "alice", %{tokens: 100, cost: 0.0, requests: 1})
       RateLimiter.record_usage(pid, "alice", %{tokens: 100, cost: 0.0, requests: 1})
-      Process.sleep(10)
 
       assert {:error, :rate_limited} = RateLimiter.acquire(pid, "alice", 100)
     end
@@ -107,7 +100,6 @@ defmodule Nous.Teams.RateLimiterTest do
       {:ok, pid} = start_supervised({RateLimiter, team_id: team_id, tpm: 500})
 
       RateLimiter.record_usage(pid, "alice", %{tokens: 400, cost: 0.0, requests: 1})
-      Process.sleep(10)
 
       # Trying to acquire 200 tokens when 400 already used, limit is 500
       assert {:error, :rate_limited} = RateLimiter.acquire(pid, "alice", 200)
@@ -117,7 +109,6 @@ defmodule Nous.Teams.RateLimiterTest do
       {:ok, pid} = start_supervised({RateLimiter, team_id: team_id, rpm: 10, tpm: 10_000})
 
       RateLimiter.record_usage(pid, "alice", %{tokens: 100, cost: 0.0, requests: 1})
-      Process.sleep(10)
 
       assert {:ok, _ref} = RateLimiter.acquire(pid, "alice", 100)
     end
@@ -164,7 +155,6 @@ defmodule Nous.Teams.RateLimiterTest do
       assert {:error, :rate_limited} = RateLimiter.acquire(pid, "alice", 30)
 
       RateLimiter.release(pid, ref)
-      Process.sleep(10)
 
       # After release, acquire should succeed.
       assert {:ok, _ref} = RateLimiter.acquire(pid, "alice", 30)
@@ -183,8 +173,6 @@ defmodule Nous.Teams.RateLimiterTest do
         reservation: ref
       })
 
-      Process.sleep(10)
-
       # 50 tokens used + remaining headroom = 150. Acquire 100 should fit.
       assert {:ok, _ref} = RateLimiter.acquire(pid, "alice", 100)
     end
@@ -195,7 +183,6 @@ defmodule Nous.Teams.RateLimiterTest do
       # No acquire — just record. This is the legacy pattern; it must
       # keep working for callers that don't go through acquire.
       RateLimiter.record_usage(pid, "alice", %{tokens: 500, cost: 0.5, requests: 1})
-      Process.sleep(10)
 
       status = RateLimiter.get_status(pid)
       assert status.agents["alice"].tokens == 500

@@ -34,6 +34,7 @@ defmodule Nous.Permissions.Policy do
             allow_names: MapSet.new(),
             allow_prefixes: [],
             approval_required: MapSet.new(),
+            allow_unattended_execute: false,
             mode: :default
 
   @type mode :: :default | :permissive | :strict
@@ -44,6 +45,7 @@ defmodule Nous.Permissions.Policy do
           allow_names: MapSet.t(),
           allow_prefixes: [String.t()],
           approval_required: MapSet.t(),
+          allow_unattended_execute: boolean(),
           mode: mode()
         }
 end

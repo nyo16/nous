@@ -82,6 +82,10 @@ defmodule Nous.Permissions do
     * `:deny` — list of tool names to block
     * `:deny_prefixes` — list of prefixes to block (e.g. `["web_"]`)
     * `:approval_required` — list of tool names requiring approval
+    * `:allow_unattended_execute` — when `true`, `:permissive` mode also drops
+      the approval gate for `category: :execute` tools (e.g. `bash`). Defaults to
+      `false`: even under `:permissive`, execute-class tools still require
+      approval so one config choice can't turn an LLM into unattended RCE.
 
   ## Examples
 
@@ -115,7 +119,8 @@ defmodule Nous.Permissions do
         opts
         |> Keyword.get(:approval_required, [])
         |> Enum.map(&String.downcase/1)
-        |> MapSet.new()
+        |> MapSet.new(),
+      allow_unattended_execute: Keyword.get(opts, :allow_unattended_execute, false)
     }
   end
 
@@ -207,6 +212,31 @@ defmodule Nous.Permissions do
   # Unknown/invalid mode: fail closed (require approval) rather than crash, so
   # blocked?/2 and requires_approval?/2 stay consistent under a bad mode.
   def requires_approval?(%Policy{}, _tool_name), do: true
+
+  @doc """
+  Checks if a tool requires approval, accounting for its `category`.
+
+  Identical to `requires_approval?/2` except that `category: :execute` tools
+  (e.g. `bash`) are NOT auto-approved under `:permissive` mode unless the policy
+  sets `allow_unattended_execute: true`. This keeps the single `:permissive`
+  switch from silently turning an LLM into unattended remote-code-execution: the
+  per-tool `requires_approval` flag and the policy already compose, but a custom
+  execute-class tool that relies on the policy for its gate would otherwise be
+  unguarded under `:permissive`.
+
+  `category` is the tool's declared `Nous.Tool` category (`:execute`, `:write`,
+  `:read`, …) or `nil`.
+  """
+  @spec requires_approval?(Policy.t(), String.t(), atom() | nil) :: boolean()
+  def requires_approval?(
+        %Policy{mode: :permissive, allow_unattended_execute: false},
+        _tool_name,
+        :execute
+      ),
+      do: true
+
+  def requires_approval?(%Policy{} = policy, tool_name, _category),
+    do: requires_approval?(policy, tool_name)
 
   @doc """
   Filters a list of `Nous.Tool` structs, removing blocked tools.
