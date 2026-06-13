@@ -286,8 +286,39 @@ if Code.ensure_loaded?(Duckdbex) do
       {Enum.join(clauses, " AND "), params, next_idx}
     end
 
-    defp field_to_column(:metadata), do: "metadata_json"
-    defp field_to_column(field), do: to_string(field)
+    # Allowlist of Entry field → physical column. Column names are interpolated
+    # into `SET col = $n` / `WHERE col = $n`, so they must never be a raw
+    # `to_string/1` of caller input (SQL-identifier injection primitive). Keys
+    # are internal Entry field atoms; an unknown field is a bug/attack → fail.
+    @column_map %{
+      id: "id",
+      content: "content",
+      type: "type",
+      importance: "importance",
+      evergreen: "evergreen",
+      embedding: "embedding",
+      agent_id: "agent_id",
+      session_id: "session_id",
+      user_id: "user_id",
+      namespace: "namespace",
+      metadata: "metadata_json",
+      access_count: "access_count",
+      created_at: "created_at",
+      updated_at: "updated_at",
+      last_accessed_at: "last_accessed_at"
+    }
+
+    defp field_to_column(field) do
+      case Map.fetch(@column_map, field) do
+        {:ok, col} ->
+          col
+
+        :error ->
+          raise ArgumentError,
+                "unknown memory column #{inspect(field)} — not in the allowlist " <>
+                  "(#{@column_map |> Map.keys() |> Enum.sort() |> Enum.map_join(", ", &inspect/1)})"
+      end
+    end
 
     defp encode_field(:embedding, val), do: val
     defp encode_field(:metadata, val), do: JSON.encode!(val || %{})

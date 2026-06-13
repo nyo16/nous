@@ -23,10 +23,49 @@ defmodule Nous.PermissionsTest do
   end
 
   describe "permissive_policy/0" do
-    test "no tool requires approval" do
+    test "no tool requires approval (name-only check)" do
       policy = Permissions.permissive_policy()
       refute Permissions.requires_approval?(policy, "bash")
       refute Permissions.requires_approval?(policy, "file_write")
+    end
+  end
+
+  describe "requires_approval?/3 (category-aware) under :permissive" do
+    test "execute-category tools still require approval by default" do
+      policy = Permissions.permissive_policy()
+      # The single :permissive switch must NOT silently enable unattended RCE.
+      assert Permissions.requires_approval?(policy, "bash", :execute)
+      assert Permissions.requires_approval?(policy, "custom_shell", :execute)
+    end
+
+    test "non-execute categories remain auto-approved under :permissive" do
+      policy = Permissions.permissive_policy()
+      refute Permissions.requires_approval?(policy, "file_write", :write)
+      refute Permissions.requires_approval?(policy, "file_read", :read)
+      refute Permissions.requires_approval?(policy, "anything", nil)
+    end
+
+    test "allow_unattended_execute: true opts execute tools back out" do
+      policy = Permissions.build_policy(mode: :permissive, allow_unattended_execute: true)
+      refute Permissions.requires_approval?(policy, "bash", :execute)
+    end
+
+    test ":default and :strict modes are unaffected by category arg" do
+      default = Permissions.default_policy()
+      assert Permissions.requires_approval?(default, "bash", :execute)
+      refute Permissions.requires_approval?(default, "file_read", :read)
+
+      strict = Permissions.strict_policy()
+      assert Permissions.requires_approval?(strict, "anything", :read)
+    end
+
+    test "3-arity agrees with 2-arity for non-permissive modes" do
+      policy = Permissions.default_policy()
+
+      for name <- ["bash", "file_read", "file_write"] do
+        assert Permissions.requires_approval?(policy, name) ==
+                 Permissions.requires_approval?(policy, name, :execute)
+      end
     end
   end
 

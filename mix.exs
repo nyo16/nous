@@ -55,7 +55,9 @@ defmodule Nous.MixProject do
       # backend, declare `{:hackney, "~> 4.0"}` in your app's deps and select
       # it via `NOUS_HTTP_BACKEND=hackney` (or the streaming variant).
       {:finch, "~> 0.19"},
-      {:req, "~> 0.5"},
+      # `or ~> 0.6` lets downstream apps adopt req 0.6.x without a resolver
+      # conflict against nous (we still lock 0.5.x until verified on 0.6).
+      {:req, "~> 0.5 or ~> 0.6"},
       {:hackney, "~> 4.0", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
@@ -70,15 +72,22 @@ defmodule Nous.MixProject do
       # {:exqlite, "~> 0.27", optional: true},
       # {:duckdbex, "~> 0.3", optional: true},
 
-      # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps to unlock)
-      # {:llama_cpp_ex, "~> 0.6.5", optional: true},
+      # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
+      # to unlock the LlamaCpp provider). optional: true keeps it out of
+      # downstream apps' builds unless they opt in, while still being available
+      # for Nous's own dev/test (e.g. the tagged llamacpp smoke test).
+      {:llama_cpp_ex, "~> 0.8", optional: true},
 
       # Memory system embedding providers (all optional — add to your app's deps to unlock)
       # {:bumblebee, "~> 0.6", optional: true},
       # {:exla, "~> 0.9", optional: true},
 
-      # Process execution for command hooks
-      {:net_runner, "~> 1.0.4"},
+      # Process execution for command hooks and the Bash tool. A NIF-based
+      # runner is used (over System.cmd/Port) for fine-grained process-tree
+      # control and reliable kill-on-timeout of child processes. `~> 1.0` (not
+      # the tighter `~> 1.0.4`) so downstream apps can pick up 1.x fixes without
+      # waiting on a nous release.
+      {:net_runner, "~> 1.0"},
 
       # Telemetry
       {:telemetry, "~> 1.2"},
@@ -91,7 +100,11 @@ defmodule Nous.MixProject do
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:mox, "~> 1.1", only: :test},
-      {:phoenix_pubsub, "~> 2.1", only: :test},
+      # optional (not only: :test) so the `~> 2.1` constraint reaches downstream
+      # resolvers — Nous.PubSub integrates with phoenix_pubsub at runtime (guarded
+      # by Code.ensure_loaded?), and apps that bring their own copy should see a
+      # compatible-version requirement rather than a hidden test-only pin.
+      {:phoenix_pubsub, "~> 2.1", optional: true},
       # Bypass = in-test HTTP server for exercising the streaming pipeline
       # without hitting real LLM endpoints. Available in :dev too so
       # `bench/http_backend.exs` can spin up an in-process server.

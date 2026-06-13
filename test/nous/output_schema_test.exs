@@ -466,6 +466,21 @@ defmodule Nous.OutputSchemaTest do
     end
   end
 
+  defmodule StrictScore do
+    use Ecto.Schema
+    use Nous.OutputSchema
+
+    @primary_key false
+    embedded_schema do
+      field(:score, :float)
+    end
+
+    @impl true
+    def validate_changeset(changeset) do
+      Ecto.Changeset.validate_number(changeset, :score, less_than_or_equal_to: 1.0)
+    end
+  end
+
   # --- schema_name/1 (now public) ---
 
   describe "schema_name/1" do
@@ -725,16 +740,31 @@ defmodule Nous.OutputSchemaTest do
       assert %SentimentResult{} = result
     end
 
-    test "returns error when no schema matches" do
-      # Neither schema has a "unrelated" field that's required
-      # Both schemas will cast successfully since Ecto is lenient with extra/missing fields.
-      # Let's use SchemaWithValidation which has a validate_changeset
+    test "falls through to a lenient schema when an earlier strict schema rejects" do
+      # SchemaWithValidation rejects this (score 2.0 > 1.0), but TopicResult is
+      # lenient (extra/missing fields are fine), so one_of falls through to it.
+      # The no-match → {:error} path is covered by "error includes one_of
+      # context when no schemas match" below; this pins the fall-through.
       json = ~s({"score": 2.0, "label": "test"})
 
-      assert {:ok, _} =
+      assert {:ok, result} =
                OutputSchema.parse_and_validate(
                  json,
                  {:one_of, [SchemaWithValidation, TopicResult]}
+               )
+
+      assert %TopicResult{} = result
+    end
+
+    test "returns error when every schema rejects" do
+      # Both schemas reject: SchemaWithValidation needs score <= 1.0 AND a
+      # required label; StrictScore (defined below) needs score <= 1.0 too.
+      json = ~s({"score": 2.0})
+
+      assert {:error, %ValidationError{}} =
+               OutputSchema.parse_and_validate(
+                 json,
+                 {:one_of, [SchemaWithValidation, StrictScore]}
                )
     end
 

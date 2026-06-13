@@ -54,7 +54,27 @@ defmodule Nous.PubSub do
   def available?(nil), do: false
 
   def available?(_pubsub) do
-    Code.ensure_loaded?(Phoenix.PubSub)
+    phoenix_pubsub_loaded?()
+  end
+
+  # `Code.ensure_loaded?/1` goes through the (singleton) code server. On the
+  # hot path this runs once PER BROADCAST — i.e. once per streamed token across
+  # every concurrently-streaming agent — making it a node-wide serialization
+  # point. Whether Phoenix.PubSub is loaded is fixed for the life of the VM
+  # (a dep is either compiled in or not), so memoize it in :persistent_term:
+  # one write on first use, lock-free reads forever after.
+  @pubsub_loaded_key {__MODULE__, :phoenix_pubsub_loaded?}
+
+  defp phoenix_pubsub_loaded? do
+    case :persistent_term.get(@pubsub_loaded_key, :unknown) do
+      :unknown ->
+        loaded = Code.ensure_loaded?(Phoenix.PubSub)
+        :persistent_term.put(@pubsub_loaded_key, loaded)
+        loaded
+
+      loaded ->
+        loaded
+    end
   end
 
   @doc """
@@ -68,7 +88,7 @@ defmodule Nous.PubSub do
   def subscribe(nil, _topic), do: :ok
 
   def subscribe(pubsub, topic) do
-    if Code.ensure_loaded?(Phoenix.PubSub) do
+    if phoenix_pubsub_loaded?() do
       try do
         apply(Phoenix.PubSub, :subscribe, [pubsub, topic])
       catch
@@ -96,7 +116,7 @@ defmodule Nous.PubSub do
   def broadcast(_pubsub, nil, _message), do: :ok
 
   def broadcast(pubsub, topic, message) do
-    if Code.ensure_loaded?(Phoenix.PubSub) do
+    if phoenix_pubsub_loaded?() do
       try do
         apply(Phoenix.PubSub, :broadcast, [pubsub, topic, message])
       catch

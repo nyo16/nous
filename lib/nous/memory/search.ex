@@ -51,24 +51,67 @@ defmodule Nous.Memory.Search do
       [scope: normalize_scope(scope), limit: limit * 3]
       |> maybe_add_type(type)
 
-    # Step 1: Text search
-    with {:ok, text_results} <- store_mod.search_text(store_state, query, store_opts) do
-      do_search(text_results, store_mod, store_state, query, embedding_provider,
-        store_opts: store_opts,
-        embedding_opts: embedding_opts,
-        limit: limit,
-        min_score: min_score,
-        type: type,
-        scoring_weights: scoring_weights,
-        decay_lambda: decay_lambda,
-        now: now
-      )
+    # Kick off embedding concurrently with the text search. The embedding is a
+    # network round-trip that does NOT touch the store, so it overlaps the text
+    # scan (cutting the embedding RTT off the critical path) without two
+    # processes sharing the store connection. search_vector still runs
+    # sequentially after both complete, keeping all store access single-process
+    # — safe for SQL backends whose connection isn't concurrency-safe.
+    embed_task =
+      if embedding_provider && supports_vector?(store_mod) do
+        Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
+          Embedding.embed(embedding_provider, query, embedding_opts)
+        end)
+      end
+
+    # Step 1: Text search (in this process, concurrent with the embed task)
+    case store_mod.search_text(store_state, query, store_opts) do
+      {:ok, text_results} ->
+        query_embedding = await_embedding(embed_task)
+
+        do_search(text_results, query_embedding, store_mod, store_state,
+          store_opts: store_opts,
+          limit: limit,
+          min_score: min_score,
+          type: type,
+          scoring_weights: scoring_weights,
+          decay_lambda: decay_lambda,
+          now: now
+        )
+
+      error ->
+        # Don't leak the embed task if the text search failed.
+        if embed_task, do: Task.shutdown(embed_task, :brutal_kill)
+        error
     end
   end
 
-  defp do_search(text_results, store_mod, store_state, query, embedding_provider, opts) do
+  # Await the concurrently-running embedding task, converting every failure mode
+  # (error tuple, crash, timeout) to nil → vector search is skipped, mirroring
+  # the previous fail-open behaviour.
+  defp await_embedding(nil), do: nil
+
+  defp await_embedding(task) do
+    case Task.yield(task, 30_000) || Task.shutdown(task) do
+      {:ok, {:ok, embedding}} ->
+        embedding
+
+      {:ok, {:error, reason}} ->
+        Logger.warning("Embedding failed: #{inspect(reason)}")
+        nil
+
+      {:exit, reason} ->
+        Logger.warning("Embedding task crashed: #{inspect(reason)}")
+        nil
+
+      nil ->
+        Logger.warning("Embedding timed out")
+        nil
+    end
+  end
+
+  defp do_search(text_results, query_embedding, store_mod, store_state, opts) do
     store_opts = Keyword.fetch!(opts, :store_opts)
-    embedding_opts = Keyword.fetch!(opts, :embedding_opts)
     limit = Keyword.fetch!(opts, :limit)
     min_score = Keyword.fetch!(opts, :min_score)
     type = Keyword.fetch!(opts, :type)
@@ -76,21 +119,16 @@ defmodule Nous.Memory.Search do
     decay_lambda = Keyword.fetch!(opts, :decay_lambda)
     now = Keyword.fetch!(opts, :now)
 
-    # Step 2: Vector search (if embedding provider configured and store supports it)
+    # Step 2: Vector search (only if the embedding succeeded and the store
+    # supports it). Runs sequentially here — single-process store access.
     vector_results =
-      if embedding_provider && supports_vector?(store_mod) do
-        case Embedding.embed(embedding_provider, query, embedding_opts) do
-          {:ok, query_embedding} ->
-            case store_mod.search_vector(store_state, query_embedding, store_opts) do
-              {:ok, results} ->
-                results
+      if query_embedding && supports_vector?(store_mod) do
+        case store_mod.search_vector(store_state, query_embedding, store_opts) do
+          {:ok, results} ->
+            results
 
-              {:error, reason} ->
-                Logger.warning("Vector search failed: #{inspect(reason)}")
-                []
-            end
-
-          {:error, _reason} ->
+          {:error, reason} ->
+            Logger.warning("Vector search failed: #{inspect(reason)}")
             []
         end
       else

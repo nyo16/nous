@@ -899,9 +899,18 @@ defmodule Nous.AgentRunner do
         {[result_msg | results], acc_ctx}
 
       {:modify, %{arguments: new_args}} ->
-        # Hook modified the arguments — continue with modified call
+        # Hook modified the arguments — continue with modified call.
+        # Apply enforce_policy_approval here too (mirroring the :allow branch
+        # below): otherwise a tool gated ONLY by the permission policy (strict
+        # mode / approval_required / execute-category) would execute UNGATED
+        # whenever a pre_tool_use hook modifies arguments, since the bare tool
+        # struct's requires_approval flag may be false.
         modified_call = put_tool_field(call, :arguments, new_args)
-        tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
+
+        tool =
+          tools
+          |> Enum.find(fn t -> t.name == cleaned_name end)
+          |> enforce_policy_approval(agent.permissions)
 
         case check_tool_approval(tool, modified_call, acc_ctx) do
           :reject ->
@@ -1157,7 +1166,9 @@ defmodule Nous.AgentRunner do
   defp enforce_policy_approval(%Tool{requires_approval: true} = tool, _policy), do: tool
 
   defp enforce_policy_approval(%Tool{} = tool, %Permissions.Policy{} = policy) do
-    if Permissions.requires_approval?(policy, tool.name) do
+    # Pass the tool's category so an :execute tool keeps its approval gate even
+    # under :permissive (unless the policy opts into allow_unattended_execute).
+    if Permissions.requires_approval?(policy, tool.name, tool.category) do
       %{tool | requires_approval: true}
     else
       tool

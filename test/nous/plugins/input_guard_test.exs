@@ -385,7 +385,7 @@ defmodule Nous.Plugins.InputGuardTest do
   # --- Strategy error handling ---
 
   describe "strategy error handling" do
-    test "failing strategy is excluded from aggregation" do
+    test "failing strategy is excluded from aggregation when fail_closed: false" do
       ctx =
         build_ctx("safe input", %{
           strategies: [
@@ -393,24 +393,26 @@ defmodule Nous.Plugins.InputGuardTest do
             {__MODULE__.SafeStrategy, []}
           ],
           aggregation: :any,
+          fail_closed: false,
           policy: %{blocked: :block}
         })
 
       ctx = InputGuard.init(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
-      # ErrorStrategy excluded, SafeStrategy says safe
+      # ErrorStrategy excluded, SafeStrategy says safe — legacy opt-out behavior
       assert result_ctx.needs_response == true
       assert length(result_ctx.messages) == 1
     end
 
-    test "all strategies failing results in pass-through" do
+    test "all strategies failing results in pass-through when fail_closed: false" do
       ctx =
         build_ctx("any input", %{
           strategies: [
             {__MODULE__.ErrorStrategy, []},
             {__MODULE__.ErrorStrategy, []}
           ],
+          fail_closed: false,
           policy: %{blocked: :block}
         })
 
@@ -418,6 +420,126 @@ defmodule Nous.Plugins.InputGuardTest do
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == true
+    end
+  end
+
+  describe "fail-closed on dropped strategies" do
+    test "dropped strategy upgrades :safe to :suspicious under default :any (warn policy injects warning)" do
+      ctx =
+        build_ctx("safe input", %{
+          strategies: [
+            {__MODULE__.ErrorStrategy, []},
+            {__MODULE__.SafeStrategy, []}
+          ]
+          # no policy key → default %{suspicious: :warn, blocked: :block}
+          # no fail_closed key → defaults true for :any
+        })
+
+      ctx = InputGuard.init(dummy_agent(), ctx)
+
+      {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
+
+      # Warn action injects a system warning message
+      assert result_ctx.needs_response == true
+      assert length(result_ctx.messages) == 2
+      [_user, warning] = result_ctx.messages
+      assert warning.role == :system
+      assert warning.content =~ "flagged as suspicious"
+    end
+
+    test "all strategies dropped blocks when policy escalates suspicious" do
+      ctx =
+        build_ctx("any input", %{
+          strategies: [
+            {__MODULE__.ErrorStrategy, []},
+            {__MODULE__.ErrorStrategy, []}
+          ],
+          policy: %{suspicious: :block, blocked: :block}
+        })
+
+      ctx = InputGuard.init(dummy_agent(), ctx)
+
+      {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
+      assert result_ctx.needs_response == false
+    end
+
+    test "strategy timeout counts as dropped and fails closed" do
+      ctx =
+        build_ctx("safe input", %{
+          strategies: [
+            {__MODULE__.SleepStrategy, []},
+            {__MODULE__.SafeStrategy, []}
+          ],
+          strategy_timeout: 50,
+          policy: %{suspicious: :block}
+        })
+
+      ctx = InputGuard.init(dummy_agent(), ctx)
+
+      {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
+      assert result_ctx.needs_response == false
+    end
+
+    test "flagged survivor verdict is not overwritten by fail-closed upgrade" do
+      ctx =
+        build_ctx("bad input", %{
+          strategies: [
+            {__MODULE__.ErrorStrategy, []},
+            {__MODULE__.AlwaysBlockStrategy, []}
+          ],
+          policy: %{suspicious: :warn, blocked: :block}
+        })
+
+      ctx = InputGuard.init(dummy_agent(), ctx)
+
+      {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
+      # AlwaysBlockStrategy's :blocked verdict wins, not a :suspicious downgrade
+      assert result_ctx.needs_response == false
+      assert Enum.any?(result_ctx.messages, &(&1.content =~ "can't process"))
+    end
+
+    test ":majority aggregation does not fail closed by default" do
+      ctx =
+        build_ctx("safe input", %{
+          strategies: [
+            {__MODULE__.ErrorStrategy, []},
+            {__MODULE__.SafeStrategy, []},
+            {__MODULE__.SafeStrategy, []}
+          ],
+          aggregation: :majority,
+          policy: %{suspicious: :block, blocked: :block}
+        })
+
+      ctx = InputGuard.init(dummy_agent(), ctx)
+
+      {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
+      assert result_ctx.needs_response == true
+    end
+
+    test "dropped strategies emit telemetry" do
+      handler_id = "input-guard-drop-#{System.unique_integer([:positive])}"
+      parent = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:nous, :input_guard, :strategy_dropped],
+        fn _event, measurements, metadata, _ ->
+          send(parent, {:strategy_dropped, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      ctx =
+        build_ctx("safe input", %{
+          strategies: [{__MODULE__.ErrorStrategy, []}, {__MODULE__.SafeStrategy, []}]
+        })
+
+      ctx = InputGuard.init(dummy_agent(), ctx)
+      {_result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
+
+      assert_receive {:strategy_dropped, %{count: 1}, %{aggregation: :any, fail_closed: true}}
     end
   end
 
@@ -487,5 +609,14 @@ defmodule Nous.Plugins.InputGuardTest do
     @behaviour Nous.Plugins.InputGuard.Strategy
     @impl true
     def check(_input, _config, _ctx), do: raise("strategy error")
+  end
+
+  defmodule SleepStrategy do
+    @behaviour Nous.Plugins.InputGuard.Strategy
+    @impl true
+    def check(_input, _config, _ctx) do
+      Process.sleep(:infinity)
+      {:ok, %Result{severity: :safe, strategy: __MODULE__}}
+    end
   end
 end

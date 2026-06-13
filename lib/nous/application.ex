@@ -71,8 +71,16 @@ defmodule Nous.Application do
         :ok
 
       opts when is_list(opts) ->
-        Application.ensure_all_started(:hackney)
+        configure_hackney_pool(opts)
+    end
+  end
 
+  defp configure_hackney_pool(opts) do
+    # hackney is optional: only touch the pool if it actually started. A bare
+    # `:hackney_pool.set_max_connections/2` against a missing app crashes boot,
+    # so guard on a successful start instead of ignoring the return value.
+    case Application.ensure_all_started(:hackney) do
+      {:ok, _started} ->
         if max = Keyword.get(opts, :max_connections) do
           :hackney_pool.set_max_connections(:default, max)
         end
@@ -80,6 +88,17 @@ defmodule Nous.Application do
         if timeout = Keyword.get(opts, :timeout) do
           :hackney_pool.set_timeout(:default, timeout)
         end
+
+        :ok
+
+      {:error, reason} ->
+        require Logger
+
+        Logger.warning(
+          "config :nous, :hackney_pool is set but :hackney could not be started " <>
+            "(#{inspect(reason)}). Add {:hackney, \"~> 4.0\"} to your deps. " <>
+            "Skipping pool configuration."
+        )
 
         :ok
     end

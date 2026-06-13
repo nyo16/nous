@@ -6,6 +6,33 @@ All notable changes to this project will be documented in this file.
 
 ### Security
 
+- **Permission-policy approval gate was bypassed when a `pre_tool_use` hook
+  modified arguments.** In `AgentRunner`, the `{:modify, …}` hook branch ran the
+  tool through `check_tool_approval/3` without first applying
+  `enforce_policy_approval/2` (unlike the normal path). A tool gated *only* by
+  the permission policy (`:strict` mode, an `approval_required` entry, or the
+  execute-category gate) — not by its own `requires_approval` flag — therefore
+  executed UNGATED whenever any `pre_tool_use` hook rewrote its arguments. The
+  modify branch now applies policy approval identically to the allow branch.
+- **InputGuard now fails closed on dropped strategies.** Under the default
+  `aggregation: :any`, a strategy that errored or timed out was silently dropped;
+  if it was the only real detector, flagged input passed as `:safe`. Dropped
+  strategies now upgrade an otherwise-`:safe` verdict to `:suspicious`
+  (configurable via `fail_closed`, default `true` for `:any`, `false` for
+  `:majority`/`:all` which already count drops against the configured
+  denominator). Drops emit a `[:nous, :input_guard, :strategy_dropped]` telemetry
+  event + a `Logger` warning. New `:strategy_timeout` option (default 30s) bounds
+  the parallel path. **Behavior change:** an `:any` guard with a flaky strategy
+  may now warn/block where it previously passed — set `fail_closed: false` to
+  restore the old behavior.
+- **`:permissive` policy no longer auto-approves execute-class tools.**
+  `Nous.Permissions.requires_approval?/3` (category-aware) keeps the approval
+  gate on `category: :execute` tools (e.g. `bash`) even under `:permissive`,
+  unless the policy sets `allow_unattended_execute: true`. Built-in `bash` was
+  already self-gated via its own `requires_approval: true`; this closes the gap
+  for custom execute-class tools that relied on the policy. **Behavior change:**
+  `build_policy(mode: :permissive)` users who want unattended shell execution
+  must now pass `allow_unattended_execute: true`.
 - **RCE approval gate could be silently bypassed.** `Nous.Tool.from_module/2`
   hardcoded `requires_approval: false` instead of reading it from the tool's
   metadata, so `Bash`/`FileWrite` registered via the standard path ran without

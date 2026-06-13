@@ -251,11 +251,10 @@ defmodule Nous.Workflow.Phase3Test do
         Graph.new("order_test")
         |> Graph.add_node(:process, :parallel_map, %{
           items: fn _state -> [3, 1, 4, 1, 5, 9, 2, 6] end,
-          handler: fn n, _state ->
-            # Sleep varying amounts to test ordering
-            Process.sleep(Enum.random(1..5))
-            n * 2
-          end,
+          # Ordering-under-out-of-order-completion is exercised deterministically
+          # in workflow/engine/parallel_executor_test.exs; here we just verify the
+          # engine preserves input order end-to-end (no flaky random sleep).
+          handler: fn n, _state -> n * 2 end,
           result_key: :doubled
         })
 

@@ -152,22 +152,82 @@ defmodule Mix.Tasks.Nous.Optimize do
   end
 
   defp load_parameters(opts) do
-    if opts[:params] do
-      # Load from file
-      case Code.eval_file(opts[:params]) do
-        {params, _} when is_list(params) ->
-          params
+    case opts[:params] do
+      nil ->
+        # Default parameters
+        [
+          Parameter.float(:temperature, 0.0, 1.0, step: 0.1),
+          Parameter.integer(:max_tokens, 256, 2048, step: 256)
+        ]
 
-        _ ->
-          Mix.shell().error("Parameters file must return a list of parameters")
-          exit({:shutdown, 1})
-      end
-    else
-      # Default parameters
-      [
-        Parameter.float(:temperature, 0.0, 1.0, step: 0.1),
-        Parameter.integer(:max_tokens, 256, 2048, step: 256)
-      ]
+      path ->
+        load_parameters_from_file(path)
+    end
+  end
+
+  # Prefer data formats (YAML/JSON) — they're parsed as pure data and never
+  # execute code. `.exs` files are still supported for the conditional-parameter
+  # DSL, but they run arbitrary Elixir, so they're gated behind an explicit
+  # extension check and a warning rather than being the default path.
+  defp load_parameters_from_file(path) do
+    case Path.extname(path) do
+      ext when ext in [".yaml", ".yml"] ->
+        path |> YamlElixir.read_from_file!() |> parse_data_parameters(path)
+
+      ".json" ->
+        path |> File.read!() |> JSON.decode!() |> parse_data_parameters(path)
+
+      ".exs" ->
+        Mix.shell().info(
+          "[nous.optimize] Evaluating Elixir parameters file #{inspect(path)} — " <>
+            "this executes arbitrary code. Prefer a .yaml/.json params file unless " <>
+            "you need conditional parameters."
+        )
+
+        load_exs_parameters(path)
+
+      other ->
+        Mix.shell().error(
+          "Unsupported parameters file extension #{inspect(other)}; use .yaml, .json, or .exs"
+        )
+
+        exit({:shutdown, 1})
+    end
+  end
+
+  defp parse_data_parameters(data, path) when is_list(data) do
+    data
+    |> Enum.map(&Parameter.from_map/1)
+    |> Enum.reduce({[], []}, fn
+      {:ok, param}, {ok, errs} -> {[param | ok], errs}
+      {:error, reason}, {ok, errs} -> {ok, [reason | errs]}
+    end)
+    |> case do
+      {params, []} ->
+        Enum.reverse(params)
+
+      {_params, errors} ->
+        Mix.shell().error(
+          "Invalid parameters in #{path}:\n  - " <> Enum.join(Enum.reverse(errors), "\n  - ")
+        )
+
+        exit({:shutdown, 1})
+    end
+  end
+
+  defp parse_data_parameters(_other, path) do
+    Mix.shell().error("Parameters file #{path} must contain a list of parameter maps")
+    exit({:shutdown, 1})
+  end
+
+  defp load_exs_parameters(path) do
+    case Code.eval_file(path) do
+      {params, _} when is_list(params) ->
+        params
+
+      _ ->
+        Mix.shell().error("Parameters file must return a list of parameters")
+        exit({:shutdown, 1})
     end
   end
 

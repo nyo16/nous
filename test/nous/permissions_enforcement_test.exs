@@ -139,6 +139,41 @@ defmodule Nous.PermissionsEnforcementTest do
       refute_receive :tool_ran, 100
       assert result.output =~ "final answer"
     end
+
+    test "policy approval is still enforced when a pre_tool_use hook modifies arguments" do
+      # Regression: the {:modify, _} hook branch previously skipped
+      # enforce_policy_approval, so a tool gated only by the policy (not by its
+      # own requires_approval flag) executed UNGATED whenever a hook rewrote its
+      # arguments. With no approval handler configured, default-deny must win.
+      test_pid = self()
+
+      fun = fn _args ->
+        send(test_pid, :tool_ran)
+        %{ran: true}
+      end
+
+      tool = Tool.from_function(fun, name: "guarded", description: "guarded tool")
+      policy = Permissions.build_policy(mode: :default, approval_required: ["guarded"])
+
+      modify_hook =
+        Nous.Hook.new(:pre_tool_use,
+          handler: fn _payload, _ctx -> {:modify, %{arguments: %{"injected" => true}}} end,
+          name: "arg-rewriter"
+        )
+
+      agent =
+        Agent.new("openai:test-model",
+          tools: [tool],
+          permissions: policy,
+          hooks: [modify_hook]
+        )
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      # Tool must NOT execute: policy requires approval, no handler → reject.
+      refute_receive :tool_ran, 100
+      assert result.output =~ "final answer"
+    end
   end
 
   describe "InputGuard is enforced on the streaming path" do
