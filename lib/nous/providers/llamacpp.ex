@@ -182,54 +182,31 @@ if Code.ensure_loaded?(LlamaCppEx) do
 
       opts = build_llamacpp_opts(merged_settings)
 
-      stream_result = LlamaCppEx.stream_chat_completion(llamacpp_model, provider_messages, opts)
+      # LlamaCppEx.stream_chat_completion/3 is spec'd `:: Enumerable.t()` — it
+      # returns a raw lazy stream, never an {:ok,_}/{:error,_} tuple. Generation
+      # errors surface during enumeration (via the normalizer), not as a
+      # setup-time error here.
+      stream = LlamaCppEx.stream_chat_completion(llamacpp_model, provider_messages, opts)
 
-      # LlamaCppEx may return {:ok, stream} or the stream directly
-      stream_result =
-        case stream_result do
-          {:ok, _} -> stream_result
-          {:error, _} -> stream_result
-          stream -> {:ok, stream}
-        end
+      duration = System.monotonic_time() - start_time
 
-      case stream_result do
-        {:ok, stream} ->
-          duration = System.monotonic_time() - start_time
+      :telemetry.execute(
+        [:nous, :provider, :stream, :connected],
+        %{duration: duration},
+        %{provider: :llamacpp, model_name: model.model}
+      )
 
-          :telemetry.execute(
-            [:nous, :provider, :stream, :connected],
-            %{duration: duration},
-            %{provider: :llamacpp, model_name: model.model}
-          )
-
-          normalizer = model.stream_normalizer || Nous.StreamNormalizer.LlamaCpp
-          transformed_stream = Nous.StreamNormalizer.normalize(stream, normalizer)
-          {:ok, transformed_stream}
-
-        {:error, error} ->
-          duration = System.monotonic_time() - start_time
-
-          :telemetry.execute(
-            [:nous, :provider, :stream, :exception],
-            %{duration: duration},
-            %{provider: :llamacpp, model_name: model.model, kind: :error, reason: error}
-          )
-
-          wrapped =
-            Nous.Errors.ProviderError.exception(
-              provider: :llamacpp,
-              message: "Streaming request failed: #{inspect(error)}",
-              details: error
-            )
-
-          {:error, wrapped}
-      end
+      normalizer = model.stream_normalizer || default_stream_normalizer()
+      transformed_stream = Nous.StreamNormalizer.normalize(stream, normalizer)
+      {:ok, transformed_stream}
     end
 
-    # Override macro-injected private functions that would otherwise be dead code
-    # (since we override request/3 and request_stream/3 which are their only callers)
+    # This provider dispatches to the NIF directly via its own request/3 and
+    # request_stream/3, so it doesn't need to build wire params — the
+    # macro-generated `build_request_params/3` default fills the overridable
+    # slot and is exempt from the unused-function warning. We only override
+    # `default_stream_normalizer/0`, which request_stream/3 above does use.
     defp default_stream_normalizer, do: Nous.StreamNormalizer.LlamaCpp
-    defp build_request_params(_model, _messages, _settings), do: %{}
 
     defp missing_model_error do
       Nous.Errors.ProviderError.exception(

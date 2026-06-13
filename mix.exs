@@ -72,8 +72,11 @@ defmodule Nous.MixProject do
       # {:exqlite, "~> 0.27", optional: true},
       # {:duckdbex, "~> 0.3", optional: true},
 
-      # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps to unlock)
-      # {:llama_cpp_ex, "~> 0.6.5", optional: true},
+      # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
+      # to unlock the LlamaCpp provider). optional: true keeps it out of
+      # downstream apps' builds unless they opt in, while still being available
+      # for Nous's own dev/test (e.g. the tagged llamacpp smoke test).
+      {:llama_cpp_ex, "~> 0.8", optional: true},
 
       # Memory system embedding providers (all optional — add to your app's deps to unlock)
       # {:bumblebee, "~> 0.6", optional: true},
