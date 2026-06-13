@@ -202,10 +202,15 @@ if Code.ensure_loaded?(LlamaCppEx) do
     end
 
     # This provider dispatches to the NIF directly via its own request/3 and
-    # request_stream/3, so it doesn't need to build wire params — the
-    # macro-generated `build_request_params/3` default fills the overridable
-    # slot and is exempt from the unused-function warning. We only override
-    # `default_stream_normalizer/0`, which request_stream/3 above does use.
+    # request_stream/3, so it never builds wire params. We still define
+    # build_request_params/3 (rather than leaving the macro default, which is
+    # dead-code-eliminated when unused) because `use Nous.Provider` injects a
+    # `@dialyzer {:nowarn_function, build_request_params: 3}` that would
+    # otherwise dangle ("Unknown function"). It's a public `@doc false` stub so
+    # the compiler doesn't flag it as an unused private function.
+    @doc false
+    def build_request_params(_model, _messages, _settings), do: %{}
+
     defp default_stream_normalizer, do: Nous.StreamNormalizer.LlamaCpp
 
     defp missing_model_error do
