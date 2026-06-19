@@ -461,8 +461,9 @@ defmodule Nous.AgentServer do
 
     state = %{state | context: new_context}
 
-    # Sync with persistence so stale context isn't restored on restart
-    do_save_context(state)
+    # Persist the cleared context off the mailbox so a slow backend can't
+    # block. Fire-and-forget (see save_context_async/1 ordering note).
+    save_context_async(state)
 
     {:noreply, state}
   end
@@ -637,7 +638,7 @@ defmodule Nous.AgentServer do
   def handle_info({:agent_response_ready, generation, context, _result}, state) do
     if generation == state.task_generation do
       state = %{state | context: context}
-      do_save_context(state)
+      save_context_async(state)
       {:noreply, state}
     else
       # Stale reply from a previous task that completed milliseconds before
@@ -739,6 +740,29 @@ defmodule Nous.AgentServer do
     new_ref = schedule_inactivity_timeout(state.inactivity_timeout)
     %{state | inactivity_timer_ref: new_ref}
   end
+
+  # Fire-and-forget context save, off the GenServer mailbox, so a slow
+  # persistence backend (S3/Postgres under load) never blocks the agent loop
+  # or stalls concurrent get_context/cancel calls. Used on the hot response
+  # path and clear_history. The explicit :save_context call stays synchronous
+  # (callers want the result). Errors are logged inside do_save_context/1.
+  #
+  # Ordering note: saves are NOT serialized, so two overlapping saves could in
+  # principle land out of order. In practice saves are spaced by LLM latency
+  # (seconds) and the context is append-only within a run, so the window is
+  # small; if strict last-write-wins ordering is ever required, replace this
+  # with a single-flight coalescing writer keyed on session_id.
+  defp save_context_async(%{persistence: backend, session_id: session_id, context: context})
+       when not is_nil(backend) do
+    # Capture only the three fields do_save_context/1 needs — not the whole
+    # state (which holds a live %Task{}/atomics we don't want copied into the
+    # spawned process).
+    snapshot = %{persistence: backend, session_id: session_id, context: context}
+    Task.Supervisor.start_child(Nous.TaskSupervisor, fn -> do_save_context(snapshot) end)
+    :ok
+  end
+
+  defp save_context_async(_state), do: :ok
 
   defp do_save_context(%{persistence: nil}), do: {:error, :no_persistence}
 

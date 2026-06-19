@@ -216,4 +216,82 @@ defmodule Nous.Teams.RateLimiterTest do
       assert {:ok, _ref} = RateLimiter.acquire(pid, "alice", 80)
     end
   end
+
+  # ===========================================================================
+  # Phase 3: running window-total counters (replacing per-acquire full folds)
+  # ===========================================================================
+
+  describe "window counter invariant" do
+    test "running totals always equal a full fold of the window", %{team_id: team_id} do
+      {:ok, pid} =
+        start_supervised({RateLimiter, team_id: team_id, rpm: 1000, tpm: 1_000_000})
+
+      assert_window_invariant(pid)
+
+      {:ok, ref1} = RateLimiter.acquire(pid, "alice", 1000)
+      assert_window_invariant(pid)
+
+      {:ok, ref2} = RateLimiter.acquire(pid, "bob", 500)
+      assert_window_invariant(pid)
+
+      # Reconcile alice (actual 600 < estimate 1000 → negative token delta).
+      RateLimiter.record_usage(pid, "alice", %{tokens: 600, cost: 0.01, reservation: ref1})
+      assert_window_invariant(pid)
+
+      # Release bob (full refund → negative deltas).
+      RateLimiter.release(pid, ref2)
+      assert_window_invariant(pid)
+
+      # Legacy post-hoc record.
+      RateLimiter.record_usage(pid, "carol", %{tokens: 300, cost: 0.0, requests: 2})
+      assert_window_invariant(pid)
+
+      # Net: alice 600 tok / 1 req, bob 0 (acquired then released),
+      # carol 300 tok / 2 req → 900 tokens, 3 requests.
+      state = :sys.get_state(pid)
+      assert state.window_tokens == 900
+      assert state.window_requests == 3
+    end
+
+    test "prune subtracts expired entries from the running totals", %{team_id: team_id} do
+      {:ok, pid} =
+        start_supervised({RateLimiter, team_id: team_id, rpm: 1000, tpm: 1_000_000})
+
+      {:ok, _} = RateLimiter.acquire(pid, "alice", 1000)
+
+      # Inject an entry older than the 60s window, with matching counters.
+      :sys.replace_state(pid, fn state ->
+        old_ts = System.monotonic_time(:millisecond) - 120_000
+
+        %{
+          state
+          | window: [{old_ts, 5000, 3} | state.window],
+            window_tokens: state.window_tokens + 5000,
+            window_requests: state.window_requests + 3
+        }
+      end)
+
+      s1 = :sys.get_state(pid)
+      assert s1.window_tokens == 6000
+      assert s1.window_requests == 4
+
+      # Any operation prunes: the expired entry is dropped and its totals
+      # subtracted, leaving fresh alice (1000/1) + new bob (200/1).
+      {:ok, _} = RateLimiter.acquire(pid, "bob", 200)
+      s2 = :sys.get_state(pid)
+      assert s2.window_tokens == 1200
+      assert s2.window_requests == 2
+      assert_window_invariant(pid)
+    end
+  end
+
+  defp assert_window_invariant(pid) do
+    state = :sys.get_state(pid)
+
+    {req_sum, tok_sum} =
+      Enum.reduce(state.window, {0, 0}, fn {_ts, tok, req}, {ra, ta} -> {ra + req, ta + tok} end)
+
+    assert state.window_requests == req_sum
+    assert state.window_tokens == tok_sum
+  end
 end

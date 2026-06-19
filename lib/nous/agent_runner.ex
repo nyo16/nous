@@ -608,17 +608,16 @@ defmodule Nous.AgentRunner do
       # Build messages via behaviour
       messages = behaviour.build_messages(agent, ctx)
 
-      # Add tools to model settings if any
-      model_settings =
+      # Add tools to model settings if any. Tool-schema conversion is memoized
+      # per run on the (provider, tool-name set) — the set is stable across
+      # iterations in the common case, so this skips re-converting every loop
+      # (Anthropic conversion alone is ~12µs + ~90KB per iteration).
+      {model_settings, ctx} =
         if Enum.empty?(all_tools) do
-          agent.model_settings
+          {agent.model_settings, ctx}
         else
-          Logger.debug(
-            "Converting #{length(all_tools)} tools for provider: #{agent.model.provider}"
-          )
-
-          tool_schemas = convert_tools_for_provider(agent.model.provider, all_tools)
-          Map.put(agent.model_settings, :tools, tool_schemas)
+          {tool_schemas, ctx} = converted_tool_schemas(ctx, agent.model.provider, all_tools)
+          {Map.put(agent.model_settings, :tools, tool_schemas), ctx}
         end
 
       # Inject structured output settings
@@ -1139,23 +1138,38 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  # Convert ContextUpdate operations to a deps map for merging
+  # Convert ContextUpdate operations to a deps map for merging.
+  #
+  # `:append` previously did `existing ++ [item]`, which is O(n^2) over many
+  # appends to the same key in one update. We prepend instead and reverse each
+  # append-built key once at the end. `reversed` tracks keys whose stored list
+  # is currently in reverse order; :set/:merge/:delete store forward-order
+  # values and reset the flag — so a `:set [list]` then `:append` (the only
+  # mixed case) still preserves exact insertion order. Result is byte-identical
+  # to the old `++` reduce.
   defp context_update_to_map(%Nous.Tool.ContextUpdate{operations: ops}) do
-    Enum.reduce(ops, %{}, fn
-      {:set, key, value}, acc ->
-        Map.put(acc, key, value)
+    {acc, reversed} =
+      Enum.reduce(ops, {%{}, MapSet.new()}, fn
+        {:set, key, value}, {acc, reversed} ->
+          {Map.put(acc, key, value), MapSet.delete(reversed, key)}
 
-      {:merge, key, map}, acc ->
-        existing = Map.get(acc, key, %{})
-        Map.put(acc, key, Map.merge(existing, map))
+        {:merge, key, map}, {acc, reversed} ->
+          existing = Map.get(acc, key, %{})
+          {Map.put(acc, key, Map.merge(existing, map)), MapSet.delete(reversed, key)}
 
-      {:append, key, item}, acc ->
-        existing = Map.get(acc, key, [])
-        Map.put(acc, key, existing ++ [item])
+        {:append, key, item}, {acc, reversed} ->
+          if MapSet.member?(reversed, key) do
+            {Map.update!(acc, key, &[item | &1]), reversed}
+          else
+            existing = Map.get(acc, key, [])
+            {Map.put(acc, key, [item | Enum.reverse(existing)]), MapSet.put(reversed, key)}
+          end
 
-      {:delete, key}, acc ->
-        Map.delete(acc, key)
-    end)
+        {:delete, key}, {acc, reversed} ->
+          {Map.delete(acc, key), MapSet.delete(reversed, key)}
+      end)
+
+    Enum.reduce(reversed, acc, fn key, acc -> Map.update!(acc, key, &Enum.reverse/1) end)
   end
 
   # Mark a tool as approval-required when the permission policy says so, so the
@@ -1498,6 +1512,33 @@ defmodule Nous.AgentRunner do
     if thinking != "",
       do: Map.put(result, :thinking, thinking),
       else: result
+  end
+
+  # Convert tools to provider schemas, memoized per run in a runtime-only ctx
+  # field. The tool set (and its provider) is stable across loop iterations in
+  # the common case, so we re-convert ONLY when the (provider, tool-name set)
+  # changes — e.g. a plugin's before_request adds/removes a tool. Returns
+  # `{schemas, ctx}` so the caller threads the updated cache forward.
+  #
+  # The name-set is the staleness guard the design accepts: a plugin swapping a
+  # tool for one with the SAME name but a different schema mid-run would not be
+  # detected (pathological; tools are otherwise stable structs).
+  #
+  # NOT applied to: run_stream/3 (single-shot — converts once per call, never
+  # reused) or rebuild_settings_for_model/4 (rare fallback path, different
+  # provider, no ctx in scope). Both intentionally re-convert.
+  defp converted_tool_schemas(ctx, provider, all_tools) do
+    names = all_tools |> Enum.map(& &1.name) |> MapSet.new()
+    key = {provider, names}
+
+    case ctx.tool_schema_cache do
+      {^key, schemas} ->
+        {schemas, ctx}
+
+      _ ->
+        schemas = convert_tools_for_provider(provider, all_tools)
+        {schemas, %{ctx | tool_schema_cache: {key, schemas}}}
+    end
   end
 
   # Convert tools to provider-specific format

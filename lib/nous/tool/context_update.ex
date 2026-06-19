@@ -156,7 +156,7 @@ defmodule Nous.Tool.ContextUpdate do
   """
   @spec apply(t(), Nous.Agent.Context.t()) :: Nous.Agent.Context.t()
   def apply(%__MODULE__{operations: ops}, %Nous.Agent.Context{} = ctx) do
-    new_deps = Enum.reduce(ops, ctx.deps || %{}, &apply_operation/2)
+    new_deps = reduce_operations(ops, ctx.deps || %{})
 
     keys =
       ops
@@ -183,7 +183,7 @@ defmodule Nous.Tool.ContextUpdate do
   """
   @spec apply_to_run_context(t(), Nous.RunContext.t()) :: Nous.RunContext.t()
   def apply_to_run_context(%__MODULE__{operations: ops}, %Nous.RunContext{} = ctx) do
-    new_deps = Enum.reduce(ops, ctx.deps || %{}, &apply_operation/2)
+    new_deps = reduce_operations(ops, ctx.deps || %{})
     %{ctx | deps: new_deps}
   end
 
@@ -202,23 +202,39 @@ defmodule Nous.Tool.ContextUpdate do
 
   # Private
 
-  defp apply_operation({:set, key, value}, deps) do
-    Map.put(deps, key, value)
+  # Reduce operations into a deps map in a single pass. `:append` previously did
+  # `existing ++ [item]` (O(n^2) over many appends to the same key); we prepend
+  # and reverse each append-built key once at the end. `reversed` tracks keys
+  # whose stored list is currently reversed — :set/:merge/:delete store
+  # forward-order values and reset the flag, so a `:set [list]` then `:append`
+  # still yields exact insertion order. Result is identical to the old reduce.
+  defp reduce_operations(ops, initial) do
+    {deps, reversed} =
+      Enum.reduce(ops, {initial, MapSet.new()}, &apply_operation/2)
+
+    Enum.reduce(reversed, deps, fn key, deps -> Map.update!(deps, key, &Enum.reverse/1) end)
   end
 
-  defp apply_operation({:merge, key, map}, deps) do
+  defp apply_operation({:set, key, value}, {deps, reversed}) do
+    {Map.put(deps, key, value), MapSet.delete(reversed, key)}
+  end
+
+  defp apply_operation({:merge, key, map}, {deps, reversed}) do
     existing = Map.get(deps, key, %{})
-    merged = deep_merge(existing, map)
-    Map.put(deps, key, merged)
+    {Map.put(deps, key, deep_merge(existing, map)), MapSet.delete(reversed, key)}
   end
 
-  defp apply_operation({:append, key, item}, deps) do
-    existing = Map.get(deps, key) || []
-    Map.put(deps, key, existing ++ [item])
+  defp apply_operation({:append, key, item}, {deps, reversed}) do
+    if MapSet.member?(reversed, key) do
+      {Map.update!(deps, key, &[item | &1]), reversed}
+    else
+      existing = Map.get(deps, key) || []
+      {Map.put(deps, key, [item | Enum.reverse(existing)]), MapSet.put(reversed, key)}
+    end
   end
 
-  defp apply_operation({:delete, key}, deps) do
-    Map.delete(deps, key)
+  defp apply_operation({:delete, key}, {deps, reversed}) do
+    {Map.delete(deps, key), MapSet.delete(reversed, key)}
   end
 
   defp deep_merge(left, right) when is_map(left) and is_map(right) do

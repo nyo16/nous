@@ -167,11 +167,13 @@ defmodule Nous.Memory.Search do
         {entry, composite}
       end)
 
-    # Step 6: Sort, filter, and take top N
+    # Step 6: Sort, filter, and take top N. min_score + type filters are folded
+    # into a single predicate (one pass instead of two).
     results =
       scored
-      |> Enum.filter(fn {_entry, score} -> score >= min_score end)
-      |> filter_by_type(type)
+      |> Enum.filter(fn {entry, score} ->
+        score >= min_score and (is_nil(type) or entry.type == type)
+      end)
       |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
       |> Enum.take(limit)
 
@@ -182,8 +184,10 @@ defmodule Nous.Memory.Search do
   # gaps), bringing RRF output onto the same 0-1 scale as text-only relevance.
   defp normalize_relevance([]), do: []
 
-  defp normalize_relevance(scored) do
-    max = scored |> Enum.map(fn {_entry, score} -> score end) |> Enum.max()
+  defp normalize_relevance([{_entry, first} | _] = scored) do
+    # Single reduce for the max (no intermediate score list), then one map to
+    # rescale — folds the old map+max+map into two passes.
+    max = Enum.reduce(scored, first, fn {_entry, score}, acc -> max(score, acc) end)
 
     if max > 0 do
       Enum.map(scored, fn {entry, score} -> {entry, score / max} end)
@@ -198,12 +202,6 @@ defmodule Nous.Memory.Search do
 
   defp maybe_add_type(opts, nil), do: opts
   defp maybe_add_type(opts, type), do: Keyword.put(opts, :type, type)
-
-  defp filter_by_type(results, nil), do: results
-
-  defp filter_by_type(results, type) do
-    Enum.filter(results, fn {entry, _score} -> entry.type == type end)
-  end
 
   defp supports_vector?(store_mod) do
     Code.ensure_loaded(store_mod)

@@ -804,6 +804,62 @@ defmodule Nous.AgentRunnerTest do
     end
   end
 
+  describe "tool-schema conversion cache (Finding #1 / Phase 2)" do
+    test "caches conversion across iterations without changing the payload sent",
+         %{model: model, test_tool: test_tool} do
+      parent = self()
+
+      # Drives two iterations (tool call, then final text) and captures the
+      # exact tool schemas sent on each request.
+      mock_fn = fn _model, messages, settings ->
+        send(parent, {:tools_sent, settings[:tools]})
+        has_tool_results = Enum.any?(messages, &match?(%Message{role: :tool}, &1))
+
+        parts =
+          if has_tool_results do
+            [{:text, "done"}]
+          else
+            [{:tool_call, %{id: "c1", name: "test_tool", arguments: %{"input" => "x"}}}]
+          end
+
+        usage = %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2, requests: 1}
+
+        response =
+          Message.from_legacy(%{
+            parts: parts,
+            usage: usage,
+            model_name: "test-model",
+            timestamp: DateTime.utc_now()
+          })
+
+        {:ok, response}
+      end
+
+      agent = Agent.new(model, tools: [test_tool])
+
+      with_mock_dispatcher(mock_fn, fn ->
+        assert {:ok, result} = AgentRunner.run(agent, "go")
+
+        # Two requests fired. Iteration 1 converts fresh (cache miss, populates);
+        # iteration 2 reads the cache. Identical payloads ⇒ caching is
+        # behavior-preserving (the cached path equals the uncached path).
+        assert_received {:tools_sent, tools_iter1}
+        assert_received {:tools_sent, tools_iter2}
+        assert is_list(tools_iter1) and tools_iter1 != []
+        assert tools_iter1 == tools_iter2
+
+        # Cache is populated, keyed on {provider, tool-name set}, and stores
+        # exactly what was sent.
+        assert {{:openai, names}, cached_schemas} = result.context.tool_schema_cache
+        assert cached_schemas == tools_iter1
+        assert MapSet.member?(names, "test_tool")
+
+        # Runtime-only: never serialized to persistence.
+        refute Map.has_key?(Nous.Agent.Context.serialize(result.context), :tool_schema_cache)
+      end)
+    end
+  end
+
   # Helper function to temporarily replace the model dispatcher
   defp with_mock_dispatcher(test_fn) when is_function(test_fn, 0) do
     test_fn.()
