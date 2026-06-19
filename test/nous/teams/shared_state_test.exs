@@ -98,4 +98,42 @@ defmodule Nous.Teams.SharedStateTest do
       assert :ok = SharedState.claim_region(pid, "bob", "lib/parser.ex", 10, 20)
     end
   end
+
+  describe "concurrent claims (Phase 3 row-per-entry)" do
+    test "many agents racing for the same region: exactly one wins", %{pid: pid} do
+      results =
+        1..25
+        |> Task.async_stream(
+          fn i -> SharedState.claim_region(pid, "agent_#{i}", "lib/hot.ex", 10, 20) end,
+          max_concurrency: 25,
+          ordered: false
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      # claim_region is a GenServer.call (serialized), so conflict detection is
+      # deterministic under concurrency: the first to be processed wins, the
+      # rest (different agents, overlapping range) conflict.
+      assert Enum.count(results, &(&1 == :ok)) == 1
+      assert Enum.count(results, &(&1 == {:error, :conflict})) == 24
+
+      # Only the winner's claim exists on that file.
+      assert [%{file: "lib/hot.ex", start_line: 10, end_line: 20}] = SharedState.get_claims(pid)
+    end
+
+    test "non-overlapping concurrent claims on the same file all succeed", %{pid: pid} do
+      results =
+        0..9
+        |> Task.async_stream(
+          fn i ->
+            SharedState.claim_region(pid, "agent_#{i}", "lib/wide.ex", i * 10, i * 10 + 5)
+          end,
+          max_concurrency: 10,
+          ordered: false
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert Enum.all?(results, &(&1 == :ok))
+      assert length(SharedState.get_claims(pid)) == 10
+    end
+  end
 end

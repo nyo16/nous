@@ -195,6 +195,11 @@ defmodule Nous.Teams.RateLimiter do
       agents: %{},
       # Sliding window: list of {timestamp_ms, tokens, requests}
       window: [],
+      # Running window totals, kept in lockstep with `window` so rate_limited?/2
+      # is O(1) instead of folding the whole window on every acquire. Maintained
+      # ONLY in apply_delta/6 (add) and prune_window/1 (subtract expired).
+      window_tokens: 0,
+      window_requests: 0,
       # Reservations: %{ref => {agent_name, est_tokens, est_requests, ts}}
       reservations: %{}
     }
@@ -363,10 +368,15 @@ defmodule Nous.Teams.RateLimiter do
     }
 
     if token_delta != 0 or request_delta != 0 do
-      # Prepend (O(1)) instead of append (O(n)). The window is order-independent
-      # — window_totals/1 folds it and prune_window/1 filters it — so prepending
-      # is semantically identical and avoids O(n^2) accumulation under load.
-      %{state | window: [{ts, token_delta, request_delta} | state.window]}
+      # Prepend (O(1)) and bump the running window totals in lockstep. The window
+      # is order-independent (prune_window/1 partitions it), so prepending is
+      # semantically identical and avoids O(n^2) accumulation under load.
+      %{
+        state
+        | window: [{ts, token_delta, request_delta} | state.window],
+          window_tokens: state.window_tokens + token_delta,
+          window_requests: state.window_requests + request_delta
+      }
     else
       state
     end
@@ -422,35 +432,49 @@ defmodule Nous.Teams.RateLimiter do
 
   defp rate_limited?(%{rpm: :infinity, tpm: :infinity}, _tokens), do: false
 
+  # O(1): reads the running window counters maintained by apply_delta/prune.
   defp rate_limited?(state, tokens) do
-    {window_requests, window_tokens} = window_totals(state.window)
-
     rpm_exceeded =
       case state.rpm do
         :infinity -> false
-        rpm -> window_requests + 1 > rpm
+        rpm -> state.window_requests + 1 > rpm
       end
 
     tpm_exceeded =
       case state.tpm do
         :infinity -> false
-        tpm -> window_tokens + tokens > tpm
+        tpm -> state.window_tokens + tokens > tpm
       end
 
     rpm_exceeded or tpm_exceeded
   end
 
-  defp window_totals(window) do
-    Enum.reduce(window, {0, 0}, fn {_ts, tokens, requests}, {total_req, total_tok} ->
-      {total_req + requests, total_tok + tokens}
-    end)
-  end
-
+  # Drop window entries older than 60s and subtract their totals from the
+  # running counters, keeping window_tokens/window_requests == sum(window).
+  # `split_with` preserves the old order-independent `filter` semantics exactly.
   defp prune_window(state) do
     now = System.monotonic_time(:millisecond)
     cutoff = now - 60_000
 
-    pruned = Enum.filter(state.window, fn {ts, _tokens, _requests} -> ts > cutoff end)
-    %{state | window: pruned}
+    {kept, expired} =
+      Enum.split_with(state.window, fn {ts, _tokens, _requests} -> ts > cutoff end)
+
+    case expired do
+      [] ->
+        state
+
+      _ ->
+        {exp_tokens, exp_requests} =
+          Enum.reduce(expired, {0, 0}, fn {_ts, tokens, requests}, {tok_acc, req_acc} ->
+            {tok_acc + tokens, req_acc + requests}
+          end)
+
+        %{
+          state
+          | window: kept,
+            window_tokens: state.window_tokens - exp_tokens,
+            window_requests: state.window_requests - exp_requests
+        }
+    end
   end
 end

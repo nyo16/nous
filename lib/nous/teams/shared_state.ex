@@ -127,13 +127,15 @@ defmodule Nous.Teams.SharedState do
     team_id = Keyword.fetch!(opts, :team_id)
     claim_ttl = Keyword.get(opts, :claim_ttl, @default_claim_ttl)
 
+    # One ETS row PER entry instead of a single growing list term:
+    #   {{:discovery, seq}, entry}            — discoveries, ordered by seq
+    #   {{:claim, agent, file}, {seq, claim}} — claims, unique per agent+file
+    # The old single-row-list design copied the entire growing list term on
+    # every :ets.insert (O(n) per write, O(n^2) accumulation). Per-row writes
+    # are O(1) and claim conflict checks become a file-scoped :ets.select.
     table = :ets.new(:"team_state_#{team_id}", [:set, :private])
 
-    # Initialize discovery list and claims list
-    :ets.insert(table, {:discoveries, []})
-    :ets.insert(table, {:claims, []})
-
-    {:ok, %{team_id: team_id, table: table, claim_ttl: claim_ttl, expiry_timers: %{}}}
+    {:ok, %{team_id: team_id, table: table, claim_ttl: claim_ttl, expiry_timers: %{}, seq: 0}}
   end
 
   @impl true
@@ -145,37 +147,43 @@ defmodule Nous.Teams.SharedState do
       timestamp: DateTime.utc_now()
     }
 
-    [{:discoveries, discoveries}] = :ets.lookup(state.table, :discoveries)
-    # Prepend (O(1)) instead of `++ [entry]` (O(n)); get_discoveries reverses
-    # to restore insertion order. Avoids O(n^2) growth as discoveries accumulate.
-    :ets.insert(state.table, {:discoveries, [entry | discoveries]})
+    # O(1) per-row insert keyed by a monotonic seq (preserves insertion order
+    # on read) — no list term copied.
+    :ets.insert(state.table, {{:discovery, state.seq}, entry})
 
-    {:reply, :ok, state}
+    {:reply, :ok, %{state | seq: state.seq + 1}}
   end
 
   @impl true
   def handle_call(:get_discoveries, _from, state) do
-    [{:discoveries, discoveries}] = :ets.lookup(state.table, :discoveries)
-    {:reply, Enum.reverse(discoveries), state}
+    discoveries =
+      state.table
+      |> :ets.match_object({{:discovery, :_}, :_})
+      |> Enum.sort_by(fn {{:discovery, seq}, _entry} -> seq end)
+      |> Enum.map(fn {_key, entry} -> entry end)
+
+    {:reply, discoveries, state}
   end
 
   @impl true
   def handle_call({:claim_region, agent_name, file_path, start_line, end_line}, _from, state) do
-    [{:claims, claims}] = :ets.lookup(state.table, :claims)
+    # Conflict = an OTHER agent's claim on the SAME file with an overlapping
+    # range. Scope to the file + exclude self in ETS (matchspec on the key),
+    # then refine overlap in Elixir over just that small set — instead of
+    # scanning every claim across all files.
+    same_file_other_claims =
+      :ets.select(state.table, [
+        {{{:claim, :"$1", file_path}, :"$2"}, [{:"/=", :"$1", agent_name}], [:"$2"]}
+      ])
 
     conflict? =
-      Enum.any?(claims, fn claim ->
-        claim.file == file_path and
-          claim.agent != agent_name and
-          ranges_overlap?(claim.start_line, claim.end_line, start_line, end_line)
+      Enum.any?(same_file_other_claims, fn {_seq, claim} ->
+        ranges_overlap?(claim.start_line, claim.end_line, start_line, end_line)
       end)
 
     if conflict? do
       {:reply, {:error, :conflict}, state}
     else
-      # Remove any existing claim by this agent on this file
-      claims = Enum.reject(claims, &(&1.file == file_path and &1.agent == agent_name))
-
       expires_at = DateTime.add(DateTime.utc_now(), state.claim_ttl, :millisecond)
       claim_key = {agent_name, file_path}
 
@@ -187,9 +195,11 @@ defmodule Nous.Teams.SharedState do
         expires_at: expires_at
       }
 
-      # Prepend (O(1)) instead of `++ [new_claim]` (O(n)); get_claims reverses
-      # to restore insertion order. Matches the share_discovery fix above.
-      :ets.insert(state.table, {:claims, [new_claim | claims]})
+      # Keyed by {:claim, agent, file}, so re-claiming the same file by the same
+      # agent overwrites the prior claim (the old explicit dedup). seq preserves
+      # insertion order for get_claims.
+      :ets.insert(state.table, {{:claim, agent_name, file_path}, {state.seq, new_claim}})
+      state = %{state | seq: state.seq + 1}
 
       # Cancel any existing expiry timer for this agent+file
       state = cancel_timer(state, claim_key)
@@ -204,9 +214,8 @@ defmodule Nous.Teams.SharedState do
 
   @impl true
   def handle_call({:release_region, agent_name, file_path}, _from, state) do
-    [{:claims, claims}] = :ets.lookup(state.table, :claims)
-    claims = Enum.reject(claims, &(&1.file == file_path and &1.agent == agent_name))
-    :ets.insert(state.table, {:claims, claims})
+    # O(1) delete by key (claims are unique per agent+file).
+    :ets.delete(state.table, {:claim, agent_name, file_path})
 
     claim_key = {agent_name, file_path}
     state = cancel_timer(state, claim_key)
@@ -216,17 +225,18 @@ defmodule Nous.Teams.SharedState do
 
   @impl true
   def handle_call(:get_claims, _from, state) do
-    [{:claims, claims}] = :ets.lookup(state.table, :claims)
-    # claims are stored most-recent-first (O(1) prepend); reverse to hand back
-    # in insertion order.
-    {:reply, Enum.reverse(claims), state}
+    claims =
+      state.table
+      |> :ets.match_object({{:claim, :_, :_}, :_})
+      |> Enum.sort_by(fn {_key, {seq, _claim}} -> seq end)
+      |> Enum.map(fn {_key, {_seq, claim}} -> claim end)
+
+    {:reply, claims, state}
   end
 
   @impl true
   def handle_info({:expire_claim, {agent_name, file_path}}, state) do
-    [{:claims, claims}] = :ets.lookup(state.table, :claims)
-    claims = Enum.reject(claims, &(&1.file == file_path and &1.agent == agent_name))
-    :ets.insert(state.table, {:claims, claims})
+    :ets.delete(state.table, {:claim, agent_name, file_path})
 
     state = %{state | expiry_timers: Map.delete(state.expiry_timers, {agent_name, file_path})}
     {:noreply, state}

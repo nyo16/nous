@@ -118,10 +118,9 @@ defmodule Nous.Decisions.Store.ETS do
   @impl true
   @spec query(map(), atom(), keyword()) :: {:ok, [Node.t()]}
   def query(state, :active_goals, _opts) do
-    results =
-      state.nodes
-      |> all_nodes()
-      |> Enum.filter(fn node -> node.type == :goal && node.status == :active end)
+    # Push the type/status predicate into ETS (partial-map match) instead of
+    # tab2list-copying every node and filtering in Elixir.
+    results = select_nodes(state.nodes, %{type: :goal, status: :active})
 
     {:ok, results}
   end
@@ -131,8 +130,7 @@ defmodule Nous.Decisions.Store.ETS do
 
     results =
       state.nodes
-      |> all_nodes()
-      |> Enum.filter(fn node -> node.type == :decision end)
+      |> select_nodes(%{type: :decision})
       |> Enum.sort_by(& &1.created_at, {:desc, DateTime})
       |> Enum.take(limit)
 
@@ -161,8 +159,12 @@ defmodule Nous.Decisions.Store.ETS do
 
   # -- Private helpers --
 
-  defp all_nodes(table) do
-    :ets.tab2list(table) |> Enum.map(fn {_id, node} -> node end)
+  # Push a field-equality predicate into ETS via a partial-map matchspec, so we
+  # only copy matching node rows instead of tab2list-copying every node first.
+  defp select_nodes(table, field_match) when is_map(field_match) do
+    table
+    |> :ets.select([{{:_, field_match}, [], [:"$_"]}])
+    |> Enum.map(fn {_id, node} -> node end)
   end
 
   defp all_edges(table) do

@@ -1,3 +1,26 @@
+# Persistence backend that sleeps before delegating to the ETS backend, used to
+# prove the agent server doesn't block its mailbox on a slow save.
+defmodule Nous.AgentServerTest.SlowPersistence do
+  @behaviour Nous.Persistence
+
+  @sleep_ms 300
+
+  @impl true
+  def save(session_id, data) do
+    Process.sleep(@sleep_ms)
+    Nous.Persistence.ETS.save(session_id, data)
+  end
+
+  @impl true
+  def load(session_id), do: Nous.Persistence.ETS.load(session_id)
+
+  @impl true
+  def delete(session_id), do: Nous.Persistence.ETS.delete(session_id)
+
+  @impl true
+  def list, do: Nous.Persistence.ETS.list()
+end
+
 defmodule Nous.AgentServerTest do
   use ExUnit.Case, async: false
 
@@ -5,6 +28,22 @@ defmodule Nous.AgentServerTest do
   alias Nous.Agent.Context
   alias Nous.Message
   alias Nous.Persistence.ETS, as: PersistenceETS
+  alias Nous.AgentServerTest.SlowPersistence
+
+  # Poll until `fun` returns truthy (async saves run in a supervised Task now).
+  defp eventually(fun, retries \\ 50, delay \\ 20) do
+    cond do
+      fun.() ->
+        true
+
+      retries == 0 ->
+        false
+
+      true ->
+        Process.sleep(delay)
+        eventually(fun, retries - 1, delay)
+    end
+  end
 
   @agent_config %{
     model: "openai:gpt-4",
@@ -194,26 +233,56 @@ defmodule Nous.AgentServerTest do
           inactivity_timeout: :infinity
         )
 
-      # Inject messages and save
+      # Inject messages via the (now async) response-ready save path.
       ctx = AgentServer.get_context(pid)
       ctx = Context.add_message(ctx, Message.user("Pre-clear"))
       send(pid, {:agent_response_ready, 0, ctx, nil})
-      # Flush: get_context (a call) returns only after response_ready is handled,
-      # and the save inside that handler is a synchronous call to PersistenceETS,
-      # so the persisted row is guaranteed written once this returns.
-      _ = AgentServer.get_context(pid)
 
-      # Verify it was saved with messages
-      {:ok, data} = PersistenceETS.load(session_id)
-      assert length(data.messages) == 1
+      # The save runs in a supervised Task now, so poll until it lands.
+      assert eventually(fn ->
+               match?({:ok, %{messages: [_]}}, PersistenceETS.load(session_id))
+             end)
 
-      # Clear
+      assert {:ok, %{messages: [%{content: "Pre-clear"}]}} = PersistenceETS.load(session_id)
+
+      # Clear (also persists asynchronously).
       AgentServer.clear_history(pid)
-      _ = AgentServer.get_context(pid)
 
-      # Persistence should now have empty messages
-      {:ok, data} = PersistenceETS.load(session_id)
-      assert data.messages == []
+      # Persistence should converge to empty messages.
+      assert eventually(fn -> match?({:ok, %{messages: []}}, PersistenceETS.load(session_id)) end)
+      GenServer.stop(pid)
+    end
+
+    test "does not block the GenServer while a slow backend persists" do
+      session_id = "test_slow_persist_#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          pubsub: nil,
+          persistence: SlowPersistence,
+          inactivity_timeout: :infinity
+        )
+
+      ctx = AgentServer.get_context(pid)
+      ctx = Context.add_message(ctx, Message.user("Hello"))
+
+      # Trigger a save via the response-ready path; the backend sleeps 300ms.
+      send(pid, {:agent_response_ready, 0, ctx, nil})
+
+      # The GenServer must stay responsive — a get_context call returns well
+      # within the backend's sleep, proving the save runs off the mailbox.
+      {elapsed_us, _ctx} = :timer.tc(fn -> AgentServer.get_context(pid) end)
+
+      assert elapsed_us < 150_000,
+             "get_context blocked for #{div(elapsed_us, 1000)}ms (>150ms) — save is not async"
+
+      # And the save still lands eventually.
+      assert eventually(fn ->
+               match?({:ok, %{messages: [%{content: "Hello"}]}}, SlowPersistence.load(session_id))
+             end)
+
       GenServer.stop(pid)
     end
   end
@@ -352,14 +421,16 @@ defmodule Nous.AgentServerTest do
         |> Context.add_message(Message.assistant("Hi!"))
 
       send(pid, {:agent_response_ready, 0, ctx, nil})
-      # Flush via a call; the save inside the response_ready handler is a
-      # synchronous PersistenceETS call, so the row is written by the time this
-      # returns.
-      _ = AgentServer.get_context(pid)
 
-      # Context should be persisted
-      {:ok, data} = PersistenceETS.load(session_id)
-      assert length(data.messages) == 2
+      # The save now runs in a supervised Task (off the mailbox), so poll until
+      # it lands instead of assuming it completed by the next call.
+      assert eventually(fn ->
+               match?({:ok, %{messages: [_, _]}}, PersistenceETS.load(session_id))
+             end)
+
+      assert {:ok, %{messages: [%{content: "Hello"}, %{content: "Hi!"}]}} =
+               PersistenceETS.load(session_id)
+
       GenServer.stop(pid)
     end
   end

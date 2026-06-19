@@ -97,7 +97,12 @@ defmodule Nous.Agent.Context do
 
           # Streaming flag — when true, the LLM call site streams chunks
           # through the new tool-aware path. Runtime-only.
-          stream: boolean()
+          stream: boolean(),
+
+          # Memoized provider tool-schema conversion (runtime-only, never
+          # serialized). `{{provider, tool_name_set}, converted_schemas}` —
+          # lets the loop skip re-converting a stable tool set every iteration.
+          tool_schema_cache: {{atom(), MapSet.t()}, [map()]} | nil
         }
 
   defstruct messages: [],
@@ -118,7 +123,8 @@ defmodule Nous.Agent.Context do
             pubsub_topic: nil,
             hook_registry: nil,
             active_skills: [],
-            stream: false
+            stream: false,
+            tool_schema_cache: nil
 
   @doc """
   Create a new context with options.

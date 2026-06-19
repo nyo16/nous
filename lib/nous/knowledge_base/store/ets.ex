@@ -92,8 +92,7 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
     docs =
       state.documents
-      |> all_records()
-      |> filter_by_kb_id(kb_id)
+      |> scoped_records(kb_id)
       |> maybe_filter(fn doc -> is_nil(status) || doc.status == status end)
 
     {:ok, docs}
@@ -190,8 +189,7 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
     entries =
       state.entries
-      |> all_records()
-      |> filter_by_kb_id(kb_id)
+      |> scoped_records(kb_id)
       |> maybe_filter(fn entry -> is_nil(entry_type) || entry.entry_type == entry_type end)
       |> maybe_filter(fn entry ->
         is_nil(tags) || Enum.any?(tags, &(&1 in entry.tags))
@@ -214,8 +212,7 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
     results =
       state.entries
-      |> all_records()
-      |> filter_by_kb_id(kb_id)
+      |> scoped_records(kb_id)
       |> Enum.map(fn entry ->
         # Score against both title and content for better matching
         title_score = String.jaro_distance(query_down, String.downcase(entry.title))
@@ -317,10 +314,16 @@ defmodule Nous.KnowledgeBase.Store.ETS do
     :ets.tab2list(table) |> Enum.map(fn {_id, record} -> record end)
   end
 
-  defp filter_by_kb_id(records, nil), do: records
+  # Push the kb_id filter INTO ETS via a partial-map matchspec, so a multi-KB
+  # table only copies the target KB's rows instead of tab2list-copying every
+  # KB's records and filtering in Elixir. nil kb_id = no scope = full copy
+  # (unavoidable). Equivalent to `all_records |> filter_by_kb_id(kb_id)`.
+  defp scoped_records(table, nil), do: all_records(table)
 
-  defp filter_by_kb_id(records, kb_id) do
-    Enum.filter(records, fn record -> record.kb_id == kb_id end)
+  defp scoped_records(table, kb_id) do
+    table
+    |> :ets.select([{{:_, %{kb_id: kb_id}}, [], [:"$_"]}])
+    |> Enum.map(fn {_id, record} -> record end)
   end
 
   defp maybe_filter(records, fun), do: Enum.filter(records, fun)

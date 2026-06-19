@@ -270,11 +270,15 @@ if Code.ensure_loaded?(Exqlite) do
 
       case query_all(conn, sql, scope_params) do
         {:ok, rows, columns} ->
+          # Compute the query embedding's L2 norm ONCE, not once per candidate
+          # (the old cosine_similarity/2 recomputed mag_a on every pair).
+          query_norm = l2_norm(embedding)
+
           results =
             rows
             |> Enum.map(fn row ->
               entry = row_to_entry(columns, row)
-              score = cosine_similarity(embedding, entry.embedding || [])
+              score = cosine_similarity(embedding, query_norm, entry.embedding || [])
               {entry, score}
             end)
             |> Enum.filter(fn {_entry, score} -> score >= min_score end)
@@ -504,17 +508,23 @@ if Code.ensure_loaded?(Exqlite) do
 
     defp normalize_bm25(_), do: 0.0
 
-    defp cosine_similarity([], _), do: 0.0
-    defp cosine_similarity(_, []), do: 0.0
+    # L2 norm of a vector. Hoisted out of the cosine loop (query) and a
+    # candidate-norm helper so search_vector computes the query magnitude once.
+    defp l2_norm(v), do: :math.sqrt(Enum.reduce(v, 0.0, fn x, acc -> acc + x * x end))
 
-    defp cosine_similarity(a, b) when length(a) != length(b), do: 0.0
+    # Cosine similarity with a PRECOMPUTED query norm, so mag_a isn't recomputed
+    # for every candidate. Math is identical to the old cosine_similarity/2.
+    # (NOTE: storing each candidate's norm in a column at insert time — to also
+    # avoid recomputing mag_b at search — is a follow-up; it needs an Exqlite
+    # schema migration + backfill and isn't enabled in this build.)
+    defp cosine_similarity(_a, _query_norm, []), do: 0.0
+    defp cosine_similarity(a, _query_norm, b) when length(a) != length(b), do: 0.0
 
-    defp cosine_similarity(a, b) do
+    defp cosine_similarity(a, query_norm, b) do
       dot = Enum.zip(a, b) |> Enum.reduce(0.0, fn {x, y}, acc -> acc + x * y end)
-      mag_a = :math.sqrt(Enum.reduce(a, 0.0, fn x, acc -> acc + x * x end))
-      mag_b = :math.sqrt(Enum.reduce(b, 0.0, fn x, acc -> acc + x * x end))
+      mag_b = l2_norm(b)
 
-      if mag_a == 0.0 or mag_b == 0.0, do: 0.0, else: dot / (mag_a * mag_b)
+      if query_norm == 0.0 or mag_b == 0.0, do: 0.0, else: dot / (query_norm * mag_b)
     end
   end
 else
