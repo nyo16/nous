@@ -62,8 +62,12 @@ agent =
 case Nous.run(agent, "What is 2+2? Answer with just the number.") do
   {:ok, result} ->
     IO.puts("Output: #{result.output}")
-    # result.fallback_used is true when a non-primary model served the run.
-    if result.fallback_used, do: IO.puts("(served by a fallback model)")
+    # The model that actually served the run is recorded in the run context as
+    # `deps[:active_model]` (set when a fallback takes over). It differs from
+    # `primary` only when failover happened. You can also observe failover via
+    # the `[:nous, :agent, :fallback, :used]` telemetry event.
+    served = result.deps[:active_model] || primary
+    if served != primary, do: IO.puts("(served by fallback model: #{inspect(served)})")
 
   {:error, %Nous.Errors.ProviderError{} = err} ->
     # Every model in the chain failed at the provider layer.

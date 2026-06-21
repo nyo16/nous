@@ -199,7 +199,8 @@ The runtime applies the policy in two distinct places:
    marked approval-required. A tool already `requires_approval: true` keeps that
    regardless of the policy.
 
-Approval-required tools are then routed to the agent's `:approval_handler` (see
+Approval-required tools are then routed to the `:approval_handler` set on the run
+context (`Nous.Agent.Context`) (see
 the [human-in-the-loop example](../../examples/11_human_in_the_loop.exs)). Default-deny applies here
 too: a tool needing approval with **no** handler configured is *rejected*, not
 auto-approved — the `requires_approval` flag is never a silent no-op.

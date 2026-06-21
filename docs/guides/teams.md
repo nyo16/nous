@@ -181,7 +181,7 @@ The plugin resolves `shared_state_pid` / `team_coordinator_pid` through a `resol
 
 ## Shared State
 
-`Teams.SharedState` owns a private ETS table per team and serves two purposes: a discovery board and file-region locks. The table is destroyed when the process terminates (`terminate/1` calls `:ets.delete/1`).
+`Teams.SharedState` owns a private ETS table per team and serves two purposes: a discovery board and file-region locks. The table is destroyed when the process terminates (`terminate/2` calls `:ets.delete/1`).
 
 ```elixir
 @spec share_discovery(pid(), String.t(), map()) :: :ok
