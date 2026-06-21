@@ -37,6 +37,7 @@ IO.puts("--- vLLM: Basic Usage ---")
 
 vllm_agent =
   Nous.new("vllm:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("VLLM_BASE_URL", "http://localhost:8000/v1"),
     instructions: "You are a helpful, concise assistant."
   )
 
@@ -62,6 +63,7 @@ IO.puts("--- vLLM: Model Settings ---")
 
 vllm_configured =
   Nous.new("vllm:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("VLLM_BASE_URL", "http://localhost:8000/v1"),
     instructions: "Be concise and precise.",
     model_settings: %{
       temperature: 0.3,
@@ -121,6 +123,7 @@ end
 
 vllm_tool_agent =
   Nous.new("vllm:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("VLLM_BASE_URL", "http://localhost:8000/v1"),
     instructions: "Use tools when asked about weather.",
     tools: [get_weather]
   )
@@ -148,6 +151,7 @@ IO.puts("1. guided_json — Constrain output to a JSON schema:")
 
 json_agent =
   Nous.new("vllm:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("VLLM_BASE_URL", "http://localhost:8000/v1"),
     instructions: "Extract structured data from text.",
     model_settings: %{
       guided_json: %{
@@ -172,6 +176,7 @@ IO.puts("\n2. guided_regex — Constrain output to a regex pattern:")
 
 regex_agent =
   Nous.new("vllm:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("VLLM_BASE_URL", "http://localhost:8000/v1"),
     instructions: "Output only the requested format.",
     model_settings: %{
       guided_regex: ~S"\d{4}-\d{2}-\d{2}"
@@ -188,6 +193,7 @@ IO.puts("\n3. guided_choice — Constrain to one of several options:")
 
 choice_agent =
   Nous.new("vllm:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("VLLM_BASE_URL", "http://localhost:8000/v1"),
     instructions: "Classify the sentiment of the text.",
     model_settings: %{
       guided_choice: ["positive", "negative", "neutral"]
@@ -209,6 +215,7 @@ IO.puts("--- SGLang: Basic Usage ---")
 
 sglang_agent =
   Nous.new("sglang:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("SGLANG_BASE_URL", "http://localhost:30000/v1"),
     instructions: "You are a helpful, concise assistant."
   )
 
@@ -239,6 +246,7 @@ IO.puts("1. json_schema — Force JSON schema compliance:")
 
 sglang_json =
   Nous.new("sglang:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("SGLANG_BASE_URL", "http://localhost:30000/v1"),
     instructions: "Extract structured data from text.",
     model_settings: %{
       json_schema: %{
@@ -263,6 +271,7 @@ IO.puts("\n2. regex — Constrain output to a regex pattern:")
 
 sglang_regex =
   Nous.new("sglang:meta-llama/Llama-3.1-8B-Instruct",
+    base_url: System.get_env("SGLANG_BASE_URL", "http://localhost:30000/v1"),
     instructions: "Output only the requested format.",
     model_settings: %{
       regex: ~S"[A-Z][a-z]+ \d{1,2}, \d{4}"
@@ -308,12 +317,14 @@ Both vLLM and SGLang can serve behind a reverse proxy or on a remote host:
 
   # vLLM on a remote GPU server
   agent = Nous.new("vllm:meta-llama/Llama-3.1-70B-Instruct",
+    base_url: System.get_env("VLLM_BASE_URL", "http://localhost:8000/v1"),
     base_url: "https://gpu-server.example.com/v1",
     api_key: "my-secret-key"
   )
 
   # SGLang on a different port
   agent = Nous.new("sglang:Qwen/Qwen2.5-7B-Instruct",
+    base_url: System.get_env("SGLANG_BASE_URL", "http://localhost:30000/v1"),
     base_url: "http://localhost:9000/v1"
   )
 

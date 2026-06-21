@@ -65,7 +65,7 @@ case Suite.from_yaml(yaml_path) do
   {:ok, suite} ->
     IO.puts("Loaded suite: #{suite.name}")
     IO.puts("Test cases: #{Suite.count(suite)}")
-    IO.puts("Tags: #{inspect(Suite.tags(suite))}\n")
+    IO.puts("Tags: #{inspect(Suite.all_tags(suite))}\n")
 
     # Run all tests
     IO.puts("Running all tests...")
@@ -76,10 +76,12 @@ case Suite.from_yaml(yaml_path) do
     IO.puts("\n" <> String.duplicate("=", 60))
     IO.puts("Running only 'basic' tagged tests...\n")
 
-    {:ok, filtered_result} = Eval.run(suite,
-      tags: [:basic],
-      timeout: 60_000
-    )
+    {:ok, filtered_result} =
+      Eval.run(suite,
+        tags: [:basic],
+        timeout: 60_000
+      )
+
     Reporter.print(filtered_result)
 
   {:error, reason} ->

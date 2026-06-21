@@ -68,15 +68,17 @@ parent =
     IMPORTANT: Do NOT answer the question yourself. Always delegate to sub-agents
     first, then synthesize their findings.
     """,
-    plugins: [Nous.Plugins.SubAgent],
-    deps: %{sub_agent_templates: templates}
+    plugins: [Nous.Plugins.SubAgent]
   )
 
+# `deps` is a RUN-time option (the Agent struct has no :deps field), so the
+# SubAgent plugin reads its templates from the deps passed to Nous.Agent.run/3.
 {:ok, result} =
   Nous.Agent.run(
     parent,
     "Compare Elixir GenServer vs Agent vs ETS for caching. Research each option in parallel.",
-    max_iterations: 15
+    max_iterations: 15,
+    deps: %{sub_agent_templates: templates}
   )
 
 IO.puts("Parent's synthesized answer:")
@@ -109,11 +111,7 @@ parent2 =
     IMPORTANT: Each sub-agent writes ONE section independently. They cannot
     see each other's work. You handle stitching them together.
     """,
-    plugins: [Nous.Plugins.SubAgent],
-    deps: %{
-      parallel_max_concurrency: 3,
-      parallel_timeout: 60_000
-    }
+    plugins: [Nous.Plugins.SubAgent]
   )
 
 {:ok, result2} =
@@ -128,7 +126,11 @@ parent2 =
     Each section should be one focused paragraph. Write all three in parallel,
     then combine them with a short intro.
     """,
-    max_iterations: 15
+    max_iterations: 15,
+    deps: %{
+      parallel_max_concurrency: 3,
+      parallel_timeout: 60_000
+    }
   )
 
 IO.puts("Combined result:")

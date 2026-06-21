@@ -1,64 +1,61 @@
 # 📚 Nous AI Guides
 
-Comprehensive guides for building production-ready AI agents with Nous.
+Comprehensive guides for building production-ready AI agents with Nous. Grouped
+the same way as the [HexDocs sidebar](https://hexdocs.pm/nous).
 
-## Available Guides
+## Core
 
-### ⚡ [LiveView Integration Guide](liveview-integration.md)
-Comprehensive guide for integrating Nous AI agents with Phoenix LiveView, covering real-time streaming, multi-user coordination, and production patterns.
+- **[Getting Started](../getting-started.md)** — install, first agent, tools, streaming, persistence.
+- **[Context & Dependencies](context.md)** — passing `deps` to tools/prompts and the run context.
+- **[Tool Development](tool_development.md)** — building robust, validated, secure tools.
+- **[Structured Output](structured_output.md)** — typed/validated results via Ecto schemas, schemaless types, or raw JSON schema.
+- **[Skills](skills.md)** — reusable instruction/capability packages (module- and file-based) and the built-in catalog.
+- **[Hooks](hooks.md)** — lifecycle interceptors to block, modify, or audit agent actions.
+- **[Memory](memory.md)** — persistent, searchable agent memory (keyword + vector, decay, scoping).
+- **[Knowledge Base](knowledge_base.md)** — structured, linkable knowledge store and tools.
+- **[Evaluation](evaluation.md)** — test suites, evaluators, metrics, and the optimizer.
+- **[Permissions & Guardrails](permissions.md)** — tool permission policies, approval gates, and session guardrails.
+- **[Observability & Telemetry](observability.md)** — telemetry events, default handler, and Prometheus via PromEx.
 
-**Topics covered:** Basic LiveView integration, streaming patterns, GenServer agent management, PubSub multi-user coordination, production patterns, error handling, testing strategies, performance optimization
+## Orchestration & Multi-Agent
 
-### 🔧 [Tool Development Guide](tool_development.md)
-Complete guide for creating powerful, production-ready tools for Nous AI agents.
+- **[Multi-Agent Teams](teams.md)** — supervised agent groups, roles, shared state, comms, and rate limiting.
+- **[Decision Graph](decisions.md)** — track goals, decisions, and outcomes as a graph.
+- **[Deep Research](research.md)** — autonomous multi-step research with citations (`Nous.Research.run/2`).
+- **[Workflow Engine](workflows.md)** — DAG/graph-based orchestration of agents, tools, and control flow.
 
-**Topics covered:** Tool fundamentals, function signatures, input validation, error handling, security, performance, testing
+## Providers & Backends
 
-### 📐 [Structured Output Guide](structured_output.md)
-Return validated, typed data from LLM responses using Ecto schemas, schemaless types, or raw JSON schema.
+- **[Providers Overview](providers.md)** — all 13 providers + `custom:`, and how to switch with one string.
+- **[Custom Providers](custom_providers.md)** — the `custom:` OpenAI-compatible prefix.
+- **[HTTP Backends](http_backends.md)** — Finch/Req vs Hackney, streaming backpressure.
+- **[Vertex AI Setup](vertex_ai_setup.md)** — Google Cloud Vertex AI configuration.
+- **[Fallback Chains](fallback.md)** — automatic provider/model failover.
 
-**Topics covered:** Ecto schema output types, schemaless types, raw JSON schema, `@llm_doc`, `validate_changeset/1`, provider modes, validation retries, vLLM/SGLang guided decoding, error handling
+## Integrations & Operations
 
-### 🎯 [Skills Guide](skills.md)
-Reusable instruction and capability packages for agents — module-based, file-based, groups, activation modes, and 21 built-in skills.
-
-**Topics covered:** Skill creation, `use Nous.Skill` macro, markdown file format, skill groups, activation modes, directory registration, built-in skills catalog
-
-### 🪝 [Hooks Guide](hooks.md)
-Lifecycle interceptors for tool execution — block, modify, or audit agent actions at specific events.
-
-**Topics covered:** Hook events, handler types (function, module, command), matchers, blocking semantics, priority ordering, NetRunner integration
-
-### 🏗️ [Best Practices](best_practices.md)
-Production deployment patterns, security, performance optimization, and operational considerations.
-
-**Topics covered:** Architecture patterns, security, scaling, monitoring, error handling, testing
-
-### 🔧 [Troubleshooting Guide](troubleshooting.md)
-Solutions for common issues during development and deployment.
-
-**Topics covered:** Connection problems, API key issues, tool failures, performance issues, development problems
-
-### 📈 [Migration Guide](migration_guide.md)
-Guide for migrating between Nous versions and upgrading existing applications.
-
-**Topics covered:** Version compatibility, breaking changes, upgrade procedures
+- **[Phoenix LiveView Integration](liveview-integration.md)** — real-time streaming, multi-user coordination, production patterns.
+- **[Production Best Practices](best_practices.md)** — architecture, security, scaling, monitoring.
+- **[Troubleshooting](troubleshooting.md)** — common development and deployment issues.
+- **[Migration Guide](migration_guide.md)** — version upgrades and breaking changes.
 
 ---
 
-## Quick Start
+## Suggested reading order
 
-**New to production deployment?** Start here:
-1. **[Skills Guide](skills.md)** - Add domain knowledge and capabilities to agents
-2. **[Hooks Guide](hooks.md)** - Intercept and control agent behavior
-3. **[LiveView Integration](liveview-integration.md)** - Build real-time AI chat applications
-4. **[Tool Development](tool_development.md)** - Learn to build robust tools
-5. **[Structured Output](structured_output.md)** - Return validated, typed data from agents
-6. **[Best Practices](best_practices.md)** - Production-ready patterns
-7. **[Troubleshooting](troubleshooting.md)** - Fix common issues
+**New to Nous:**
+1. [Getting Started](../getting-started.md) → 2. [Tool Development](tool_development.md) →
+3. [Structured Output](structured_output.md) → 4. [Skills](skills.md) → 5. [Best Practices](best_practices.md)
 
-**Having issues?** Jump directly to [Troubleshooting](troubleshooting.md).
+**Building something specific:**
+- Real-time chat → [LiveView Integration](liveview-integration.md)
+- Multiple agents → [Teams](teams.md) / [Workflows](workflows.md)
+- Research assistant → [Deep Research](research.md)
+- Production hardening → [Permissions & Guardrails](permissions.md) + [Observability](observability.md)
+
+**Having issues?** → [Troubleshooting](troubleshooting.md).
 
 ---
 
-**Need more examples?** Check the [main examples directory](../README.md) for hands-on learning.
+**Need hands-on code?** See the [examples directory](../../examples/README.md) and the
+full [API reference on HexDocs](https://hexdocs.pm/nous).

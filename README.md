@@ -127,10 +127,15 @@ or out to a focused guide.
 - **[Human-in-the-loop](#human-in-the-loop)** — approval workflows for sensitive tools, sync or async via PubSub
 - **[Input guard](#input-guard)** — pluggable strategies for prompt-injection and jailbreak detection
 - **[Sub-agent delegation](#sub-agent-delegation)** — `delegate_task` / `spawn_agents` for sequential or parallel sub-agents
+- **[Multi-agent teams](docs/guides/teams.md)** — supervised agent groups with roles, shared state, comms, and budget/rate limiting
+- **[Decision graph](docs/guides/decisions.md)** — track goals, decisions, and outcomes as a queryable graph
 - **[Memory](#agent-memory)** — persistent hybrid keyword + vector search; ETS, SQLite, DuckDB, Muninn, Zvec backends ([guide](docs/guides/memory.md))
 - **[Workflow](#workflow-engine)** — executable DAGs of agents, tools, and control flow with branching, cycles, parallelism, pause/resume ([guide](docs/guides/workflows.md))
 - **[Knowledge base](#knowledge-base)** — LLM-compiled wiki with summaries, backlinks, ingestion pipelines ([guide](docs/guides/knowledge_base.md))
-- **[Deep research](#deep-research)** — autonomous multi-step research with citations
+- **[Deep research](#deep-research)** — autonomous multi-step research with citations ([guide](docs/guides/research.md))
+- **[Fallback chains](docs/guides/fallback.md)** — automatic provider/model failover on transport-layer errors
+- **[Permissions & guardrails](docs/guides/permissions.md)** — tool permission policies, approval gates, session limits
+- **[Observability](docs/guides/observability.md)** — telemetry events plus Prometheus metrics via PromEx
 - **[Agent supervision](#agent-supervision--persistence)** — `AgentDynamicSupervisor`, persistence backends, crash recovery
 - **[LiveView integration](#liveview-integration)** — streaming, PubSub fan-out, async approvals ([guide](docs/guides/liveview-integration.md))
 
@@ -605,14 +610,18 @@ IO.puts(report.content)  # Markdown report with inline citations
 Production lifecycle management with state persistence:
 
 ```elixir
-{:ok, pid} = Nous.AgentDynamicSupervisor.start_agent(
-  agent, session_id: "user-123",
-  persistence: Nous.Persistence.ETS,
-  name: {:via, Registry, {Nous.AgentRegistry, "user-123"}}
-)
+# start_agent/3 takes the session_id, an agent_config MAP, then options. The
+# supervisor registers the via-tuple for you (no :name option needed).
+{:ok, _pid} =
+  Nous.AgentDynamicSupervisor.start_agent(
+    "user-123",
+    %{model: "openai:gpt-4o", instructions: "Be helpful"},
+    persistence: Nous.Persistence.ETS
+  )
 
-# Agent state auto-saves; restore later
-{:ok, context} = Nous.Persistence.ETS.load("user-123")
+# Context auto-saves as a serialized map; deserialize it to restore on a later run:
+{:ok, data} = Nous.Persistence.ETS.load("user-123")
+{:ok, context} = Nous.Agent.Context.deserialize(data)
 {:ok, result} = Nous.run(agent, "Continue our conversation", context: context)
 ```
 
@@ -691,10 +700,17 @@ hackney backpressure tuning.
 ### Advanced Examples
 
 - [advanced/context_updates.exs](examples/advanced/context_updates.exs) - Tool state management
-- [advanced/error_handling.exs](examples/advanced/error_handling.exs) - Retries, fallbacks
+- [advanced/error_handling.exs](examples/advanced/error_handling.exs) - Manual retries and error handling
+- [advanced/fallback.exs](examples/advanced/fallback.exs) - Built-in provider/model failover chains
+- [advanced/tool_permissions.exs](examples/advanced/tool_permissions.exs) - Permission policies and tool filtering
 - [advanced/telemetry.exs](examples/advanced/telemetry.exs) - Metrics, cost tracking
 - [advanced/cancellation.exs](examples/advanced/cancellation.exs) - Task cancellation
-- [advanced/liveview_integration.exs](examples/advanced/liveview_integration.exs) - LiveView patterns
+- [advanced/teams.exs](examples/advanced/teams.exs) - Multi-agent team lifecycle (roles, shared state)
+- [advanced/decisions.exs](examples/advanced/decisions.exs) - Decision-graph tracking
+- [advanced/deep_research.exs](examples/advanced/deep_research.exs) - Autonomous deep research with citations
+- [advanced/liveview_chat.exs](examples/advanced/liveview_chat.exs) - LiveView streaming chat
+- [advanced/liveview_multi_agent.exs](examples/advanced/liveview_multi_agent.exs) - LiveView multi-agent dashboard
+- [advanced/liveview_integration.exs](examples/advanced/liveview_integration.exs) - LiveView patterns reference
 
 ## Telemetry
 
@@ -710,7 +726,7 @@ Nous.Telemetry.attach_default_handler()
 - `[:nous, :provider, :request, :start/stop/exception]`
 - `[:nous, :tool, :execute, :start/stop/exception]`
 - `[:nous, :tool, :timeout]`
-- `[:nous, :fallback, :activated/exhausted]`
+- `[:nous, :fallback, :activated]` and `[:nous, :agent, :fallback, :used]`
 - `[:nous, :context, :update]`
 - `[:nous, :workflow, :run, :start/stop/exception]`
 - `[:nous, :workflow, :node, :start/stop/exception]`

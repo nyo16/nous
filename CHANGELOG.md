@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [Unreleased]
 
 ### Security
@@ -1009,7 +1012,7 @@ Read these before upgrading.
 
 - Added "Timeouts" section to README documenting `receive_timeout` option and default timeouts per provider.
 
-## [0.13.0] - 2026-03-21
+## [0.12.14] - 2026-03-21
 
 ### Added
 
@@ -1510,3 +1513,45 @@ Initial public release with multi-provider LLM support:
 - Tool/function calling
 - Streaming support
 - ReAct agent implementation
+
+<!-- Version comparison links -->
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.16.1...HEAD
+[0.16.1]: https://github.com/nyo16/nous/compare/v0.16.0...v0.16.1
+[0.16.0]: https://github.com/nyo16/nous/compare/v0.15.8...v0.16.0
+[0.15.8]: https://github.com/nyo16/nous/compare/v0.15.7...v0.15.8
+[0.15.7]: https://github.com/nyo16/nous/compare/v0.15.6...v0.15.7
+[0.15.6]: https://github.com/nyo16/nous/compare/v0.15.5...v0.15.6
+[0.15.5]: https://github.com/nyo16/nous/compare/v0.15.4...v0.15.5
+[0.15.4]: https://github.com/nyo16/nous/compare/v0.15.3...v0.15.4
+[0.15.3]: https://github.com/nyo16/nous/compare/v0.15.2...v0.15.3
+[0.15.2]: https://github.com/nyo16/nous/compare/v0.15.1...v0.15.2
+[0.15.1]: https://github.com/nyo16/nous/compare/v0.15.0...v0.15.1
+[0.15.0]: https://github.com/nyo16/nous/compare/v0.14.3...v0.15.0
+[0.14.3]: https://github.com/nyo16/nous/compare/v0.14.2...v0.14.3
+[0.14.2]: https://github.com/nyo16/nous/compare/v0.14.0...v0.14.2
+[0.14.0]: https://github.com/nyo16/nous/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/nyo16/nous/compare/v0.13.0...v0.13.1
+[0.13.0]: https://github.com/nyo16/nous/compare/v0.12.17...v0.13.0
+[0.12.17]: https://github.com/nyo16/nous/compare/v0.12.16...v0.12.17
+[0.12.16]: https://github.com/nyo16/nous/compare/v0.12.15...v0.12.16
+[0.12.15]: https://github.com/nyo16/nous/compare/v0.12.14...v0.12.15
+[0.12.14]: https://github.com/nyo16/nous/compare/v0.12.11...v0.12.14
+[0.12.11]: https://github.com/nyo16/nous/compare/v0.12.10...v0.12.11
+[0.12.10]: https://github.com/nyo16/nous/compare/v0.12.9...v0.12.10
+[0.12.9]: https://github.com/nyo16/nous/compare/v0.12.8...v0.12.9
+[0.12.8]: https://github.com/nyo16/nous/compare/v0.12.7...v0.12.8
+[0.12.7]: https://github.com/nyo16/nous/compare/v0.12.6...v0.12.7
+[0.12.6]: https://github.com/nyo16/nous/compare/v0.12.5...v0.12.6
+[0.12.5]: https://github.com/nyo16/nous/compare/v0.12.2...v0.12.5
+[0.12.2]: https://github.com/nyo16/nous/compare/v0.12.0...v0.12.2
+[0.12.0]: https://github.com/nyo16/nous/compare/v0.11.3...v0.12.0
+[0.11.3]: https://github.com/nyo16/nous/compare/v0.11.0...v0.11.3
+[0.11.0]: https://github.com/nyo16/nous/compare/v0.10.1...v0.11.0
+[0.10.1]: https://github.com/nyo16/nous/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/nyo16/nous/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/nyo16/nous/compare/v0.8.1...v0.9.0
+[0.8.1]: https://github.com/nyo16/nous/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/nyo16/nous/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/nyo16/nous/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/nyo16/nous/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/nyo16/nous/releases/tag/v0.7.0

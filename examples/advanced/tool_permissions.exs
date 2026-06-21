@@ -8,7 +8,6 @@
 # Run with: mix run examples/advanced/tool_permissions.exs
 
 alias Nous.Permissions
-alias Nous.Permissions.Policy
 alias Nous.Tools.{Bash, FileRead, FileWrite, FileEdit, FileGlob, FileGrep}
 
 IO.puts("=== Tool Permissions Demo ===\n")

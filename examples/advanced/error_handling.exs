@@ -11,9 +11,10 @@ IO.puts("=== Nous AI - Error Handling ===\n")
 
 IO.puts("--- Basic Error Handling ---")
 
-agent = Nous.new("lmstudio:qwen3",
-  instructions: "You are a helpful assistant."
-)
+agent =
+  Nous.new("lmstudio:qwen3",
+    instructions: "You are a helpful assistant."
+  )
 
 case Nous.run(agent, "Hello!") do
   {:ok, result} ->
@@ -106,6 +107,7 @@ defmodule Fallback do
 
       {:error, reason} ->
         IO.puts("#{model} failed: #{inspect(reason)}")
+
         if rest != [] do
           attempt_providers(message, rest, attempt + 1)
         else
@@ -118,7 +120,8 @@ defmodule Fallback do
 end
 
 providers = [
-  %{model: "lmstudio:qwen3"},  # Try local first
+  # Try local first
+  %{model: "lmstudio:qwen3"},
   %{model: "anthropic:claude-sonnet-4-5-20250929", api_key: System.get_env("ANTHROPIC_API_KEY")},
   %{model: "openai:gpt-4", api_key: System.get_env("OPENAI_API_KEY")}
 ]
@@ -126,6 +129,7 @@ providers = [
 case Fallback.run("What is 2+2?", providers) do
   {:ok, result, provider} ->
     IO.puts("Answer from #{provider}: #{result.output}")
+
   {:error, reason} ->
     IO.puts("All failed: #{inspect(reason)}")
 end
@@ -161,24 +165,27 @@ defmodule FlakeyTools do
   end
 end
 
-tool_agent = Nous.new("lmstudio:qwen3",
-  instructions: """
-  You have tools that might fail. When a tool returns an error:
-  1. Acknowledge the failure
-  2. Explain what went wrong
-  3. Try an alternative approach or ask the user for help
-  """,
-  tools: [
-    &FlakeyTools.unreliable_api/2,
-    &FlakeyTools.validate_input/2
-  ]
-)
+tool_agent =
+  Nous.new("lmstudio:qwen3",
+    instructions: """
+    You have tools that might fail. When a tool returns an error:
+    1. Acknowledge the failure
+    2. Explain what went wrong
+    3. Try an alternative approach or ask the user for help
+    """,
+    tools: [
+      &FlakeyTools.unreliable_api/2,
+      &FlakeyTools.validate_input/2
+    ]
+  )
 
 IO.puts("Testing unreliable tool...")
+
 case Nous.run(tool_agent, "Search for 'elixir'") do
   {:ok, result} ->
     IO.puts("Response: #{result.output}")
     IO.puts("Tool calls: #{result.usage.tool_calls}")
+
   {:error, error} ->
     IO.puts("Agent error: #{inspect(error)}")
 end
@@ -190,6 +197,7 @@ IO.puts("")
 # ============================================================================
 
 IO.puts("--- Max Iterations ---")
+
 IO.puts("""
 Prevent infinite tool loops with max_iterations:
 
@@ -198,7 +206,7 @@ Prevent infinite tool loops with max_iterations:
   )
 
 When exceeded:
-  {:error, %Nous.Errors.MaxIterationsReached{iterations: 10}}
+  {:error, %Nous.Errors.MaxIterationsExceeded{max_iterations: 10}}
 """)
 
 # ============================================================================
@@ -206,6 +214,7 @@ When exceeded:
 # ============================================================================
 
 IO.puts("--- Timeouts ---")
+
 IO.puts("""
 Configure timeouts at multiple levels:
 
@@ -287,17 +296,20 @@ end
 cb = CircuitBreaker.new(2, 5000)
 unreliable = fn -> if :rand.uniform(3) == 1, do: {:ok, "success"}, else: {:error, :failed} end
 
-{_final_cb, _results} = Enum.reduce(1..5, {cb, []}, fn i, {current_cb, acc} ->
-  IO.puts("Attempt #{i}:")
-  case CircuitBreaker.call(current_cb, unreliable) do
-    {:ok, result, updated_cb} ->
-      IO.puts("  Success: #{result}")
-      {updated_cb, [result | acc]}
-    {:error, reason, updated_cb} ->
-      IO.puts("  Failed: #{inspect(reason)}")
-      {updated_cb, acc}
-  end
-end)
+{_final_cb, _results} =
+  Enum.reduce(1..5, {cb, []}, fn i, {current_cb, acc} ->
+    IO.puts("Attempt #{i}:")
+
+    case CircuitBreaker.call(current_cb, unreliable) do
+      {:ok, result, updated_cb} ->
+        IO.puts("  Success: #{result}")
+        {updated_cb, [result | acc]}
+
+      {:error, reason, updated_cb} ->
+        IO.puts("  Failed: #{inspect(reason)}")
+        {updated_cb, acc}
+    end
+  end)
 
 IO.puts("")
 

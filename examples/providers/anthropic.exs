@@ -20,10 +20,11 @@ end
 
 IO.puts("--- Basic Claude ---")
 
-agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
-  api_key: api_key,
-  instructions: "Be helpful and concise."
-)
+agent =
+  Nous.new("anthropic:claude-sonnet-4-5-20250929",
+    api_key: api_key,
+    instructions: "Be helpful and concise."
+  )
 
 {:ok, result} = Nous.run(agent, "What is Elixir? One sentence.")
 IO.puts("Response: #{result.output}")
@@ -34,6 +35,7 @@ IO.puts("Tokens: #{result.usage.total_tokens}\n")
 # ============================================================================
 
 IO.puts("--- Available Models ---")
+
 IO.puts("""
   anthropic:claude-sonnet-4-5-20250929  - Best for most tasks
   anthropic:claude-opus-4-5-20250929    - Most capable
@@ -46,22 +48,26 @@ IO.puts("""
 
 IO.puts("--- Extended Thinking ---")
 
-thinking_agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
-  api_key: api_key,
-  instructions: "Think through problems carefully.",
-  model_settings: %{
-    extended_thinking: true,
-    thinking_budget_tokens: 1000
-  }
-)
+thinking_agent =
+  Nous.new("anthropic:claude-sonnet-4-5-20250929",
+    api_key: api_key,
+    instructions: "Think through problems carefully.",
+    model_settings: %{
+      extended_thinking: true,
+      thinking_budget_tokens: 1000
+    }
+  )
 
 {:ok, result} = Nous.run(thinking_agent, "What is 15 * 7 + 23? Show your work.")
 IO.puts("Response: #{result.output}")
 
-# Access thinking (if available)
-if result.thinking do
-  IO.puts("Thinking: #{String.slice(result.thinking, 0..100)}...")
+# Access thinking (if available). The :thinking key is only present when the
+# model returned reasoning content, so use Access (result[:thinking]) which
+# returns nil for an absent key instead of raising KeyError.
+if thinking = result[:thinking] do
+  IO.puts("Thinking: #{String.slice(thinking, 0..100)}...")
 end
+
 IO.puts("")
 
 # ============================================================================
@@ -74,11 +80,12 @@ get_weather = fn _ctx, %{"city" => city} ->
   %{city: city, temperature: 22, conditions: "partly cloudy"}
 end
 
-tool_agent = Nous.new("anthropic:claude-sonnet-4-5-20250929",
-  api_key: api_key,
-  instructions: "Use tools when helpful.",
-  tools: [get_weather]
-)
+tool_agent =
+  Nous.new("anthropic:claude-sonnet-4-5-20250929",
+    api_key: api_key,
+    instructions: "Use tools when helpful.",
+    tools: [get_weather]
+  )
 
 {:ok, result} = Nous.run(tool_agent, "What's the weather in Paris?")
 IO.puts("Response: #{result.output}")
@@ -104,7 +111,9 @@ IO.puts("Response: #{result.output}\n")
 IO.puts("--- Streaming ---")
 
 {:ok, stream} = Nous.run_stream(agent, "Count from 1 to 5.")
-stream |> Enum.each(fn
+
+stream
+|> Enum.each(fn
   {:text_delta, text} -> IO.write(text)
   {:finish, _} -> IO.puts("\n")
   _ -> :ok
