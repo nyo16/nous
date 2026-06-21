@@ -297,7 +297,7 @@ The public API is `Nous.*` and `Nous.Tools.*`. These are NOT public:
 - `Nous.HTTP.Backend.*` — internal; use `HTTP.post/4`'s `:backend` opt instead
 - `Nous.Providers.HTTP` — internal helper for provider authors
 - `Nous.AgentRunner`, `Nous.AgentServer` — internal supervision; use `Nous.run/3`
-- `Nous.Application`, `Nous.Persistence.ETS.TableOwner` — internal supervision tree
+- Nous.Application, Nous.Persistence.ETS.TableOwner — internal supervision tree
 - Anything under `Nous.Workflow.Engine.*` — internal; the public API is `Nous.Workflow`
 - Anything marked `@moduledoc false` — hidden on purpose; will change without notice
 

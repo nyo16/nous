@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the human-approval gate — one prompt-injected document from RCE. It now falls
   back to metadata like name/description/parameters. (Also fixed:
   `Nous.Tool.Behaviour.implements?/1` ensures the module is loaded before
-  checking, and `Agent.new/2` accepts bare behaviour modules in `:tools`.)
+  checking, and `Nous.Agent.new/2` accepts bare behaviour modules in `:tools`.)
 - **FileGrep ripgrep flag injection.** LLM-controlled `pattern`/`glob` reached
   `rg` with no `--` option terminator, so values like `-f/etc/passwd` or
   `--pre=…` read files (or ran a preprocessor) outside the workspace. Pattern is
@@ -62,7 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   connection to it (preserving Host header, SNI, and cert verification) to close
   the DNS-rebinding TOCTOU. The Req provider backends pass `redirect: false`.
 - **Permission policy is now actually enforced.** `Nous.Permissions.Policy`
-  (via a new `:permissions` option on `Agent.new/2`) filters blocked tools out
+  (via a new `:permissions` option on `Nous.Agent.new/2`) filters blocked tools out
   of the tool list the model sees and forces the approval gate for
   approval-required tools — previously the engine was never consulted at
   runtime. `blocked?/2` now honors allow lists in every mode (deny-by-default),
@@ -113,11 +113,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proper tool-error result so the LLM can retry.
 - **Workflow checkpoint ETS table lost its data when the saving process
   exited.** The `:nous_workflow_checkpoints` table is now owned by a
-  supervised `TableOwner` under `Nous.Application` (mirrors the existing
+  supervised `TableOwner` under Nous.Application (mirrors the existing
   `Nous.Persistence.ETS` pattern). Every suspended workflow relying on
   resume is now durable to caller exits.
 - **Memory plugin re-initialized its ETS store on every agent run.**
-  `Nous.Plugins.Memory.init/2` now reuses the existing `store_state` when
+  Nous.Plugins.Memory.init/2 now reuses the existing `store_state` when
   present; per-run defaults are still refreshed. Avoids
   `ets_too_many_tables` under load and the silent loss of memories across
   runs.
@@ -222,7 +222,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming path). Existing-but-undocumented events
   (`fallback`, `hook`, `skill`, `workflow`) are now documented in the
   `Nous.Telemetry` moduledoc.
-- **`Agent.new/2` accepts bare tool modules** in `:tools` (e.g.
+- **`Nous.Agent.new/2` accepts bare tool modules** in `:tools` (e.g.
   `tools: [Nous.Tools.Bash]`), converted via `Nous.Tool.from_module/1`.
 - **`Nous.Permissions.blocked?/2` allow-list semantics.** A non-empty
   `allow_names`/`allow_prefixes` is now deny-by-default in every mode (was only
@@ -255,7 +255,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Deprecated
 
 - `Nous.ToolSchema.to_openai/1` — use `Nous.Tool.to_openai_schema/1`.
-- `Nous.Agent.tool/3` — use `Agent.new/2` with `:tools`, or build a
+- `Nous.Agent.tool/3` — use `Nous.Agent.new/2` with `:tools`, or build a
   `%Nous.Tool{}` directly.
 - `Nous.Eval.run!/2` — match `Nous.Eval.run/2`'s
   `{:ok, _} | {:error, _}` result.
@@ -389,13 +389,13 @@ works against either entry point.
   `content` field entirely and then raised
   `%Ecto.InvalidChangesetError{errors: [content: {"content is required",
   []}]}` from `ContentPart.new!/1`, taking down the whole
-  `Nous.LLM.run_with_tools/6` call. `ContentPart` now overrides
+  Nous.LLM.run_with_tools/6 call. `ContentPart` now overrides
   `:empty_values` to `[""]` so legitimate whitespace content is
-  preserved, and `Nous.Messages.Gemini.parse_content/1` defensively
+  preserved, and Nous.Messages.Gemini.parse_content/1 defensively
   skips whitespace-only text parts to avoid creating useless
   `ContentPart`s. The streaming normalizer (`Nous.StreamNormalizer.Gemini`)
   already had this guard; the non-streaming path is now consistent.
-- **`Nous.Messages.Gemini.parse_content/1` no longer silently drops
+- **Nous.Messages.Gemini.parse_content/1 no longer silently drops
   function calls without `args`.** Nullary tool calls
   (`%{"functionCall" => %{"name" => "get_time"}}`) were falling into
   the catch-all clause and disappearing. Pattern now requires only
@@ -412,7 +412,7 @@ works against either entry point.
   APIs, since long-term/daily quota exhaustion deliberately omits
   `RetryInfo` to discourage retry loops.
 - **`Nous.Errors.ProviderError` gains `:retry_after_ms`** alongside
-  the existing `:status_code`. `Nous.Provider.request/3` and
+  the existing `:status_code`. Nous.Provider.request/3 and
   `request_stream/3` now populate both fields automatically when the
   underlying HTTP layer returns an error tuple, so callers can branch
   on rate-limit hints without parsing provider-specific bodies:
@@ -447,7 +447,7 @@ works against either entry point.
   Existing pattern matches on `%{status: _, body: _}` continue to work
   since map matching is non-exhaustive.
 - **Gemini tool-call ID generation unified.**
-  `Nous.Messages.Gemini.parse_content/1` previously used
+  Nous.Messages.Gemini.parse_content/1 previously used
   `"gemini_#{:rand.uniform(10_000)}"` (~50% birthday-paradox collision
   at ~118 calls) while `parse_parts/1` used
   `"call_#{:rand.uniform(1_000_000)}"` — two formats, two ranges. Both
@@ -496,7 +496,7 @@ works against either entry point.
   `Nous.Finch` pool. Previously they ignored the `:finch_name` opt
   built by `Nous.Provider` and let Req spin up its own default Finch
   instance, leaving the supervised `Nous.Finch` pool (started by
-  `Nous.Application` with `size: 10, count: 1`) idle. Both backends
+  Nous.Application with `size: 10, count: 1`) idle. Both backends
   now read `:finch_name` from per-call opts, falling back to
   `Application.get_env(:nous, :finch, Nous.Finch)`. Net effect:
   `Nous.Finch` becomes the live default for both streaming and
@@ -511,7 +511,7 @@ works against either entry point.
   board.** The previous 60s default routinely tripped on reasoning
   models and longer completions. Affected:
   - `Nous.Model` `receive_timeout` default → 180_000
-  - `Nous.Model.default_receive_timeout/1` per-provider:
+  - Nous.Model.default_receive_timeout/1 per-provider:
     cloud/custom → 180_000, llamacpp → 300_000 (up from 120_000)
   - Provider `@default_timeout` (OpenAI, Anthropic, Mistral, VertexAI,
     OpenAICompatible) → 180_000
@@ -1049,6 +1049,38 @@ Read these before upgrading.
 
 - 76 new tests for hooks and skills systems.
 
+## [0.12.13] - 2026-03-20
+
+### Added
+
+- **`custom:` provider** (`Nous.Providers.Custom`): first-class prefix for any OpenAI-compatible endpoint, with `CUSTOM_API_KEY` / `CUSTOM_BASE_URL` environment-variable support. This is now the documented/recommended approach for custom endpoints.
+  - Configuration precedence (highest to lowest): direct options to `Nous.new/2` → environment variables → application config (`config :nous, :custom, ...`) → defaults.
+- Custom Providers guide (`docs/guides/custom_providers.md`) and `examples/providers/custom_providers.exs`.
+
+### Changed
+
+- `Model.parse/2` accepts the `openai_compatible:` prefix as a backward-compatible alias for `custom:` (both route to the `:custom` provider); `ModelDispatcher` gained an explicit `:custom` clause.
+- Expanded documentation across `Model`, `OpenAICompatible`, and the README; `vllm_sglang.exs` now points to `custom:` as the recommended approach.
+
+## [0.12.12] - 2026-03-19
+
+### Fixed
+
+- **Unbounded atom creation in `atomize_keys/1`** (security): untrusted keys no longer create atoms dynamically.
+- ETS table race condition in `Persistence.ETS.ensure_table/0`.
+- Double recency penalization in memory search scoring.
+- `clear_history` now stays in sync with the persistence backend.
+
+### Added
+
+- `{:error, reason}` handling in `recall/2` and `Search.search`.
+- `Nous.Memory.Scope` — shared scope logic extracted from the memory modules.
+- AgentServer tests (16) and Summarization plugin tests (8).
+
+### Removed
+
+- Dead code in `do_memory_reflection`.
+
 ## [0.12.11] - 2026-03-19
 
 ### Added
@@ -1535,7 +1567,9 @@ Initial public release with multi-provider LLM support:
 [0.12.17]: https://github.com/nyo16/nous/compare/v0.12.16...v0.12.17
 [0.12.16]: https://github.com/nyo16/nous/compare/v0.12.15...v0.12.16
 [0.12.15]: https://github.com/nyo16/nous/compare/v0.12.14...v0.12.15
-[0.12.14]: https://github.com/nyo16/nous/compare/v0.12.11...v0.12.14
+[0.12.14]: https://github.com/nyo16/nous/compare/v0.12.13...v0.12.14
+[0.12.13]: https://github.com/nyo16/nous/compare/v0.12.12...v0.12.13
+[0.12.12]: https://github.com/nyo16/nous/compare/v0.12.11...v0.12.12
 [0.12.11]: https://github.com/nyo16/nous/compare/v0.12.10...v0.12.11
 [0.12.10]: https://github.com/nyo16/nous/compare/v0.12.9...v0.12.10
 [0.12.9]: https://github.com/nyo16/nous/compare/v0.12.8...v0.12.9
