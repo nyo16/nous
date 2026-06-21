@@ -1,7 +1,7 @@
 # Getting Started with Nous
 
 This guide picks up where the [README Quick Start](../README.md#quick-start)
-leaves off. It assumes you already have Nous installed (`{:nous, "~> 0.16.0"}`)
+leaves off. It assumes you already have Nous installed (`{:nous, "~> 0.16.1"}`)
 and a provider configured (API key set, or a local LM Studio / Ollama / vLLM
 server running).
 
@@ -222,9 +222,9 @@ For supervised, crash-recoverable versions of this pattern, see
 
 ## What's Next?
 
-- **More examples** → [`examples/`](../examples/) (numbered 01–19, plus
-  `providers/`, `memory/`, `advanced/`, `workflow/`)
-- **Specific features** → [`docs/guides/`](guides/) — tool development,
+- **More examples** → [`examples/`](../examples/README.md) (numbered 01–19, plus
+  `providers/`, `memory/`, `advanced/`, `workflow/`, `eval/`)
+- **Specific features** → [the guides index](guides/README.md) — tool development,
   structured output, hooks, skills, memory, workflows, knowledge base,
   LiveView integration, evaluation
 - **Production deployment** → [Best Practices](guides/best_practices.md)

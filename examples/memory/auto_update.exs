@@ -15,28 +15,37 @@ model = (System.get_env("OPENAI_API_KEY") && "openai:gpt-4o-mini") || "lmstudio:
 
 alias Nous.Memory.Store
 
+# `deps` is a RUN-time option (the Agent struct has no :deps field), so the
+# Memory plugin reads its config from the deps passed to Nous.run/3. Define it
+# once and pass it on the first turn; later turns inherit it via `context:`.
+memory_deps = %{
+  memory_config: %{
+    store: Store.ETS,
+    auto_update_memory: true,
+    auto_update_every: 1,
+    # Use a cheaper/faster model for the reflection step (optional)
+    # reflection_model: "openai:gpt-4o-mini",
+    reflection_max_tokens: 500
+  }
+}
+
 # Create an agent with auto_update_memory enabled
 agent =
   Nous.new(model,
     plugins: [Nous.Plugins.Memory],
-    instructions: "You are a helpful personal assistant. Remember what the user tells you.",
-    deps: %{
-      memory_config: %{
-        store: Store.ETS,
-        auto_update_memory: true,
-        auto_update_every: 1,
-        # Use a cheaper/faster model for the reflection step (optional)
-        # reflection_model: "openai:gpt-4o-mini",
-        reflection_max_tokens: 500
-      }
-    }
+    instructions: "You are a helpful personal assistant. Remember what the user tells you."
   )
 
 IO.puts("=== Auto-Update Memory Demo ===\n")
 
 # Turn 1: Tell the agent something personal
 IO.puts("--- Turn 1 ---")
-{:ok, result1} = Nous.run(agent, "My name is Alice and I work as a data scientist at Acme Corp.")
+
+{:ok, result1} =
+  Nous.run(agent, "My name is Alice and I work as a data scientist at Acme Corp.",
+    deps: memory_deps
+  )
+
 IO.puts("Agent: #{result1.output}\n")
 
 # Check what memories were auto-created

@@ -25,16 +25,18 @@ defmodule SlowTools do
   end
 end
 
-agent = Nous.new("lmstudio:qwen3",
-  instructions: "You are a research assistant. Use tools to gather information.",
-  tools: [&SlowTools.slow_search/2]
-)
+agent =
+  Nous.new("lmstudio:qwen3",
+    instructions: "You are a research assistant. Use tools to gather information.",
+    tools: [&SlowTools.slow_search/2]
+  )
 
 IO.puts("Starting agent in background task...")
 
-task = Task.async(fn ->
-  Nous.run(agent, "Search for 'Elixir programming'")
-end)
+task =
+  Task.async(fn ->
+    Nous.run(agent, "Search for 'Elixir programming'")
+  end)
 
 # Let it run for 3 seconds
 Process.sleep(3000)
@@ -49,6 +51,7 @@ IO.puts("Task cancelled.\n")
 # ============================================================================
 
 IO.puts("--- Graceful Cancellation ---")
+
 IO.puts("""
 Use Task.shutdown with timeout for cleanup:
 
@@ -71,6 +74,7 @@ Use Task.shutdown with timeout for cleanup:
 # ============================================================================
 
 IO.puts("--- Streaming Cancellation ---")
+
 IO.puts("""
 For streaming, you can stop early by breaking from the stream:
 
@@ -96,6 +100,7 @@ For streaming, you can stop early by breaking from the stream:
 # ============================================================================
 
 IO.puts("--- AgentServer Cancellation ---")
+
 IO.puts("""
 For production apps, use AgentServer with built-in cancellation:
 
@@ -112,7 +117,7 @@ For production apps, use AgentServer with built-in cancellation:
   Nous.AgentServer.send_message(pid, "Do something complex...")
 
   # Cancel mid-execution
-  :ok = Nous.AgentServer.cancel(pid)
+  :ok = Nous.AgentServer.cancel_execution(pid)
 
   # Handle cancellation event
   def handle_info({:agent_cancelled, reason}, state) do
@@ -126,6 +131,7 @@ For production apps, use AgentServer with built-in cancellation:
 # ============================================================================
 
 IO.puts("--- LiveView Cancellation ---")
+
 IO.puts("""
 In Phoenix LiveView, track the task reference:
 
@@ -159,6 +165,7 @@ In Phoenix LiveView, track the task reference:
 # ============================================================================
 
 IO.puts("--- Cancellation Check in Tools ---")
+
 IO.puts("""
 For long-running tools, check for cancellation periodically:
 
@@ -196,6 +203,7 @@ Or use a cancellation token pattern:
 # ============================================================================
 
 IO.puts("--- Timeout vs Cancellation ---")
+
 IO.puts("""
 Timeouts are automatic, cancellation is manual:
 

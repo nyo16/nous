@@ -1,8 +1,11 @@
 # Example Projects
 
-These larger example projects have been moved to separate repositories for easier maintenance.
+Larger, full-application examples that are too big to live as single scripts.
+These are **planned** — they will land as separate repositories. Until then, the
+runnable scripts in the main [`examples/`](../README.md) directory cover every
+feature individually.
 
-## Available Projects
+## Planned Projects
 
 ### Council
 Multi-agent deliberation system with consensus building.

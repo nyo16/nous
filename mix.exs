@@ -120,12 +120,15 @@ defmodule Nous.MixProject do
       extras: [
         "README.md",
         "CHANGELOG.md",
+        {"AGENTS.md", title: "AI Agent Guide (AGENTS.md)"},
+        {"CONTRIBUTING.md", title: "Contributing"},
 
         # Getting Started
         {"docs/getting-started.md", filename: "getting_started", title: "Getting Started Guide"},
 
         # Examples Overview
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
+        {"docs/guides/README.md", filename: "guides_index", title: "All Guides"},
 
         # Production Guides
         {"docs/guides/skills.md", filename: "skills", title: "Skills Guide"},
@@ -148,10 +151,30 @@ defmodule Nous.MixProject do
         {"docs/guides/context.md", filename: "context", title: "Context & Dependencies Guide"},
         {"docs/guides/knowledge_base.md",
          filename: "knowledge_base", title: "Knowledge Base Guide"},
+        {"docs/guides/permissions.md",
+         filename: "permissions", title: "Permissions & Guardrails Guide"},
+        {"docs/guides/observability.md",
+         filename: "observability", title: "Observability & Telemetry Guide"},
+
+        # Orchestration & Multi-Agent
+        {"docs/guides/teams.md", filename: "teams", title: "Multi-Agent Teams Guide"},
+        {"docs/guides/decisions.md", filename: "decisions", title: "Decision Graph Guide"},
+        {"docs/guides/research.md", filename: "research", title: "Deep Research Guide"},
+
+        # Providers & Backends
+        {"docs/guides/providers.md", filename: "providers", title: "Providers Overview"},
+        {"docs/guides/custom_providers.md",
+         filename: "custom_providers", title: "Custom Providers Guide"},
+        {"docs/guides/http_backends.md", filename: "http_backends", title: "HTTP Backends Guide"},
+        {"docs/guides/vertex_ai_setup.md",
+         filename: "vertex_ai_setup", title: "Vertex AI Setup Guide"},
+        {"docs/guides/fallback.md", filename: "fallback", title: "Fallback Chains Guide"},
 
         # Design Documents
         {"docs/design/llm_council_design.md",
-         filename: "council_design", title: "LLM Council Design"}
+         filename: "council_design", title: "LLM Council Design"},
+        {"docs/benchmarks/http_backend.md",
+         filename: "http_backend_benchmark", title: "HTTP Backend Benchmark"}
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,
@@ -159,7 +182,8 @@ defmodule Nous.MixProject do
         "Getting Started": [
           "readme.html",
           "getting_started.html",
-          "examples_overview.html"
+          "examples_overview.html",
+          "guides_index.html"
         ],
         "Production Guides": [
           "skills.html",
@@ -171,13 +195,33 @@ defmodule Nous.MixProject do
           "migration_guide.html",
           "evaluation.html",
           "structured_output.html",
-          "workflows.html",
           "memory.html",
           "context.html",
-          "knowledge_base.html"
+          "knowledge_base.html",
+          "permissions.html",
+          "observability.html"
+        ],
+        "Orchestration & Multi-Agent": [
+          "teams.html",
+          "decisions.html",
+          "research.html",
+          "workflows.html"
+        ],
+        "Providers & Backends": [
+          "providers.html",
+          "custom_providers.html",
+          "http_backends.html",
+          "vertex_ai_setup.html",
+          "fallback.html"
         ],
         Design: [
-          "council_design.html"
+          "council_design.html",
+          "http_backend_benchmark.html"
+        ],
+        Reference: [
+          "changelog.html",
+          "agents.html",
+          "contributing.html"
         ]
       ],
       groups_for_modules: [
@@ -188,7 +232,9 @@ defmodule Nous.MixProject do
           Nous.Agent.Behaviour,
           Nous.Agent.Callbacks,
           Nous.ReActAgent,
-          Nous.Transcript
+          Nous.Transcript,
+          Nous.LLM,
+          Nous.RunContext
         ],
         "Agent Implementations": [
           Nous.Agents.BasicAgent,
@@ -200,26 +246,85 @@ defmodule Nous.MixProject do
         ],
         "Model Configuration": [
           Nous.Model,
-          Nous.ModelDispatcher
+          Nous.ModelDispatcher,
+          Nous.Fallback
         ],
         Providers: [
           Nous.Provider,
           Nous.Providers.HTTP,
+          Nous.Providers.HTTP.JSONArrayParser,
           Nous.Providers.OpenAI,
           Nous.Providers.OpenAICompatible,
           Nous.Providers.Anthropic,
+          Nous.Providers.Custom,
+          Nous.Providers.Gemini,
+          Nous.Providers.Mistral,
           Nous.Providers.LMStudio,
           Nous.Providers.VertexAI,
           Nous.Providers.LlamaCpp,
-          Nous.StreamNormalizer.LlamaCpp
+          Nous.Providers.VLLM,
+          Nous.Providers.SGLang
+        ],
+        "Messages & Streaming": [
+          Nous.Message,
+          Nous.Message.ContentPart,
+          Nous.Messages,
+          Nous.Messages.OpenAI,
+          Nous.Messages.Anthropic,
+          Nous.Messages.Gemini,
+          Nous.StreamNormalizer,
+          Nous.StreamNormalizer.OpenAI,
+          Nous.StreamNormalizer.Anthropic,
+          Nous.StreamNormalizer.Gemini,
+          Nous.StreamNormalizer.LlamaCpp,
+          Nous.StreamNormalizer.ToolCallAccumulator
+        ],
+        "HTTP Backends": [
+          Nous.HTTP.Backend,
+          Nous.HTTP.Backend.Req,
+          Nous.HTTP.Backend.Hackney,
+          Nous.HTTP.StreamBackend,
+          Nous.HTTP.StreamBackend.Req,
+          Nous.HTTP.StreamBackend.Hackney
         ],
         "Tool System": [
           Nous.Tool,
           Nous.Tool.Behaviour,
           Nous.Tool.ContextUpdate,
           Nous.Tool.Validator,
+          Nous.Tool.Registry,
+          Nous.Tool.Schema,
           Nous.ToolSchema,
           Nous.ToolExecutor
+        ],
+        "Structured Output": [
+          Nous.OutputSchema,
+          Nous.OutputSchema.UseMacro,
+          Nous.OutputSchema.Validator
+        ],
+        "Research Tools": [
+          Nous.Tools.WebFetch,
+          Nous.Tools.Summarize,
+          Nous.Tools.SearchScrape,
+          Nous.Tools.TavilySearch,
+          Nous.Tools.BraveSearch,
+          Nous.Tools.ResearchNotes
+        ],
+        "Coding Tools": [
+          Nous.Tools.Bash,
+          Nous.Tools.FileRead,
+          Nous.Tools.FileWrite,
+          Nous.Tools.FileEdit,
+          Nous.Tools.FileGlob,
+          Nous.Tools.FileGrep,
+          Nous.Tools.TodoTools,
+          Nous.Tools.PathGuard,
+          Nous.Tools.UrlGuard
+        ],
+        "Utility Tools": [
+          Nous.Tools.DateTimeTools,
+          Nous.Tools.StringTools,
+          Nous.Tools.ReActTools
         ],
         Testing: [
           Nous.Tool.Testing
@@ -229,12 +334,22 @@ defmodule Nous.MixProject do
         ],
         "Data Types": [
           Nous.Types,
-          Nous.Usage,
-          Nous.Messages
+          Nous.Usage
         ],
         Infrastructure: [
           Nous.Telemetry,
-          Nous.Errors
+          Nous.PromEx.Plugin,
+          Nous.Errors,
+          Nous.Errors.RetryInfo,
+          Nous.Errors.ConfigurationError,
+          Nous.Errors.ModelError,
+          Nous.Errors.ProviderError,
+          Nous.Errors.ToolError,
+          Nous.Errors.ToolTimeout,
+          Nous.Errors.ValidationError,
+          Nous.Errors.UsageLimitExceeded,
+          Nous.Errors.MaxIterationsExceeded,
+          Nous.Errors.ExecutionCancelled
         ],
         Evaluation: [
           Nous.Eval,
@@ -242,9 +357,28 @@ defmodule Nous.MixProject do
           Nous.Eval.TestCase,
           Nous.Eval.Runner,
           Nous.Eval.Evaluator,
+          Nous.Eval.Evaluators.Contains,
+          Nous.Eval.Evaluators.ExactMatch,
+          Nous.Eval.Evaluators.FuzzyMatch,
+          Nous.Eval.Evaluators.LLMJudge,
+          Nous.Eval.Evaluators.Schema,
+          Nous.Eval.Evaluators.ToolUsage,
           Nous.Eval.Metrics,
+          Nous.Eval.Metrics.Summary,
+          Nous.Eval.Result,
+          Nous.Eval.SuiteResult,
+          Nous.Eval.YamlLoader,
+          Nous.Eval.Config,
           Nous.Eval.Reporter,
-          Nous.Eval.Config
+          Nous.Eval.Reporter.Console,
+          Nous.Eval.Reporter.Json,
+          Nous.Eval.Optimizer,
+          Nous.Eval.Optimizer.Parameter,
+          Nous.Eval.Optimizer.SearchSpace,
+          Nous.Eval.Optimizer.Strategy,
+          Nous.Eval.Optimizer.Strategies.Bayesian,
+          Nous.Eval.Optimizer.Strategies.GridSearch,
+          Nous.Eval.Optimizer.Strategies.Random
         ],
         "Hooks System": [
           Nous.Hook,
@@ -290,11 +424,32 @@ defmodule Nous.MixProject do
           Nous.Plugins.InputGuard.Strategies.Semantic,
           Nous.Plugins.Memory,
           Nous.Plugins.SubAgent,
-          Nous.Plugins.Summarization
+          Nous.Plugins.Summarization,
+          Nous.Plugins.Decisions,
+          Nous.Plugins.TeamTools
+        ],
+        "Multi-Agent (Teams)": [
+          Nous.Teams,
+          Nous.Teams.Supervisor,
+          Nous.Teams.Coordinator,
+          Nous.Teams.Role,
+          Nous.Teams.Comms,
+          Nous.Teams.SharedState,
+          Nous.Teams.RateLimiter
+        ],
+        "Decision Graph": [
+          Nous.Decisions,
+          Nous.Decisions.Node,
+          Nous.Decisions.Edge,
+          Nous.Decisions.ContextBuilder,
+          Nous.Decisions.Store,
+          Nous.Decisions.Store.ETS,
+          Nous.Decisions.Store.DuckDB
         ],
         Memory: [
           Nous.Memory,
           Nous.Memory.Entry,
+          Nous.Memory.Scope,
           Nous.Memory.Store,
           Nous.Memory.Store.ETS,
           Nous.Memory.Store.SQLite,
@@ -315,8 +470,7 @@ defmodule Nous.MixProject do
           Nous.PubSub.Approval
         ],
         Persistence: [
-          Nous.Persistence,
-          Nous.Persistence.ETS
+          Nous.Persistence
         ],
         Supervision: [
           Nous.AgentRegistry,
@@ -331,21 +485,6 @@ defmodule Nous.MixProject do
           Nous.Research.Reporter,
           Nous.Research.Finding,
           Nous.Research.Report
-        ],
-        "Research Tools": [
-          Nous.Tools.WebFetch,
-          Nous.Tools.Summarize,
-          Nous.Tools.SearchScrape,
-          Nous.Tools.TavilySearch,
-          Nous.Tools.ResearchNotes
-        ],
-        "Coding Tools": [
-          Nous.Tools.Bash,
-          Nous.Tools.FileRead,
-          Nous.Tools.FileWrite,
-          Nous.Tools.FileEdit,
-          Nous.Tools.FileGlob,
-          Nous.Tools.FileGrep
         ],
         Session: [
           Nous.Session.Config,
@@ -387,6 +526,10 @@ defmodule Nous.MixProject do
           Nous.Workflow.Checkpoint.ETS,
           Nous.Workflow.Scratch,
           Nous.Workflow.Telemetry
+        ],
+        "Mix Tasks": [
+          Mix.Tasks.Nous.Eval,
+          Mix.Tasks.Nous.Optimize
         ]
       ]
     ]

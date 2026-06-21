@@ -11,6 +11,16 @@ IO.puts("=== Nous AI - Telemetry Demo ===\n")
 
 IO.puts("--- Custom Telemetry Handler ---")
 
+# A plain function value (scripts can't define `defp` at the top level).
+inspect_metadata = fn metadata ->
+  cond do
+    metadata[:agent_name] -> "agent=#{metadata[:agent_name]}"
+    metadata[:tool_name] -> "tool=#{metadata[:tool_name]}"
+    metadata[:provider] -> "provider=#{metadata[:provider]}"
+    true -> ""
+  end
+end
+
 :telemetry.attach_many(
   "demo-handler",
   [
@@ -27,25 +37,17 @@ IO.puts("--- Custom Telemetry Handler ---")
   fn event, measurements, metadata, _config ->
     event_name = Enum.join(event, ".")
 
-    duration = if measurements[:duration] do
-      "#{System.convert_time_unit(measurements[:duration], :native, :millisecond)}ms"
-    else
-      nil
-    end
+    duration =
+      if measurements[:duration] do
+        "#{System.convert_time_unit(measurements[:duration], :native, :millisecond)}ms"
+      else
+        nil
+      end
 
-    IO.puts("[#{event_name}] #{inspect_metadata(metadata)} #{duration || ""}")
+    IO.puts("[#{event_name}] #{inspect_metadata.(metadata)} #{duration || ""}")
   end,
   nil
 )
-
-defp inspect_metadata(metadata) do
-  cond do
-    metadata[:agent_name] -> "agent=#{metadata[:agent_name]}"
-    metadata[:tool_name] -> "tool=#{metadata[:tool_name]}"
-    metadata[:provider] -> "provider=#{metadata[:provider]}"
-    true -> ""
-  end
-end
 
 IO.puts("Handler attached. Running agent...\n")
 
@@ -57,11 +59,12 @@ get_time = fn _ctx, _args ->
   %{time: DateTime.utc_now() |> DateTime.to_string()}
 end
 
-agent = Nous.new("lmstudio:qwen3",
-  name: "demo-agent",
-  instructions: "You have a time tool.",
-  tools: [get_time]
-)
+agent =
+  Nous.new("lmstudio:qwen3",
+    name: "demo-agent",
+    instructions: "You have a time tool.",
+    tools: [get_time]
+  )
 
 {:ok, result} = Nous.run(agent, "What time is it?")
 
@@ -73,6 +76,7 @@ IO.puts("")
 # ============================================================================
 
 IO.puts("--- Default Handler ---")
+
 IO.puts("""
 Nous provides a built-in handler for development:
 
@@ -90,6 +94,7 @@ This logs events at appropriate levels:
 # ============================================================================
 
 IO.puts("--- Available Events ---")
+
 IO.puts("""
 Agent Events:
   [:nous, :agent, :run, :start]       - Agent execution starts
@@ -122,6 +127,7 @@ Context Events:
 # ============================================================================
 
 IO.puts("--- Metrics Integration ---")
+
 IO.puts("""
 For production metrics, use telemetry_metrics:
 
@@ -169,18 +175,21 @@ IO.puts("--- Cost Tracking ---")
 defmodule CostTracker do
   use Agent
 
-  def start_link, do: Agent.start_link(fn -> %{total_tokens: 0, requests: 0} end, name: __MODULE__)
+  def start_link,
+    do: Agent.start_link(fn -> %{total_tokens: 0, requests: 0} end, name: __MODULE__)
+
   def get_stats, do: Agent.get(__MODULE__, & &1)
 
   def handle_event([:nous, :agent, :run, :stop], measurements, _metadata, _config) do
     Agent.update(__MODULE__, fn state ->
       %{
-        state |
-        total_tokens: state.total_tokens + measurements.total_tokens,
-        requests: state.requests + 1
+        state
+        | total_tokens: state.total_tokens + measurements.total_tokens,
+          requests: state.requests + 1
       }
     end)
   end
+
   def handle_event(_, _, _, _), do: :ok
 end
 
