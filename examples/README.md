@@ -14,6 +14,15 @@ export ANTHROPIC_API_KEY="sk-..."
 export OPENAI_API_KEY="sk-..."
 ```
 
+## Standalone APIs
+
+Top-level entry points that don't need the full agent loop:
+
+| File | Description |
+|------|-------------|
+| [llm_oneshot.exs](llm_oneshot.exs) | Bare `Nous.LLM` one-shot API: `generate_text/3`, `generate_text!/3`, `stream_text/3` (no agent) |
+| [knowledge_base.exs](knowledge_base.exs) | Knowledge Base store: add entries, `search/4`, and the KB agent plugin |
+
 ## Core Examples (01-10)
 
 Progressive learning path from basics to advanced features:
@@ -110,11 +119,13 @@ Production patterns and advanced features:
 | [advanced/teams.exs](advanced/teams.exs) | Multi-agent team lifecycle: roles, shared state, comms |
 | [advanced/decisions.exs](advanced/decisions.exs) | Decision-graph tracking (core API + agent plugin) |
 | [advanced/deep_research.exs](advanced/deep_research.exs) | Autonomous deep research with citations |
+| [advanced/summarization.exs](advanced/summarization.exs) | Auto-compact long conversation history via the Summarization plugin |
+| [advanced/web_tools.exs](advanced/web_tools.exs) | Web/search tools: WebFetch, SearchScrape, Tavily, Brave |
 | [advanced/telemetry.exs](advanced/telemetry.exs) | Custom metrics and cost tracking |
 | [advanced/cancellation.exs](advanced/cancellation.exs) | Task and streaming cancellation |
-| [advanced/liveview_integration.exs](advanced/liveview_integration.exs) | Phoenix LiveView integration patterns |
-| [advanced/liveview_chat.exs](advanced/liveview_chat.exs) | Full chat UI: streaming, tools, sessions, auto-scroll |
-| [advanced/liveview_multi_agent.exs](advanced/liveview_multi_agent.exs) | Multi-agent dashboard with real-time PubSub status |
+| [advanced/liveview_integration.exs](advanced/liveview_integration.exs) | LiveView **patterns reference** — 6 patterns (non-streaming, streaming, tools, cancellation, AgentServer, map-callbacks) |
+| [advanced/liveview_chat.exs](advanced/liveview_chat.exs) | A **complete chat app** — one ChatLive module: streaming, tools, sessions, auto-scroll |
+| [advanced/liveview_multi_agent.exs](advanced/liveview_multi_agent.exs) | A **multi-agent dashboard** — real-time PubSub status across agents |
 | [advanced/tool_permissions.exs](advanced/tool_permissions.exs) | Permission policies: presets, custom deny/approve, tool filtering |
 
 ## Running Examples
