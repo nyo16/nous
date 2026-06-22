@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Agent-runtime hot-path hardening (behavior-preserving)** (#62). Eliminates
+  confirmed super-linear and serialization hot paths in the agent runtime,
+  measured with Benchee first; all changes preserve observable behavior. Core
+  loop: tool-schema conversion is memoized once per run via a runtime-only
+  `Context.tool_schema_cache` and stripped from `Context.serialize/1`.
+  Persistence/OTP: `agent_server` context saves on the response/`clear_history`
+  paths are now fire-and-forget via `Task.Supervisor` (off the GenServer
+  mailbox); `Teams.RateLimiter` uses running-window counters so `rate_limited?/2`
+  is O(1); `Teams.SharedState` uses ETS row-per-entry for discoveries/claims.
+  Context updates replace O(n²) `++ [item]` appends with prepend + per-key
+  reverse. Memory/search: scope/kb_id/type filters are pushed into ETS via
+  matchspecs, search is single-pass, and the SQLite cosine L2 norm is hoisted
+  out of the loop.
+
+### Documentation
+
+- **Documentation overhaul** (#63). ExDoc structure reorganized after months of
+  feature growth: 67 previously-orphaned modules are now grouped, with new module
+  groups (Multi-Agent/Teams, Decision Graph, Messages & Streaming, HTTP Backends,
+  Structured Output, Utility Tools, Mix Tasks), a completed Providers group, and
+  an expanded Evaluation subtree; 0 broken-link warnings. Seven new
+  source-grounded subsystem guides (teams, decisions, research, fallback,
+  permissions, observability, providers). README/getting-started/indexes updated
+  and stale doc indexes regenerated. Numerous broken examples fixed and four new
+  advanced examples added (teams, decisions, deep_research, fallback).
+
+## [0.16.5] - 2026-06-12
+
 ### Security
 
 - **Permission-policy approval gate was bypassed when a `pre_tool_use` hook
@@ -36,6 +66,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for custom execute-class tools that relied on the policy. **Behavior change:**
   `build_policy(mode: :permissive)` users who want unattended shell execution
   must now pass `allow_unattended_execute: true`.
+
+## [0.16.4] - 2026-06-05
+
+### Changed
+
+- **Audit-pass follow-up: security/OTP/test hardening** (#60). Security
+  hardening: PathGuard canonical-path resolution, `web_fetch` fail-closed,
+  atom-exhaustion DoS guard, ReDoS cap, additional UrlGuard ranges. Correctness:
+  `get_tool_field` fetch, rate-limit TOCTOU fix, async-load reply-on-crash,
+  `async_nolink` absorb, O(1) claims, iodata flat accumulation. Documents the
+  intentional run-scoped ETS ownership model (KnowledgeBase/Decisions stores)
+  and a safer slug-index write order, makes the rate-limiter fail-open
+  observable (log + telemetry), and improves test quality (deterministic
+  `refute_receive`, `start_supervised!`, unique telemetry handler IDs, encoded-IP
+  SSRF cases).
+
+## [0.16.3] - 2026-05-29
+
+### Security
+
 - **RCE approval gate could be silently bypassed.** `Nous.Tool.from_module/2`
   hardcoded `requires_approval: false` instead of reading it from the tool's
   metadata, so `Bash`/`FileWrite` registered via the standard path ran without
@@ -100,6 +150,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OpenAI `parse_tool_call/1` crashed on a tool_call missing `"function"`.**
   `Map.get(nil, "name")` raised `BadMapError`, aborting the whole response
   parse on non-conformant OpenAI-compatible backends. Defaults to `%{}` now.
+
+### Fixed (important)
+
+- **Team region locking and discovery sharing were silently inert.**
+  `Nous.Teams.Supervisor` wires `SharedState` into agent deps as a registered
+  atom name, but `Nous.Plugins.TeamTools` gated on `is_pid/1` — false for the
+  name — so `claim_region`/`share_discovery` no-op'd for every team built via
+  the public API. The guards now resolve a registered name to a live pid.
+- **A tool that `throw`s or `exit`s (non-timeout) crashed the whole agent run.**
+  `Nous.ToolExecutor` only caught `:exit, {:timeout, _}`; it now catches any
+  `throw`/`exit` and converts it to a retryable `ToolError`.
+- **Streaming Gemini/Vertex tool calls dropped `thought_signature`.** The
+  accumulator rebuilt the call without `metadata`, breaking multi-turn thinking
+  parity for 2.5 thinking models. The signature is now carried through.
+- **Documented per-run `:model_settings` override was ignored.** `AgentRunner`
+  now merges `opts[:model_settings]` over the agent's settings for that run.
+- **`Nous.Teams.RateLimiter` was never invoked**, so `budget`/`rpm`/`tpm` had no
+  effect. It is now wired into the agent request path (reserve → reconcile →
+  release) when a limiter is in deps; rpm/tpm/request limits are enforced (the
+  cost budget is reconciled post-hoc — see the moduledoc).
+- **Crashed/timed-out parallel workflow branches were attributed to
+  `"unknown"`.** `Nous.Workflow.Engine.ParallelExecutor` now uses
+  `zip_input_on_exit` so failures keep their branch id / item index.
+- **SQLite memory scoped FTS recall was silently broken** (a parameter
+  off-by-one bound the scope filter to the wrong columns); the **Hybrid store**
+  now over-fetches a larger candidate pool when a scope is applied (so in-scope
+  results aren't crowded out); and **memory search normalizes RRF scores to
+  0–1** so `min_score` behaves consistently between text-only and hybrid modes.
+- **Tool argument validator now recurses** into nested object properties and
+  array items (was top-level types only).
+- **Eval config robustness.** `NOUS_EVAL_*` integer env vars parse via
+  `Integer.parse` (no crash on a bad value) and a partial custom `cost_config`
+  deep-merges instead of raising `KeyError`.
+- **`Nous.Tools.SearchScrape` processed only the first `concurrency` URLs.**
+  It now fetches all URLs (capped and throttled by `max_concurrency`) and clamps
+  LLM-supplied `concurrency`/`timeout`.
+
+### Changed
+
+- **`Nous.Agent.new/2` accepts bare tool modules** in `:tools` (e.g.
+  `tools: [Nous.Tools.Bash]`), converted via `Nous.Tool.from_module/1`.
+- **`Nous.Permissions.blocked?/2` allow-list semantics.** A non-empty
+  `allow_names`/`allow_prefixes` is now deny-by-default in every mode (was only
+  honored in `:strict`); `build_policy/1` raises on an unknown `:mode`.
+- **`Nous.Hook.new/2` accepts `:fail_closed`** so security-gating hooks can opt
+  into fail-closed via the documented constructor (not only a struct literal).
+- **License metadata corrected** to `Apache-2.0` in `mix.exs` (was `MIT`) to
+  match the bundled `LICENSE` and README.
+- **Docs:** fixed non-compiling/silently-broken examples — README plugin
+  configs now pass `:deps` to `Nous.run/3` (not `Nous.new/2`, which ignores it);
+  getting-started uses `Nous.Errors.ProviderError`, the correct
+  `AgentDynamicSupervisor.start_agent/3` arity, `Context.deserialize/1`, and
+  `%Nous.Message{}` for the chatbot example; AGENTS.md custom-tool example uses
+  `@behaviour`/`metadata/0`/`execute(ctx, args)` and corrects the streaming
+  backpressure claim (Req is the default; Hackney is the opt-in pull-based
+  backend).
+
+### Performance
+
+- **Removed O(n²) list accumulation on hot loops.** `Nous.Teams.RateLimiter`'s
+  sliding window and `Nous.Teams.SharedState`'s discovery list now prepend
+  (O(1)) instead of `++ [entry]` (O(n)).
+- **KnowledgeBase ETS store keeps a `slug -> id` index**, so
+  `fetch_entry_by_slug/2` is O(1) instead of a full table scan + struct rebuild
+  on every `kb_read`/`kb_backlinks`/`kb_link` call.
+- **Decisions ETS store builds an edge adjacency index once per BFS traversal**
+  (`descendants`/`ancestors`/`path_between`) instead of scanning the whole edge
+  table per visited node — O(V+E) instead of O(V·E).
+
+## [0.16.2] - 2026-05-16
+
+### Fixed (critical)
+
 - **Gemini/Vertex tool-result roundtrip was broken.** `Nous.Messages.Gemini`
   was sending the tool call_id (e.g. `"gemini_abc123"`) as the
   `functionResponse.name`, but Gemini's API requires the original
@@ -178,39 +301,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns immediately, so `DynamicSupervisor.start_child` (and
   `Teams.Coordinator.spawn_agent`) no longer wedge waiting for slow
   persistence backends.
-- **Team region locking and discovery sharing were silently inert.**
-  `Nous.Teams.Supervisor` wires `SharedState` into agent deps as a registered
-  atom name, but `Nous.Plugins.TeamTools` gated on `is_pid/1` — false for the
-  name — so `claim_region`/`share_discovery` no-op'd for every team built via
-  the public API. The guards now resolve a registered name to a live pid.
-- **A tool that `throw`s or `exit`s (non-timeout) crashed the whole agent run.**
-  `Nous.ToolExecutor` only caught `:exit, {:timeout, _}`; it now catches any
-  `throw`/`exit` and converts it to a retryable `ToolError`.
-- **Streaming Gemini/Vertex tool calls dropped `thought_signature`.** The
-  accumulator rebuilt the call without `metadata`, breaking multi-turn thinking
-  parity for 2.5 thinking models. The signature is now carried through.
-- **Documented per-run `:model_settings` override was ignored.** `AgentRunner`
-  now merges `opts[:model_settings]` over the agent's settings for that run.
-- **`Nous.Teams.RateLimiter` was never invoked**, so `budget`/`rpm`/`tpm` had no
-  effect. It is now wired into the agent request path (reserve → reconcile →
-  release) when a limiter is in deps; rpm/tpm/request limits are enforced (the
-  cost budget is reconciled post-hoc — see the moduledoc).
-- **Crashed/timed-out parallel workflow branches were attributed to
-  `"unknown"`.** `Nous.Workflow.Engine.ParallelExecutor` now uses
-  `zip_input_on_exit` so failures keep their branch id / item index.
-- **SQLite memory scoped FTS recall was silently broken** (a parameter
-  off-by-one bound the scope filter to the wrong columns); the **Hybrid store**
-  now over-fetches a larger candidate pool when a scope is applied (so in-scope
-  results aren't crowded out); and **memory search normalizes RRF scores to
-  0–1** so `min_score` behaves consistently between text-only and hybrid modes.
-- **Tool argument validator now recurses** into nested object properties and
-  array items (was top-level types only).
-- **Eval config robustness.** `NOUS_EVAL_*` integer env vars parse via
-  `Integer.parse` (no crash on a bad value) and a partial custom `cost_config`
-  deep-merges instead of raising `KeyError`.
-- **`Nous.Tools.SearchScrape` processed only the first `concurrency` URLs.**
-  It now fetches all URLs (capped and throttled by `max_concurrency`) and clamps
-  LLM-supplied `concurrency`/`timeout`.
 
 ### Changed
 
@@ -222,35 +312,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   streaming path). Existing-but-undocumented events
   (`fallback`, `hook`, `skill`, `workflow`) are now documented in the
   `Nous.Telemetry` moduledoc.
-- **`Nous.Agent.new/2` accepts bare tool modules** in `:tools` (e.g.
-  `tools: [Nous.Tools.Bash]`), converted via `Nous.Tool.from_module/1`.
-- **`Nous.Permissions.blocked?/2` allow-list semantics.** A non-empty
-  `allow_names`/`allow_prefixes` is now deny-by-default in every mode (was only
-  honored in `:strict`); `build_policy/1` raises on an unknown `:mode`.
-- **`Nous.Hook.new/2` accepts `:fail_closed`** so security-gating hooks can opt
-  into fail-closed via the documented constructor (not only a struct literal).
-- **License metadata corrected** to `Apache-2.0` in `mix.exs` (was `MIT`) to
-  match the bundled `LICENSE` and README.
-- **Docs:** fixed non-compiling/silently-broken examples — README plugin
-  configs now pass `:deps` to `Nous.run/3` (not `Nous.new/2`, which ignores it);
-  getting-started uses `Nous.Errors.ProviderError`, the correct
-  `AgentDynamicSupervisor.start_agent/3` arity, `Context.deserialize/1`, and
-  `%Nous.Message{}` for the chatbot example; AGENTS.md custom-tool example uses
-  `@behaviour`/`metadata/0`/`execute(ctx, args)` and corrects the streaming
-  backpressure claim (Req is the default; Hackney is the opt-in pull-based
-  backend).
-
-### Performance
-
-- **Removed O(n²) list accumulation on hot loops.** `Nous.Teams.RateLimiter`'s
-  sliding window and `Nous.Teams.SharedState`'s discovery list now prepend
-  (O(1)) instead of `++ [entry]` (O(n)).
-- **KnowledgeBase ETS store keeps a `slug -> id` index**, so
-  `fetch_entry_by_slug/2` is O(1) instead of a full table scan + struct rebuild
-  on every `kb_read`/`kb_backlinks`/`kb_link` call.
-- **Decisions ETS store builds an edge adjacency index once per BFS traversal**
-  (`descendants`/`ancestors`/`path_between`) instead of scanning the whole edge
-  table per visited node — O(V+E) instead of O(V·E).
 
 ### Deprecated
 
@@ -1547,7 +1608,11 @@ Initial public release with multi-provider LLM support:
 - ReAct agent implementation
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/nyo16/nous/compare/v0.16.1...HEAD
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.16.5...HEAD
+[0.16.5]: https://github.com/nyo16/nous/compare/v0.16.4...v0.16.5
+[0.16.4]: https://github.com/nyo16/nous/compare/v0.16.3...v0.16.4
+[0.16.3]: https://github.com/nyo16/nous/compare/v0.16.2...v0.16.3
+[0.16.2]: https://github.com/nyo16/nous/compare/v0.16.1...v0.16.2
 [0.16.1]: https://github.com/nyo16/nous/compare/v0.16.0...v0.16.1
 [0.16.0]: https://github.com/nyo16/nous/compare/v0.15.8...v0.16.0
 [0.15.8]: https://github.com/nyo16/nous/compare/v0.15.7...v0.15.8
