@@ -46,65 +46,15 @@ defmodule Nous.Providers.VLLM do
 
   """
 
+  # vLLM is local-by-default and speaks the OpenAI `/chat/completions` dialect,
+  # so `chat/2` and `chat_stream/2` are injected by `Nous.Provider`. The
+  # `:local` strategy reads `VLLM_BASE_URL` and validates via UrlGuard with
+  # `allow_private_hosts: true` (rejects `file://` etc. while allowing
+  # localhost); auth is optional (`bearer` headers).
   use Nous.Provider,
     id: :vllm,
+    display_name: "vLLM",
     default_base_url: "http://localhost:8000/v1",
-    default_env_key: "VLLM_API_KEY"
-
-  alias Nous.Providers.HTTP
-
-  @default_timeout 120_000
-  @streaming_timeout 300_000
-
-  @impl Nous.Provider
-  def chat(params, opts \\ []) do
-    with {:ok, base} <- get_base_url(opts) do
-      url = "#{base}/chat/completions"
-      headers = build_headers(api_key(opts))
-      timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-      HTTP.post(url, params, headers, timeout: timeout)
-    end
-  end
-
-  @impl Nous.Provider
-  def chat_stream(params, opts \\ []) do
-    with {:ok, base} <- get_base_url(opts) do
-      url = "#{base}/chat/completions"
-      headers = build_headers(api_key(opts))
-      timeout = Keyword.get(opts, :timeout, @streaming_timeout)
-
-      params = Map.put(params, "stream", true)
-
-      HTTP.stream(url, params, headers, timeout: timeout)
-    end
-  end
-
-  # Resolve and validate the base URL. The resolved URL goes through
-  # `Nous.Tools.UrlGuard` with `allow_private_hosts: true` (vLLM is
-  # local-by-default) to reject malformed schemes (`file://` etc.) while
-  # still allowing the localhost default. Returns `{:ok, base}` on success
-  # or `{:error, {:invalid_config, reason}}` so callers can pattern-match
-  # without rescuing exceptions.
-  defp get_base_url(opts) do
-    base =
-      Keyword.get(opts, :base_url) ||
-        System.get_env("VLLM_BASE_URL") ||
-        base_url(opts)
-
-    case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: true) do
-      {:ok, _uri} ->
-        {:ok, base}
-
-      {:error, reason} ->
-        {:error,
-         {:invalid_config, "vLLM base_url failed validation: #{reason}. Got: #{inspect(base)}"}}
-    end
-  end
-
-  # vLLM doesn't require auth by default, but we support it if configured.
-  # `HTTP.bearer_auth_header/1` returns `[]` for nil / empty / "not-needed".
-  defp build_headers(api_key) do
-    HTTP.json_headers() ++ HTTP.bearer_auth_header(api_key)
-  end
+    default_env_key: "VLLM_API_KEY",
+    chat: [base_url: :local, headers: :bearer, timeout: 120_000, stream_timeout: 300_000]
 end

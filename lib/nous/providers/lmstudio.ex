@@ -37,67 +37,16 @@ defmodule Nous.Providers.LMStudio do
 
   """
 
+  # LM Studio is local-by-default and speaks the OpenAI `/chat/completions`
+  # dialect, so `chat/2` and `chat_stream/2` are injected by `Nous.Provider`.
+  # The `:local` strategy reads `LMSTUDIO_BASE_URL` and validates via UrlGuard
+  # with `allow_private_hosts: true` (rejects `file://` etc. while allowing
+  # localhost); auth is optional (`bearer` headers). Local models may be slower,
+  # hence the longer timeouts.
   use Nous.Provider,
     id: :lmstudio,
+    display_name: "LM Studio",
     default_base_url: "http://localhost:1234/v1",
-    default_env_key: "LMSTUDIO_API_KEY"
-
-  alias Nous.Providers.HTTP
-
-  # Local models may be slower
-  @default_timeout 120_000
-  @streaming_timeout 300_000
-
-  @impl Nous.Provider
-  def chat(params, opts \\ []) do
-    with {:ok, base} <- get_base_url(opts) do
-      url = "#{base}/chat/completions"
-      headers = build_headers(api_key(opts))
-      timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-      HTTP.post(url, params, headers, timeout: timeout)
-    end
-  end
-
-  @impl Nous.Provider
-  def chat_stream(params, opts \\ []) do
-    with {:ok, base} <- get_base_url(opts) do
-      url = "#{base}/chat/completions"
-      headers = build_headers(api_key(opts))
-      timeout = Keyword.get(opts, :timeout, @streaming_timeout)
-
-      params = Map.put(params, "stream", true)
-
-      HTTP.stream(url, params, headers, timeout: timeout)
-    end
-  end
-
-  # Resolve and validate the base URL. The resolved URL goes through
-  # `Nous.Tools.UrlGuard` with `allow_private_hosts: true` (LM Studio is
-  # local-by-default) to reject malformed schemes (`file://` etc.) while
-  # still allowing the localhost default. Returns `{:ok, base}` on success
-  # or `{:error, {:invalid_config, reason}}` so callers can pattern-match
-  # without rescuing exceptions.
-  defp get_base_url(opts) do
-    base =
-      Keyword.get(opts, :base_url) ||
-        System.get_env("LMSTUDIO_BASE_URL") ||
-        base_url(opts)
-
-    case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: true) do
-      {:ok, _uri} ->
-        {:ok, base}
-
-      {:error, reason} ->
-        {:error,
-         {:invalid_config,
-          "LM Studio base_url failed validation: #{reason}. Got: #{inspect(base)}"}}
-    end
-  end
-
-  # LM Studio doesn't require auth, but we support it if configured.
-  # `HTTP.bearer_auth_header/1` returns `[]` for nil / empty / "not-needed".
-  defp build_headers(api_key) do
-    HTTP.json_headers() ++ HTTP.bearer_auth_header(api_key)
-  end
+    default_env_key: "LMSTUDIO_API_KEY",
+    chat: [base_url: :local, headers: :bearer, timeout: 120_000, stream_timeout: 300_000]
 end
