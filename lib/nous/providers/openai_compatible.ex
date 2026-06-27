@@ -125,43 +125,14 @@ defmodule Nous.Providers.OpenAICompatible do
   See `Nous.Providers.Custom` for the dedicated custom provider implementation.
   """
 
+  # Generic OpenAI-compatible endpoint: `chat/2` and `chat_stream/2` are
+  # injected by `Nous.Provider` (`:plain` base URL, `bearer_org` headers so the
+  # optional `openai-organization` header is supported). `HTTP.bearer_auth_header/1`
+  # returns `[]` for nil / empty / "not-needed", preserving the local-server
+  # "not-needed" sentinel.
   use Nous.Provider,
     id: :openai_compatible,
     default_base_url: "https://api.openai.com/v1",
-    default_env_key: "OPENAI_API_KEY"
-
-  alias Nous.Providers.HTTP
-
-  @default_timeout 180_000
-  @streaming_timeout 300_000
-
-  @impl Nous.Provider
-  def chat(params, opts \\ []) do
-    url = "#{base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts), opts)
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    HTTP.post(url, params, headers, timeout: timeout)
-  end
-
-  @impl Nous.Provider
-  def chat_stream(params, opts \\ []) do
-    url = "#{base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts), opts)
-    timeout = Keyword.get(opts, :timeout, @streaming_timeout)
-    finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
-
-    # Ensure stream is enabled
-    params = Map.put(params, "stream", true)
-
-    HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
-  end
-
-  # `HTTP.bearer_auth_header/1` returns `[]` for nil / empty / "not-needed",
-  # so the "not-needed" sentinel for local servers is preserved.
-  defp build_headers(api_key, opts) do
-    HTTP.json_headers() ++
-      HTTP.bearer_auth_header(api_key) ++
-      HTTP.organization_header(Keyword.get(opts, :organization))
-  end
+    default_env_key: "OPENAI_API_KEY",
+    chat: [base_url: :plain, headers: :bearer_org, timeout: 180_000, stream_timeout: 300_000]
 end

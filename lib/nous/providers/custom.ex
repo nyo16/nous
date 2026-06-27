@@ -130,87 +130,15 @@ defmodule Nous.Providers.Custom do
   See `Nous.Providers.OpenAICompatible` for implementation details.
   """
 
+  # The custom provider accepts a user-supplied base URL, so `chat/2` and
+  # `chat_stream/2` are injected by `Nous.Provider` with the `:required` base-URL
+  # strategy: the URL is mandatory and validated through UrlGuard for SSRF
+  # protection (set `allow_private_hosts: true` in opts or app config for local
+  # dev). `bearer_org` headers support the optional `openai-organization` header.
   use Nous.Provider,
     id: :custom,
+    display_name: "Custom provider",
     default_base_url: "",
-    default_env_key: "CUSTOM_API_KEY"
-
-  alias Nous.Providers.HTTP
-
-  @default_timeout 120_000
-  @streaming_timeout 300_000
-
-  @impl Nous.Provider
-  def chat(params, opts \\ []) do
-    with {:ok, base} <- get_base_url(opts) do
-      url = "#{base}/chat/completions"
-      headers = build_headers(api_key(opts), opts)
-      timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-      HTTP.post(url, params, headers, timeout: timeout)
-    end
-  end
-
-  @impl Nous.Provider
-  def chat_stream(params, opts \\ []) do
-    with {:ok, base} <- get_base_url(opts) do
-      url = "#{base}/chat/completions"
-      headers = build_headers(api_key(opts), opts)
-      timeout = Keyword.get(opts, :timeout, @streaming_timeout)
-      finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
-
-      params = Map.put(params, "stream", true)
-
-      HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
-    end
-  end
-
-  # Get base URL from opts, env var, or config (required for custom provider).
-  # The custom provider accepts user-supplied base_url, so the URL is
-  # validated through UrlGuard for SSRF protection. Set
-  # `allow_private_hosts: true` in opts (or :allow_private_hosts in app
-  # config) for local development against private services. Returns
-  # `{:ok, base}` on success or `{:error, {:invalid_config, reason}}` so
-  # callers can pattern-match without rescuing exceptions.
-  defp get_base_url(opts) do
-    base =
-      Keyword.get(opts, :base_url) ||
-        System.get_env("CUSTOM_BASE_URL") ||
-        get_in(Application.get_env(:nous, :custom, []), [:base_url])
-
-    cond do
-      is_nil(base) or base == "" ->
-        {:error,
-         {:invalid_config,
-          "Custom provider requires a base_url. Set one of: " <>
-            "Nous.new(\"custom:model\", base_url: \"http://...\"), " <>
-            "CUSTOM_BASE_URL env var, or " <>
-            "config :nous, :custom, base_url: \"http://...\""}}
-
-      true ->
-        allow_private =
-          Keyword.get(opts, :allow_private_hosts) ||
-            get_in(Application.get_env(:nous, :custom, []), [:allow_private_hosts]) ||
-            false
-
-        case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: allow_private) do
-          {:ok, _uri} ->
-            {:ok, base}
-
-          {:error, reason} ->
-            {:error,
-             {:invalid_config,
-              "Custom provider base_url failed SSRF validation: #{reason}. " <>
-                "Set `allow_private_hosts: true` for local dev if intentional."}}
-        end
-    end
-  end
-
-  # `HTTP.bearer_auth_header/1` returns `[]` for nil / empty / "not-needed",
-  # so the "not-needed" sentinel for local servers is preserved.
-  defp build_headers(api_key, opts) do
-    HTTP.json_headers() ++
-      HTTP.bearer_auth_header(api_key) ++
-      HTTP.organization_header(Keyword.get(opts, :organization))
-  end
+    default_env_key: "CUSTOM_API_KEY",
+    chat: [base_url: :required, headers: :bearer_org, timeout: 120_000, stream_timeout: 300_000]
 end

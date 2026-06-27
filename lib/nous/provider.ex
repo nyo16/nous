@@ -129,6 +129,11 @@ defmodule Nous.Provider do
     default_base_url = Keyword.fetch!(opts, :default_base_url)
     default_env_key = Keyword.fetch!(opts, :default_env_key)
 
+    # Optionally inject the shared OpenAI-compatible `chat/2` + `chat_stream/2`
+    # implementations (plus base-URL resolution and header helpers). Providers
+    # that pass a `:chat` config get them; everyone else implements their own.
+    {chat_code, chat_overridable} = chat_ast(opts)
+
     quote do
       @behaviour Nous.Provider
 
@@ -492,12 +497,188 @@ defmodule Nous.Provider do
         end
       end
 
-      defoverridable count_tokens: 1,
-                     request: 3,
-                     request_stream: 3,
-                     build_request_params: 3,
-                     build_provider_opts: 1,
-                     default_stream_normalizer: 0
+      unquote(chat_code)
+
+      defoverridable unquote(
+                       [
+                         count_tokens: 1,
+                         request: 3,
+                         request_stream: 3,
+                         build_request_params: 3,
+                         build_provider_opts: 1,
+                         default_stream_normalizer: 0
+                       ] ++ chat_overridable
+                     )
     end
   end
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Shared OpenAI-compatible chat injection
+  #
+  # Many providers (vLLM, SGLang, LM Studio, Mistral, OpenAI-compatible, Custom)
+  # speak the same OpenAI `/chat/completions` dialect. Their `chat/2` and
+  # `chat_stream/2` bodies are identical except for three axes, all expressed
+  # through the `:chat` option of `use Nous.Provider`:
+  #
+  #   * `:base_url` resolution strategy — `:plain | :local | :required`
+  #   * `:headers` style — `:bearer | :bearer_org`
+  #   * `:timeout` / `:stream_timeout` request timeouts
+  #
+  # Returns `{quoted_code, overridable_specs}` so the caller can both inject the
+  # functions and mark them overridable.
+  # ──────────────────────────────────────────────────────────────────────────
+  @doc false
+  def chat_ast(opts) do
+    case Keyword.get(opts, :chat) do
+      nil ->
+        {nil, []}
+
+      chat_opts ->
+        id = Keyword.fetch!(opts, :id)
+        timeout = Keyword.get(chat_opts, :timeout, 180_000)
+        stream_timeout = Keyword.get(chat_opts, :stream_timeout, 300_000)
+        base_strategy = Keyword.get(chat_opts, :base_url, :plain)
+        header_style = Keyword.get(chat_opts, :headers, :bearer)
+        display_name = Keyword.get(opts, :display_name) || default_display_name(id)
+        base_env = base_url_env(id)
+
+        resolver = resolve_base_url_ast(base_strategy, id, base_env, display_name)
+        headers = build_headers_ast(header_style)
+
+        ast =
+          quote do
+            @impl Nous.Provider
+            def chat(params, opts \\ []) do
+              with {:ok, base} <- chat_resolve_base_url(opts) do
+                url = "#{base}/chat/completions"
+                headers = chat_build_headers(api_key(opts), opts)
+                timeout = Keyword.get(opts, :timeout, unquote(timeout))
+
+                Nous.Providers.HTTP.post(url, params, headers, timeout: timeout)
+              end
+            end
+
+            @impl Nous.Provider
+            def chat_stream(params, opts \\ []) do
+              with {:ok, base} <- chat_resolve_base_url(opts) do
+                url = "#{base}/chat/completions"
+                headers = chat_build_headers(api_key(opts), opts)
+                timeout = Keyword.get(opts, :timeout, unquote(stream_timeout))
+                finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
+                params = Map.put(params, "stream", true)
+
+                Nous.Providers.HTTP.stream(url, params, headers,
+                  timeout: timeout,
+                  finch_name: finch_name
+                )
+              end
+            end
+
+            unquote(resolver)
+            unquote(headers)
+          end
+
+        {ast, [chat: 2, chat_stream: 2]}
+    end
+  end
+
+  # `:plain` — trust the resolved base URL as-is (used by hosted OpenAI-compatible
+  # endpoints like Mistral that take an https URL). Never fails.
+  defp resolve_base_url_ast(:plain, _id, _base_env, _display) do
+    quote do
+      defp chat_resolve_base_url(opts), do: {:ok, base_url(opts)}
+    end
+  end
+
+  # `:local` — local-by-default servers (vLLM/SGLang/LM Studio). Reads a
+  # `<PROVIDER>_BASE_URL` env override and validates through `UrlGuard` with
+  # `allow_private_hosts: true` so localhost works but `file://` etc. is rejected.
+  defp resolve_base_url_ast(:local, _id, base_env, display) do
+    quote do
+      defp chat_resolve_base_url(opts) do
+        base =
+          Keyword.get(opts, :base_url) ||
+            System.get_env(unquote(base_env)) ||
+            base_url(opts)
+
+        case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: true) do
+          {:ok, _uri} ->
+            {:ok, base}
+
+          {:error, reason} ->
+            {:error,
+             {:invalid_config,
+              unquote(display) <>
+                " base_url failed validation: #{reason}. Got: #{inspect(base)}"}}
+        end
+      end
+    end
+  end
+
+  # `:required` — user-supplied base URL is mandatory (Custom provider). Validated
+  # through `UrlGuard` for SSRF protection; `allow_private_hosts` is opt-in via
+  # opts or app config for local development.
+  defp resolve_base_url_ast(:required, id, base_env, display) do
+    quote do
+      defp chat_resolve_base_url(opts) do
+        base =
+          Keyword.get(opts, :base_url) ||
+            System.get_env(unquote(base_env)) ||
+            get_in(Application.get_env(:nous, unquote(id), []), [:base_url])
+
+        if is_nil(base) or base == "" do
+          {:error,
+           {:invalid_config,
+            unquote(display) <>
+              " requires a base_url. Set one of: " <>
+              "Nous.new(\"#{unquote(id)}:model\", base_url: \"http://...\"), " <>
+              unquote(base_env) <>
+              " env var, or " <>
+              "config :nous, #{inspect(unquote(id))}, base_url: \"http://...\""}}
+        else
+          allow_private =
+            Keyword.get(opts, :allow_private_hosts) ||
+              get_in(Application.get_env(:nous, unquote(id), []), [:allow_private_hosts]) ||
+              false
+
+          case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: allow_private) do
+            {:ok, _uri} ->
+              {:ok, base}
+
+            {:error, reason} ->
+              {:error,
+               {:invalid_config,
+                unquote(display) <>
+                  " base_url failed SSRF validation: #{reason}. " <>
+                  "Set `allow_private_hosts: true` for local dev if intentional."}}
+          end
+        end
+      end
+    end
+  end
+
+  # `:bearer` — JSON + bearer token. `HTTP.bearer_auth_header/1` returns `[]` for
+  # nil / empty / "not-needed", so the local-server "not-needed" sentinel is kept.
+  defp build_headers_ast(:bearer) do
+    quote do
+      defp chat_build_headers(api_key, _opts) do
+        Nous.Providers.HTTP.json_headers() ++ Nous.Providers.HTTP.bearer_auth_header(api_key)
+      end
+    end
+  end
+
+  # `:bearer_org` — adds the OpenAI `openai-organization` header when present.
+  defp build_headers_ast(:bearer_org) do
+    quote do
+      defp chat_build_headers(api_key, opts) do
+        Nous.Providers.HTTP.json_headers() ++
+          Nous.Providers.HTTP.bearer_auth_header(api_key) ++
+          Nous.Providers.HTTP.organization_header(Keyword.get(opts, :organization))
+      end
+    end
+  end
+
+  defp base_url_env(id), do: (id |> Atom.to_string() |> String.upcase()) <> "_BASE_URL"
+
+  defp default_display_name(id), do: id |> Atom.to_string() |> String.capitalize()
 end

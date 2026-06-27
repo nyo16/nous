@@ -38,38 +38,13 @@ defmodule Nous.Providers.Mistral do
 
   """
 
+  # Mistral is a hosted OpenAI-compatible endpoint, so `chat/2` and
+  # `chat_stream/2` are injected by `Nous.Provider` (`:plain` base URL,
+  # `bearer` auth). Mistral-specific params (`reasoning_mode`, `safe_prompt`,
+  # …) are passed through in the request body unchanged.
   use Nous.Provider,
     id: :mistral,
     default_base_url: "https://api.mistral.ai/v1",
-    default_env_key: "MISTRAL_API_KEY"
-
-  alias Nous.Providers.HTTP
-
-  @default_timeout 180_000
-  @streaming_timeout 300_000
-
-  @impl Nous.Provider
-  def chat(params, opts \\ []) do
-    url = "#{base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts))
-    timeout = Keyword.get(opts, :timeout, @default_timeout)
-
-    HTTP.post(url, params, headers, timeout: timeout)
-  end
-
-  @impl Nous.Provider
-  def chat_stream(params, opts \\ []) do
-    url = "#{base_url(opts)}/chat/completions"
-    headers = build_headers(api_key(opts))
-    timeout = Keyword.get(opts, :timeout, @streaming_timeout)
-    finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
-
-    params = Map.put(params, "stream", true)
-
-    HTTP.stream(url, params, headers, timeout: timeout, finch_name: finch_name)
-  end
-
-  defp build_headers(api_key) do
-    HTTP.json_headers() ++ HTTP.bearer_auth_header(api_key)
-  end
+    default_env_key: "MISTRAL_API_KEY",
+    chat: [base_url: :plain, headers: :bearer, timeout: 180_000, stream_timeout: 300_000]
 end
