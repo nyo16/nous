@@ -262,6 +262,33 @@ defmodule Nous.Message.ContentPart do
     {:error, :incompatible_types}
   end
 
+  @doc """
+  Collapse a homogeneous list of text (or thinking) parts into one string.
+
+  Providers legitimately split a single response into multiple text or
+  thought blocks (e.g. text surrounding a tool_use, or a long multi-paragraph
+  answer). Joining homogeneous lists lets the result fit `Message.content`
+  (a `:string` field) instead of raising `Ecto.InvalidChangesetError` in
+  `Message.new!/1`. Mixed-type lists pass through unchanged.
+  """
+  @spec consolidate([t()]) :: String.t() | [t()]
+  def consolidate([]), do: ""
+  def consolidate([%__MODULE__{type: :text, content: content}]), do: content
+  def consolidate([%__MODULE__{type: :thinking, content: content}]), do: content
+
+  def consolidate(parts) when is_list(parts) do
+    cond do
+      Enum.all?(parts, &match?(%__MODULE__{type: :text}, &1)) ->
+        Enum.map_join(parts, "", & &1.content)
+
+      Enum.all?(parts, &match?(%__MODULE__{type: :thinking}, &1)) ->
+        Enum.map_join(parts, "", & &1.content)
+
+      true ->
+        parts
+    end
+  end
+
   # URL utilities
 
   @doc """

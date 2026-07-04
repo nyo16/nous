@@ -283,4 +283,42 @@ defmodule Nous.Message.ContentPartTest do
       assert {:error, :incompatible_types} = ContentPart.merge(part1, part2)
     end
   end
+
+  describe "consolidate/1" do
+    test "empty list becomes an empty string" do
+      assert ContentPart.consolidate([]) == ""
+    end
+
+    test "a single text or thinking part unwraps to its content" do
+      assert ContentPart.consolidate([%ContentPart{type: :text, content: "hi"}]) == "hi"
+      assert ContentPart.consolidate([%ContentPart{type: :thinking, content: "hm"}]) == "hm"
+    end
+
+    test "homogeneous text parts join into one string" do
+      parts = [
+        %ContentPart{type: :text, content: "one "},
+        %ContentPart{type: :text, content: "two"}
+      ]
+
+      assert ContentPart.consolidate(parts) == "one two"
+    end
+
+    test "homogeneous thinking parts join into one string" do
+      parts = [
+        %ContentPart{type: :thinking, content: "a"},
+        %ContentPart{type: :thinking, content: "b"}
+      ]
+
+      assert ContentPart.consolidate(parts) == "ab"
+    end
+
+    test "mixed part types pass through unchanged" do
+      parts = [
+        %ContentPart{type: :text, content: "look"},
+        %ContentPart{type: :image_url, content: "http://example/img.png"}
+      ]
+
+      assert ContentPart.consolidate(parts) == parts
+    end
+  end
 end

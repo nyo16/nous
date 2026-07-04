@@ -23,22 +23,8 @@ defmodule Nous.Messages.Anthropic do
   """
   @spec to_format([Message.t()]) :: {String.t() | nil, [map()]}
   def to_format(messages) when is_list(messages) do
-    {system_messages, other_messages} = Enum.split_with(messages, &Message.is_system?/1)
-
-    system_prompt =
-      case system_messages do
-        [] ->
-          nil
-
-        msgs ->
-          msgs
-          |> Enum.map(&Message.extract_text/1)
-          |> Enum.join("\n\n")
-      end
-
-    anthropic_messages = Enum.map(other_messages, &message_to_anthropic/1)
-
-    {system_prompt, anthropic_messages}
+    {system_prompt, other_messages} = Message.split_system(messages)
+    {system_prompt, Enum.map(other_messages, &message_to_anthropic/1)}
   end
 
   @doc """
@@ -61,8 +47,8 @@ defmodule Nous.Messages.Anthropic do
 
     attrs = %{
       role: :assistant,
-      content: consolidate_content_parts(content_parts),
-      reasoning_content: consolidate_content_parts(reasoning_content),
+      content: ContentPart.consolidate(content_parts),
+      reasoning_content: ContentPart.consolidate(reasoning_content),
       metadata: %{
         model_name: model,
         usage: parse_usage(usage_data),
@@ -307,26 +293,4 @@ defmodule Nous.Messages.Anthropic do
   end
 
   def parse_usage(_), do: %Usage{}
-
-  defp consolidate_content_parts([]), do: ""
-  defp consolidate_content_parts([%ContentPart{type: :text, content: content}]), do: content
-  defp consolidate_content_parts([%ContentPart{type: :thinking, content: content}]), do: content
-
-  defp consolidate_content_parts(parts) when is_list(parts) do
-    # Claude legitimately returns multiple text (or thinking) blocks — e.g. text
-    # surrounding a tool_use, or a long multi-paragraph answer. Join homogeneous
-    # lists into a single string so they fit Message.content (a :string field);
-    # otherwise Message.new!/1 raised Ecto.InvalidChangesetError. Mirrors the
-    # Gemini path.
-    cond do
-      Enum.all?(parts, &match?(%ContentPart{type: :text}, &1)) ->
-        Enum.map_join(parts, "", & &1.content)
-
-      Enum.all?(parts, &match?(%ContentPart{type: :thinking}, &1)) ->
-        Enum.map_join(parts, "", & &1.content)
-
-      true ->
-        parts
-    end
-  end
 end

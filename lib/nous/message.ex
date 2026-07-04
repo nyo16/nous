@@ -406,6 +406,32 @@ defmodule Nous.Message do
   def is_system?(_), do: false
 
   @doc """
+  Split messages into `{system_prompt, other_messages}`.
+
+  Providers that take the system prompt out-of-band (Anthropic, Gemini) use
+  this before converting the remaining messages. Multiple system messages are
+  joined with blank lines; no system messages yields `nil`.
+
+  ## Examples
+
+      iex> Message.split_system([Message.system("Be helpful"), Message.user("Hi")])
+      {"Be helpful", [Message.user("Hi")]}
+
+  """
+  @spec split_system([t()]) :: {String.t() | nil, [t()]}
+  def split_system(messages) when is_list(messages) do
+    {system_messages, other_messages} = Enum.split_with(messages, &is_system?/1)
+
+    system_prompt =
+      case system_messages do
+        [] -> nil
+        msgs -> Enum.map_join(msgs, "\n\n", &extract_text/1)
+      end
+
+    {system_prompt, other_messages}
+  end
+
+  @doc """
   Get message content as ContentPart list.
 
   Always returns a list, converting string content to text parts.

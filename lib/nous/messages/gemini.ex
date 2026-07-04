@@ -25,22 +25,8 @@ defmodule Nous.Messages.Gemini do
   """
   @spec to_format([Message.t()]) :: {String.t() | nil, [map()]}
   def to_format(messages) when is_list(messages) do
-    {system_messages, other_messages} = Enum.split_with(messages, &Message.is_system?/1)
-
-    system_prompt =
-      case system_messages do
-        [] ->
-          nil
-
-        msgs ->
-          msgs
-          |> Enum.map(&Message.extract_text/1)
-          |> Enum.join("\n\n")
-      end
-
-    gemini_contents = Enum.map(other_messages, &message_to_gemini/1)
-
-    {system_prompt, gemini_contents}
+    {system_prompt, other_messages} = Message.split_system(messages)
+    {system_prompt, Enum.map(other_messages, &message_to_gemini/1)}
   end
 
   @doc """
@@ -67,7 +53,7 @@ defmodule Nous.Messages.Gemini do
 
     {content_parts, reasoning_content, tool_calls} = parse_content(parts_data)
 
-    consolidated_content = consolidate_content_parts(content_parts)
+    consolidated_content = ContentPart.consolidate(content_parts)
 
     log_if_blocked(
       consolidated_content,
@@ -89,7 +75,7 @@ defmodule Nous.Messages.Gemini do
     attrs = %{
       role: :assistant,
       content: consolidated_content,
-      reasoning_content: consolidate_content_parts(reasoning_content),
+      reasoning_content: ContentPart.consolidate(reasoning_content),
       metadata: metadata
     }
 
@@ -666,25 +652,6 @@ defmodule Nous.Messages.Gemini do
           "model=#{model_version} finishReason=#{inspect(finish_reason)} " <>
           "promptFeedback=#{inspect(prompt_feedback)}"
       )
-    end
-  end
-
-  defp consolidate_content_parts([]), do: ""
-  defp consolidate_content_parts([%ContentPart{type: :text, content: content}]), do: content
-  defp consolidate_content_parts([%ContentPart{type: :thinking, content: content}]), do: content
-
-  defp consolidate_content_parts(parts) when is_list(parts) do
-    # Gemini may split a single response into multiple text (or thought) parts.
-    # Join homogeneous lists into a single string so they fit Message.content.
-    cond do
-      Enum.all?(parts, &match?(%ContentPart{type: :text}, &1)) ->
-        Enum.map_join(parts, "", & &1.content)
-
-      Enum.all?(parts, &match?(%ContentPart{type: :thinking}, &1)) ->
-        Enum.map_join(parts, "", & &1.content)
-
-      true ->
-        parts
     end
   end
 end
