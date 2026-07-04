@@ -1,6 +1,17 @@
 defmodule Nous.Skills.PythonFastAPI do
   @moduledoc "Built-in skill for FastAPI and async Python web development."
-  use Nous.Skill, tags: [:python, :fastapi, :api, :async, :web], group: :coding
+  use Nous.Skill,
+    keywords: [
+      "fastapi",
+      "fast api",
+      "python api",
+      "pydantic",
+      "async python",
+      "asyncio",
+      "uvicorn"
+    ],
+    tags: [:python, :fastapi, :api, :async, :web],
+    group: :coding
 
   @impl true
   def name, do: "python_fastapi"
@@ -50,20 +61,5 @@ defmodule Nous.Skills.PythonFastAPI do
 
     8. **Guard clauses first**: Handle error conditions at function start with early returns, not nested if/else.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "fastapi",
-      "fast api",
-      "python api",
-      "pydantic",
-      "async python",
-      "asyncio",
-      "uvicorn"
-    ])
   end
 end

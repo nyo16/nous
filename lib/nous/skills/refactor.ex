@@ -1,6 +1,9 @@
 defmodule Nous.Skills.Refactor do
   @moduledoc "Built-in skill for safe code refactoring."
-  use Nous.Skill, tags: [:refactor, :cleanup, :improvement], group: :coding
+  use Nous.Skill,
+    keywords: ["refactor", "clean up", "simplify", "restructure"],
+    tags: [:refactor, :cleanup, :improvement],
+    group: :coding
 
   @impl true
   def name, do: "refactor"
@@ -30,11 +33,5 @@ defmodule Nous.Skills.Refactor do
     - Add new features during refactoring
     - Refactor and fix bugs simultaneously
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-    String.contains?(input, ["refactor", "clean up", "simplify", "restructure"])
   end
 end

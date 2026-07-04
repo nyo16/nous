@@ -1,6 +1,9 @@
 defmodule Nous.Skills.TestGen do
   @moduledoc "Built-in skill for test generation."
-  use Nous.Skill, tags: [:test, :testing, :quality], group: :testing
+  use Nous.Skill,
+    keywords: ["write test", "generate test", "add test", "test case", "test for", "create test"],
+    tags: [:test, :testing, :quality],
+    group: :testing
 
   @impl true
   def name, do: "test_gen"
@@ -23,19 +26,5 @@ defmodule Nous.Skills.TestGen do
     Prefer descriptive test names that explain the behavior being tested.
     Each test should be independent and not rely on other tests' side effects.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "write test",
-      "generate test",
-      "add test",
-      "test case",
-      "test for",
-      "create test"
-    ])
   end
 end

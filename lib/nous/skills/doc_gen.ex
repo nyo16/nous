@@ -1,6 +1,9 @@
 defmodule Nous.Skills.DocGen do
   @moduledoc "Built-in skill for documentation generation."
-  use Nous.Skill, tags: [:docs, :documentation, :docstring], group: :docs
+  use Nous.Skill,
+    keywords: ["document", "add docs", "docstring", "moduledoc", "write docs", "generate docs"],
+    tags: [:docs, :documentation, :docstring],
+    group: :docs
 
   @impl true
   def name, do: "doc_gen"
@@ -22,19 +25,5 @@ defmodule Nous.Skills.DocGen do
     Match the documentation style of the existing project.
     Focus on documenting public APIs — internal implementation details are less critical.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "document",
-      "add docs",
-      "docstring",
-      "moduledoc",
-      "write docs",
-      "generate docs"
-    ])
   end
 end

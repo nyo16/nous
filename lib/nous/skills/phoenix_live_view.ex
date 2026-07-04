@@ -1,6 +1,18 @@
 defmodule Nous.Skills.PhoenixLiveView do
   @moduledoc "Built-in skill for Phoenix LiveView development."
-  use Nous.Skill, tags: [:elixir, :phoenix, :liveview, :web], group: :coding
+  use Nous.Skill,
+    keywords: [
+      "liveview",
+      "live_view",
+      "live view",
+      "mount",
+      "handle_event",
+      "handle_info",
+      "live_component",
+      "phoenix component"
+    ],
+    tags: [:elixir, :phoenix, :liveview, :web],
+    group: :coding
 
   @impl true
   def name, do: "phoenix_liveview"
@@ -44,21 +56,5 @@ defmodule Nous.Skills.PhoenixLiveView do
 
     7. **Avoid**: Fat LiveView modules (extract to components), querying in mount without `connected?/1` guard, using `raw/1` with user input (XSS risk).
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "liveview",
-      "live_view",
-      "live view",
-      "mount",
-      "handle_event",
-      "handle_info",
-      "live_component",
-      "phoenix component"
-    ])
   end
 end

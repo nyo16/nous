@@ -1,6 +1,17 @@
 defmodule Nous.Skills.PythonTyping do
   @moduledoc "Built-in skill for modern Python type hints, Pydantic, and dataclasses."
-  use Nous.Skill, tags: [:python, :typing, :pydantic, :modern], group: :coding
+  use Nous.Skill,
+    keywords: [
+      "python type",
+      "type hint",
+      "pydantic",
+      "dataclass",
+      "protocol class",
+      "pattern matching python",
+      "mypy"
+    ],
+    tags: [:python, :typing, :pydantic, :modern],
+    group: :coding
 
   @impl true
   def name, do: "python_typing"
@@ -54,20 +65,5 @@ defmodule Nous.Skills.PythonTyping do
 
     8. **Google-style docstrings** for all public APIs with type descriptions.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "python type",
-      "type hint",
-      "pydantic",
-      "dataclass",
-      "protocol class",
-      "pattern matching python",
-      "mypy"
-    ])
   end
 end

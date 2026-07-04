@@ -1,6 +1,19 @@
 defmodule Nous.Skills.OtpPatterns do
   @moduledoc "Built-in skill for OTP supervision, GenServer, and concurrency patterns."
-  use Nous.Skill, tags: [:elixir, :otp, :genserver, :supervisor, :concurrency], group: :coding
+  use Nous.Skill,
+    keywords: [
+      "genserver",
+      "supervisor",
+      "otp",
+      "supervision tree",
+      "task.async",
+      "process",
+      "gen_server",
+      "dynamic_supervisor",
+      "let it crash"
+    ],
+    tags: [:elixir, :otp, :genserver, :supervisor, :concurrency],
+    group: :coding
 
   @impl true
   def name, do: "otp_patterns"
@@ -44,22 +57,5 @@ defmodule Nous.Skills.OtpPatterns do
 
     8. **Never store domain entities (User, Order) as processes**: Use the database with optimistic locking. Processes are for runtime concerns.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "genserver",
-      "supervisor",
-      "otp",
-      "supervision tree",
-      "task.async",
-      "process",
-      "gen_server",
-      "dynamic_supervisor",
-      "let it crash"
-    ])
   end
 end

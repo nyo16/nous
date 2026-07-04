@@ -1,6 +1,16 @@
 defmodule Nous.Skills.TaskBreakdown do
   @moduledoc "Built-in skill for task decomposition."
-  use Nous.Skill, tags: [:planning, :tasks, :decomposition], group: :planning
+  use Nous.Skill,
+    keywords: [
+      "break down",
+      "decompose",
+      "task list",
+      "implementation plan",
+      "steps to",
+      "plan this"
+    ],
+    tags: [:planning, :tasks, :decomposition],
+    group: :planning
 
   @impl true
   def name, do: "task_breakdown"
@@ -26,19 +36,5 @@ defmodule Nous.Skills.TaskBreakdown do
     - Mark tasks that can be parallelized
     - Identify the critical path
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "break down",
-      "decompose",
-      "task list",
-      "implementation plan",
-      "steps to",
-      "plan this"
-    ])
   end
 end

@@ -152,7 +152,18 @@ defmodule Nous.Skill do
 
   @optional_callbacks [tools: 2, tags: 0, group: 0, match?: 1]
 
-  @doc false
+  @doc """
+  Set up a module-based skill.
+
+  ## Options
+
+    * `:tags` - tags for categorization and filtering (default: `[]`)
+    * `:group` - skill group (`:coding`, `:review`, `:testing`, ...)
+    * `:keywords` - list of lowercase strings; when given, generates a
+      `match?/1` that activates the skill if the downcased input contains any
+      of them. Define `match?/1` yourself for anything fancier.
+
+  """
   defmacro __using__(opts) do
     quote do
       @behaviour Nous.Skill
@@ -165,6 +176,16 @@ defmodule Nous.Skill do
       def group, do: Keyword.get(@skill_opts, :group)
 
       defoverridable tags: 0, group: 0
+
+      if Keyword.get(@skill_opts, :keywords, []) != [] do
+        @impl true
+        def match?(input) do
+          input = String.downcase(input)
+          String.contains?(input, Keyword.fetch!(@skill_opts, :keywords))
+        end
+
+        defoverridable match?: 1
+      end
     end
   end
 

@@ -1,6 +1,18 @@
 defmodule Nous.Skills.PythonDataScience do
   @moduledoc "Built-in skill for Python data science with pandas, NumPy, and scikit-learn."
-  use Nous.Skill, tags: [:python, :data_science, :pandas, :numpy, :ml], group: :coding
+  use Nous.Skill,
+    keywords: [
+      "pandas",
+      "numpy",
+      "dataframe",
+      "scikit",
+      "sklearn",
+      "data science",
+      "machine learning",
+      "ml pipeline"
+    ],
+    tags: [:python, :data_science, :pandas, :numpy, :ml],
+    group: :coding
 
   @impl true
   def name, do: "python_data_science"
@@ -50,21 +62,5 @@ defmodule Nous.Skills.PythonDataScience do
 
     9. **Reproducibility**: Set random seeds, version your data, log hyperparameters.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "pandas",
-      "numpy",
-      "dataframe",
-      "scikit",
-      "sklearn",
-      "data science",
-      "machine learning",
-      "ml pipeline"
-    ])
   end
 end

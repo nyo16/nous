@@ -87,5 +87,51 @@ defmodule Nous.SkillTest do
     test "sets default group from use opts" do
       assert MacroSkill.group() == :coding
     end
+
+    defmodule KeywordSkill do
+      use Nous.Skill, keywords: ["review", "check this code"]
+
+      @impl true
+      def name, do: "keyword_test"
+      @impl true
+      def description, do: "Keyword test"
+      @impl true
+      def instructions(_, _), do: "test"
+    end
+
+    test "generates match?/1 from :keywords, case-insensitively" do
+      assert KeywordSkill.match?("please REVIEW my diff")
+      assert KeywordSkill.match?("Check This Code for me")
+      refute KeywordSkill.match?("write a haiku")
+    end
+
+    test "keyword skills activate via on_match in from_module/1" do
+      skill = Skill.from_module(KeywordSkill)
+      assert {:on_match, matcher} = skill.activation
+      assert matcher.("review this")
+    end
+
+    test "no :keywords means no generated match?/1" do
+      refute function_exported?(MacroSkill, :match?, 1)
+    end
+
+    defmodule OverriddenKeywordSkill do
+      use Nous.Skill, keywords: ["ignored"]
+
+      @impl true
+      def name, do: "overridden"
+      @impl true
+      def description, do: "Overridden"
+      @impl true
+      def instructions(_, _), do: "test"
+
+      @impl true
+      def match?(input), do: input == "exact"
+    end
+
+    test "a hand-written match?/1 overrides the generated one" do
+      assert OverriddenKeywordSkill.match?("exact")
+      refute OverriddenKeywordSkill.match?("ignored")
+    end
   end
 end
