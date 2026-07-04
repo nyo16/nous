@@ -127,6 +127,8 @@ defmodule Nous.Eval.Runner do
     try do
       setup.()
     rescue
+      # Suite setup is an arbitrary user function; the catch-all is a
+      # deliberate fault boundary so one bad suite can't abort the eval run.
       e ->
         Logger.warning("[Nous.Eval] Setup failed: #{inspect(e)}")
         %{}
@@ -139,6 +141,7 @@ defmodule Nous.Eval.Runner do
     try do
       teardown.(setup_result)
     rescue
+      # Arbitrary user function; deliberate fault boundary (see run_setup/1).
       e ->
         Logger.warning("[Nous.Eval] Teardown failed: #{inspect(e)}")
         :ok
@@ -238,10 +241,9 @@ defmodule Nous.Eval.Runner do
         [{k, v}]
 
       {k, v} when is_binary(k) ->
-        try do
-          [{String.to_existing_atom(k), v}]
-        rescue
-          ArgumentError -> []
+        case Nous.Util.safe_existing_atom(k) do
+          nil -> []
+          atom -> [{atom, v}]
         end
     end)
   end

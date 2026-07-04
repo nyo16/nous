@@ -1,6 +1,19 @@
 defmodule Nous.Skills.PythonUv do
   @moduledoc "Built-in skill for Python's uv package manager and project tooling."
-  use Nous.Skill, tags: [:python, :uv, :packaging, :dependencies], group: :coding
+  use Nous.Skill,
+    keywords: [
+      " uv ",
+      "uv add",
+      "uv run",
+      "uv init",
+      "uv sync",
+      "uv pip",
+      "uv tool",
+      "uvx ",
+      "pyproject.toml"
+    ],
+    tags: [:python, :uv, :packaging, :dependencies],
+    group: :coding
 
   @impl true
   def name, do: "python_uv"
@@ -68,22 +81,5 @@ defmodule Nous.Skills.PythonUv do
 
     9. **Workspaces** for monorepos: define `[tool.uv.workspace]` in root pyproject.toml.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      " uv ",
-      "uv add",
-      "uv run",
-      "uv init",
-      "uv sync",
-      "uv pip",
-      "uv tool",
-      "uvx ",
-      "pyproject.toml"
-    ])
   end
 end

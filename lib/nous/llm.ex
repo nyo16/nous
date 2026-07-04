@@ -359,10 +359,9 @@ defmodule Nous.LLM do
     tools_by_name = Map.new(tools, fn tool -> {tool.name, tool} end)
 
     Enum.map(tool_calls, fn call ->
-      # Handle both atom and string keys
-      name = call[:name] || call["name"]
-      id = call[:id] || call["id"]
-      arguments = call[:arguments] || call["arguments"]
+      name = Nous.ToolCall.field(call, :name)
+      id = Nous.ToolCall.field(call, :id)
+      arguments = Nous.ToolCall.field(call, :arguments)
 
       tool = Map.get(tools_by_name, name)
 

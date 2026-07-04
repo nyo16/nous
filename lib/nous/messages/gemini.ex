@@ -25,22 +25,8 @@ defmodule Nous.Messages.Gemini do
   """
   @spec to_format([Message.t()]) :: {String.t() | nil, [map()]}
   def to_format(messages) when is_list(messages) do
-    {system_messages, other_messages} = Enum.split_with(messages, &Message.is_system?/1)
-
-    system_prompt =
-      case system_messages do
-        [] ->
-          nil
-
-        msgs ->
-          msgs
-          |> Enum.map(&Message.extract_text/1)
-          |> Enum.join("\n\n")
-      end
-
-    gemini_contents = Enum.map(other_messages, &message_to_gemini/1)
-
-    {system_prompt, gemini_contents}
+    {system_prompt, other_messages} = Message.split_system(messages)
+    {system_prompt, Enum.map(other_messages, &message_to_gemini/1)}
   end
 
   @doc """
@@ -67,7 +53,7 @@ defmodule Nous.Messages.Gemini do
 
     {content_parts, reasoning_content, tool_calls} = parse_content(parts_data)
 
-    consolidated_content = consolidate_content_parts(content_parts)
+    consolidated_content = ContentPart.consolidate(content_parts)
 
     log_if_blocked(
       consolidated_content,
@@ -89,7 +75,7 @@ defmodule Nous.Messages.Gemini do
     attrs = %{
       role: :assistant,
       content: consolidated_content,
-      reasoning_content: consolidate_content_parts(reasoning_content),
+      reasoning_content: ContentPart.consolidate(reasoning_content),
       metadata: metadata
     }
 
@@ -343,6 +329,79 @@ defmodule Nous.Messages.Gemini do
   end
 
   @doc """
+  Build the `generateContent` request params shared by the Gemini and
+  Vertex AI providers (both speak the same wire format).
+
+  Expects already-merged settings (`model.default_settings` merged with the
+  per-request settings). Handles system-instruction extraction, the
+  `generationConfig` mapping, tools, safety settings, tool config, and cached
+  content. Vendor `:extra_body` merging stays provider-side, where the
+  `Nous.Provider` macro enforces the blocked-key policy.
+  """
+  @spec build_request_params(Nous.Model.t(), [Message.t()], map()) :: map()
+  def build_request_params(model, messages, merged_settings) do
+    {system_prompt, contents} = to_format(messages)
+
+    params = %{"model" => model.model, "contents" => contents}
+
+    params =
+      if system_prompt do
+        Map.put(params, "systemInstruction", %{"parts" => [%{"text" => system_prompt}]})
+      else
+        params
+      end
+
+    # Map generic settings to Gemini's generationConfig
+    generation_config =
+      %{}
+      |> maybe_put("temperature", merged_settings[:temperature])
+      |> maybe_put("maxOutputTokens", merged_settings[:max_tokens])
+      |> maybe_put("topP", merged_settings[:top_p])
+      |> maybe_put("topK", merged_settings[:top_k])
+      |> maybe_put("seed", merged_settings[:seed])
+      |> maybe_put("candidateCount", merged_settings[:candidate_count])
+      |> maybe_put("presencePenalty", merged_settings[:presence_penalty])
+      |> maybe_put("frequencyPenalty", merged_settings[:frequency_penalty])
+      |> maybe_put("responseModalities", merged_settings[:response_modalities])
+      |> maybe_put("stopSequences", merged_settings[:stop_sequences] || merged_settings[:stop])
+      |> maybe_put(
+        "thinkingConfig",
+        normalize_thinking_config(merged_settings[:thinking_config])
+      )
+      |> Map.merge(json_config_for_settings(merged_settings))
+
+    # Merge any explicit generationConfig from settings
+    generation_config =
+      Map.merge(generation_config, merged_settings[:generationConfig] || %{})
+
+    params =
+      if map_size(generation_config) > 0 do
+        Map.put(params, "generationConfig", generation_config)
+      else
+        params
+      end
+
+    params
+    |> maybe_put(
+      "tools",
+      build_tools(merged_settings[:tools] || [], merged_settings[:native_tools])
+    )
+    |> maybe_put(
+      "safetySettings",
+      normalize_safety_settings(merged_settings[:safety_settings])
+    )
+    |> maybe_put("toolConfig", resolve_tool_config(merged_settings))
+    |> maybe_put("cachedContent", merged_settings[:cached_content])
+  end
+
+  defp resolve_tool_config(settings) do
+    settings[:tool_config] || normalize_tool_choice(settings[:tool_choice])
+  end
+
+  defp maybe_put(params, _key, nil), do: params
+  defp maybe_put(params, key, value), do: Map.put(params, key, value)
+
+  @doc """
   Derive Gemini's `responseMimeType`/`responseSchema` pair from generic settings.
 
   Honors three settings keys, in priority order:
@@ -583,7 +642,8 @@ defmodule Nous.Messages.Gemini do
   # Surface non-STOP finish reasons (SAFETY, RECITATION, MAX_TOKENS, etc.)
   # and prompt blocks so they don't manifest as silent empty responses.
   defp log_if_blocked(content, tool_calls, finish_reason, prompt_feedback, model_version) do
-    empty? = (content == "" or is_nil(content)) and tool_calls == []
+    # consolidate/1 never returns nil — "" is the empty case (checked by dialyzer).
+    empty? = content == "" and tool_calls == []
     block_reason = prompt_feedback && Map.get(prompt_feedback, "blockReason")
     interesting_finish? = finish_reason not in [nil, "STOP", "FINISH_REASON_UNSPECIFIED"]
 
@@ -593,25 +653,6 @@ defmodule Nous.Messages.Gemini do
           "model=#{model_version} finishReason=#{inspect(finish_reason)} " <>
           "promptFeedback=#{inspect(prompt_feedback)}"
       )
-    end
-  end
-
-  defp consolidate_content_parts([]), do: ""
-  defp consolidate_content_parts([%ContentPart{type: :text, content: content}]), do: content
-  defp consolidate_content_parts([%ContentPart{type: :thinking, content: content}]), do: content
-
-  defp consolidate_content_parts(parts) when is_list(parts) do
-    # Gemini may split a single response into multiple text (or thought) parts.
-    # Join homogeneous lists into a single string so they fit Message.content.
-    cond do
-      Enum.all?(parts, &match?(%ContentPart{type: :text}, &1)) ->
-        Enum.map_join(parts, "", & &1.content)
-
-      Enum.all?(parts, &match?(%ContentPart{type: :thinking}, &1)) ->
-        Enum.map_join(parts, "", & &1.content)
-
-      true ->
-        parts
     end
   end
 end

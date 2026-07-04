@@ -1,6 +1,9 @@
 defmodule Nous.Skills.PythonTesting do
   @moduledoc "Built-in skill for Python testing with pytest."
-  use Nous.Skill, tags: [:python, :testing, :pytest], group: :testing
+  use Nous.Skill,
+    keywords: ["pytest", "python test", "test python", "fixture", "parametrize"],
+    tags: [:python, :testing, :pytest],
+    group: :testing
 
   @impl true
   def name, do: "python_testing"
@@ -61,18 +64,5 @@ defmodule Nous.Skills.PythonTesting do
 
     7. **Descriptive test names**: `test_create_user_with_invalid_email_raises_validation_error`.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "pytest",
-      "python test",
-      "test python",
-      "fixture",
-      "parametrize"
-    ])
   end
 end

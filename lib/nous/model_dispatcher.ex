@@ -5,6 +5,7 @@ defmodule Nous.ModelDispatcher do
   Routes requests to providers based on the model's provider field:
   - `:anthropic` → `Nous.Providers.Anthropic`
   - `:gemini` → `Nous.Providers.Gemini`
+  - `:vertex_ai` → `Nous.Providers.VertexAI`
   - `:mistral` → `Nous.Providers.Mistral`
   - `:lmstudio` → `Nous.Providers.LMStudio`
   - `:llamacpp` → `Nous.Providers.LlamaCpp`
@@ -19,173 +20,58 @@ defmodule Nous.ModelDispatcher do
 
   require Logger
 
+  @provider_modules %{
+    anthropic: Providers.Anthropic,
+    gemini: Providers.Gemini,
+    vertex_ai: Providers.VertexAI,
+    mistral: Providers.Mistral,
+    lmstudio: Providers.LMStudio,
+    llamacpp: Providers.LlamaCpp,
+    vllm: Providers.VLLM,
+    sglang: Providers.SGLang,
+    openai: Providers.OpenAI,
+    custom: Providers.Custom
+  }
+
+  @doc """
+  Resolve the provider module for a provider atom.
+
+  Unknown providers fall back to `Nous.Providers.OpenAICompatible`.
+  """
+  @spec provider_module(atom()) :: module()
+  def provider_module(provider) do
+    Map.get(@provider_modules, provider, Providers.OpenAICompatible)
+  end
+
   @doc """
   Dispatch request to the appropriate provider implementation.
   """
   @spec request(Model.t(), list(), map()) :: {:ok, map()} | {:error, term()}
-  def request(%Model{provider: :anthropic} = model, messages, settings) do
-    Logger.debug("Routing to Anthropic provider for model: #{model.model}")
-    Providers.Anthropic.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :gemini} = model, messages, settings) do
-    Logger.debug("Routing to Gemini provider for model: #{model.model}")
-    Providers.Gemini.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :vertex_ai} = model, messages, settings) do
-    Logger.debug("Routing to Vertex AI provider for model: #{model.model}")
-    Providers.VertexAI.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :mistral} = model, messages, settings) do
-    Logger.debug("Routing to Mistral provider for model: #{model.model}")
-    Providers.Mistral.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :lmstudio} = model, messages, settings) do
-    Logger.debug("Routing to LMStudio provider for model: #{model.model}")
-    Providers.LMStudio.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :vllm} = model, messages, settings) do
-    Logger.debug("Routing to vLLM provider for model: #{model.model}")
-    Providers.VLLM.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :sglang} = model, messages, settings) do
-    Logger.debug("Routing to SGLang provider for model: #{model.model}")
-    Providers.SGLang.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :llamacpp} = model, messages, settings) do
-    Logger.debug("Routing to LlamaCpp provider for model: #{model.model}")
-    Providers.LlamaCpp.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :openai} = model, messages, settings) do
-    Logger.debug("Routing to OpenAI provider for model: #{model.model}")
-    Providers.OpenAI.request(model, messages, settings)
-  end
-
-  def request(%Model{provider: :custom} = model, messages, settings) do
-    Logger.debug("Routing to Custom provider for model: #{model.model}")
-    Providers.Custom.request(model, messages, settings)
-  end
-
   def request(%Model{} = model, messages, settings) do
-    # All other providers use OpenAI-compatible API
-    Logger.debug("Routing to OpenAI-compatible provider for: #{model.provider}:#{model.model}")
-    Providers.OpenAICompatible.request(model, messages, settings)
+    provider = provider_module(model.provider)
+    Logger.debug("Routing to #{inspect(provider)} for: #{model.provider}:#{model.model}")
+    provider.request(model, messages, settings)
   end
 
   @doc """
   Dispatch streaming request to the appropriate provider implementation.
   """
   @spec request_stream(Model.t(), list(), map()) :: {:ok, Enumerable.t()} | {:error, term()}
-  def request_stream(%Model{provider: :anthropic} = model, messages, settings) do
-    Logger.debug("Routing streaming request to Anthropic provider for model: #{model.model}")
-    Providers.Anthropic.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :gemini} = model, messages, settings) do
-    Logger.debug("Routing streaming request to Gemini provider for model: #{model.model}")
-    Providers.Gemini.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :vertex_ai} = model, messages, settings) do
-    Logger.debug("Routing streaming request to Vertex AI provider for model: #{model.model}")
-    Providers.VertexAI.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :mistral} = model, messages, settings) do
-    Logger.debug("Routing streaming request to Mistral provider for model: #{model.model}")
-    Providers.Mistral.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :lmstudio} = model, messages, settings) do
-    Logger.debug("Routing streaming request to LMStudio provider for model: #{model.model}")
-    Providers.LMStudio.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :vllm} = model, messages, settings) do
-    Logger.debug("Routing streaming request to vLLM provider for model: #{model.model}")
-    Providers.VLLM.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :sglang} = model, messages, settings) do
-    Logger.debug("Routing streaming request to SGLang provider for model: #{model.model}")
-    Providers.SGLang.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :llamacpp} = model, messages, settings) do
-    Logger.debug("Routing streaming request to LlamaCpp provider for model: #{model.model}")
-    Providers.LlamaCpp.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :openai} = model, messages, settings) do
-    Logger.debug("Routing streaming request to OpenAI provider for model: #{model.model}")
-    Providers.OpenAI.request_stream(model, messages, settings)
-  end
-
-  def request_stream(%Model{provider: :custom} = model, messages, settings) do
-    Logger.debug("Routing streaming request to Custom provider for model: #{model.model}")
-    Providers.Custom.request_stream(model, messages, settings)
-  end
-
   def request_stream(%Model{} = model, messages, settings) do
+    provider = provider_module(model.provider)
+
     Logger.debug(
-      "Routing streaming request to OpenAI-compatible provider for: #{model.provider}:#{model.model}"
+      "Routing streaming request to #{inspect(provider)} for: #{model.provider}:#{model.model}"
     )
 
-    Providers.OpenAICompatible.request_stream(model, messages, settings)
+    provider.request_stream(model, messages, settings)
   end
 
   @doc """
   Count tokens (uses appropriate provider implementation).
   """
   @spec count_tokens(Model.t(), list()) :: integer()
-  def count_tokens(%Model{provider: :anthropic}, messages) do
-    Providers.Anthropic.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :gemini}, messages) do
-    Providers.Gemini.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :vertex_ai}, messages) do
-    Providers.VertexAI.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :mistral}, messages) do
-    Providers.Mistral.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :lmstudio}, messages) do
-    Providers.LMStudio.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :vllm}, messages) do
-    Providers.VLLM.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :sglang}, messages) do
-    Providers.SGLang.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :llamacpp}, messages) do
-    Providers.LlamaCpp.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :openai}, messages) do
-    Providers.OpenAI.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{provider: :custom}, messages) do
-    Providers.Custom.count_tokens(messages)
-  end
-
-  def count_tokens(%Model{}, messages) do
-    Providers.OpenAICompatible.count_tokens(messages)
+  def count_tokens(%Model{} = model, messages) do
+    provider_module(model.provider).count_tokens(messages)
   end
 end

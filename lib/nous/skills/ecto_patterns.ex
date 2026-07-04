@@ -1,6 +1,19 @@
 defmodule Nous.Skills.EctoPatterns do
   @moduledoc "Built-in skill for Ecto query composition, changesets, and data patterns."
-  use Nous.Skill, tags: [:elixir, :ecto, :database, :query], group: :coding
+  use Nous.Skill,
+    keywords: [
+      "ecto",
+      "query",
+      "changeset",
+      "repo",
+      "preload",
+      "migration",
+      "schema",
+      "n+1",
+      "context module"
+    ],
+    tags: [:elixir, :ecto, :database, :query],
+    group: :coding
 
   @impl true
   def name, do: "ecto_patterns"
@@ -46,22 +59,5 @@ defmodule Nous.Skills.EctoPatterns do
 
     7. **Always use parameterized queries**: Never interpolate user input into query strings.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "ecto",
-      "query",
-      "changeset",
-      "repo",
-      "preload",
-      "migration",
-      "schema",
-      "n+1",
-      "context module"
-    ])
   end
 end

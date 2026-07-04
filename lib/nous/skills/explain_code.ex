@@ -1,6 +1,9 @@
 defmodule Nous.Skills.ExplainCode do
   @moduledoc "Built-in skill for code explanation."
-  use Nous.Skill, tags: [:explain, :understand, :learn], group: :coding
+  use Nous.Skill,
+    keywords: ["explain", "what does this", "how does this", "walk me through", "understand this"],
+    tags: [:explain, :understand, :learn],
+    group: :coding
 
   @impl true
   def name, do: "explain_code"
@@ -24,18 +27,5 @@ defmodule Nous.Skills.ExplainCode do
     - For experienced developers: focus on domain logic and architectural decisions
     - For domain experts: focus on implementation details and edge cases
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "explain",
-      "what does this",
-      "how does this",
-      "walk me through",
-      "understand this"
-    ])
   end
 end

@@ -269,8 +269,9 @@ defmodule Nous.Agent.Callbacks do
         try do
           callback.(event, payload)
         rescue
+          # Callbacks are arbitrary user functions; the catch-all is a
+          # deliberate fault boundary so one bad callback can't kill the run.
           e ->
-            # Log but don't fail on callback errors
             require Logger
             Logger.warning("Callback error for #{event}: #{inspect(e)}")
         end

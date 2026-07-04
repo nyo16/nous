@@ -205,17 +205,8 @@ defmodule Nous.Eval.TestCase do
   defp parse_eval_type(_), do: :contains
 
   # Convert a YAML scalar to an existing atom; unknown values are dropped.
-  # NEVER use String.to_atom/1 here - YAML files are user-controllable input.
-  defp safe_to_atom(nil), do: nil
-  defp safe_to_atom(value) when is_atom(value), do: value
-
-  defp safe_to_atom(value) when is_binary(value) do
-    String.to_existing_atom(value)
-  rescue
-    ArgumentError -> nil
-  end
-
-  defp safe_to_atom(_), do: nil
+  # YAML files are user-controllable input, so only existing atoms resolve.
+  defp safe_to_atom(value), do: Nous.Util.safe_existing_atom(value)
 
   @doc """
   Validate a test case.
@@ -269,22 +260,16 @@ defmodule Nous.Eval.TestCase do
     Enum.find_value(keys, default, fn k -> Map.get(map, k) end)
   end
 
-  # eval_config / agent_config maps come from arbitrary YAML. Convert to atoms
-  # ONLY if the atom already exists in the BEAM; unknown keys remain as
-  # binaries. This prevents YAML files from exhausting the global atom table.
+  # eval_config / agent_config maps come from arbitrary YAML. Unlike the
+  # top-level Nous.Util.atomize_keys/1, this walks nested maps and lists.
+  # Unknown keys remain binaries so YAML can't exhaust the atom table.
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {atom_key_or_binary(k), atomize_keys(v)}
+      {k, v} when is_binary(k) -> {Nous.Util.safe_existing_atom(k, k), atomize_keys(v)}
       {k, v} -> {k, atomize_keys(v)}
     end)
   end
 
   defp atomize_keys(list) when is_list(list), do: Enum.map(list, &atomize_keys/1)
   defp atomize_keys(other), do: other
-
-  defp atom_key_or_binary(binary) do
-    String.to_existing_atom(binary)
-  rescue
-    ArgumentError -> binary
-  end
 end

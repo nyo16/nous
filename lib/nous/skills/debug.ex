@@ -1,6 +1,18 @@
 defmodule Nous.Skills.Debug do
   @moduledoc "Built-in skill for systematic debugging."
-  use Nous.Skill, tags: [:debug, :fix, :troubleshoot], group: :debug
+  use Nous.Skill,
+    keywords: [
+      "debug",
+      "fix bug",
+      "not working",
+      "broken",
+      "error",
+      "failing",
+      "crash",
+      "troubleshoot"
+    ],
+    tags: [:debug, :fix, :troubleshoot],
+    group: :debug
 
   @impl true
   def name, do: "debug"
@@ -24,21 +36,5 @@ defmodule Nous.Skills.Debug do
     - Fixing symptoms instead of root causes
     - Making multiple changes at once (change one thing at a time)
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "debug",
-      "fix bug",
-      "not working",
-      "broken",
-      "error",
-      "failing",
-      "crash",
-      "troubleshoot"
-    ])
   end
 end

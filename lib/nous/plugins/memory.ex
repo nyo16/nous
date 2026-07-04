@@ -389,16 +389,9 @@ defmodule Nous.Plugins.Memory do
           namespace: config[:namespace]
         })
 
-      case store_mod.store(store_state, entry) do
-        {:ok, new_state} ->
-          Logger.debug("Memory auto-update: remembered #{entry.id} — #{content}")
-          updated_config = Map.put(ctx.deps[:memory_config] || config, :store_state, new_state)
-          %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
-
-        {:error, reason} ->
-          Logger.warning("Memory auto-update: store failed: #{inspect(reason)}")
-          ctx
-      end
+      store_state
+      |> store_mod.store(entry)
+      |> apply_store_result(ctx, config, "remembered #{entry.id} — #{content}", "store failed")
     end
   end
 
@@ -429,16 +422,9 @@ defmodule Nous.Plugins.Memory do
         updates
       end
 
-    case store_mod.update(store_state, id, updates) do
-      {:ok, new_state} ->
-        Logger.debug("Memory auto-update: updated #{id}")
-        updated_config = Map.put(ctx.deps[:memory_config] || config, :store_state, new_state)
-        %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
-
-      {:error, reason} ->
-        Logger.warning("Memory auto-update: update failed for #{id}: #{inspect(reason)}")
-        ctx
-    end
+    store_state
+    |> store_mod.update(id, updates)
+    |> apply_store_result(ctx, config, "updated #{id}", "update failed for #{id}")
   end
 
   defp apply_single_operation(ctx, config, %{"action" => "forget", "id" => id})
@@ -446,21 +432,29 @@ defmodule Nous.Plugins.Memory do
     store_mod = config[:store]
     store_state = (ctx.deps[:memory_config] || config)[:store_state]
 
-    case store_mod.delete(store_state, id) do
-      {:ok, new_state} ->
-        Logger.debug("Memory auto-update: forgot #{id}")
-        updated_config = Map.put(ctx.deps[:memory_config] || config, :store_state, new_state)
-        %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
-
-      {:error, reason} ->
-        Logger.warning("Memory auto-update: forget failed for #{id}: #{inspect(reason)}")
-        ctx
-    end
+    store_state
+    |> store_mod.delete(id)
+    |> apply_store_result(ctx, config, "forgot #{id}", "forget failed for #{id}")
   end
 
   defp apply_single_operation(ctx, _config, op) do
     Logger.warning("Memory auto-update: unrecognized operation: #{inspect(op)}")
     ctx
+  end
+
+  # Persist the new store state on success; log and leave ctx unchanged on
+  # failure so one bad operation can't wedge the run.
+  defp apply_store_result(result, ctx, config, ok_log, error_log) do
+    case result do
+      {:ok, new_state} ->
+        Logger.debug("Memory auto-update: #{ok_log}")
+        updated_config = Map.put(ctx.deps[:memory_config] || config, :store_state, new_state)
+        %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
+
+      {:error, reason} ->
+        Logger.warning("Memory auto-update: #{error_log}: #{inspect(reason)}")
+        ctx
+    end
   end
 
   defp maybe_embed(config, content) do

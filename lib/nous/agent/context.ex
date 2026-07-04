@@ -595,6 +595,9 @@ defmodule Nous.Agent.Context do
 
     {:ok, ctx}
   rescue
+    # Deserializes attacker-controllable persisted blobs; a malformed blob
+    # can raise from anywhere in the decode path, so the catch-all is a
+    # deliberate boundary honoring the {:ok, _} | {:error, _} contract.
     e -> {:error, Exception.message(e)}
   end
 
@@ -715,22 +718,10 @@ defmodule Nous.Agent.Context do
     }
   end
 
-  defp atomize_keys(map) when is_map(map) do
-    Map.new(map, fn
-      {k, v} when is_atom(k) -> {k, v}
-      {k, v} when is_binary(k) -> {safe_to_atom(k), v}
-    end)
-  end
-
-  # Safe atom resolution for keys read from persisted state.
-  # NEVER calls String.to_atom/1 - that would let attacker-controlled persisted blobs
-  # exhaust the global atom table (atoms are not GC'd; node-wide DoS).
-  # Unknown keys stay as binaries; downstream Ecto.cast simply ignores them.
-  defp safe_to_atom(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> key
-  end
+  # Keys read from persisted state are attacker-controllable; Nous.Util only
+  # resolves already-existing atoms, and unknown keys stay as binaries that
+  # downstream Ecto.cast simply ignores.
+  defp atomize_keys(map) when is_map(map), do: Nous.Util.atomize_keys(map)
 
   defp update_needs_response(ctx, %Message{role: :assistant} = message) do
     # Assistant messages with tool calls need a response (tool results)

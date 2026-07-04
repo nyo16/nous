@@ -141,22 +141,16 @@ defmodule Nous.Agents.ReActAgent do
     # Check if final_answer was called
     tool_calls = response.tool_calls
 
-    has_final_answer =
-      Enum.any?(tool_calls, fn call ->
-        call["name"] == "final_answer" or call[:name] == "final_answer"
+    final_call =
+      Enum.find(tool_calls, fn call ->
+        Nous.ToolCall.field(call, :name) == "final_answer"
       end)
 
-    if has_final_answer do
-      # Extract final answer from tool call
-      final_call =
-        Enum.find(tool_calls, fn call ->
-          call["name"] == "final_answer" or call[:name] == "final_answer"
-        end)
-
+    if final_call do
       answer =
-        get_in(final_call, [:arguments, "answer"]) ||
-          get_in(final_call, [:arguments, :answer]) ||
-          "No answer provided"
+        final_call
+        |> Nous.ToolCall.field(:arguments, %{})
+        |> Nous.ToolCall.field(:answer, "No answer provided")
 
       ctx
       |> Context.merge_deps(%{final_answer: answer})
@@ -208,8 +202,8 @@ defmodule Nous.Agents.ReActAgent do
   def after_tool(_agent, call, _result, ctx) do
     # Record tool call in history
     history_entry = %{
-      name: call["name"] || call[:name],
-      arguments: call["arguments"] || call[:arguments],
+      name: Nous.ToolCall.field(call, :name),
+      arguments: Nous.ToolCall.field(call, :arguments),
       timestamp: DateTime.utc_now()
     }
 
@@ -218,7 +212,10 @@ defmodule Nous.Agents.ReActAgent do
     # Check for duplicate calls (loop detection)
     if is_duplicate_call?(call, ctx.deps[:tool_history] || []) do
       require Logger
-      Logger.warning("ReAct loop detection: duplicate tool call #{call["name"] || call[:name]}")
+
+      Logger.warning(
+        "ReAct loop detection: duplicate tool call #{Nous.ToolCall.field(call, :name)}"
+      )
     end
 
     Context.merge_deps(ctx, %{tool_history: tool_history})
@@ -290,8 +287,8 @@ defmodule Nous.Agents.ReActAgent do
   end
 
   defp is_duplicate_call?(call, history) do
-    call_name = call["name"] || call[:name]
-    call_args = call["arguments"] || call[:arguments]
+    call_name = Nous.ToolCall.field(call, :name)
+    call_args = Nous.ToolCall.field(call, :arguments)
 
     Enum.any?(history, fn entry ->
       entry.name == call_name and entry.arguments == call_args

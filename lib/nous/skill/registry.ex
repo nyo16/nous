@@ -217,10 +217,7 @@ defmodule Nous.Skill.Registry do
   """
   @spec by_group(t(), atom()) :: [Skill.t()]
   def by_group(%__MODULE__{} = registry, group) do
-    registry.groups
-    |> Map.get(group, [])
-    |> Enum.map(&Map.get(registry.skills, &1))
-    |> Enum.reject(&is_nil/1)
+    resolve_names(registry, Map.get(registry.groups, group, []))
   end
 
   @doc """
@@ -228,10 +225,7 @@ defmodule Nous.Skill.Registry do
   """
   @spec by_tag(t(), atom()) :: [Skill.t()]
   def by_tag(%__MODULE__{} = registry, tag) do
-    registry.tags
-    |> Map.get(tag, [])
-    |> Enum.map(&Map.get(registry.skills, &1))
-    |> Enum.reject(&is_nil/1)
+    resolve_names(registry, Map.get(registry.tags, tag, []))
   end
 
   @doc """
@@ -239,9 +233,8 @@ defmodule Nous.Skill.Registry do
   """
   @spec active_skills(t()) :: [Skill.t()]
   def active_skills(%__MODULE__{} = registry) do
-    registry.active
-    |> Enum.map(&Map.get(registry.skills, &1))
-    |> Enum.reject(&is_nil/1)
+    registry
+    |> resolve_names(registry.active)
     |> Enum.sort_by(& &1.priority)
   end
 
@@ -344,6 +337,13 @@ defmodule Nous.Skill.Registry do
     Map.update(index, key, [name], fn names ->
       if name in names, do: names, else: names ++ [name]
     end)
+  end
+
+  # Resolve skill names from an index to their structs, dropping stale names.
+  defp resolve_names(registry, names) do
+    names
+    |> Enum.map(&Map.get(registry.skills, &1))
+    |> Enum.reject(&is_nil/1)
   end
 
   defp load_skill_content(%Skill{source: :module, source_ref: module}, agent, ctx) do

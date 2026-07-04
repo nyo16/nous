@@ -37,6 +37,21 @@ defmodule Nous.Tool.SchemaTest do
     end
   end
 
+  # Tool that requires human approval before execution
+  defmodule ApprovalTool do
+    use Nous.Tool.Schema
+
+    tool "dangerous",
+      description: "A tool that needs approval",
+      category: :execute,
+      requires_approval: true do
+      param(:command, :string, required: true, doc: "Command to run")
+    end
+
+    @impl Nous.Tool.Behaviour
+    def execute(_ctx, _args), do: {:ok, "done"}
+  end
+
   # Tool with all param types
   defmodule AllTypesTool do
     use Nous.Tool.Schema
@@ -91,6 +106,19 @@ defmodule Nous.Tool.SchemaTest do
       assert meta.description == "A minimal tool"
       assert meta.category == nil
       assert meta.tags == []
+    end
+
+    test "requires_approval is included in metadata" do
+      assert ApprovalTool.metadata().requires_approval == true
+    end
+
+    test "requires_approval defaults to false" do
+      assert MinimalTool.metadata().requires_approval == false
+    end
+
+    test "requires_approval flows into Tool.from_module/2" do
+      assert Tool.from_module(ApprovalTool).requires_approval == true
+      assert Tool.from_module(MinimalTool).requires_approval == false
     end
 
     test "required params appear in required list" do

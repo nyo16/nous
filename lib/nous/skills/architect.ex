@@ -1,6 +1,15 @@
 defmodule Nous.Skills.Architect do
   @moduledoc "Built-in skill for system architecture design."
-  use Nous.Skill, tags: [:architecture, :design, :system], group: :planning
+  use Nous.Skill,
+    keywords: [
+      "architect",
+      "design system",
+      "system design",
+      "how should i structure",
+      "component design"
+    ],
+    tags: [:architecture, :design, :system],
+    group: :planning
 
   @impl true
   def name, do: "architect"
@@ -27,18 +36,5 @@ defmodule Nous.Skills.Architect do
     - Alternatives: What else was considered
     - Consequences: What this enables and constrains
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "architect",
-      "design system",
-      "system design",
-      "how should i structure",
-      "component design"
-    ])
   end
 end

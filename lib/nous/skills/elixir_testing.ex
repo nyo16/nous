@@ -1,6 +1,17 @@
 defmodule Nous.Skills.ElixirTesting do
   @moduledoc "Built-in skill for Elixir testing with ExUnit, Mox, and property-based testing."
-  use Nous.Skill, tags: [:elixir, :testing, :exunit, :mox], group: :testing
+  use Nous.Skill,
+    keywords: [
+      "exunit",
+      "elixir test",
+      "mix test",
+      "mox",
+      "test elixir",
+      "property test",
+      "stream_data"
+    ],
+    tags: [:elixir, :testing, :exunit, :mox],
+    group: :testing
 
   @impl true
   def name, do: "elixir_testing"
@@ -63,20 +74,5 @@ defmodule Nous.Skills.ElixirTesting do
 
     7. **Descriptive test names**: Describe the behavior, not the implementation.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "exunit",
-      "elixir test",
-      "mix test",
-      "mox",
-      "test elixir",
-      "property test",
-      "stream_data"
-    ])
   end
 end

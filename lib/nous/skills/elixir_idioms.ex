@@ -1,6 +1,16 @@
 defmodule Nous.Skills.ElixirIdioms do
   @moduledoc "Built-in skill for idiomatic Elixir patterns and anti-patterns."
-  use Nous.Skill, tags: [:elixir, :idioms, :functional, :patterns], group: :coding
+  use Nous.Skill,
+    keywords: [
+      "elixir",
+      "pipe operator",
+      "pattern match",
+      "idiomatic",
+      "with statement",
+      "functional"
+    ],
+    tags: [:elixir, :idioms, :functional, :patterns],
+    group: :coding
 
   @impl true
   def name, do: "elixir_idioms"
@@ -53,19 +63,5 @@ defmodule Nous.Skills.ElixirIdioms do
 
     10. **Avoid**: Long parameter lists (use maps/keywords), excessive comments (self-documenting code), single-use private functions that obscure flow.
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-
-    String.contains?(input, [
-      "elixir",
-      "pipe operator",
-      "pattern match",
-      "idiomatic",
-      "with statement",
-      "functional"
-    ])
   end
 end

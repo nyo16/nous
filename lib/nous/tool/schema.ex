@@ -82,6 +82,7 @@ defmodule Nous.Tool.Schema do
       Module.register_attribute(__MODULE__, :tool_description, [])
       Module.register_attribute(__MODULE__, :tool_category, [])
       Module.register_attribute(__MODULE__, :tool_tags, [])
+      Module.register_attribute(__MODULE__, :tool_requires_approval, [])
 
       @before_compile Nous.Tool.Schema
     end
@@ -95,6 +96,9 @@ defmodule Nous.Tool.Schema do
     * `:description` - Human-readable description of the tool (required)
     * `:category` - Tool category: `:read`, `:write`, `:execute`, `:communicate`, `:search`
     * `:tags` - List of atom tags for filtering (default: `[]`)
+    * `:requires_approval` - Whether the tool needs human approval before
+      execution (default: `false`). Flows into `Nous.Tool.from_module/2` and
+      the agent runner's approval flow.
 
   ## Example
 
@@ -111,12 +115,14 @@ defmodule Nous.Tool.Schema do
     description = Keyword.get(opts, :description, "")
     category = Keyword.get(opts, :category)
     tags = Keyword.get(opts, :tags, [])
+    requires_approval = Keyword.get(opts, :requires_approval, false)
 
     quote do
       @tool_name unquote(name)
       @tool_description unquote(description)
       @tool_category unquote(category)
       @tool_tags unquote(tags)
+      @tool_requires_approval unquote(requires_approval)
 
       unquote(block)
     end
@@ -162,6 +168,7 @@ defmodule Nous.Tool.Schema do
     description = Module.get_attribute(env.module, :tool_description)
     category = Module.get_attribute(env.module, :tool_category)
     tags = Module.get_attribute(env.module, :tool_tags)
+    requires_approval = Module.get_attribute(env.module, :tool_requires_approval) || false
 
     json_schema = build_json_schema(params)
 
@@ -170,7 +177,8 @@ defmodule Nous.Tool.Schema do
       description: description,
       parameters: json_schema,
       category: category,
-      tags: tags
+      tags: tags,
+      requires_approval: requires_approval
     }
 
     tool_schema = %{
@@ -178,6 +186,7 @@ defmodule Nous.Tool.Schema do
       description: description,
       category: category,
       tags: tags,
+      requires_approval: requires_approval,
       params: params
     }
 

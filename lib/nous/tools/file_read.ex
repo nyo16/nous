@@ -6,36 +6,18 @@ defmodule Nous.Tools.FileRead do
   offset and limit for reading specific sections of large files.
   """
 
-  @behaviour Nous.Tool.Behaviour
+  use Nous.Tool.Schema
 
   @default_limit 2000
 
-  @impl true
-  def metadata do
-    %{
-      name: "file_read",
-      description: "Read a file from the filesystem. Returns content with line numbers.",
-      category: :read,
-      requires_approval: false,
-      parameters: %{
-        "type" => "object",
-        "properties" => %{
-          "file_path" => %{
-            "type" => "string",
-            "description" => "Path to the file to read"
-          },
-          "offset" => %{
-            "type" => "integer",
-            "description" => "Line number to start reading from (1-based). Defaults to 1."
-          },
-          "limit" => %{
-            "type" => "integer",
-            "description" => "Number of lines to read. Defaults to 2000."
-          }
-        },
-        "required" => ["file_path"]
-      }
-    }
+  tool "file_read",
+    description: "Read a file from the filesystem. Returns content with line numbers.",
+    category: :read do
+    param(:file_path, :string, required: true, doc: "Path to the file to read")
+
+    param(:offset, :integer, doc: "Line number to start reading from (1-based). Defaults to 1.")
+
+    param(:limit, :integer, doc: "Number of lines to read. Defaults to 2000.")
   end
 
   @impl true

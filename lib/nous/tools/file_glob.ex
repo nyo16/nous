@@ -6,32 +6,19 @@ defmodule Nous.Tools.FileGlob do
   Results are sorted by modification time (most recent first).
   """
 
-  @behaviour Nous.Tool.Behaviour
+  use Nous.Tool.Schema
 
   @default_limit 200
 
-  @impl true
-  def metadata do
-    %{
-      name: "file_glob",
-      description: "Find files matching a glob pattern (e.g. \"**/*.ex\", \"lib/**/*.exs\").",
-      category: :search,
-      requires_approval: false,
-      parameters: %{
-        "type" => "object",
-        "properties" => %{
-          "pattern" => %{
-            "type" => "string",
-            "description" => "Glob pattern to match files (e.g. \"**/*.ex\")"
-          },
-          "path" => %{
-            "type" => "string",
-            "description" => "Base directory to search from. Defaults to current directory."
-          }
-        },
-        "required" => ["pattern"]
-      }
-    }
+  tool "file_glob",
+    description: "Find files matching a glob pattern (e.g. \"**/*.ex\", \"lib/**/*.exs\").",
+    category: :search do
+    param(:pattern, :string,
+      required: true,
+      doc: "Glob pattern to match files (e.g. \"**/*.ex\")"
+    )
+
+    param(:path, :string, doc: "Base directory to search from. Defaults to current directory.")
   end
 
   @impl true

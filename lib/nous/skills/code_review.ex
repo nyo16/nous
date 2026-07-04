@@ -1,6 +1,9 @@
 defmodule Nous.Skills.CodeReview do
   @moduledoc "Built-in skill for code review."
-  use Nous.Skill, tags: [:code, :quality, :review], group: :review
+  use Nous.Skill,
+    keywords: ["review", "code review", "check this code", "review my"],
+    tags: [:code, :quality, :review],
+    group: :review
 
   @impl true
   def name, do: "code_review"
@@ -24,11 +27,5 @@ defmodule Nous.Skills.CodeReview do
     - The severity (critical, warning, suggestion)
     - A concrete fix or improvement
     """
-  end
-
-  @impl true
-  def match?(input) do
-    input = String.downcase(input)
-    String.contains?(input, ["review", "code review", "check this code", "review my"])
   end
 end

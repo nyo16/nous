@@ -37,6 +37,8 @@ defmodule Nous.Tools.BraveSearch do
 
   require Logger
 
+  alias Nous.Tools.Search.Common
+
   @doc """
   Search the web using Brave Search API.
 
@@ -57,43 +59,27 @@ defmodule Nous.Tools.BraveSearch do
   - success: Whether the search succeeded
   """
   def web_search(ctx, args) do
-    # Support both "query" and "q" parameter names
-    query = Map.get(args, "query") || Map.get(args, "q") || ""
+    query = Common.query(args)
     # Max 20 results
     count = Map.get(args, "count", 5) |> min(20)
     country = Map.get(args, "country")
     search_lang = Map.get(args, "search_lang")
     safesearch = Map.get(args, "safesearch", "moderate")
+    api_key = Common.api_key(ctx, :brave_api_key, "BRAVE_API_KEY")
 
-    # Get API key from context or environment
-    api_key = get_api_key(ctx)
+    opts = [
+      missing_key_error:
+        "BRAVE_API_KEY not configured. Get your key from https://brave.com/search/api/",
+      log_label: "Brave search",
+      error_prefix: "Search failed"
+    ]
 
-    if api_key && api_key != "" do
-      case perform_search(query, api_key, count, country, search_lang, safesearch) do
-        {:ok, results} ->
-          %{
-            query: query,
-            results: results,
-            result_count: length(results),
-            success: true
-          }
-
-        {:error, reason} ->
-          Logger.error("Brave search failed: #{inspect(reason)}")
-
-          %{
-            query: query,
-            error: "Search failed: #{inspect(reason)}",
-            success: false
-          }
+    Common.run_search(query, api_key, opts, fn ->
+      with {:ok, results} <-
+             perform_search(query, api_key, count, country, search_lang, safesearch) do
+        {:ok, %{results: results, result_count: length(results)}}
       end
-    else
-      %{
-        query: query,
-        error: "BRAVE_API_KEY not configured. Get your key from https://brave.com/search/api/",
-        success: false
-      }
-    end
+    end)
   end
 
   @doc """
@@ -107,50 +93,26 @@ defmodule Nous.Tools.BraveSearch do
   - search_lang: Language of search
   """
   def news_search(ctx, args) do
-    # Support both "query" and "q" parameter names
-    query = Map.get(args, "query") || Map.get(args, "q") || ""
+    query = Common.query(args)
     count = Map.get(args, "count", 5) |> min(20)
     country = Map.get(args, "country")
     search_lang = Map.get(args, "search_lang")
+    api_key = Common.api_key(ctx, :brave_api_key, "BRAVE_API_KEY")
 
-    api_key = get_api_key(ctx)
+    opts = [
+      missing_key_error: "BRAVE_API_KEY not configured",
+      log_label: "Brave news search",
+      error_prefix: "News search failed"
+    ]
 
-    if api_key && api_key != "" do
-      case perform_news_search(query, api_key, count, country, search_lang) do
-        {:ok, results} ->
-          %{
-            query: query,
-            results: results,
-            result_count: length(results),
-            success: true
-          }
-
-        {:error, reason} ->
-          Logger.error("Brave news search failed: #{inspect(reason)}")
-
-          %{
-            query: query,
-            error: "News search failed: #{inspect(reason)}",
-            success: false
-          }
+    Common.run_search(query, api_key, opts, fn ->
+      with {:ok, results} <- perform_news_search(query, api_key, count, country, search_lang) do
+        {:ok, %{results: results, result_count: length(results)}}
       end
-    else
-      %{
-        query: query,
-        error: "BRAVE_API_KEY not configured",
-        success: false
-      }
-    end
+    end)
   end
 
   # Private functions
-
-  defp get_api_key(ctx) do
-    # Try context first, then config, then environment
-    ctx.deps[:brave_api_key] ||
-      Application.get_env(:nous, :brave_api_key) ||
-      System.get_env("BRAVE_API_KEY")
-  end
 
   defp perform_search(query, api_key, count, country, search_lang, safesearch) do
     url = "https://api.search.brave.com/res/v1/web/search"
@@ -227,31 +189,27 @@ defmodule Nous.Tools.BraveSearch do
   defp maybe_add_param(params, _key, nil), do: params
   defp maybe_add_param(params, key, value), do: Map.put(params, key, value)
 
-  defp parse_web_results(%{"web" => %{"results" => results}}) when is_list(results) do
-    Enum.map(results, fn result ->
-      %{
-        title: Map.get(result, "title", ""),
-        url: Map.get(result, "url", ""),
-        description: Map.get(result, "description", ""),
-        age: Map.get(result, "age"),
-        page_age: Map.get(result, "page_age")
-      }
-    end)
+  defp parse_web_results(response) do
+    response
+    |> get_in(["web", "results"])
+    |> Common.map_results(
+      title: {"title", ""},
+      url: {"url", ""},
+      description: {"description", ""},
+      age: "age",
+      page_age: "page_age"
+    )
   end
 
-  defp parse_web_results(_response), do: []
-
-  defp parse_news_results(%{"results" => results}) when is_list(results) do
-    Enum.map(results, fn result ->
-      %{
-        title: Map.get(result, "title", ""),
-        url: Map.get(result, "url", ""),
-        description: Map.get(result, "description", ""),
-        age: Map.get(result, "age"),
-        source: Map.get(result, "source")
-      }
-    end)
+  defp parse_news_results(response) do
+    response
+    |> Map.get("results")
+    |> Common.map_results(
+      title: {"title", ""},
+      url: {"url", ""},
+      description: {"description", ""},
+      age: "age",
+      source: "source"
+    )
   end
-
-  defp parse_news_results(_response), do: []
 end

@@ -635,4 +635,24 @@ defmodule Nous.MessagesGenericHelpersTest do
       assert length(user_msgs) == 2
     end
   end
+
+  describe "Message.split_system/1" do
+    test "extracts a single system prompt" do
+      messages = [Message.system("Be helpful"), Message.user("Hi")]
+
+      assert {"Be helpful", [%Message{role: :user}]} = Message.split_system(messages)
+    end
+
+    test "joins multiple system messages with blank lines" do
+      messages = [Message.system("One"), Message.user("Hi"), Message.system("Two")]
+
+      assert {"One\n\nTwo", [%Message{role: :user}]} = Message.split_system(messages)
+    end
+
+    test "returns nil system prompt when no system messages exist" do
+      messages = [Message.user("Hi"), Message.assistant("Hello")]
+
+      assert {nil, ^messages} = Message.split_system(messages)
+    end
+  end
 end

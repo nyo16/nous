@@ -142,8 +142,8 @@ defmodule Nous.Eval.Evaluators.ToolUsage do
         %{role: :assistant, tool_calls: calls} when is_list(calls) ->
           Enum.map(calls, fn call ->
             %{
-              name: call[:name] || call["name"],
-              args: call[:args] || call["args"] || call[:arguments] || call["arguments"]
+              name: Nous.ToolCall.field(call, :name),
+              args: Nous.ToolCall.field(call, :args, Nous.ToolCall.field(call, :arguments))
             }
           end)
 

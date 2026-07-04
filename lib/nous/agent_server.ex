@@ -152,15 +152,8 @@ defmodule Nous.AgentServer do
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    {gen_opts, init_opts} = split_gen_opts(opts)
+    {gen_opts, init_opts} = Nous.Util.split_gen_opts(opts)
     GenServer.start_link(__MODULE__, init_opts, gen_opts)
-  end
-
-  defp split_gen_opts(opts) do
-    case Keyword.pop(opts, :name) do
-      {nil, rest} -> {[], rest}
-      {name, rest} -> {[name: name], rest}
-    end
   end
 
   @doc """
