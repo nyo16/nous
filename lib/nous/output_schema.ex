@@ -272,7 +272,7 @@ defmodule Nous.OutputSchema do
         Nous.Messages.extract_text(msg)
 
       tool_call ->
-        args = tool_call[:arguments] || tool_call["arguments"] || %{}
+        args = Nous.ToolCall.field(tool_call, :arguments, %{})
         JSON.encode!(args)
     end
   end
@@ -433,9 +433,9 @@ defmodule Nous.OutputSchema do
         {Nous.Messages.extract_text(msg), nil}
 
       tool_call ->
-        name = tool_call[:name] || tool_call["name"]
+        name = Nous.ToolCall.field(tool_call, :name)
         schema = find_schema_for_tool_name(name, schemas)
-        args = tool_call[:arguments] || tool_call["arguments"] || %{}
+        args = Nous.ToolCall.field(tool_call, :arguments, %{})
         {JSON.encode!(args), schema}
     end
   end
@@ -885,8 +885,7 @@ defmodule Nous.OutputSchema do
   defp find_synthetic_tool_call(%Nous.Message{tool_calls: tool_calls})
        when is_list(tool_calls) do
     Enum.find(tool_calls, fn call ->
-      name = call[:name] || call["name"]
-      synthetic_tool_name?(name || "")
+      synthetic_tool_name?(Nous.ToolCall.field(call, :name, ""))
     end)
   end
 

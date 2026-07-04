@@ -89,7 +89,7 @@ defmodule Nous.Agents.KnowledgeBaseAgent do
 
     kb_calls =
       Enum.filter(tool_calls, fn call ->
-        name = call["name"] || call[:name] || ""
+        name = Nous.ToolCall.field(call, :name, "")
         String.starts_with?(to_string(name), "kb_")
       end)
 
@@ -98,7 +98,7 @@ defmodule Nous.Agents.KnowledgeBaseAgent do
 
       new_ops =
         Enum.map(kb_calls, fn call ->
-          %{tool: call["name"] || call[:name], timestamp: DateTime.utc_now()}
+          %{tool: Nous.ToolCall.field(call, :name), timestamp: DateTime.utc_now()}
         end)
 
       Context.merge_deps(ctx, %{kb_operations: ops ++ new_ops})

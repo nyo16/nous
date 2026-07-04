@@ -1318,27 +1318,11 @@ defmodule Nous.AgentRunner do
 
   defp check_tool_approval(_tool, _call, _ctx), do: :approve
 
-  # Get tool call field - handles both atom and string keys
-  # OpenAI-compatible APIs return string keys, our internal format uses atoms
-  defp get_tool_field(call, field) when is_atom(field) do
-    # Use fetch, not `||`: a legitimately-falsy value under the atom key
-    # (e.g. arguments: false / 0 / "") must win over the string-key fallback
-    # instead of being coalesced away. Keys are atom-OR-string per provider, so
-    # a present atom key is authoritative even when its value is falsy.
-    case Map.fetch(call, field) do
-      {:ok, value} -> value
-      :error -> Map.get(call, to_string(field))
-    end
-  end
+  # Tool call fields arrive with atom OR string keys depending on the
+  # provider; Nous.ToolCall resolves both without coalescing falsy values.
+  defp get_tool_field(call, field), do: Nous.ToolCall.field(call, field)
 
-  # Set tool call field - handles both atom and string keys
-  defp put_tool_field(call, field, value) when is_atom(field) do
-    if Map.has_key?(call, field) do
-      Map.put(call, field, value)
-    else
-      Map.put(call, to_string(field), value)
-    end
-  end
+  defp put_tool_field(call, field, value), do: Nous.ToolCall.put_field(call, field, value)
 
   # Clean tool names - Claude sometimes uses XML-like syntax.
   # L-9: tolerate nil/non-binary input - some providers emit malformed

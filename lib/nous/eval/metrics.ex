@@ -141,9 +141,7 @@ defmodule Nous.Eval.Metrics do
     |> Enum.flat_map(fn msg ->
       case msg do
         %{role: :assistant, tool_calls: calls} when is_list(calls) ->
-          Enum.map(calls, fn call ->
-            call[:name] || call["name"] || "unknown"
-          end)
+          Enum.map(calls, &Nous.ToolCall.field(&1, :name, "unknown"))
 
         _ ->
           []
