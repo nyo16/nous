@@ -38,6 +38,26 @@ defmodule Nous.Util do
   def safe_existing_atom(_value, fallback), do: fallback
 
   @doc """
+  Split a keyword list into `{gen_opts, init_opts}` for `GenServer.start_link/3`.
+
+  `:name` (when present and non-nil) goes to the GenServer options; everything
+  else is passed through as init options.
+
+  ## Examples
+
+      iex> Nous.Util.split_gen_opts(name: MyServer, foo: 1)
+      {[name: MyServer], [foo: 1]}
+
+  """
+  @spec split_gen_opts(keyword()) :: {keyword(), keyword()}
+  def split_gen_opts(opts) when is_list(opts) do
+    case Keyword.pop(opts, :name) do
+      {nil, rest} -> {[], rest}
+      {name, rest} -> {[name: name], rest}
+    end
+  end
+
+  @doc """
   Convert a map's top-level binary keys to already-existing atoms; keys with
   no existing atom stay binaries (downstream casts simply ignore them).
 

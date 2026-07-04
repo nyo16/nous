@@ -35,6 +35,21 @@ defmodule Nous.UtilTest do
     end
   end
 
+  describe "split_gen_opts/1" do
+    test "splits :name into GenServer opts" do
+      assert Util.split_gen_opts(name: MyServer, foo: 1) ==
+               {[name: MyServer], [foo: 1]}
+    end
+
+    test "returns empty gen opts when :name is absent" do
+      assert Util.split_gen_opts(foo: 1) == {[], [foo: 1]}
+    end
+
+    test "treats an explicit nil name as absent" do
+      assert Util.split_gen_opts(name: nil, foo: 1) == {[], [foo: 1]}
+    end
+  end
+
   describe "atomize_keys/1" do
     test "converts keys that are existing atoms" do
       assert Util.atomize_keys(%{"name" => "a", "id" => 1}) == %{name: "a", id: 1}
