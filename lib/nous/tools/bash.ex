@@ -11,33 +11,18 @@ defmodule Nous.Tools.Bash do
   access to this tool in production.
   """
 
-  @behaviour Nous.Tool.Behaviour
+  use Nous.Tool.Schema
 
   @default_timeout 120_000
   @max_output_size 1_000_000
 
-  @impl true
-  def metadata do
-    %{
-      name: "bash",
-      description: "Execute a shell command and return its output.",
-      category: :execute,
-      requires_approval: true,
-      parameters: %{
-        "type" => "object",
-        "properties" => %{
-          "command" => %{
-            "type" => "string",
-            "description" => "The shell command to execute"
-          },
-          "timeout" => %{
-            "type" => "integer",
-            "description" => "Timeout in milliseconds. Defaults to 120000 (2 minutes)."
-          }
-        },
-        "required" => ["command"]
-      }
-    }
+  tool "bash",
+    description: "Execute a shell command and return its output.",
+    category: :execute,
+    requires_approval: true do
+    param(:command, :string, required: true, doc: "The shell command to execute")
+
+    param(:timeout, :integer, doc: "Timeout in milliseconds. Defaults to 120000 (2 minutes).")
   end
 
   @impl true

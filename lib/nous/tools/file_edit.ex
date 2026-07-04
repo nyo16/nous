@@ -7,40 +7,20 @@ defmodule Nous.Tools.FileEdit do
   to prevent unintended changes.
   """
 
-  @behaviour Nous.Tool.Behaviour
+  use Nous.Tool.Schema
 
-  @impl true
-  def metadata do
-    %{
-      name: "file_edit",
-      description:
-        "Edit a file by replacing exact string matches. The old_string must be unique in the file unless replace_all is true.",
-      category: :write,
-      requires_approval: true,
-      parameters: %{
-        "type" => "object",
-        "properties" => %{
-          "file_path" => %{
-            "type" => "string",
-            "description" => "Path to the file to edit"
-          },
-          "old_string" => %{
-            "type" => "string",
-            "description" => "The exact text to find and replace"
-          },
-          "new_string" => %{
-            "type" => "string",
-            "description" => "The replacement text"
-          },
-          "replace_all" => %{
-            "type" => "boolean",
-            "description" =>
-              "Replace all occurrences instead of requiring uniqueness. Defaults to false."
-          }
-        },
-        "required" => ["file_path", "old_string", "new_string"]
-      }
-    }
+  tool "file_edit",
+    description:
+      "Edit a file by replacing exact string matches. The old_string must be unique in the file unless replace_all is true.",
+    category: :write,
+    requires_approval: true do
+    param(:file_path, :string, required: true, doc: "Path to the file to edit")
+    param(:old_string, :string, required: true, doc: "The exact text to find and replace")
+    param(:new_string, :string, required: true, doc: "The replacement text")
+
+    param(:replace_all, :boolean,
+      doc: "Replace all occurrences instead of requiring uniqueness. Defaults to false."
+    )
   end
 
   @impl true

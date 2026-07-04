@@ -6,30 +6,14 @@ defmodule Nous.Tools.FileWrite do
   if they don't exist.
   """
 
-  @behaviour Nous.Tool.Behaviour
+  use Nous.Tool.Schema
 
-  @impl true
-  def metadata do
-    %{
-      name: "file_write",
-      description: "Write content to a file. Creates parent directories if needed.",
-      category: :write,
-      requires_approval: true,
-      parameters: %{
-        "type" => "object",
-        "properties" => %{
-          "file_path" => %{
-            "type" => "string",
-            "description" => "Path to the file to write"
-          },
-          "content" => %{
-            "type" => "string",
-            "description" => "The content to write to the file"
-          }
-        },
-        "required" => ["file_path", "content"]
-      }
-    }
+  tool "file_write",
+    description: "Write content to a file. Creates parent directories if needed.",
+    category: :write,
+    requires_approval: true do
+    param(:file_path, :string, required: true, doc: "Path to the file to write")
+    param(:content, :string, required: true, doc: "The content to write to the file")
   end
 
   @impl true

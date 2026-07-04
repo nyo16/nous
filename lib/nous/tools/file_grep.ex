@@ -6,41 +6,23 @@ defmodule Nous.Tools.FileGrep do
   when available for performance, falls back to pure Elixir regex.
   """
 
-  @behaviour Nous.Tool.Behaviour
+  use Nous.Tool.Schema
 
   @default_limit 250
 
-  @impl true
-  def metadata do
-    %{
-      name: "file_grep",
-      description: "Search file contents using regex patterns. Uses ripgrep when available.",
-      category: :search,
-      requires_approval: false,
-      parameters: %{
-        "type" => "object",
-        "properties" => %{
-          "pattern" => %{
-            "type" => "string",
-            "description" => "Regular expression pattern to search for"
-          },
-          "path" => %{
-            "type" => "string",
-            "description" => "File or directory to search in. Defaults to current directory."
-          },
-          "glob" => %{
-            "type" => "string",
-            "description" => "Glob filter for files (e.g. \"*.ex\", \"*.{ts,tsx}\")"
-          },
-          "output_mode" => %{
-            "type" => "string",
-            "description" =>
-              "Output mode: \"content\" (matching lines), \"files_with_matches\" (file paths only), \"count\" (match counts). Defaults to \"files_with_matches\"."
-          }
-        },
-        "required" => ["pattern"]
-      }
-    }
+  tool "file_grep",
+    description: "Search file contents using regex patterns. Uses ripgrep when available.",
+    category: :search do
+    param(:pattern, :string, required: true, doc: "Regular expression pattern to search for")
+
+    param(:path, :string, doc: "File or directory to search in. Defaults to current directory.")
+
+    param(:glob, :string, doc: "Glob filter for files (e.g. \"*.ex\", \"*.{ts,tsx}\")")
+
+    param(:output_mode, :string,
+      doc:
+        "Output mode: \"content\" (matching lines), \"files_with_matches\" (file paths only), \"count\" (match counts). Defaults to \"files_with_matches\"."
+    )
   end
 
   @impl true
