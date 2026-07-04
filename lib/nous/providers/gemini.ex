@@ -84,74 +84,15 @@ defmodule Nous.Providers.Gemini do
   # without a model-level value.
   @default_timeout 120_000
 
-  # Override to convert from generic format to Gemini's format
+  # Override to convert from generic format to Gemini's format. The builder is
+  # shared with Vertex AI (same wire format); only :extra_body merging stays
+  # here so the macro-injected blocked-key policy applies.
   defp build_request_params(model, messages, settings) do
     merged_settings = Map.merge(model.default_settings, settings)
 
-    # Convert messages to Gemini format: {system_prompt, contents}
-    {system_prompt, contents} = Nous.Messages.to_provider_format(messages, :gemini)
-
-    params = %{"model" => model.model, "contents" => contents}
-
-    params =
-      if system_prompt do
-        Map.put(params, "systemInstruction", %{"parts" => [%{"text" => system_prompt}]})
-      else
-        params
-      end
-
-    # Map generic settings to Gemini's generationConfig
-    generation_config =
-      %{}
-      |> maybe_put("temperature", merged_settings[:temperature])
-      |> maybe_put("maxOutputTokens", merged_settings[:max_tokens])
-      |> maybe_put("topP", merged_settings[:top_p])
-      |> maybe_put("topK", merged_settings[:top_k])
-      |> maybe_put("seed", merged_settings[:seed])
-      |> maybe_put("candidateCount", merged_settings[:candidate_count])
-      |> maybe_put("presencePenalty", merged_settings[:presence_penalty])
-      |> maybe_put("frequencyPenalty", merged_settings[:frequency_penalty])
-      |> maybe_put("responseModalities", merged_settings[:response_modalities])
-      |> maybe_put("stopSequences", merged_settings[:stop_sequences] || merged_settings[:stop])
-      |> maybe_put(
-        "thinkingConfig",
-        Nous.Messages.Gemini.normalize_thinking_config(merged_settings[:thinking_config])
-      )
-      |> Map.merge(Nous.Messages.Gemini.json_config_for_settings(merged_settings))
-
-    # Merge any explicit generationConfig from settings
-    generation_config =
-      Map.merge(generation_config, merged_settings[:generationConfig] || %{})
-
-    params =
-      if map_size(generation_config) > 0 do
-        Map.put(params, "generationConfig", generation_config)
-      else
-        params
-      end
-
-    params =
-      params
-      |> maybe_put(
-        "tools",
-        Nous.Messages.Gemini.build_tools(
-          merged_settings[:tools] || [],
-          merged_settings[:native_tools]
-        )
-      )
-      |> maybe_put(
-        "safetySettings",
-        Nous.Messages.Gemini.normalize_safety_settings(merged_settings[:safety_settings])
-      )
-      |> maybe_put("toolConfig", resolve_tool_config(merged_settings))
-      |> maybe_put("cachedContent", merged_settings[:cached_content])
-
-    maybe_merge_extra_body(params, merged_settings[:extra_body])
-  end
-
-  defp resolve_tool_config(settings) do
-    settings[:tool_config] ||
-      Nous.Messages.Gemini.normalize_tool_choice(settings[:tool_choice])
+    model
+    |> Nous.Messages.Gemini.build_request_params(messages, merged_settings)
+    |> maybe_merge_extra_body(merged_settings[:extra_body])
   end
 
   @impl Nous.Provider

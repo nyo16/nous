@@ -787,4 +787,92 @@ defmodule Nous.MessagesGeminiTest do
       assert file_part["fileData"]["mimeType"] == "image/png"
     end
   end
+
+  describe "build_request_params/3" do
+    # Shared by the Gemini and Vertex AI providers — pins the wire format both
+    # produced before the builder was extracted.
+    defp model(settings \\ %{}) do
+      %Nous.Model{provider: :gemini, model: "gemini-2.5-flash", default_settings: settings}
+    end
+
+    test "builds minimal params with model and contents" do
+      params = Gemini.build_request_params(model(), [Message.user("Hello")], %{})
+
+      assert params["model"] == "gemini-2.5-flash"
+      assert [%{"role" => "user", "parts" => [%{"text" => "Hello"}]}] = params["contents"]
+      refute Map.has_key?(params, "systemInstruction")
+      refute Map.has_key?(params, "generationConfig")
+      refute Map.has_key?(params, "tools")
+    end
+
+    test "extracts system messages into systemInstruction" do
+      messages = [Message.system("Be helpful"), Message.user("Hi")]
+      params = Gemini.build_request_params(model(), messages, %{})
+
+      assert params["systemInstruction"] == %{"parts" => [%{"text" => "Be helpful"}]}
+      assert [%{"role" => "user"}] = params["contents"]
+    end
+
+    test "maps generic settings into generationConfig with camelCase keys" do
+      settings = %{
+        temperature: 0.5,
+        max_tokens: 1024,
+        top_p: 0.9,
+        top_k: 40,
+        stop_sequences: ["END"]
+      }
+
+      params = Gemini.build_request_params(model(), [Message.user("Hi")], settings)
+
+      assert params["generationConfig"] == %{
+               "temperature" => 0.5,
+               "maxOutputTokens" => 1024,
+               "topP" => 0.9,
+               "topK" => 40,
+               "stopSequences" => ["END"]
+             }
+    end
+
+    test "explicit generationConfig from settings wins over mapped keys" do
+      settings = %{temperature: 0.5, generationConfig: %{"temperature" => 0.9}}
+      params = Gemini.build_request_params(model(), [Message.user("Hi")], settings)
+
+      assert params["generationConfig"]["temperature"] == 0.9
+    end
+
+    test "json_schema settings produce responseMimeType and responseSchema" do
+      schema = %{"type" => "object"}
+      params = Gemini.build_request_params(model(), [Message.user("Hi")], %{json_schema: schema})
+
+      assert params["generationConfig"]["responseMimeType"] == "application/json"
+      assert params["generationConfig"]["responseSchema"] == schema
+    end
+
+    test "includes tools, toolConfig, and cachedContent when set" do
+      declaration = %{"name" => "get_weather", "parameters" => %{"type" => "object"}}
+
+      settings = %{
+        tools: [declaration],
+        tool_choice: :none,
+        cached_content: "cachedContents/abc"
+      }
+
+      params = Gemini.build_request_params(model(), [Message.user("Hi")], settings)
+
+      assert [%{"functionDeclarations" => [^declaration]}] = params["tools"]
+      assert params["toolConfig"] == %{"functionCallingConfig" => %{"mode" => "NONE"}}
+      assert params["cachedContent"] == "cachedContents/abc"
+    end
+
+    test "explicit tool_config takes priority over tool_choice" do
+      settings = %{
+        tool_config: %{"functionCallingConfig" => %{"mode" => "ANY"}},
+        tool_choice: :none
+      }
+
+      params = Gemini.build_request_params(model(), [Message.user("Hi")], settings)
+
+      assert params["toolConfig"] == %{"functionCallingConfig" => %{"mode" => "ANY"}}
+    end
+  end
 end
