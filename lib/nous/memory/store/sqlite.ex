@@ -461,24 +461,12 @@ if Code.ensure_loaded?(Exqlite) do
     defp decode_json(nil), do: %{}
     defp decode_json(str) when is_binary(str), do: decode_json_atoms(str)
 
-    defp decode_json_atoms(str) when is_binary(str), do: str |> JSON.decode!() |> atomize_keys()
-
     # Metadata is user-supplied (the `remember` tool's :metadata arg has a
     # wide-open object schema). Keys read from the DB that don't already
     # exist as atoms must NOT crash recall - leave them as binaries so a
     # single bad row can't break list/search.
-    defp atomize_keys(map) when is_map(map) do
-      Map.new(map, fn {k, v} ->
-        atom_or_binary =
-          try do
-            String.to_existing_atom(k)
-          rescue
-            ArgumentError -> k
-          end
-
-        {atom_or_binary, v}
-      end)
-    end
+    defp decode_json_atoms(str) when is_binary(str),
+      do: str |> JSON.decode!() |> Nous.Util.atomize_keys()
 
     defp bool_to_int(true), do: 1
     defp bool_to_int(false), do: 0

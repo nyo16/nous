@@ -306,14 +306,8 @@ defmodule Nous.PromptTemplate do
   @spec extract_variables(String.t()) :: [atom() | String.t()]
   def extract_variables(text) when is_binary(text) do
     Regex.scan(~r/@(\w+)/, text)
-    |> Enum.map(fn [_, var] -> safe_to_existing_atom(var) end)
+    |> Enum.map(fn [_, var] -> Nous.Util.safe_existing_atom(var, var) end)
     |> Enum.uniq()
-  end
-
-  defp safe_to_existing_atom(binary) do
-    String.to_existing_atom(binary)
-  rescue
-    ArgumentError -> binary
   end
 
   @doc """
@@ -407,12 +401,7 @@ defmodule Nous.PromptTemplate do
   end
 
   defp lookup_binding(bindings, var_name) do
-    atom_key =
-      try do
-        String.to_existing_atom(var_name)
-      rescue
-        ArgumentError -> nil
-      end
+    atom_key = Nous.Util.safe_existing_atom(var_name)
 
     cond do
       not is_nil(atom_key) and Map.has_key?(bindings, atom_key) ->

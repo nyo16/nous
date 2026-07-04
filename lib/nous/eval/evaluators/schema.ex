@@ -272,15 +272,6 @@ defmodule Nous.Eval.Evaluators.Schema do
   # Field names in `required_fields` / `field_values` come from arbitrary YAML.
   # Resolve to an EXISTING atom only (struct keys are always existing atoms);
   # unknown names fall back to the raw binary, which `Map.get/2` treats as a
-  # missing/mismatched field. NEVER use String.to_atom/1 - that would let a
-  # YAML file exhaust the global atom table (DoS).
-  defp safe_field_atom(field) when is_atom(field), do: field
-
-  defp safe_field_atom(field) when is_binary(field) do
-    String.to_existing_atom(field)
-  rescue
-    ArgumentError -> field
-  end
-
-  defp safe_field_atom(field), do: field
+  # missing/mismatched field.
+  defp safe_field_atom(field), do: Nous.Util.safe_existing_atom(field, field)
 end

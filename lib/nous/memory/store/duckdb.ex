@@ -334,21 +334,9 @@ if Code.ensure_loaded?(Duckdbex) do
     defp decode_json(nil), do: %{}
     defp decode_json(str) when is_binary(str), do: decode_json_atoms(str)
 
-    defp decode_json_atoms(str) when is_binary(str), do: str |> JSON.decode!() |> atomize_keys()
-
     # Metadata is user-supplied; never crash on unknown keys.
-    defp atomize_keys(map) when is_map(map) do
-      Map.new(map, fn {k, v} ->
-        atom_or_binary =
-          try do
-            String.to_existing_atom(k)
-          rescue
-            ArgumentError -> k
-          end
-
-        {atom_or_binary, v}
-      end)
-    end
+    defp decode_json_atoms(str) when is_binary(str),
+      do: str |> JSON.decode!() |> Nous.Util.atomize_keys()
 
     defp to_bool(true), do: true
     defp to_bool(false), do: false

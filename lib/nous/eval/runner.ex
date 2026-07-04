@@ -238,10 +238,9 @@ defmodule Nous.Eval.Runner do
         [{k, v}]
 
       {k, v} when is_binary(k) ->
-        try do
-          [{String.to_existing_atom(k), v}]
-        rescue
-          ArgumentError -> []
+        case Nous.Util.safe_existing_atom(k) do
+          nil -> []
+          atom -> [{atom, v}]
         end
     end)
   end

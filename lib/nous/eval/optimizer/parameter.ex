@@ -213,12 +213,13 @@ defmodule Nous.Eval.Optimizer.Parameter do
   defp fetch_type(other), do: {:error, "invalid parameter type: #{inspect(other)}"}
 
   # Parameter names are config keys (e.g. :temperature, :max_tokens) matched
-  # against agent settings; to_existing_atom keeps a hostile params file from
-  # minting arbitrary atoms while still accepting the known knobs.
+  # against agent settings; resolving only existing atoms keeps a hostile
+  # params file from minting arbitrary atoms while accepting the known knobs.
   defp fetch_name(name) when is_binary(name) do
-    {:ok, String.to_existing_atom(name)}
-  rescue
-    ArgumentError -> {:error, "unknown parameter name: #{inspect(name)}"}
+    case Nous.Util.safe_existing_atom(name) do
+      nil -> {:error, "unknown parameter name: #{inspect(name)}"}
+      atom -> {:ok, atom}
+    end
   end
 
   defp fetch_name(name) when is_atom(name) and not is_nil(name), do: {:ok, name}
