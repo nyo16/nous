@@ -70,20 +70,12 @@ defmodule Nous.Tools.FileGrep do
 
     rg = rg_path()
 
-    case System.cmd(rg, args, stderr_to_stdout: true, env: scrubbed_env()) do
+    # Scrubbed env keeps API keys out of the rg subprocess.
+    case System.cmd(rg, args, stderr_to_stdout: true, env: Nous.Tools.Env.scrubbed()) do
       {output, 0} -> {:ok, String.trim(output)}
       {_output, 1} -> {:ok, "No matches found"}
       {output, _} -> {:error, "rg failed: #{String.trim(output)}"}
     end
-  end
-
-  # Same allowlist as Nous.Tools.Bash; keeps API keys out of subprocesses.
-  @env_allowlist ~w(PATH HOME LANG LC_ALL TZ USER SHELL TERM)
-
-  defp scrubbed_env do
-    @env_allowlist
-    |> Enum.map(fn name -> {name, System.get_env(name)} end)
-    |> Enum.reject(fn {_, v} -> is_nil(v) end)
   end
 
   defp mode_flag("content"), do: ["-n"]

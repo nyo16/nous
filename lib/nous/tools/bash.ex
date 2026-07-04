@@ -37,7 +37,7 @@ defmodule Nous.Tools.Bash do
       NetRunner.run(["/bin/sh", "-c", command],
         timeout: timeout,
         max_output_size: @max_output_size,
-        env: scrubbed_env()
+        env: Nous.Tools.Env.scrubbed()
       )
 
     case result do
@@ -56,16 +56,5 @@ defmodule Nous.Tools.Bash do
       {output, exit_code} ->
         {:ok, "Exit code: #{exit_code}\n#{output}"}
     end
-  end
-
-  # Whitelist of env vars safe to forward to the shell. Everything else,
-  # including API keys, OAuth tokens, vault creds, and shell-loader hooks
-  # (LD_PRELOAD, DYLD_INSERT_LIBRARIES) is dropped.
-  @env_allowlist ~w(PATH HOME LANG LC_ALL TZ USER SHELL TERM)
-
-  defp scrubbed_env do
-    @env_allowlist
-    |> Enum.map(fn name -> {name, System.get_env(name)} end)
-    |> Enum.reject(fn {_, v} -> is_nil(v) end)
   end
 end
