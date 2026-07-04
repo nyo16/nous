@@ -178,28 +178,14 @@ defmodule Nous.Hook.Runner do
   # Execute a single hook based on its type
   defp execute_hook(%Hook{type: :function, handler: fun}, event, payload)
        when is_function(fun, 2) do
-    try do
-      fun.(event, payload)
-    rescue
-      e ->
-        Logger.warning("Function hook raised: #{Exception.message(e)}")
-        {:error, e}
-    catch
-      kind, reason ->
-        Logger.warning("Function hook threw #{kind}: #{inspect(reason)}")
-        {:error, {kind, reason}}
-    end
+    contained("Function hook", fn -> fun.(event, payload) end)
   end
 
   defp execute_hook(%Hook{type: :module, handler: module}, event, payload) when is_atom(module) do
-    try do
+    contained("Module hook #{inspect(module)}", fn ->
       Code.ensure_loaded!(module)
       module.handle(event, payload)
-    rescue
-      e ->
-        Logger.warning("Module hook #{inspect(module)} raised: #{Exception.message(e)}")
-        {:error, e}
-    end
+    end)
   end
 
   # Command hook handler MUST be a [program | args] list. The previous
@@ -239,7 +225,7 @@ defmodule Nous.Hook.Runner do
         payload: sanitize_payload(payload)
       })
 
-    try do
+    contained("Command hook", fn ->
       case NetRunner.run(argv, input: json_input, timeout: timeout) do
         {output, 0} ->
           parse_command_output(output)
@@ -263,11 +249,22 @@ defmodule Nous.Hook.Runner do
             :allow
           end
       end
-    rescue
-      e ->
-        Logger.warning("Command hook failed: #{Exception.message(e)}")
-        {:error, e}
-    end
+    end)
+  end
+
+  # Run a hook body with full containment: hooks execute arbitrary user code,
+  # so any raise or throw becomes a logged {:error, _} instead of crashing
+  # the agent run. (A catch-all rescue is deliberate at this boundary.)
+  defp contained(label, fun) do
+    fun.()
+  rescue
+    e ->
+      Logger.warning("#{label} raised: #{Exception.message(e)}")
+      {:error, e}
+  catch
+    kind, reason ->
+      Logger.warning("#{label} threw #{kind}: #{inspect(reason)}")
+      {:error, {kind, reason}}
   end
 
   # Parse stdout from command hook as JSON

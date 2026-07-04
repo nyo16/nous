@@ -203,6 +203,30 @@ defmodule Nous.Hook.RunnerTest do
       assert Runner.run(registry, :pre_tool_use, %{tool_name: "dangerous"}) == :deny
       assert Runner.run(registry, :pre_tool_use, %{tool_name: "safe"}) == :allow
     end
+
+    defmodule RaisingHook do
+      @behaviour Nous.Hook
+      @impl true
+      def handle(_event, _payload), do: raise("boom")
+    end
+
+    defmodule ThrowingHook do
+      @behaviour Nous.Hook
+      @impl true
+      def handle(_event, _payload), do: throw(:boom)
+    end
+
+    test "a raising module hook is contained, not fatal" do
+      hook = make_hook(:pre_tool_use, RaisingHook, type: :module)
+      registry = Registry.from_hooks([hook])
+      assert Runner.run(registry, :pre_tool_use, %{tool_name: "test"}) == :allow
+    end
+
+    test "a throwing module hook is contained, not fatal" do
+      hook = make_hook(:pre_tool_use, ThrowingHook, type: :module)
+      registry = Registry.from_hooks([hook])
+      assert Runner.run(registry, :pre_tool_use, %{tool_name: "test"}) == :allow
+    end
   end
 
   describe "matcher filtering" do
