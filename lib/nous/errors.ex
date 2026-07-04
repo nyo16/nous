@@ -4,6 +4,10 @@ defmodule Nous.Errors do
 
   These exceptions provide structured error information for different
   failure scenarios in agent execution.
+
+  Every exception accepts either a keyword list of fields (with an optional
+  `:message` override) or a bare message string; construction is shared via
+  `Nous.Errors.Base`.
   """
 
   defmodule ConfigurationError do
@@ -14,27 +18,14 @@ defmodule Nous.Errors do
     optional dependency is not available.
     """
 
-    defexception [:message, :details]
+    use Nous.Errors.Base, fields: [:details]
 
     @type t :: %__MODULE__{
             message: String.t(),
             details: any()
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      message = Keyword.get(opts, :message, "Configuration error")
-      details = Keyword.get(opts, :details)
-
-      %__MODULE__{
-        message: message,
-        details: details
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
-    end
+    defp default_message(_fields), do: "Configuration error"
   end
 
   defmodule ModelError do
@@ -46,7 +37,7 @@ defmodule Nous.Errors do
     Note: Consider using `ProviderError` for new code.
     """
 
-    defexception [:message, :provider, :status_code, :details]
+    use Nous.Errors.Base, fields: [:provider, :status_code, :details]
 
     @type t :: %__MODULE__{
             message: String.t(),
@@ -55,28 +46,10 @@ defmodule Nous.Errors do
             details: any()
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      provider = Keyword.get(opts, :provider)
-      status_code = Keyword.get(opts, :status_code)
-      details = Keyword.get(opts, :details)
-
-      message =
-        opts[:message] ||
-          "Model request failed" <>
-            if(provider, do: " (#{provider})", else: "") <>
-            if(status_code, do: " [#{status_code}]", else: "")
-
-      %__MODULE__{
-        message: message,
-        provider: provider,
-        status_code: status_code,
-        details: details
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
+    defp default_message(%{provider: provider, status_code: status_code}) do
+      "Model request failed" <>
+        if(provider, do: " (#{provider})", else: "") <>
+        if(status_code, do: " [#{status_code}]", else: "")
     end
   end
 
@@ -97,7 +70,7 @@ defmodule Nous.Errors do
       * `:details` — raw error payload from the HTTP layer
     """
 
-    defexception [:message, :provider, :status_code, :retry_after_ms, :details]
+    use Nous.Errors.Base, fields: [:provider, :status_code, :retry_after_ms, :details]
 
     @type t :: %__MODULE__{
             message: String.t(),
@@ -107,30 +80,10 @@ defmodule Nous.Errors do
             details: any()
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      provider = Keyword.get(opts, :provider)
-      status_code = Keyword.get(opts, :status_code)
-      retry_after_ms = Keyword.get(opts, :retry_after_ms)
-      details = Keyword.get(opts, :details)
-
-      message =
-        opts[:message] ||
-          "Provider request failed" <>
-            if(provider, do: " (#{provider})", else: "") <>
-            if(status_code, do: " [#{status_code}]", else: "")
-
-      %__MODULE__{
-        message: message,
-        provider: provider,
-        status_code: status_code,
-        retry_after_ms: retry_after_ms,
-        details: details
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
+    defp default_message(%{provider: provider, status_code: status_code}) do
+      "Provider request failed" <>
+        if(provider, do: " (#{provider})", else: "") <>
+        if(status_code, do: " [#{status_code}]", else: "")
     end
   end
 
@@ -141,7 +94,7 @@ defmodule Nous.Errors do
     Raised when a tool function fails during execution.
     """
 
-    defexception [:message, :tool_name, :attempt, :original_error]
+    use Nous.Errors.Base, fields: [:tool_name, :attempt, :original_error]
 
     @type t :: %__MODULE__{
             message: String.t(),
@@ -150,28 +103,10 @@ defmodule Nous.Errors do
             original_error: any()
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      tool_name = Keyword.get(opts, :tool_name)
-      attempt = Keyword.get(opts, :attempt)
-      original_error = Keyword.get(opts, :original_error)
-
-      message =
-        opts[:message] ||
-          "Tool execution failed" <>
-            if(tool_name, do: " (#{tool_name})", else: "") <>
-            if(attempt, do: " after #{attempt} attempt(s)", else: "")
-
-      %__MODULE__{
-        message: message,
-        tool_name: tool_name,
-        attempt: attempt,
-        original_error: original_error
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
+    defp default_message(%{tool_name: tool_name, attempt: attempt}) do
+      "Tool execution failed" <>
+        if(tool_name, do: " (#{tool_name})", else: "") <>
+        if(attempt, do: " after #{attempt} attempt(s)", else: "")
     end
   end
 
@@ -182,7 +117,7 @@ defmodule Nous.Errors do
     Raised when a tool takes longer than its configured timeout.
     """
 
-    defexception [:message, :tool_name, :timeout]
+    use Nous.Errors.Base, fields: [:tool_name, :timeout]
 
     @type t :: %__MODULE__{
             message: String.t(),
@@ -190,24 +125,8 @@ defmodule Nous.Errors do
             timeout: non_neg_integer() | nil
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      tool_name = Keyword.get(opts, :tool_name)
-      timeout = Keyword.get(opts, :timeout)
-
-      message =
-        opts[:message] ||
-          "Tool '#{tool_name || "unknown"}' timed out after #{timeout || 0}ms"
-
-      %__MODULE__{
-        message: message,
-        tool_name: tool_name,
-        timeout: timeout
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
+    defp default_message(%{tool_name: tool_name, timeout: timeout}) do
+      "Tool '#{tool_name || "unknown"}' timed out after #{timeout || 0}ms"
     end
   end
 
@@ -218,7 +137,7 @@ defmodule Nous.Errors do
     Raised when structured output fails Ecto validation.
     """
 
-    defexception [:message, :errors, :output_type]
+    use Nous.Errors.Base, fields: [:errors, :output_type]
 
     @type t :: %__MODULE__{
             message: String.t(),
@@ -226,25 +145,9 @@ defmodule Nous.Errors do
             output_type: module() | nil
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      errors = Keyword.get(opts, :errors)
-      output_type = Keyword.get(opts, :output_type)
-
-      message =
-        opts[:message] ||
-          "Output validation failed" <>
-            if(output_type, do: " for #{inspect(output_type)}", else: "")
-
-      %__MODULE__{
-        message: message,
-        errors: errors,
-        output_type: output_type
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
+    defp default_message(%{output_type: output_type}) do
+      "Output validation failed" <>
+        if(output_type, do: " for #{inspect(output_type)}", else: "")
     end
   end
 
@@ -256,7 +159,7 @@ defmodule Nous.Errors do
     requests, tokens, or tool calls.
     """
 
-    defexception [:message, :limit_type, :limit_value, :actual_value]
+    use Nous.Errors.Base, fields: [:limit_type, :limit_value, :actual_value]
 
     @type t :: %__MODULE__{
             message: String.t(),
@@ -265,31 +168,17 @@ defmodule Nous.Errors do
             actual_value: integer() | nil
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      limit_type = Keyword.get(opts, :limit_type)
-      limit_value = Keyword.get(opts, :limit_value)
-      actual_value = Keyword.get(opts, :actual_value)
-
-      message =
-        opts[:message] ||
-          "Usage limit exceeded" <>
-            if(limit_type, do: " (#{limit_type})", else: "") <>
-            if(limit_value && actual_value,
-              do: ": #{actual_value} > #{limit_value}",
-              else: ""
-            )
-
-      %__MODULE__{
-        message: message,
-        limit_type: limit_type,
-        limit_value: limit_value,
-        actual_value: actual_value
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
+    defp default_message(%{
+           limit_type: limit_type,
+           limit_value: limit_value,
+           actual_value: actual_value
+         }) do
+      "Usage limit exceeded" <>
+        if(limit_type, do: " (#{limit_type})", else: "") <>
+        if(limit_value && actual_value,
+          do: ": #{actual_value} > #{limit_value}",
+          else: ""
+        )
     end
   end
 
@@ -301,30 +190,16 @@ defmodule Nous.Errors do
     with the model, possibly indicating an infinite loop.
     """
 
-    defexception [:message, :max_iterations]
+    use Nous.Errors.Base, fields: [:max_iterations]
 
     @type t :: %__MODULE__{
             message: String.t(),
             max_iterations: pos_integer() | nil
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      max_iterations = Keyword.get(opts, :max_iterations)
-
-      message =
-        opts[:message] ||
-          "Maximum iterations exceeded" <>
-            if(max_iterations, do: " (#{max_iterations})", else: "")
-
-      %__MODULE__{
-        message: message,
-        max_iterations: max_iterations
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
+    defp default_message(%{max_iterations: max_iterations}) do
+      "Maximum iterations exceeded" <>
+        if(max_iterations, do: " (#{max_iterations})", else: "")
     end
   end
 
@@ -336,30 +211,16 @@ defmodule Nous.Errors do
     by the user or system.
     """
 
-    defexception [:message, :reason]
+    use Nous.Errors.Base, fields: [:reason]
 
     @type t :: %__MODULE__{
             message: String.t(),
             reason: String.t() | nil
           }
 
-    @impl true
-    def exception(opts) when is_list(opts) do
-      reason = Keyword.get(opts, :reason)
-
-      message =
-        opts[:message] ||
-          "Execution cancelled" <>
-            if(reason, do: ": #{reason}", else: "")
-
-      %__MODULE__{
-        message: message,
-        reason: reason
-      }
-    end
-
-    def exception(message) when is_binary(message) do
-      %__MODULE__{message: message}
+    defp default_message(%{reason: reason}) do
+      "Execution cancelled" <>
+        if(reason, do: ": #{reason}", else: "")
     end
   end
 end
