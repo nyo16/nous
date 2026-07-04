@@ -642,7 +642,8 @@ defmodule Nous.Messages.Gemini do
   # Surface non-STOP finish reasons (SAFETY, RECITATION, MAX_TOKENS, etc.)
   # and prompt blocks so they don't manifest as silent empty responses.
   defp log_if_blocked(content, tool_calls, finish_reason, prompt_feedback, model_version) do
-    empty? = (content == "" or is_nil(content)) and tool_calls == []
+    # consolidate/1 never returns nil — "" is the empty case (checked by dialyzer).
+    empty? = content == "" and tool_calls == []
     block_reason = prompt_feedback && Map.get(prompt_feedback, "blockReason")
     interesting_finish? = finish_reason not in [nil, "STOP", "FINISH_REASON_UNSPECIFIED"]
 
