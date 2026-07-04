@@ -54,13 +54,15 @@ defmodule Nous.Tool.ContextUpdate do
 
   """
 
+  alias __MODULE__
+
   @type operation ::
           {:set, atom(), any()}
           | {:merge, atom(), map()}
           | {:append, atom(), any()}
           | {:delete, atom()}
 
-  @type t :: %__MODULE__{
+  @type t :: %ContextUpdate{
           operations: [operation()]
         }
 
@@ -76,7 +78,7 @@ defmodule Nous.Tool.ContextUpdate do
 
   """
   @spec new() :: t()
-  def new, do: %__MODULE__{}
+  def new, do: %ContextUpdate{}
 
   @doc """
   Set a key to a value in the context deps.
@@ -90,7 +92,7 @@ defmodule Nous.Tool.ContextUpdate do
 
   """
   @spec set(t(), atom(), any()) :: t()
-  def set(%__MODULE__{} = update, key, value) when is_atom(key) do
+  def set(%ContextUpdate{} = update, key, value) when is_atom(key) do
     %{update | operations: update.operations ++ [{:set, key, value}]}
   end
 
@@ -106,7 +108,7 @@ defmodule Nous.Tool.ContextUpdate do
 
   """
   @spec merge(t(), atom(), map()) :: t()
-  def merge(%__MODULE__{} = update, key, map) when is_atom(key) and is_map(map) do
+  def merge(%ContextUpdate{} = update, key, map) when is_atom(key) and is_map(map) do
     %{update | operations: update.operations ++ [{:merge, key, map}]}
   end
 
@@ -122,7 +124,7 @@ defmodule Nous.Tool.ContextUpdate do
 
   """
   @spec append(t(), atom(), any()) :: t()
-  def append(%__MODULE__{} = update, key, item) when is_atom(key) do
+  def append(%ContextUpdate{} = update, key, item) when is_atom(key) do
     %{update | operations: update.operations ++ [{:append, key, item}]}
   end
 
@@ -136,7 +138,7 @@ defmodule Nous.Tool.ContextUpdate do
 
   """
   @spec delete(t(), atom()) :: t()
-  def delete(%__MODULE__{} = update, key) when is_atom(key) do
+  def delete(%ContextUpdate{} = update, key) when is_atom(key) do
     %{update | operations: update.operations ++ [{:delete, key}]}
   end
 
@@ -155,7 +157,7 @@ defmodule Nous.Tool.ContextUpdate do
 
   """
   @spec apply(t(), Nous.Agent.Context.t()) :: Nous.Agent.Context.t()
-  def apply(%__MODULE__{operations: ops}, %Nous.Agent.Context{} = ctx) do
+  def apply(%ContextUpdate{operations: ops}, %Nous.Agent.Context{} = ctx) do
     new_deps = reduce_operations(ops, ctx.deps || %{})
 
     keys =
@@ -182,7 +184,7 @@ defmodule Nous.Tool.ContextUpdate do
   For backwards compatibility with tools using RunContext.
   """
   @spec apply_to_run_context(t(), Nous.RunContext.t()) :: Nous.RunContext.t()
-  def apply_to_run_context(%__MODULE__{operations: ops}, %Nous.RunContext{} = ctx) do
+  def apply_to_run_context(%ContextUpdate{operations: ops}, %Nous.RunContext{} = ctx) do
     new_deps = reduce_operations(ops, ctx.deps || %{})
     %{ctx | deps: new_deps}
   end
@@ -191,14 +193,14 @@ defmodule Nous.Tool.ContextUpdate do
   Check if this ContextUpdate has any operations.
   """
   @spec empty?(t()) :: boolean()
-  def empty?(%__MODULE__{operations: []}), do: true
-  def empty?(%__MODULE__{}), do: false
+  def empty?(%ContextUpdate{operations: []}), do: true
+  def empty?(%ContextUpdate{}), do: false
 
   @doc """
   Get the list of operations in this update.
   """
   @spec operations(t()) :: [operation()]
-  def operations(%__MODULE__{operations: ops}), do: ops
+  def operations(%ContextUpdate{operations: ops}), do: ops
 
   # Private
 

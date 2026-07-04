@@ -20,9 +20,10 @@ defmodule Nous.Eval.Result do
 
   """
 
+  alias __MODULE__
   alias Nous.Eval.Metrics
 
-  @type t :: %__MODULE__{
+  @type t :: %Result{
           test_case_id: String.t(),
           test_case_name: String.t(),
           passed: boolean(),
@@ -57,7 +58,7 @@ defmodule Nous.Eval.Result do
   """
   @spec success(keyword()) :: t()
   def success(opts) do
-    %__MODULE__{
+    %Result{
       test_case_id: Keyword.fetch!(opts, :test_case_id),
       test_case_name: Keyword.get(opts, :test_case_name, opts[:test_case_id]),
       passed: true,
@@ -77,7 +78,7 @@ defmodule Nous.Eval.Result do
   """
   @spec failure(keyword()) :: t()
   def failure(opts) do
-    %__MODULE__{
+    %Result{
       test_case_id: Keyword.fetch!(opts, :test_case_id),
       test_case_name: Keyword.get(opts, :test_case_name, opts[:test_case_id]),
       passed: false,
@@ -97,7 +98,7 @@ defmodule Nous.Eval.Result do
   """
   @spec error(keyword()) :: t()
   def error(opts) do
-    %__MODULE__{
+    %Result{
       test_case_id: Keyword.fetch!(opts, :test_case_id),
       test_case_name: Keyword.get(opts, :test_case_name, opts[:test_case_id]),
       passed: false,
@@ -112,8 +113,8 @@ defmodule Nous.Eval.Result do
   Check if the result has an error (test didn't complete).
   """
   @spec has_error?(t()) :: boolean()
-  def has_error?(%__MODULE__{error: nil}), do: false
-  def has_error?(%__MODULE__{}), do: true
+  def has_error?(%Result{error: nil}), do: false
+  def has_error?(%Result{}), do: true
 end
 
 defmodule Nous.Eval.SuiteResult do
@@ -121,9 +122,10 @@ defmodule Nous.Eval.SuiteResult do
   Result of running an entire test suite.
   """
 
+  alias __MODULE__
   alias Nous.Eval.{Result, Metrics}
 
-  @type t :: %__MODULE__{
+  @type t :: %SuiteResult{
           suite_name: String.t(),
           started_at: DateTime.t(),
           completed_at: DateTime.t(),
@@ -185,7 +187,7 @@ defmodule Nous.Eval.SuiteResult do
         nil
       end
 
-    %__MODULE__{
+    %SuiteResult{
       suite_name: suite_name,
       started_at: started_at,
       completed_at: completed_at,
@@ -205,7 +207,7 @@ defmodule Nous.Eval.SuiteResult do
   Get failed test cases.
   """
   @spec failed(t()) :: [Result.t()]
-  def failed(%__MODULE__{results: results}) do
+  def failed(%SuiteResult{results: results}) do
     Enum.reject(results, & &1.passed)
   end
 
@@ -213,7 +215,7 @@ defmodule Nous.Eval.SuiteResult do
   Get passed test cases.
   """
   @spec passed(t()) :: [Result.t()]
-  def passed(%__MODULE__{results: results}) do
+  def passed(%SuiteResult{results: results}) do
     Enum.filter(results, & &1.passed)
   end
 
@@ -221,7 +223,7 @@ defmodule Nous.Eval.SuiteResult do
   Get error test cases (tests that failed to run).
   """
   @spec errors(t()) :: [Result.t()]
-  def errors(%__MODULE__{results: results}) do
+  def errors(%SuiteResult{results: results}) do
     Enum.filter(results, &Result.has_error?/1)
   end
 end

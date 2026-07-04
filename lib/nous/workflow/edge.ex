@@ -30,9 +30,11 @@ defmodule Nous.Workflow.Edge do
       })
   """
 
+  alias __MODULE__
+
   @type edge_type :: :sequential | :conditional | :default
 
-  @type t :: %__MODULE__{
+  @type t :: %Edge{
           id: String.t(),
           from_id: String.t(),
           to_id: String.t(),
@@ -68,7 +70,7 @@ defmodule Nous.Workflow.Edge do
   """
   @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
-    %__MODULE__{
+    %Edge{
       id: Map.get(attrs, :id) || generate_id(),
       from_id: attrs |> Map.fetch!(:from_id) |> to_string(),
       to_id: attrs |> Map.fetch!(:to_id) |> to_string(),

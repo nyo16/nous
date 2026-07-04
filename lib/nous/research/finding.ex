@@ -3,7 +3,9 @@ defmodule Nous.Research.Finding do
   Represents a research finding from a search/analysis step.
   """
 
-  @type t :: %__MODULE__{
+  alias __MODULE__
+
+  @type t :: %Finding{
           claim: String.t(),
           source_url: String.t() | nil,
           source_title: String.t() | nil,
@@ -22,7 +24,7 @@ defmodule Nous.Research.Finding do
   ]
 
   def new(attrs) do
-    %__MODULE__{
+    %Finding{
       claim: Map.fetch!(attrs, :claim),
       source_url: Map.get(attrs, :source_url),
       source_title: Map.get(attrs, :source_title),

@@ -40,6 +40,7 @@ defmodule Nous.Message do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias __MODULE__
   alias Nous.Message.ContentPart
 
   @roles ~w(system user assistant tool)a
@@ -57,7 +58,7 @@ defmodule Nous.Message do
     timestamps(type: :utc_datetime_usec, inserted_at: :created_at, updated_at: false)
   end
 
-  @type t :: %__MODULE__{
+  @type t :: %Message{
           role: atom(),
           content: String.t() | nil,
           reasoning_content: String.t() | nil,
@@ -84,7 +85,7 @@ defmodule Nous.Message do
   """
   @spec new(map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
   def new(attrs) when is_map(attrs) do
-    %__MODULE__{}
+    %Message{}
     |> changeset(attrs)
     |> case do
       %Ecto.Changeset{valid?: true} = changeset ->
@@ -293,9 +294,9 @@ defmodule Nous.Message do
 
   """
   @spec extract_text(t()) :: String.t()
-  def extract_text(%__MODULE__{content: content}) when is_binary(content), do: content
+  def extract_text(%Message{content: content}) when is_binary(content), do: content
 
-  def extract_text(%__MODULE__{content: content}) when is_list(content) do
+  def extract_text(%Message{content: content}) when is_list(content) do
     ContentPart.extract_text(content)
   end
 
@@ -313,9 +314,9 @@ defmodule Nous.Message do
 
   """
   @spec to_text(t()) :: String.t()
-  def to_text(%__MODULE__{content: content}) when is_binary(content), do: content
+  def to_text(%Message{content: content}) when is_binary(content), do: content
 
-  def to_text(%__MODULE__{content: content}) when is_list(content) do
+  def to_text(%Message{content: content}) when is_list(content) do
     ContentPart.to_text(content)
   end
 
@@ -334,7 +335,7 @@ defmodule Nous.Message do
 
   """
   @spec has_tool_calls?(t()) :: boolean()
-  def has_tool_calls?(%__MODULE__{tool_calls: tool_calls}) do
+  def has_tool_calls?(%Message{tool_calls: tool_calls}) do
     is_list(tool_calls) and length(tool_calls) > 0
   end
 
@@ -354,8 +355,8 @@ defmodule Nous.Message do
 
   """
   @spec is_tool_related?(t()) :: boolean()
-  def is_tool_related?(%__MODULE__{role: :tool}), do: true
-  def is_tool_related?(%__MODULE__{} = message), do: has_tool_calls?(message)
+  def is_tool_related?(%Message{role: :tool}), do: true
+  def is_tool_related?(%Message{} = message), do: has_tool_calls?(message)
 
   @doc """
   Check if message is from user.
@@ -370,7 +371,7 @@ defmodule Nous.Message do
 
   """
   @spec from_user?(t()) :: boolean()
-  def from_user?(%__MODULE__{role: :user}), do: true
+  def from_user?(%Message{role: :user}), do: true
   def from_user?(_), do: false
 
   @doc """
@@ -386,7 +387,7 @@ defmodule Nous.Message do
 
   """
   @spec from_assistant?(t()) :: boolean()
-  def from_assistant?(%__MODULE__{role: :assistant}), do: true
+  def from_assistant?(%Message{role: :assistant}), do: true
   def from_assistant?(_), do: false
 
   @doc """
@@ -402,7 +403,7 @@ defmodule Nous.Message do
 
   """
   @spec is_system?(t()) :: boolean()
-  def is_system?(%__MODULE__{role: :system}), do: true
+  def is_system?(%Message{role: :system}), do: true
   def is_system?(_), do: false
 
   @doc """
@@ -443,11 +444,11 @@ defmodule Nous.Message do
 
   """
   @spec get_content_parts(t()) :: [ContentPart.t()]
-  def get_content_parts(%__MODULE__{content: content}) when is_binary(content) do
+  def get_content_parts(%Message{content: content}) when is_binary(content) do
     [ContentPart.text(content)]
   end
 
-  def get_content_parts(%__MODULE__{content: content}) when is_list(content) do
+  def get_content_parts(%Message{content: content}) when is_list(content) do
     content
   end
 
@@ -462,7 +463,7 @@ defmodule Nous.Message do
 
   """
   @spec put_metadata(t(), atom() | String.t(), any()) :: t()
-  def put_metadata(%__MODULE__{} = message, key, value) do
+  def put_metadata(%Message{} = message, key, value) do
     %{message | metadata: Map.put(message.metadata, key, value)}
   end
 
@@ -477,7 +478,7 @@ defmodule Nous.Message do
 
   """
   @spec get_metadata(t(), atom() | String.t(), any()) :: any()
-  def get_metadata(%__MODULE__{metadata: metadata}, key, default \\ nil) do
+  def get_metadata(%Message{metadata: metadata}, key, default \\ nil) do
     Map.get(metadata, key, default)
   end
 

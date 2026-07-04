@@ -31,9 +31,10 @@ defmodule Nous.Eval.Suite do
 
   """
 
+  alias __MODULE__
   alias Nous.Eval.TestCase
 
-  @type t :: %__MODULE__{
+  @type t :: %Suite{
           name: String.t(),
           description: String.t() | nil,
           test_cases: [TestCase.t()],
@@ -95,7 +96,7 @@ defmodule Nous.Eval.Suite do
   def new(opts) when is_list(opts) do
     name = Keyword.fetch!(opts, :name)
 
-    %__MODULE__{
+    %Suite{
       name: to_string(name),
       description: Keyword.get(opts, :description),
       test_cases: Keyword.get(opts, :test_cases, []),
@@ -114,7 +115,7 @@ defmodule Nous.Eval.Suite do
   Add a test case to the suite.
   """
   @spec add_case(t(), TestCase.t()) :: t()
-  def add_case(%__MODULE__{} = suite, %TestCase{} = test_case) do
+  def add_case(%Suite{} = suite, %TestCase{} = test_case) do
     %{suite | test_cases: suite.test_cases ++ [test_case]}
   end
 
@@ -122,7 +123,7 @@ defmodule Nous.Eval.Suite do
   Add multiple test cases to the suite.
   """
   @spec add_cases(t(), [TestCase.t()]) :: t()
-  def add_cases(%__MODULE__{} = suite, test_cases) when is_list(test_cases) do
+  def add_cases(%Suite{} = suite, test_cases) when is_list(test_cases) do
     %{suite | test_cases: suite.test_cases ++ test_cases}
   end
 
@@ -130,7 +131,7 @@ defmodule Nous.Eval.Suite do
   Filter test cases by tags (include only cases with ANY of the specified tags).
   """
   @spec filter_by_tags(t(), [atom()]) :: t()
-  def filter_by_tags(%__MODULE__{} = suite, tags) when is_list(tags) do
+  def filter_by_tags(%Suite{} = suite, tags) when is_list(tags) do
     filtered =
       Enum.filter(suite.test_cases, fn tc ->
         Enum.any?(tc.tags, &(&1 in tags))
@@ -143,7 +144,7 @@ defmodule Nous.Eval.Suite do
   Exclude test cases with any of the specified tags.
   """
   @spec exclude_tags(t(), [atom()]) :: t()
-  def exclude_tags(%__MODULE__{} = suite, tags) when is_list(tags) do
+  def exclude_tags(%Suite{} = suite, tags) when is_list(tags) do
     filtered =
       Enum.reject(suite.test_cases, fn tc ->
         Enum.any?(tc.tags, &(&1 in tags))
@@ -156,7 +157,7 @@ defmodule Nous.Eval.Suite do
   Get test case by ID.
   """
   @spec get_case(t(), String.t()) :: TestCase.t() | nil
-  def get_case(%__MODULE__{test_cases: cases}, id) do
+  def get_case(%Suite{test_cases: cases}, id) do
     Enum.find(cases, fn tc -> tc.id == id end)
   end
 
@@ -164,7 +165,7 @@ defmodule Nous.Eval.Suite do
   Get number of test cases.
   """
   @spec count(t()) :: non_neg_integer()
-  def count(%__MODULE__{test_cases: cases}), do: length(cases)
+  def count(%Suite{test_cases: cases}), do: length(cases)
 
   @doc """
   Load a suite from a YAML file.
@@ -219,7 +220,7 @@ defmodule Nous.Eval.Suite do
   Validate a suite and all its test cases.
   """
   @spec validate(t()) :: :ok | {:error, term()}
-  def validate(%__MODULE__{} = suite) do
+  def validate(%Suite{} = suite) do
     cond do
       is_nil(suite.name) or suite.name == "" ->
         {:error, "Suite name is required"}
@@ -245,7 +246,7 @@ defmodule Nous.Eval.Suite do
   Get all unique tags used in the suite.
   """
   @spec all_tags(t()) :: [atom()]
-  def all_tags(%__MODULE__{test_cases: cases}) do
+  def all_tags(%Suite{test_cases: cases}) do
     cases
     |> Enum.flat_map(& &1.tags)
     |> Enum.uniq()

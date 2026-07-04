@@ -15,12 +15,13 @@ defmodule Nous.Skill.Registry do
       active = Nous.Skill.Registry.active_skills(registry)
   """
 
+  alias __MODULE__
   alias Nous.Skill
   alias Nous.Skill.Loader
 
   require Logger
 
-  @type t :: %__MODULE__{
+  @type t :: %Registry{
           skills: %{optional(String.t()) => Skill.t()},
           groups: %{optional(atom()) => [String.t()]},
           tags: %{optional(atom()) => [String.t()]},
@@ -38,13 +39,13 @@ defmodule Nous.Skill.Registry do
   Create an empty registry.
   """
   @spec new() :: t()
-  def new, do: %__MODULE__{}
+  def new, do: %Registry{}
 
   @doc """
   Register a skill in the registry, indexing by name, group, tags, and scope.
   """
   @spec register(t(), Skill.t()) :: t()
-  def register(%__MODULE__{} = registry, %Skill{} = skill) do
+  def register(%Registry{} = registry, %Skill{} = skill) do
     %{
       registry
       | skills: Map.put(registry.skills, skill.name, skill),
@@ -58,7 +59,7 @@ defmodule Nous.Skill.Registry do
   Register multiple skills at once.
   """
   @spec register_all(t(), [Skill.t()]) :: t()
-  def register_all(%__MODULE__{} = registry, skills) do
+  def register_all(%Registry{} = registry, skills) do
     Enum.reduce(skills, registry, &register(&2, &1))
   end
 
@@ -75,7 +76,7 @@ defmodule Nous.Skill.Registry do
 
   """
   @spec register_directory(t(), String.t()) :: t()
-  def register_directory(%__MODULE__{} = registry, path) when is_binary(path) do
+  def register_directory(%Registry{} = registry, path) when is_binary(path) do
     skills = Loader.load_directory(path)
 
     Logger.debug("Loaded #{length(skills)} skill(s) from directory: #{path}")
@@ -93,7 +94,7 @@ defmodule Nous.Skill.Registry do
 
   """
   @spec register_directories(t(), [String.t()]) :: t()
-  def register_directories(%__MODULE__{} = registry, paths) when is_list(paths) do
+  def register_directories(%Registry{} = registry, paths) when is_list(paths) do
     Enum.reduce(paths, registry, &register_directory(&2, &1))
   end
 
@@ -133,7 +134,7 @@ defmodule Nous.Skill.Registry do
   """
   @spec activate(t(), String.t(), Nous.Agent.t(), Nous.Agent.Context.t()) ::
           {String.t() | nil, [Nous.Tool.t()], t()}
-  def activate(%__MODULE__{} = registry, name, agent, ctx) do
+  def activate(%Registry{} = registry, name, agent, ctx) do
     case Map.get(registry.skills, name) do
       nil ->
         Logger.warning("Skill not found: #{name}")
@@ -164,7 +165,7 @@ defmodule Nous.Skill.Registry do
   Deactivate a skill by name.
   """
   @spec deactivate(t(), String.t()) :: t()
-  def deactivate(%__MODULE__{} = registry, name) do
+  def deactivate(%Registry{} = registry, name) do
     case Map.get(registry.skills, name) do
       nil ->
         registry
@@ -191,7 +192,7 @@ defmodule Nous.Skill.Registry do
   """
   @spec activate_group(t(), atom(), Nous.Agent.t(), Nous.Agent.Context.t()) ::
           {[{String.t(), [Nous.Tool.t()]}], t()}
-  def activate_group(%__MODULE__{} = registry, group, agent, ctx) do
+  def activate_group(%Registry{} = registry, group, agent, ctx) do
     names = Map.get(registry.groups, group, [])
 
     {results, updated_registry} =
@@ -207,7 +208,7 @@ defmodule Nous.Skill.Registry do
   Deactivate all skills in a group.
   """
   @spec deactivate_group(t(), atom()) :: t()
-  def deactivate_group(%__MODULE__{} = registry, group) do
+  def deactivate_group(%Registry{} = registry, group) do
     names = Map.get(registry.groups, group, [])
     Enum.reduce(names, registry, &deactivate(&2, &1))
   end
@@ -216,7 +217,7 @@ defmodule Nous.Skill.Registry do
   Get all skills in a group.
   """
   @spec by_group(t(), atom()) :: [Skill.t()]
-  def by_group(%__MODULE__{} = registry, group) do
+  def by_group(%Registry{} = registry, group) do
     resolve_names(registry, Map.get(registry.groups, group, []))
   end
 
@@ -224,7 +225,7 @@ defmodule Nous.Skill.Registry do
   Get all skills with a tag.
   """
   @spec by_tag(t(), atom()) :: [Skill.t()]
-  def by_tag(%__MODULE__{} = registry, tag) do
+  def by_tag(%Registry{} = registry, tag) do
     resolve_names(registry, Map.get(registry.tags, tag, []))
   end
 
@@ -232,7 +233,7 @@ defmodule Nous.Skill.Registry do
   Get all currently active skills.
   """
   @spec active_skills(t()) :: [Skill.t()]
-  def active_skills(%__MODULE__{} = registry) do
+  def active_skills(%Registry{} = registry) do
     registry
     |> resolve_names(registry.active)
     |> Enum.sort_by(& &1.priority)
@@ -245,7 +246,7 @@ defmodule Nous.Skill.Registry do
   description keyword matching.
   """
   @spec match(t(), String.t()) :: [Skill.t()]
-  def match(%__MODULE__{} = registry, input) do
+  def match(%Registry{} = registry, input) do
     input_lower = String.downcase(input)
 
     registry.skills
@@ -270,7 +271,7 @@ defmodule Nous.Skill.Registry do
   List all registered skill names.
   """
   @spec list(t()) :: [String.t()]
-  def list(%__MODULE__{} = registry) do
+  def list(%Registry{} = registry) do
     Map.keys(registry.skills)
   end
 
@@ -278,7 +279,7 @@ defmodule Nous.Skill.Registry do
   Get a skill by name.
   """
   @spec get(t(), String.t()) :: Skill.t() | nil
-  def get(%__MODULE__{} = registry, name) do
+  def get(%Registry{} = registry, name) do
     Map.get(registry.skills, name)
   end
 
@@ -286,7 +287,7 @@ defmodule Nous.Skill.Registry do
   Check if a skill is currently active.
   """
   @spec active?(t(), String.t()) :: boolean()
-  def active?(%__MODULE__{} = registry, name) do
+  def active?(%Registry{} = registry, name) do
     MapSet.member?(registry.active, name)
   end
 

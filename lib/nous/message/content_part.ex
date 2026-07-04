@@ -34,6 +34,8 @@ defmodule Nous.Message.ContentPart do
   use Ecto.Schema
   import Ecto.Changeset
 
+  alias __MODULE__
+
   @content_types ~w(text image_url image file file_url thinking)a
 
   @primary_key false
@@ -43,7 +45,7 @@ defmodule Nous.Message.ContentPart do
     field(:options, :map, default: %{})
   end
 
-  @type t :: %__MODULE__{
+  @type t :: %ContentPart{
           type: atom(),
           content: String.t(),
           options: map()
@@ -65,7 +67,7 @@ defmodule Nous.Message.ContentPart do
   """
   @spec new(map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
   def new(attrs) when is_map(attrs) do
-    %__MODULE__{}
+    %ContentPart{}
     |> changeset(attrs)
     |> case do
       %Ecto.Changeset{valid?: true} = changeset ->
@@ -242,7 +244,7 @@ defmodule Nous.Message.ContentPart do
 
   """
   @spec merge(t(), t()) :: t() | {:error, :incompatible_types}
-  def merge(%__MODULE__{type: type} = part1, %__MODULE__{type: type} = part2) do
+  def merge(%ContentPart{type: type} = part1, %ContentPart{type: type} = part2) do
     merged_options =
       Map.merge(part1.options, part2.options, fn _key, v1, v2 ->
         case {v1, v2} do
@@ -251,14 +253,14 @@ defmodule Nous.Message.ContentPart do
         end
       end)
 
-    %__MODULE__{
+    %ContentPart{
       type: type,
       content: part1.content <> part2.content,
       options: merged_options
     }
   end
 
-  def merge(%__MODULE__{type: type1}, %__MODULE__{type: type2}) when type1 != type2 do
+  def merge(%ContentPart{type: type1}, %ContentPart{type: type2}) when type1 != type2 do
     {:error, :incompatible_types}
   end
 
@@ -273,15 +275,15 @@ defmodule Nous.Message.ContentPart do
   """
   @spec consolidate([t()]) :: String.t() | [t()]
   def consolidate([]), do: ""
-  def consolidate([%__MODULE__{type: :text, content: content}]), do: content
-  def consolidate([%__MODULE__{type: :thinking, content: content}]), do: content
+  def consolidate([%ContentPart{type: :text, content: content}]), do: content
+  def consolidate([%ContentPart{type: :thinking, content: content}]), do: content
 
   def consolidate(parts) when is_list(parts) do
     cond do
-      Enum.all?(parts, &match?(%__MODULE__{type: :text}, &1)) ->
+      Enum.all?(parts, &match?(%ContentPart{type: :text}, &1)) ->
         Enum.map_join(parts, "", & &1.content)
 
-      Enum.all?(parts, &match?(%__MODULE__{type: :thinking}, &1)) ->
+      Enum.all?(parts, &match?(%ContentPart{type: :thinking}, &1)) ->
         Enum.map_join(parts, "", & &1.content)
 
       true ->
@@ -552,10 +554,10 @@ defmodule Nous.Message.ContentPart do
     end
   end
 
-  defp part_to_text(%__MODULE__{type: :text, content: content}), do: content
-  defp part_to_text(%__MODULE__{type: :image_url, content: url}), do: "[Image: #{url}]"
-  defp part_to_text(%__MODULE__{type: :image, content: _}), do: "[Image]"
-  defp part_to_text(%__MODULE__{type: :file, content: path}), do: "[File: #{path}]"
-  defp part_to_text(%__MODULE__{type: :file_url, content: url}), do: "[File: #{url}]"
-  defp part_to_text(%__MODULE__{type: :thinking, content: content}), do: "[Thinking: #{content}]"
+  defp part_to_text(%ContentPart{type: :text, content: content}), do: content
+  defp part_to_text(%ContentPart{type: :image_url, content: url}), do: "[Image: #{url}]"
+  defp part_to_text(%ContentPart{type: :image, content: _}), do: "[Image]"
+  defp part_to_text(%ContentPart{type: :file, content: path}), do: "[File: #{path}]"
+  defp part_to_text(%ContentPart{type: :file_url, content: url}), do: "[File: #{url}]"
+  defp part_to_text(%ContentPart{type: :thinking, content: content}), do: "[Thinking: #{content}]"
 end

@@ -24,7 +24,9 @@ defmodule Nous.Workflow.State do
       #=> "research topic"
   """
 
-  @type t :: %__MODULE__{
+  alias __MODULE__
+
+  @type t :: %State{
           data: map(),
           node_results: %{String.t() => term()},
           metadata: map(),
@@ -56,7 +58,7 @@ defmodule Nous.Workflow.State do
   def new(data \\ %{}) when is_map(data) do
     now = DateTime.utc_now()
 
-    %__MODULE__{
+    %State{
       data: data,
       started_at: now,
       updated_at: now
@@ -67,7 +69,7 @@ defmodule Nous.Workflow.State do
   Record a node's result in the state.
   """
   @spec put_result(t(), String.t(), term()) :: t()
-  def put_result(%__MODULE__{} = state, node_id, result) do
+  def put_result(%State{} = state, node_id, result) do
     %{
       state
       | node_results: Map.put(state.node_results, node_id, result),
@@ -79,7 +81,7 @@ defmodule Nous.Workflow.State do
   Record an error for a node.
   """
   @spec put_error(t(), String.t(), term()) :: t()
-  def put_error(%__MODULE__{} = state, node_id, error) do
+  def put_error(%State{} = state, node_id, error) do
     %{state | errors: [{node_id, error} | state.errors], updated_at: DateTime.utc_now()}
   end
 
@@ -87,7 +89,7 @@ defmodule Nous.Workflow.State do
   Update the user data map.
   """
   @spec update_data(t(), (map() -> map())) :: t()
-  def update_data(%__MODULE__{} = state, fun) when is_function(fun, 1) do
+  def update_data(%State{} = state, fun) when is_function(fun, 1) do
     %{state | data: fun.(state.data), updated_at: DateTime.utc_now()}
   end
 end

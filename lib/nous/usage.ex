@@ -14,7 +14,9 @@ defmodule Nous.Usage do
 
   """
 
-  @type t :: %__MODULE__{
+  alias __MODULE__
+
+  @type t :: %Usage{
           requests: non_neg_integer(),
           tool_calls: non_neg_integer(),
           input_tokens: non_neg_integer(),
@@ -43,7 +45,7 @@ defmodule Nous.Usage do
 
   """
   @spec new() :: t()
-  def new, do: %__MODULE__{}
+  def new, do: %Usage{}
 
   @doc """
   Add two usage trackers together.
@@ -59,8 +61,8 @@ defmodule Nous.Usage do
 
   """
   @spec add(t(), t()) :: t()
-  def add(%__MODULE__{} = u1, %__MODULE__{} = u2) do
-    %__MODULE__{
+  def add(%Usage{} = u1, %Usage{} = u2) do
+    %Usage{
       requests: u1.requests + u2.requests,
       tool_calls: u1.tool_calls + u2.tool_calls,
       input_tokens: u1.input_tokens + u2.input_tokens,
@@ -82,7 +84,7 @@ defmodule Nous.Usage do
 
   """
   @spec inc_requests(t()) :: t()
-  def inc_requests(%__MODULE__{} = usage) do
+  def inc_requests(%Usage{} = usage) do
     %{usage | requests: usage.requests + 1}
   end
 
@@ -96,7 +98,7 @@ defmodule Nous.Usage do
 
   """
   @spec inc_tool_calls(t(), non_neg_integer()) :: t()
-  def inc_tool_calls(%__MODULE__{} = usage, count \\ 1) do
+  def inc_tool_calls(%Usage{} = usage, count \\ 1) do
     %{usage | tool_calls: usage.tool_calls + count}
   end
 
@@ -116,7 +118,7 @@ defmodule Nous.Usage do
 
   """
   @spec add_tokens(t(), keyword()) :: t()
-  def add_tokens(%__MODULE__{} = usage, opts) do
+  def add_tokens(%Usage{} = usage, opts) do
     input = Keyword.get(opts, :input, 0)
     output = Keyword.get(opts, :output, 0)
 
@@ -146,7 +148,7 @@ defmodule Nous.Usage do
   """
   @spec from_openai(map()) :: t()
   def from_openai(openai_usage) when is_map(openai_usage) do
-    %__MODULE__{
+    %Usage{
       requests: 1,
       input_tokens: Map.get(openai_usage, :prompt_tokens, 0),
       output_tokens: Map.get(openai_usage, :completion_tokens, 0),

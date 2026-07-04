@@ -40,6 +40,8 @@ defmodule Nous.Eval.TestCase do
 
   """
 
+  alias __MODULE__
+
   @type eval_type ::
           :exact_match
           | :fuzzy_match
@@ -49,7 +51,7 @@ defmodule Nous.Eval.TestCase do
           | :llm_judge
           | :custom
 
-  @type t :: %__MODULE__{
+  @type t :: %TestCase{
           id: String.t(),
           name: String.t() | nil,
           description: String.t() | nil,
@@ -142,7 +144,7 @@ defmodule Nous.Eval.TestCase do
     id = Keyword.fetch!(opts, :id)
     input = Keyword.fetch!(opts, :input)
 
-    %__MODULE__{
+    %TestCase{
       id: to_string(id),
       name: Keyword.get(opts, :name),
       description: Keyword.get(opts, :description),
@@ -166,7 +168,7 @@ defmodule Nous.Eval.TestCase do
   def from_map(map) when is_map(map) do
     with {:ok, id} <- fetch_required(map, [:id, "id"]),
          {:ok, input} <- fetch_required(map, [:input, "input"]) do
-      test_case = %__MODULE__{
+      test_case = %TestCase{
         id: to_string(id),
         name: get_any(map, [:name, "name"]),
         description: get_any(map, [:description, "description"]),
@@ -212,7 +214,7 @@ defmodule Nous.Eval.TestCase do
   Validate a test case.
   """
   @spec validate(t()) :: :ok | {:error, term()}
-  def validate(%__MODULE__{} = tc) do
+  def validate(%TestCase{} = tc) do
     cond do
       is_nil(tc.id) or tc.id == "" ->
         {:error, "Test case ID is required"}
@@ -243,7 +245,7 @@ defmodule Nous.Eval.TestCase do
   Get display name for the test case.
   """
   @spec display_name(t()) :: String.t()
-  def display_name(%__MODULE__{name: name, id: id}) do
+  def display_name(%TestCase{name: name, id: id}) do
     name || id
   end
 

@@ -16,6 +16,8 @@ defmodule Nous.Workflow.Trace do
       end
   """
 
+  alias __MODULE__
+
   @type entry :: %{
           node_id: String.t(),
           node_type: atom(),
@@ -26,7 +28,7 @@ defmodule Nous.Workflow.Trace do
           error: term() | nil
         }
 
-  @type t :: %__MODULE__{
+  @type t :: %Trace{
           run_id: String.t(),
           entries: [entry()],
           started_at: DateTime.t()
@@ -41,7 +43,7 @@ defmodule Nous.Workflow.Trace do
   """
   @spec new() :: t()
   def new do
-    %__MODULE__{
+    %Trace{
       run_id: generate_id(),
       entries: [],
       started_at: DateTime.utc_now()
@@ -59,7 +61,7 @@ defmodule Nous.Workflow.Trace do
           :completed | :failed | :skipped | :suspended,
           term()
         ) :: t()
-  def record(%__MODULE__{} = trace, node_id, node_type, duration_ns, status, error \\ nil) do
+  def record(%Trace{} = trace, node_id, node_type, duration_ns, status, error \\ nil) do
     now = DateTime.utc_now()
     duration_ms = System.convert_time_unit(duration_ns, :native, :millisecond)
 
@@ -80,7 +82,7 @@ defmodule Nous.Workflow.Trace do
   Returns the total execution time in milliseconds.
   """
   @spec total_duration_ms(t()) :: non_neg_integer()
-  def total_duration_ms(%__MODULE__{entries: entries}) do
+  def total_duration_ms(%Trace{entries: entries}) do
     Enum.reduce(entries, 0, fn entry, acc -> acc + entry.duration_ms end)
   end
 
@@ -88,7 +90,7 @@ defmodule Nous.Workflow.Trace do
   Returns the number of nodes executed.
   """
   @spec node_count(t()) :: non_neg_integer()
-  def node_count(%__MODULE__{entries: entries}), do: length(entries)
+  def node_count(%Trace{entries: entries}), do: length(entries)
 
   defp generate_id do
     :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)

@@ -52,11 +52,12 @@ defmodule Nous.Agent.Context do
 
   require Logger
 
+  alias __MODULE__
   alias Nous.{Message, Usage}
 
   @type callback_fn :: (atom(), any() -> any())
 
-  @type t :: %__MODULE__{
+  @type t :: %Context{
           # Conversation
           messages: [Message.t()],
           tool_calls: [map()],
@@ -155,7 +156,7 @@ defmodule Nous.Agent.Context do
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    %__MODULE__{
+    %Context{
       messages: Keyword.get(opts, :messages, []),
       system_prompt: Keyword.get(opts, :system_prompt),
       deps: Keyword.get(opts, :deps, %{}),
@@ -192,7 +193,7 @@ defmodule Nous.Agent.Context do
   # NOTE: `messages` is appended-to (`++ [message]`), which is O(n) per call —
   # acceptable for single appends, but use `add_messages/2` for bulk inserts;
   # it concatenates once instead of re-walking the list per message.
-  def add_message(%__MODULE__{} = ctx, %Message{} = message) do
+  def add_message(%Context{} = ctx, %Message{} = message) do
     updated_messages = ctx.messages ++ [message]
 
     %{ctx | messages: updated_messages}
@@ -212,7 +213,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec add_messages(t(), [Message.t()]) :: t()
-  def add_messages(%__MODULE__{} = ctx, messages) when is_list(messages) do
+  def add_messages(%Context{} = ctx, messages) when is_list(messages) do
     # Concatenate the whole batch ONCE (O(n+m)) instead of `++ [msg]` per
     # message (O(n*m)). `needs_response` is then folded over just the new
     # messages — identical result to the old per-item reduce, since
@@ -234,7 +235,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec add_tool_call(t(), map()) :: t()
-  def add_tool_call(%__MODULE__{} = ctx, call) when is_map(call) do
+  def add_tool_call(%Context{} = ctx, call) when is_map(call) do
     %{ctx | tool_calls: ctx.tool_calls ++ [call]}
   end
 
@@ -251,12 +252,12 @@ defmodule Nous.Agent.Context do
 
   """
   @spec add_usage(t(), Usage.t() | map()) :: t()
-  def add_usage(%__MODULE__{} = ctx, %Usage{} = usage) do
+  def add_usage(%Context{} = ctx, %Usage{} = usage) do
     new_usage = Usage.add(ctx.usage, usage)
     %{ctx | usage: new_usage}
   end
 
-  def add_usage(%__MODULE__{} = ctx, usage) when is_map(usage) do
+  def add_usage(%Context{} = ctx, usage) when is_map(usage) do
     # Convert map to Usage struct, handling partial updates
     usage_struct = %Usage{
       requests: Map.get(usage, :requests, 0),
@@ -286,7 +287,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec merge_deps(t(), map()) :: t()
-  def merge_deps(%__MODULE__{} = ctx, new_deps) when is_map(new_deps) do
+  def merge_deps(%Context{} = ctx, new_deps) when is_map(new_deps) do
     merged = Map.merge(ctx.deps || %{}, new_deps)
     %{ctx | deps: merged}
   end
@@ -303,7 +304,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec increment_iteration(t()) :: t()
-  def increment_iteration(%__MODULE__{} = ctx) do
+  def increment_iteration(%Context{} = ctx) do
     %{ctx | iteration: ctx.iteration + 1}
   end
 
@@ -319,7 +320,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec set_needs_response(t(), boolean()) :: t()
-  def set_needs_response(%__MODULE__{} = ctx, value) when is_boolean(value) do
+  def set_needs_response(%Context{} = ctx, value) when is_boolean(value) do
     %{ctx | needs_response: value}
   end
 
@@ -338,7 +339,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec max_iterations_reached?(t()) :: boolean()
-  def max_iterations_reached?(%__MODULE__{iteration: i, max_iterations: max}) do
+  def max_iterations_reached?(%Context{iteration: i, max_iterations: max}) do
     i >= max
   end
 
@@ -357,8 +358,8 @@ defmodule Nous.Agent.Context do
 
   """
   @spec last_message(t()) :: Message.t() | nil
-  def last_message(%__MODULE__{messages: []}), do: nil
-  def last_message(%__MODULE__{messages: messages}), do: List.last(messages)
+  def last_message(%Context{messages: []}), do: nil
+  def last_message(%Context{messages: messages}), do: List.last(messages)
 
   @doc """
   Get all assistant messages from the context.
@@ -373,7 +374,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec assistant_messages(t()) :: [Message.t()]
-  def assistant_messages(%__MODULE__{messages: messages}) do
+  def assistant_messages(%Context{messages: messages}) do
     Enum.filter(messages, &(&1.role == :assistant))
   end
 
@@ -391,7 +392,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec to_run_context(t()) :: Nous.RunContext.t()
-  def to_run_context(%__MODULE__{} = ctx) do
+  def to_run_context(%Context{} = ctx) do
     Nous.RunContext.new(ctx.deps, usage: ctx.usage)
   end
 
@@ -437,7 +438,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec patch_dangling_tool_calls(t()) :: t()
-  def patch_dangling_tool_calls(%__MODULE__{messages: messages} = ctx) do
+  def patch_dangling_tool_calls(%Context{messages: messages} = ctx) do
     # Build id -> name map from assistant tool_calls (name needed so providers
     # like Gemini can populate functionResponse.name correctly).
     tool_call_names =
@@ -497,7 +498,7 @@ defmodule Nous.Agent.Context do
 
   """
   @spec serialize(t()) :: map()
-  def serialize(%__MODULE__{} = ctx) do
+  def serialize(%Context{} = ctx) do
     %{
       version: 1,
       messages: Enum.map(ctx.messages, &serialize_message/1),
@@ -574,7 +575,7 @@ defmodule Nous.Agent.Context do
           end
       end
 
-    ctx = %__MODULE__{
+    ctx = %Context{
       messages: messages,
       tool_calls: data[:tool_calls] || [],
       system_prompt: data[:system_prompt],

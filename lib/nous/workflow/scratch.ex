@@ -23,7 +23,9 @@ defmodule Nous.Workflow.Scratch do
   The scratch reference is available in `state.metadata.scratch`.
   """
 
-  @type t :: %__MODULE__{
+  alias __MODULE__
+
+  @type t :: %Scratch{
           table: :ets.tid() | nil,
           id: String.t()
         }
@@ -35,7 +37,7 @@ defmodule Nous.Workflow.Scratch do
   """
   @spec new() :: t()
   def new do
-    %__MODULE__{
+    %Scratch{
       id: :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
     }
   end
@@ -44,7 +46,7 @@ defmodule Nous.Workflow.Scratch do
   Store a value in the scratch space.
   """
   @spec put(t(), term(), term()) :: t()
-  def put(%__MODULE__{} = scratch, key, value) do
+  def put(%Scratch{} = scratch, key, value) do
     scratch = ensure_table(scratch)
     :ets.insert(scratch.table, {key, value})
     scratch
@@ -56,9 +58,9 @@ defmodule Nous.Workflow.Scratch do
   @spec get(t(), term(), term()) :: term()
   def get(scratch, key, default \\ nil)
 
-  def get(%__MODULE__{table: nil}, _key, default), do: default
+  def get(%Scratch{table: nil}, _key, default), do: default
 
-  def get(%__MODULE__{} = scratch, key, default) do
+  def get(%Scratch{} = scratch, key, default) do
     case :ets.lookup(scratch.table, key) do
       [{^key, value}] -> value
       [] -> default
@@ -69,9 +71,9 @@ defmodule Nous.Workflow.Scratch do
   Delete a key from the scratch space.
   """
   @spec delete(t(), term()) :: :ok
-  def delete(%__MODULE__{table: nil}, _key), do: :ok
+  def delete(%Scratch{table: nil}, _key), do: :ok
 
-  def delete(%__MODULE__{} = scratch, key) do
+  def delete(%Scratch{} = scratch, key) do
     :ets.delete(scratch.table, key)
     :ok
   end
@@ -80,14 +82,14 @@ defmodule Nous.Workflow.Scratch do
   Clean up the scratch ETS table. Called automatically on workflow completion.
   """
   @spec cleanup(t()) :: :ok
-  def cleanup(%__MODULE__{table: nil}), do: :ok
+  def cleanup(%Scratch{table: nil}), do: :ok
 
-  def cleanup(%__MODULE__{table: table}) do
+  def cleanup(%Scratch{table: table}) do
     :ets.delete(table)
     :ok
   end
 
-  defp ensure_table(%__MODULE__{table: nil} = scratch) do
+  defp ensure_table(%Scratch{table: nil} = scratch) do
     table = :ets.new(:"nous_scratch_#{scratch.id}", [:set, :public])
     %{scratch | table: table}
   end

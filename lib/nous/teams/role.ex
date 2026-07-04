@@ -23,7 +23,9 @@ defmodule Nous.Teams.Role do
       filtered = Role.apply_tool_filter(role, all_tools)
   """
 
-  @type t :: %__MODULE__{
+  alias __MODULE__
+
+  @type t :: %Role{
           name: atom(),
           system_prompt: String.t() | nil,
           allowed_tools: [String.t()] | nil,
@@ -72,17 +74,17 @@ defmodule Nous.Teams.Role do
       1
   """
   @spec apply_tool_filter(t(), [Nous.Tool.t()]) :: [Nous.Tool.t()]
-  def apply_tool_filter(%__MODULE__{allowed_tools: allowed} = _role, tools)
+  def apply_tool_filter(%Role{allowed_tools: allowed} = _role, tools)
       when is_list(allowed) do
     Enum.filter(tools, &(&1.name in allowed))
   end
 
-  def apply_tool_filter(%__MODULE__{denied_tools: denied} = _role, tools)
+  def apply_tool_filter(%Role{denied_tools: denied} = _role, tools)
       when is_list(denied) do
     Enum.reject(tools, &(&1.name in denied))
   end
 
-  def apply_tool_filter(%__MODULE__{}, tools), do: tools
+  def apply_tool_filter(%Role{}, tools), do: tools
 
   # Built-in roles
 
@@ -99,7 +101,7 @@ defmodule Nous.Teams.Role do
   """
   @spec researcher() :: t()
   def researcher do
-    %__MODULE__{
+    %Role{
       name: :researcher,
       system_prompt: """
       You are a research specialist on this team. Your job is to:
@@ -135,7 +137,7 @@ defmodule Nous.Teams.Role do
   """
   @spec coder() :: t()
   def coder do
-    %__MODULE__{
+    %Role{
       name: :coder,
       system_prompt: """
       You are a coding specialist on this team. Your job is to:
@@ -162,7 +164,7 @@ defmodule Nous.Teams.Role do
   """
   @spec lead() :: t()
   def lead do
-    %__MODULE__{
+    %Role{
       name: :lead,
       system_prompt: """
       You are the team lead. Your job is to:

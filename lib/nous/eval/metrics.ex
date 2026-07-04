@@ -12,7 +12,9 @@ defmodule Nous.Eval.Metrics do
 
   """
 
-  @type t :: %__MODULE__{
+  alias __MODULE__
+
+  @type t :: %Metrics{
           # Token metrics
           input_tokens: non_neg_integer(),
           output_tokens: non_neg_integer(),
@@ -57,14 +59,14 @@ defmodule Nous.Eval.Metrics do
   Create empty metrics.
   """
   @spec new() :: t()
-  def new, do: %__MODULE__{}
+  def new, do: %Metrics{}
 
   @doc """
   Create metrics from a Nous.Usage struct.
   """
   @spec from_usage(Nous.Usage.t()) :: t()
   def from_usage(%Nous.Usage{} = usage) do
-    %__MODULE__{
+    %Metrics{
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
       total_tokens: usage.total_tokens,
@@ -90,7 +92,7 @@ defmodule Nous.Eval.Metrics do
         _ -> 1
       end
 
-    %__MODULE__{
+    %Metrics{
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
       total_tokens: usage.total_tokens,
@@ -106,8 +108,8 @@ defmodule Nous.Eval.Metrics do
   Merge two metrics structs.
   """
   @spec merge(t(), t()) :: t()
-  def merge(%__MODULE__{} = m1, %__MODULE__{} = m2) do
-    %__MODULE__{
+  def merge(%Metrics{} = m1, %Metrics{} = m2) do
+    %Metrics{
       input_tokens: m1.input_tokens + m2.input_tokens,
       output_tokens: m1.output_tokens + m2.output_tokens,
       total_tokens: m1.total_tokens + m2.total_tokens,
@@ -129,7 +131,7 @@ defmodule Nous.Eval.Metrics do
   Add cost estimation to metrics.
   """
   @spec with_cost(t(), String.t()) :: t()
-  def with_cost(%__MODULE__{} = metrics, provider) do
+  def with_cost(%Metrics{} = metrics, provider) do
     cost = Nous.Eval.Config.estimate_cost(provider, metrics.input_tokens, metrics.output_tokens)
     %{metrics | estimated_cost: cost}
   end
@@ -165,9 +167,10 @@ defmodule Nous.Eval.Metrics.Summary do
   Aggregated metrics summary across multiple evaluation runs.
   """
 
+  alias __MODULE__
   alias Nous.Eval.Metrics
 
-  @type t :: %__MODULE__{
+  @type t :: %Summary{
           count: non_neg_integer(),
 
           # Aggregated scores
@@ -233,7 +236,7 @@ defmodule Nous.Eval.Metrics.Summary do
     count = length(metrics_list)
 
     if count == 0 do
-      %__MODULE__{}
+      %Summary{}
     else
       tokens = Enum.map(metrics_list, & &1.total_tokens)
       latencies = Enum.map(metrics_list, & &1.total_duration_ms)
@@ -254,7 +257,7 @@ defmodule Nous.Eval.Metrics.Summary do
       # Score calculations
       pass_count = Enum.count(scores, &(&1 >= 0.5))
 
-      %__MODULE__{
+      %Summary{
         count: count,
         mean_score: mean(scores),
         min_score: Enum.min(scores, fn -> 0.0 end),
@@ -284,7 +287,7 @@ defmodule Nous.Eval.Metrics.Summary do
   Compare two summaries.
   """
   @spec compare(t(), t()) :: map()
-  def compare(%__MODULE__{} = a, %__MODULE__{} = b) do
+  def compare(%Summary{} = a, %Summary{} = b) do
     %{
       score_diff: b.mean_score - a.mean_score,
       tokens_diff: b.mean_tokens - a.mean_tokens,

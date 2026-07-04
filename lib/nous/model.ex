@@ -14,6 +14,8 @@ defmodule Nous.Model do
 
   """
 
+  alias __MODULE__
+
   @type provider ::
           :openai
           | :anthropic
@@ -30,7 +32,7 @@ defmodule Nous.Model do
           | :mistral
           | :custom
 
-  @type t :: %__MODULE__{
+  @type t :: %Model{
           provider: provider(),
           model: String.t(),
           base_url: String.t() | nil,
@@ -237,7 +239,7 @@ defmodule Nous.Model do
   """
   @spec new(provider(), String.t(), keyword()) :: t()
   def new(provider, model, opts \\ []) do
-    %__MODULE__{
+    %Model{
       provider: provider,
       model: model,
       base_url: Keyword.get(opts, :base_url, default_base_url(provider)),

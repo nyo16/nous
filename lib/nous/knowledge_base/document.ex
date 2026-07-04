@@ -6,10 +6,12 @@ defmodule Nous.KnowledgeBase.Document do
   gets processed by the LLM into structured `Entry` wiki articles.
   """
 
+  alias __MODULE__
+
   @type doc_type :: :markdown | :text | :url | :pdf | :html
   @type status :: :pending | :processing | :compiled | :failed
 
-  @type t :: %__MODULE__{
+  @type t :: %Document{
           id: String.t(),
           title: String.t(),
           content: String.t(),
@@ -52,7 +54,7 @@ defmodule Nous.KnowledgeBase.Document do
     content = Map.fetch!(attrs, :content)
     title = Map.fetch!(attrs, :title)
 
-    %__MODULE__{
+    %Document{
       id: id,
       title: title,
       content: content,

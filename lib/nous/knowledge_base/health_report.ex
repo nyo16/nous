@@ -5,6 +5,8 @@ defmodule Nous.KnowledgeBase.HealthReport do
   Contains statistics, scores, and identified issues for maintenance.
   """
 
+  alias __MODULE__
+
   @type issue_type :: :stale | :inconsistent | :orphan | :gap | :low_confidence | :duplicate
   @type severity :: :low | :medium | :high
 
@@ -16,7 +18,7 @@ defmodule Nous.KnowledgeBase.HealthReport do
           suggested_action: String.t()
         }
 
-  @type t :: %__MODULE__{
+  @type t :: %HealthReport{
           id: String.t(),
           kb_id: String.t() | nil,
           total_entries: non_neg_integer(),
@@ -46,7 +48,7 @@ defmodule Nous.KnowledgeBase.HealthReport do
   Creates a new HealthReport from attributes.
   """
   def new(attrs) when is_map(attrs) do
-    %__MODULE__{
+    %HealthReport{
       id: Map.get(attrs, :id) || generate_id(),
       kb_id: Map.get(attrs, :kb_id),
       total_entries: Map.get(attrs, :total_entries, 0),
