@@ -7,9 +7,11 @@ defmodule Nous.KnowledgeBase.Entry do
   and metadata for search and graph traversal.
   """
 
+  alias __MODULE__
+
   @type entry_type :: :article | :concept | :summary | :index | :glossary
 
-  @type t :: %__MODULE__{
+  @type t :: %Entry{
           id: String.t(),
           title: String.t(),
           slug: String.t(),
@@ -57,7 +59,7 @@ defmodule Nous.KnowledgeBase.Entry do
     id = Map.get(attrs, :id) || generate_id()
     title = Map.fetch!(attrs, :title)
 
-    %__MODULE__{
+    %Entry{
       id: id,
       title: title,
       slug: Map.get(attrs, :slug) || slugify(title),

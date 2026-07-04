@@ -28,9 +28,11 @@ defmodule Nous.Tool do
 
   """
 
+  alias __MODULE__
+
   @type category :: :read | :write | :execute | :communicate | :search | nil
 
-  @type t :: %__MODULE__{
+  @type t :: %Tool{
           name: String.t(),
           description: String.t(),
           parameters: map(),
@@ -110,7 +112,7 @@ defmodule Nous.Tool do
       extract_function_docs(fun) ||
         {Keyword.get(opts, :description, ""), default_schema()}
 
-    %__MODULE__{
+    %Tool{
       name: Keyword.get(opts, :name, function_name),
       description: Keyword.get(opts, :description, description),
       parameters: Keyword.get(opts, :parameters, param_schema),
@@ -198,7 +200,7 @@ defmodule Nous.Tool do
 
     metadata = Behaviour.get_metadata(module)
 
-    %__MODULE__{
+    %Tool{
       name: Keyword.get(opts, :name, metadata.name),
       description: Keyword.get(opts, :description, metadata.description),
       parameters: Keyword.get(opts, :parameters, metadata.parameters),
@@ -235,7 +237,7 @@ defmodule Nous.Tool do
 
   """
   @spec to_openai_schema(t()) :: map()
-  def to_openai_schema(%__MODULE__{} = tool) do
+  def to_openai_schema(%Tool{} = tool) do
     %{
       "type" => "function",
       "function" => %{

@@ -72,6 +72,8 @@ defmodule Nous.Skill do
       )
   """
 
+  alias __MODULE__
+
   @type activation ::
           :manual
           | :auto
@@ -83,7 +85,7 @@ defmodule Nous.Skill do
 
   @type status :: :discovered | :loaded | :active | :inactive
 
-  @type t :: %__MODULE__{
+  @type t :: %Skill{
           name: String.t(),
           description: String.t(),
           tags: [atom()],
@@ -196,7 +198,7 @@ defmodule Nous.Skill do
   def from_module(module) when is_atom(module) do
     Code.ensure_loaded!(module)
 
-    %__MODULE__{
+    %Skill{
       name: module.name(),
       description: module.description(),
       tags: if(function_exported?(module, :tags, 0), do: module.tags(), else: []),

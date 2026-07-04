@@ -27,9 +27,10 @@ defmodule Nous.Agent do
 
   """
 
+  alias __MODULE__
   alias Nous.{Fallback, Hook, Model, Tool, Types}
 
-  @type t :: %__MODULE__{
+  @type t :: %Agent{
           model: Model.t(),
           fallback: [Model.t()],
           output_type: Types.output_type(),
@@ -128,7 +129,7 @@ defmodule Nous.Agent do
   def new(model_string, opts \\ []) do
     model = Model.parse(model_string, opts)
 
-    %__MODULE__{
+    %Agent{
       model: model,
       fallback: Fallback.parse_fallback_models(Keyword.get(opts, :fallback, [])),
       output_type: Keyword.get(opts, :output_type, :string),
@@ -242,12 +243,12 @@ defmodule Nous.Agent do
   def run(agent, input, opts \\ [])
 
   # String prompt
-  def run(%__MODULE__{} = agent, prompt, opts) when is_binary(prompt) do
+  def run(%Agent{} = agent, prompt, opts) when is_binary(prompt) do
     Nous.AgentRunner.run(agent, prompt, opts)
   end
 
   # Keyword input with messages or context
-  def run(%__MODULE__{} = agent, input, opts) when is_list(input) do
+  def run(%Agent{} = agent, input, opts) when is_list(input) do
     merged_opts = Keyword.merge(input, opts)
 
     cond do
@@ -309,7 +310,7 @@ defmodule Nous.Agent do
 
   """
   @spec run_stream(t(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
-  def run_stream(%__MODULE__{} = agent, prompt, opts \\ []) do
+  def run_stream(%Agent{} = agent, prompt, opts \\ []) do
     Nous.AgentRunner.run_stream(agent, prompt, opts)
   end
 
@@ -334,7 +335,7 @@ defmodule Nous.Agent do
   """
   @deprecated "Prefer Agent.new/2 with the :tools option, or build %Nous.Tool{} directly"
   @spec tool(t(), function(), keyword()) :: t()
-  def tool(%__MODULE__{} = agent, tool_fun, opts \\ []) do
+  def tool(%Agent{} = agent, tool_fun, opts \\ []) do
     tool = Tool.from_function(tool_fun, opts)
     %{agent | tools: [tool | agent.tools]}
   end

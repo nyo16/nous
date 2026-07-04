@@ -32,10 +32,12 @@ defmodule Nous.Decisions.Edge do
   | `created_at` | `DateTime.t()` | When the edge was created |
   """
 
+  alias __MODULE__
+
   @type edge_type ::
           :leads_to | :chosen | :rejected | :requires | :blocks | :enables | :supersedes
 
-  @type t :: %__MODULE__{
+  @type t :: %Edge{
           id: String.t(),
           from_id: String.t(),
           to_id: String.t(),
@@ -72,7 +74,7 @@ defmodule Nous.Decisions.Edge do
     now = DateTime.utc_now()
     id = Map.get(attrs, :id) || generate_id()
 
-    %__MODULE__{
+    %Edge{
       id: id,
       from_id: Map.fetch!(attrs, :from_id),
       to_id: Map.fetch!(attrs, :to_id),

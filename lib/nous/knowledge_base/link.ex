@@ -6,9 +6,11 @@ defmodule Nous.KnowledgeBase.Link do
   concept connections, and parent-child hierarchies.
   """
 
+  alias __MODULE__
+
   @type link_type :: :backlink | :cross_reference | :concept | :see_also | :parent_child
 
-  @type t :: %__MODULE__{
+  @type t :: %Link{
           id: String.t(),
           from_entry_id: String.t(),
           to_entry_id: String.t(),
@@ -36,7 +38,7 @@ defmodule Nous.KnowledgeBase.Link do
   Requires `:from_entry_id` and `:to_entry_id`.
   """
   def new(attrs) when is_map(attrs) do
-    %__MODULE__{
+    %Link{
       id: Map.get(attrs, :id) || generate_id(),
       from_entry_id: Map.fetch!(attrs, :from_entry_id),
       to_entry_id: Map.fetch!(attrs, :to_entry_id),

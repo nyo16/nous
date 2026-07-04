@@ -19,7 +19,9 @@ defmodule Nous.Workflow.Checkpoint do
   | `created_at` | When checkpoint was created |
   """
 
-  @type t :: %__MODULE__{
+  alias __MODULE__
+
+  @type t :: %Checkpoint{
           workflow_id: String.t(),
           run_id: String.t(),
           node_id: String.t() | nil,
@@ -44,7 +46,7 @@ defmodule Nous.Workflow.Checkpoint do
   """
   @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
-    %__MODULE__{
+    %Checkpoint{
       workflow_id: Map.fetch!(attrs, :workflow_id),
       run_id: Map.get(attrs, :run_id) || generate_id(),
       node_id: Map.get(attrs, :node_id),

@@ -65,9 +65,10 @@ defmodule Nous.PromptTemplate do
 
   """
 
+  alias __MODULE__
   alias Nous.Message
 
-  @type t :: %__MODULE__{
+  @type t :: %PromptTemplate{
           text: String.t(),
           role: :system | :user | :assistant,
           inputs: map()
@@ -97,7 +98,7 @@ defmodule Nous.PromptTemplate do
   def from_template(text, opts \\ []) when is_binary(text) do
     case validate_template_safety(text) do
       :ok ->
-        %__MODULE__{
+        %PromptTemplate{
           text: text,
           role: Keyword.get(opts, :role, :user),
           inputs: Keyword.get(opts, :inputs, %{})
@@ -188,7 +189,7 @@ defmodule Nous.PromptTemplate do
 
   """
   @spec format(t(), map()) :: String.t()
-  def format(%__MODULE__{text: text, inputs: default_inputs}, bindings \\ %{}) do
+  def format(%PromptTemplate{text: text, inputs: default_inputs}, bindings \\ %{}) do
     merged = Map.merge(default_inputs, bindings)
     do_format(text, merged)
   end
@@ -218,7 +219,7 @@ defmodule Nous.PromptTemplate do
 
   """
   @spec to_message(t(), map()) :: Message.t()
-  def to_message(%__MODULE__{role: role} = template, bindings \\ %{}) do
+  def to_message(%PromptTemplate{role: role} = template, bindings \\ %{}) do
     content = format(template, bindings)
 
     case role do
@@ -247,7 +248,7 @@ defmodule Nous.PromptTemplate do
   @spec to_messages([t() | Message.t()], map()) :: [Message.t()]
   def to_messages(items, bindings \\ %{}) when is_list(items) do
     Enum.map(items, fn
-      %__MODULE__{} = template -> to_message(template, bindings)
+      %PromptTemplate{} = template -> to_message(template, bindings)
       %Message{} = message -> message
     end)
   end
@@ -286,7 +287,7 @@ defmodule Nous.PromptTemplate do
 
   """
   @spec variables(t()) :: [atom()]
-  def variables(%__MODULE__{text: text}) do
+  def variables(%PromptTemplate{text: text}) do
     extract_variables(text)
   end
 
@@ -328,7 +329,7 @@ defmodule Nous.PromptTemplate do
 
   """
   @spec validate_bindings(t(), map()) :: {:ok, map()} | {:error, [atom()]}
-  def validate_bindings(%__MODULE__{} = template, bindings) do
+  def validate_bindings(%PromptTemplate{} = template, bindings) do
     required = variables(template)
     available = Map.merge(template.inputs, bindings)
     provided = MapSet.new(Map.keys(available))
@@ -378,7 +379,7 @@ defmodule Nous.PromptTemplate do
       |> Enum.map(& &1.text)
       |> Enum.join(separator)
 
-    %__MODULE__{
+    %PromptTemplate{
       text: combined_text,
       role: role,
       inputs: merged_inputs

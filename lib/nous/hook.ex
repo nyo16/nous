@@ -54,6 +54,8 @@ defmodule Nous.Hook do
       }
   """
 
+  alias __MODULE__
+
   @type event ::
           :pre_tool_use
           | :post_tool_use
@@ -68,7 +70,7 @@ defmodule Nous.Hook do
 
   @type matcher :: String.t() | Regex.t() | (map() -> boolean()) | nil
 
-  @type t :: %__MODULE__{
+  @type t :: %Hook{
           event: event(),
           matcher: matcher(),
           type: hook_type(),
@@ -120,17 +122,17 @@ defmodule Nous.Hook do
   For other events, `nil` matchers always match.
   """
   @spec matches?(t(), map()) :: boolean()
-  def matches?(%__MODULE__{matcher: nil}, _payload), do: true
+  def matches?(%Hook{matcher: nil}, _payload), do: true
 
-  def matches?(%__MODULE__{matcher: name}, %{tool_name: tool_name}) when is_binary(name) do
+  def matches?(%Hook{matcher: name}, %{tool_name: tool_name}) when is_binary(name) do
     name == tool_name
   end
 
-  def matches?(%__MODULE__{matcher: %Regex{} = re}, %{tool_name: tool_name}) do
+  def matches?(%Hook{matcher: %Regex{} = re}, %{tool_name: tool_name}) do
     Regex.match?(re, tool_name)
   end
 
-  def matches?(%__MODULE__{matcher: fun}, payload) when is_function(fun, 1) do
+  def matches?(%Hook{matcher: fun}, payload) when is_function(fun, 1) do
     fun.(payload)
   end
 
@@ -141,7 +143,7 @@ defmodule Nous.Hook do
   """
   @spec new(event(), keyword()) :: t()
   def new(event, opts \\ []) do
-    %__MODULE__{
+    %Hook{
       event: event,
       type: Keyword.get(opts, :type, :function),
       handler: Keyword.fetch!(opts, :handler),

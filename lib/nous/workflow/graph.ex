@@ -23,11 +23,12 @@ defmodule Nous.Workflow.Graph do
         |> Nous.Workflow.Graph.chain([:fetch, :process, :store])
   """
 
+  alias __MODULE__
   alias Nous.Workflow.{Node, Edge}
 
   @type node_id :: String.t()
 
-  @type t :: %__MODULE__{
+  @type t :: %Graph{
           id: String.t(),
           name: String.t(),
           nodes: %{node_id() => Node.t()},
@@ -66,7 +67,7 @@ defmodule Nous.Workflow.Graph do
   """
   @spec new(String.t(), keyword()) :: t()
   def new(id, opts \\ []) when is_binary(id) do
-    %__MODULE__{
+    %Graph{
       id: id,
       name: Keyword.get(opts, :name, id),
       allows_cycles: Keyword.get(opts, :allows_cycles, false)
@@ -93,7 +94,7 @@ defmodule Nous.Workflow.Graph do
 
   """
   @spec add_node(t(), atom() | String.t(), Node.node_type(), map(), keyword()) :: t()
-  def add_node(%__MODULE__{} = graph, node_id, type, config \\ %{}, opts \\ []) do
+  def add_node(%Graph{} = graph, node_id, type, config \\ %{}, opts \\ []) do
     id = to_string(node_id)
 
     if Map.has_key?(graph.nodes, id) do
@@ -142,7 +143,7 @@ defmodule Nous.Workflow.Graph do
 
   """
   @spec connect(t(), atom() | String.t(), atom() | String.t(), keyword()) :: t()
-  def connect(%__MODULE__{} = graph, from, to, opts \\ []) do
+  def connect(%Graph{} = graph, from, to, opts \\ []) do
     from_id = to_string(from)
     to_id = to_string(to)
 
@@ -185,7 +186,7 @@ defmodule Nous.Workflow.Graph do
 
   """
   @spec chain(t(), [atom() | String.t()]) :: t()
-  def chain(%__MODULE__{} = graph, node_ids) when is_list(node_ids) do
+  def chain(%Graph{} = graph, node_ids) when is_list(node_ids) do
     node_ids
     |> Enum.chunk_every(2, 1, :discard)
     |> Enum.reduce(graph, fn [from, to], acc -> connect(acc, from, to) end)
@@ -195,7 +196,7 @@ defmodule Nous.Workflow.Graph do
   Set the entry node explicitly (overrides the auto-detected first node).
   """
   @spec set_entry(t(), atom() | String.t()) :: t()
-  def set_entry(%__MODULE__{} = graph, node_id) do
+  def set_entry(%Graph{} = graph, node_id) do
     id = to_string(node_id)
     validate_node_exists!(graph, id, "set_entry")
     %{graph | entry_node: id}
@@ -205,7 +206,7 @@ defmodule Nous.Workflow.Graph do
   Returns the successor node IDs for a given node (via out_edges).
   """
   @spec successors(t(), node_id()) :: [node_id()]
-  def successors(%__MODULE__{} = graph, node_id) do
+  def successors(%Graph{} = graph, node_id) do
     graph.out_edges
     |> Map.get(node_id, [])
     |> Enum.map(& &1.to_id)
@@ -215,7 +216,7 @@ defmodule Nous.Workflow.Graph do
   Returns the predecessor node IDs for a given node (via in_edges).
   """
   @spec predecessors(t(), node_id()) :: [node_id()]
-  def predecessors(%__MODULE__{} = graph, node_id) do
+  def predecessors(%Graph{} = graph, node_id) do
     graph.in_edges
     |> Map.get(node_id, [])
     |> Enum.map(& &1.from_id)
@@ -225,19 +226,19 @@ defmodule Nous.Workflow.Graph do
   Returns the number of nodes in the graph.
   """
   @spec node_count(t()) :: non_neg_integer()
-  def node_count(%__MODULE__{nodes: nodes}), do: map_size(nodes)
+  def node_count(%Graph{nodes: nodes}), do: map_size(nodes)
 
   @doc """
   Returns all node IDs in the graph.
   """
   @spec node_ids(t()) :: [node_id()]
-  def node_ids(%__MODULE__{nodes: nodes}), do: Map.keys(nodes)
+  def node_ids(%Graph{nodes: nodes}), do: Map.keys(nodes)
 
   @doc """
   Returns terminal nodes (nodes with no outgoing edges).
   """
   @spec terminal_nodes(t()) :: [node_id()]
-  def terminal_nodes(%__MODULE__{} = graph) do
+  def terminal_nodes(%Graph{} = graph) do
     Enum.filter(Map.keys(graph.nodes), fn id ->
       graph.out_edges |> Map.get(id, []) |> Enum.empty?()
     end)
@@ -258,7 +259,7 @@ defmodule Nous.Workflow.Graph do
           map(),
           keyword()
         ) :: t()
-  def insert_after(%__MODULE__{} = graph, after_id, new_id, type, config \\ %{}, opts \\ []) do
+  def insert_after(%Graph{} = graph, after_id, new_id, type, config \\ %{}, opts \\ []) do
     after_str = to_string(after_id)
     validate_node_exists!(graph, after_str, "insert_after")
 
@@ -301,7 +302,7 @@ defmodule Nous.Workflow.Graph do
   Remove a node and reconnect its predecessors to its successors.
   """
   @spec remove_node(t(), atom() | String.t()) :: t()
-  def remove_node(%__MODULE__{} = graph, node_id) do
+  def remove_node(%Graph{} = graph, node_id) do
     id = to_string(node_id)
     validate_node_exists!(graph, id, "remove_node")
 

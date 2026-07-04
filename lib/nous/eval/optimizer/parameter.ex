@@ -40,9 +40,11 @@ defmodule Nous.Eval.Optimizer.Parameter do
 
   """
 
+  alias __MODULE__
+
   @type param_type :: :float | :integer | :choice | :bool
 
-  @type t :: %__MODULE__{
+  @type t :: %Parameter{
           name: atom(),
           type: param_type(),
           min: number() | nil,
@@ -85,7 +87,7 @@ defmodule Nous.Eval.Optimizer.Parameter do
   """
   @spec float(atom(), number(), number(), keyword()) :: t()
   def float(name, min, max, opts \\ []) do
-    %__MODULE__{
+    %Parameter{
       name: name,
       type: :float,
       min: min,
@@ -114,7 +116,7 @@ defmodule Nous.Eval.Optimizer.Parameter do
   """
   @spec integer(atom(), integer(), integer(), keyword()) :: t()
   def integer(name, min, max, opts \\ []) do
-    %__MODULE__{
+    %Parameter{
       name: name,
       type: :integer,
       min: min,
@@ -141,7 +143,7 @@ defmodule Nous.Eval.Optimizer.Parameter do
   """
   @spec choice(atom(), [term()], keyword()) :: t()
   def choice(name, choices, opts \\ []) when is_list(choices) do
-    %__MODULE__{
+    %Parameter{
       name: name,
       type: :choice,
       choices: choices,
@@ -166,7 +168,7 @@ defmodule Nous.Eval.Optimizer.Parameter do
   """
   @spec bool(atom(), keyword()) :: t()
   def bool(name, opts \\ []) do
-    %__MODULE__{
+    %Parameter{
       name: name,
       type: :bool,
       choices: [true, false],
@@ -263,17 +265,17 @@ defmodule Nous.Eval.Optimizer.Parameter do
   Get all possible values for a parameter (for grid search).
   """
   @spec values(t()) :: [term()]
-  def values(%__MODULE__{type: :float, min: min, max: max, step: nil}) do
+  def values(%Parameter{type: :float, min: min, max: max, step: nil}) do
     # Default to 10 steps
     step = (max - min) / 10
     generate_range(min, max, step)
   end
 
-  def values(%__MODULE__{type: :float, min: min, max: max, step: step, log_scale: false}) do
+  def values(%Parameter{type: :float, min: min, max: max, step: step, log_scale: false}) do
     generate_range(min, max, step)
   end
 
-  def values(%__MODULE__{type: :float, min: min, max: max, step: step, log_scale: true}) do
+  def values(%Parameter{type: :float, min: min, max: max, step: step, log_scale: true}) do
     # Log scale: generate in log space then convert back
     log_min = :math.log10(min)
     log_max = :math.log10(max)
@@ -284,37 +286,37 @@ defmodule Nous.Eval.Optimizer.Parameter do
     |> Enum.map(&Float.round(&1, 6))
   end
 
-  def values(%__MODULE__{type: :integer, min: min, max: max, step: step}) do
+  def values(%Parameter{type: :integer, min: min, max: max, step: step}) do
     Enum.to_list(min..max//step)
   end
 
-  def values(%__MODULE__{type: :choice, choices: choices}), do: choices
-  def values(%__MODULE__{type: :bool}), do: [true, false]
+  def values(%Parameter{type: :choice, choices: choices}), do: choices
+  def values(%Parameter{type: :bool}), do: [true, false]
 
   @doc """
   Sample a random value from the parameter space.
   """
   @spec sample(t()) :: term()
-  def sample(%__MODULE__{type: :float, min: min, max: max, log_scale: false}) do
+  def sample(%Parameter{type: :float, min: min, max: max, log_scale: false}) do
     min + :rand.uniform() * (max - min)
   end
 
-  def sample(%__MODULE__{type: :float, min: min, max: max, log_scale: true}) do
+  def sample(%Parameter{type: :float, min: min, max: max, log_scale: true}) do
     log_min = :math.log10(min)
     log_max = :math.log10(max)
     log_val = log_min + :rand.uniform() * (log_max - log_min)
     :math.pow(10, log_val)
   end
 
-  def sample(%__MODULE__{type: :integer, min: min, max: max}) do
+  def sample(%Parameter{type: :integer, min: min, max: max}) do
     min + :rand.uniform(max - min + 1) - 1
   end
 
-  def sample(%__MODULE__{type: :choice, choices: choices}) do
+  def sample(%Parameter{type: :choice, choices: choices}) do
     Enum.random(choices)
   end
 
-  def sample(%__MODULE__{type: :bool}) do
+  def sample(%Parameter{type: :bool}) do
     :rand.uniform() > 0.5
   end
 
@@ -322,9 +324,9 @@ defmodule Nous.Eval.Optimizer.Parameter do
   Check if a parameter is active given current config.
   """
   @spec active?(t(), map()) :: boolean()
-  def active?(%__MODULE__{condition: nil}, _config), do: true
+  def active?(%Parameter{condition: nil}, _config), do: true
 
-  def active?(%__MODULE__{condition: {param_name, check_fn}}, config) do
+  def active?(%Parameter{condition: {param_name, check_fn}}, config) do
     case Map.get(config, param_name) do
       nil -> false
       value -> check_fn.(value)

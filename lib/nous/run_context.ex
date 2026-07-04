@@ -24,9 +24,10 @@ defmodule Nous.RunContext do
 
   """
 
+  alias __MODULE__
   alias Nous.Usage
 
-  @type t(deps) :: %__MODULE__{
+  @type t(deps) :: %RunContext{
           deps: deps,
           retry: non_neg_integer(),
           usage: Usage.t()
@@ -54,7 +55,7 @@ defmodule Nous.RunContext do
   """
   @spec new(deps :: any(), opts :: keyword()) :: t(any())
   def new(deps, opts \\ []) do
-    %__MODULE__{
+    %RunContext{
       deps: deps,
       retry: Keyword.get(opts, :retry, 0),
       usage: Keyword.get(opts, :usage, Usage.new())

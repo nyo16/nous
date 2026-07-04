@@ -33,7 +33,9 @@ defmodule Nous.Eval.Config do
 
   """
 
-  @type t :: %__MODULE__{
+  alias __MODULE__
+
+  @type t :: %Config{
           default_model: String.t() | nil,
           default_timeout: non_neg_integer(),
           default_instructions: String.t() | nil,
@@ -78,7 +80,7 @@ defmodule Nous.Eval.Config do
   def get(opts \\ []) do
     app_config = Application.get_env(:nous, Nous.Eval, [])
 
-    %__MODULE__{
+    %Config{
       default_model:
         opts[:default_model] ||
           env_string("NOUS_EVAL_DEFAULT_MODEL") ||
@@ -177,12 +179,12 @@ defmodule Nous.Eval.Config do
     end
   end
 
-  defp merge_cost_config(nil), do: %__MODULE__{}.cost_config
+  defp merge_cost_config(nil), do: %Config{}.cost_config
 
   defp merge_cost_config(custom) do
     # Deep-merge per-provider rate maps so a partial custom entry (e.g. only
     # :input for one provider) doesn't wipe the built-in :output rate.
-    Map.merge(%__MODULE__{}.cost_config, custom, fn
+    Map.merge(%Config{}.cost_config, custom, fn
       _provider, default_rates, custom_rates
       when is_map(default_rates) and is_map(custom_rates) ->
         Map.merge(default_rates, custom_rates)

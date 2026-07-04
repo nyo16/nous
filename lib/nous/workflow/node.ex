@@ -29,6 +29,8 @@ defmodule Nous.Workflow.Node do
       })
   """
 
+  alias __MODULE__
+
   @type node_type ::
           :agent_step
           | :tool_step
@@ -45,7 +47,7 @@ defmodule Nous.Workflow.Node do
           | :skip
           | {:fallback, node_id :: String.t()}
 
-  @type t :: %__MODULE__{
+  @type t :: %Node{
           id: String.t(),
           type: node_type(),
           label: String.t(),
@@ -90,7 +92,7 @@ defmodule Nous.Workflow.Node do
             "invalid node type: #{inspect(type)}, must be one of #{inspect(@valid_types)}"
     end
 
-    %__MODULE__{
+    %Node{
       id: attrs |> Map.fetch!(:id) |> to_string(),
       type: type,
       label: Map.fetch!(attrs, :label),

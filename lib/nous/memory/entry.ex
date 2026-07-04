@@ -3,9 +3,11 @@ defmodule Nous.Memory.Entry do
   Memory entry struct with scoping fields for flexible isolation.
   """
 
+  alias __MODULE__
+
   @type memory_type :: :semantic | :episodic | :procedural
 
-  @type t :: %__MODULE__{
+  @type t :: %Entry{
           id: String.t(),
           content: String.t(),
           type: memory_type(),
@@ -45,7 +47,7 @@ defmodule Nous.Memory.Entry do
     now = DateTime.utc_now()
     id = Map.get(attrs, :id) || generate_id()
 
-    %__MODULE__{
+    %Entry{
       id: id,
       content: Map.fetch!(attrs, :content),
       type: Map.get(attrs, :type, :semantic),

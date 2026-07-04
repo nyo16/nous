@@ -26,9 +26,10 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
 
   """
 
+  alias __MODULE__
   alias Nous.Eval.Optimizer.Parameter
 
-  @type t :: %__MODULE__{
+  @type t :: %SearchSpace{
           parameters: [Parameter.t()],
           size: non_neg_integer() | :infinite
         }
@@ -43,7 +44,7 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   def from_parameters(parameters) when is_list(parameters) do
     size = calculate_size(parameters)
 
-    %__MODULE__{
+    %SearchSpace{
       parameters: parameters,
       size: size
     }
@@ -55,7 +56,7 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   Returns `:infinite` if any parameter has continuous range without step.
   """
   @spec size(t()) :: non_neg_integer() | :infinite
-  def size(%__MODULE__{size: size}), do: size
+  def size(%SearchSpace{size: size}), do: size
 
   @doc """
   Generate all configurations for grid search.
@@ -63,12 +64,12 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   Only works for finite search spaces. Returns a list of configuration maps.
   """
   @spec grid(t()) :: [map()]
-  def grid(%__MODULE__{size: :infinite}) do
+  def grid(%SearchSpace{size: :infinite}) do
     raise ArgumentError,
           "Cannot generate grid for infinite search space. Add step sizes to parameters."
   end
 
-  def grid(%__MODULE__{parameters: parameters}) do
+  def grid(%SearchSpace{parameters: parameters}) do
     parameters
     |> Enum.map(fn param -> {param.name, Parameter.values(param)} end)
     |> cartesian_product()
@@ -79,7 +80,7 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   Sample a random configuration from the search space.
   """
   @spec sample(t()) :: map()
-  def sample(%__MODULE__{parameters: parameters}) do
+  def sample(%SearchSpace{parameters: parameters}) do
     parameters
     |> Enum.map(fn param -> {param.name, Parameter.sample(param)} end)
     |> Map.new()
@@ -97,7 +98,7 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   Sample configurations using Latin Hypercube Sampling for better coverage.
   """
   @spec latin_hypercube_sample(t(), non_neg_integer()) :: [map()]
-  def latin_hypercube_sample(%__MODULE__{parameters: parameters}, n) do
+  def latin_hypercube_sample(%SearchSpace{parameters: parameters}, n) do
     # For each parameter, divide range into n equal intervals
     # and sample one point from each interval
     param_samples =
@@ -118,7 +119,7 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   Get parameter by name.
   """
   @spec get_parameter(t(), atom()) :: Parameter.t() | nil
-  def get_parameter(%__MODULE__{parameters: parameters}, name) do
+  def get_parameter(%SearchSpace{parameters: parameters}, name) do
     Enum.find(parameters, fn p -> p.name == name end)
   end
 
@@ -126,7 +127,7 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   Check if a configuration is valid (all required parameters present).
   """
   @spec valid_config?(t(), map()) :: boolean()
-  def valid_config?(%__MODULE__{parameters: parameters}, config) do
+  def valid_config?(%SearchSpace{parameters: parameters}, config) do
     Enum.all?(parameters, fn param ->
       # Check if parameter is active given current config
       if Parameter.active?(param, config) do

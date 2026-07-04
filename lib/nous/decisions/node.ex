@@ -34,10 +34,12 @@ defmodule Nous.Decisions.Node do
   | `updated_at` | `DateTime.t()` | When the node was last modified |
   """
 
+  alias __MODULE__
+
   @type node_type :: :goal | :decision | :option | :action | :outcome | :observation | :revisit
   @type status :: :active | :completed | :superseded | :rejected
 
-  @type t :: %__MODULE__{
+  @type t :: %Node{
           id: String.t(),
           type: node_type(),
           label: String.t(),
@@ -85,7 +87,7 @@ defmodule Nous.Decisions.Node do
     now = DateTime.utc_now()
     id = Map.get(attrs, :id) || generate_id()
 
-    %__MODULE__{
+    %Node{
       id: id,
       type: Map.fetch!(attrs, :type),
       label: Map.fetch!(attrs, :label),
