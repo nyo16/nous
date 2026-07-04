@@ -595,6 +595,9 @@ defmodule Nous.Agent.Context do
 
     {:ok, ctx}
   rescue
+    # Deserializes attacker-controllable persisted blobs; a malformed blob
+    # can raise from anywhere in the decode path, so the catch-all is a
+    # deliberate boundary honoring the {:ok, _} | {:error, _} contract.
     e -> {:error, Exception.message(e)}
   end
 

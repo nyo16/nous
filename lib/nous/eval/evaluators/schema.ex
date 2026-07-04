@@ -150,6 +150,9 @@ defmodule Nous.Eval.Evaluators.Schema do
         {:ok, struct}
       end
     rescue
+      # Casts arbitrary YAML data against a user-supplied schema module; the
+      # raise set is open (non-schema modules, malformed values), and the
+      # contract is to report every failure as {:error, messages}.
       e ->
         {:error, [Exception.message(e)]}
     end

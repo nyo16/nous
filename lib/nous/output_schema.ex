@@ -512,7 +512,9 @@ defmodule Nous.OutputSchema do
       _ -> nil
     end
   rescue
-    _ -> nil
+    # Probe failure modes only: UndefinedFunctionError when the output type
+    # isn't an Ecto schema, FunctionClauseError from the generated reflection.
+    _ in [UndefinedFunctionError, FunctionClauseError] -> nil
   end
 
   defp try_schema_call(module, fun, default) do
@@ -522,7 +524,9 @@ defmodule Nous.OutputSchema do
       default
     end
   rescue
-    _ -> default
+    # The generated reflection raises FunctionClauseError for atoms it
+    # doesn't support (verified: Ecto schemas raise it for e.g. :types).
+    _ in [FunctionClauseError] -> default
   end
 
   defp try_llm_doc(module) do
@@ -530,6 +534,8 @@ defmodule Nous.OutputSchema do
       try do
         module.__llm_doc__()
       rescue
+        # __llm_doc__/0 is user-authored code; a catch-all here is a
+        # deliberate fault boundary, not an oversight.
         _ -> nil
       end
     else
