@@ -16,6 +16,8 @@ defmodule Nous.KnowledgeBase.Entry do
           title: String.t(),
           slug: String.t(),
           content: String.t(),
+          title_down: String.t() | nil,
+          content_down: String.t() | nil,
           summary: String.t() | nil,
           entry_type: entry_type(),
           concepts: [String.t()],
@@ -35,6 +37,8 @@ defmodule Nous.KnowledgeBase.Entry do
     :title,
     :slug,
     :content,
+    :title_down,
+    :content_down,
     :summary,
     :embedding,
     :kb_id,
@@ -58,12 +62,15 @@ defmodule Nous.KnowledgeBase.Entry do
     now = DateTime.utc_now()
     id = Map.get(attrs, :id) || generate_id()
     title = Map.fetch!(attrs, :title)
+    content = Map.fetch!(attrs, :content)
 
     %Entry{
       id: id,
       title: title,
       slug: Map.get(attrs, :slug) || slugify(title),
-      content: Map.fetch!(attrs, :content),
+      content: content,
+      title_down: String.downcase(title),
+      content_down: String.downcase(content),
       summary: Map.get(attrs, :summary),
       entry_type: Map.get(attrs, :entry_type, :article),
       concepts: Map.get(attrs, :concepts, []),
@@ -76,6 +83,20 @@ defmodule Nous.KnowledgeBase.Entry do
       created_at: Map.get(attrs, :created_at, now),
       updated_at: Map.get(attrs, :updated_at, now),
       last_verified_at: Map.get(attrs, :last_verified_at)
+    }
+  end
+
+  @doc """
+  Recomputes the cached downcased search fields from `title`/`content`.
+
+  Call after any mutation of `title` or `content` (e.g. store `update_entry`)
+  so search never scores against a stale cache.
+  """
+  def with_downcase_cache(%Entry{} = entry) do
+    %{
+      entry
+      | title_down: String.downcase(entry.title),
+        content_down: String.downcase(entry.content)
     }
   end
 

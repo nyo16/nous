@@ -132,7 +132,7 @@ defmodule Nous.Message do
       %{role: :system, content: content}
       |> Map.merge(Map.new(opts))
 
-    new!(attrs)
+    build(attrs)
   end
 
   @doc """
@@ -157,7 +157,7 @@ defmodule Nous.Message do
       %{role: :user, content: content}
       |> Map.merge(Map.new(opts))
 
-    new!(attrs)
+    build(attrs)
   end
 
   def user(content_parts, opts) when is_list(content_parts) do
@@ -170,7 +170,7 @@ defmodule Nous.Message do
       metadata: Map.merge(Map.new(opts), %{content_parts: content_parts})
     }
 
-    new!(attrs)
+    build(attrs)
   end
 
   @doc """
@@ -193,7 +193,7 @@ defmodule Nous.Message do
       %{role: :assistant, content: content}
       |> Map.merge(Map.new(opts))
 
-    new!(attrs)
+    build(attrs)
   end
 
   @doc """
@@ -219,7 +219,7 @@ defmodule Nous.Message do
       %{role: :tool, content: content, tool_call_id: tool_call_id}
       |> Map.merge(Map.new(opts))
 
-    new!(attrs)
+    build(attrs)
   end
 
   # Encode an arbitrary tool return value as a JSON string for the LLM.
@@ -336,7 +336,7 @@ defmodule Nous.Message do
   """
   @spec has_tool_calls?(t()) :: boolean()
   def has_tool_calls?(%Message{tool_calls: tool_calls}) do
-    is_list(tool_calls) and length(tool_calls) > 0
+    is_list(tool_calls) and tool_calls != []
   end
 
   @doc """
@@ -542,6 +542,15 @@ defmodule Nous.Message do
   end
 
   # Private functions
+
+  # Direct-construction fast path for the role helpers (system/user/assistant/
+  # tool): they assemble known-valid shapes from internal code, so the cast +
+  # validate pipeline is skipped. Like cast/4, struct/2 ignores unknown keys,
+  # and created_at is stamped unconditionally (changeset/2 put_change does the
+  # same). External/untrusted attrs must keep going through new/1 or new!/1.
+  defp build(attrs) when is_map(attrs) do
+    %{struct(Message, attrs) | created_at: DateTime.utc_now()}
+  end
 
   defp changeset(message, attrs) do
     message

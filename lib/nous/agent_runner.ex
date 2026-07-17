@@ -795,59 +795,13 @@ defmodule Nous.AgentRunner do
 
         # Execute all real tool calls and collect results
         {tool_results, ctx} =
-          Enum.reduce(real_calls, {[], ctx}, fn call, {results, acc_ctx} ->
-            call_name = get_tool_field(call, :name)
-            call_id = get_tool_field(call, :id)
-            call_arguments = get_tool_field(call, :arguments)
-
-            # Execute callback before tool
-            Callbacks.execute(acc_ctx, :on_tool_call, %{
-              id: call_id,
-              name: call_name,
-              arguments: call_arguments
-            })
-
-            cleaned_name = clean_tool_name(call_name)
-
-            # Short-circuit on tool_call whose arguments JSON failed to parse.
-            # The provider marshalling tagged it with "_invalid_arguments" so
-            # we surface a clean tool-error result and let the LLM retry —
-            # rather than invoking the tool with bogus/empty args.
-            invalid_args =
-              Map.get(call, "_invalid_arguments") || Map.get(call, :_invalid_arguments)
-
-            if is_binary(invalid_args) do
-              Logger.warning(
-                "Tool '#{cleaned_name}' called with malformed arguments JSON: #{invalid_args}"
-              )
-
-              result_msg =
-                Message.tool(
-                  call_id,
-                  "Error: tool arguments were not valid JSON. Please retry with a JSON object.",
-                  name: cleaned_name
-                )
-
-              {[result_msg | results], acc_ctx}
-            else
-              run_tool_with_hooks(
-                call,
-                call_id,
-                call_name,
-                cleaned_name,
-                call_arguments,
-                tools,
-                run_ctx,
-                behaviour,
-                agent,
-                acc_ctx,
-                results
-              )
-            end
-          end)
+          if agent.parallel_tool_calls and length(real_calls) > 1 do
+            run_tool_calls_parallel(real_calls, tools, run_ctx, behaviour, agent, ctx)
+          else
+            run_tool_calls_sequential(real_calls, tools, run_ctx, behaviour, agent, ctx)
+          end
 
         # Add tool result messages
-        tool_results = Enum.reverse(tool_results)
         ctx = Context.add_messages(ctx, tool_results)
 
         # Record tool calls
@@ -856,6 +810,218 @@ defmodule Nous.AgentRunner do
         end)
       end
     end
+  end
+
+  # Sequential tool-call execution (the default): each call runs its full
+  # pre/execute/post pipeline before the next call starts, so call N+1's hooks
+  # and approval checks observe call N's context effects.
+  defp run_tool_calls_sequential(real_calls, tools, run_ctx, behaviour, agent, ctx) do
+    {results, ctx} =
+      Enum.reduce(real_calls, {[], ctx}, fn call, {results, acc_ctx} ->
+        call_name = get_tool_field(call, :name)
+        call_id = get_tool_field(call, :id)
+        call_arguments = get_tool_field(call, :arguments)
+
+        # Execute callback before tool
+        Callbacks.execute(acc_ctx, :on_tool_call, %{
+          id: call_id,
+          name: call_name,
+          arguments: call_arguments
+        })
+
+        cleaned_name = clean_tool_name(call_name)
+
+        # Short-circuit on tool_call whose arguments JSON failed to parse.
+        # The provider marshalling tagged it with "_invalid_arguments" so
+        # we surface a clean tool-error result and let the LLM retry —
+        # rather than invoking the tool with bogus/empty args.
+        invalid_args = invalid_arguments(call)
+
+        if is_binary(invalid_args) do
+          result_msg = invalid_arguments_result(call_id, cleaned_name, invalid_args)
+          {[result_msg | results], acc_ctx}
+        else
+          run_tool_with_hooks(
+            call,
+            call_id,
+            call_name,
+            cleaned_name,
+            call_arguments,
+            tools,
+            run_ctx,
+            behaviour,
+            agent,
+            acc_ctx,
+            results
+          )
+        end
+      end)
+
+    {Enum.reverse(results), ctx}
+  end
+
+  # Parallel tool-call execution (agent.parallel_tool_calls). Three stages keep
+  # hook/approval/post-processing semantics sequential while only the approved
+  # executions fan out:
+  #   (a) pre-stage, in call order: on_tool_call callback, invalid-args
+  #       short-circuit, pre_tool_use hook, approval check
+  #   (b) approved calls execute concurrently under Nous.TaskSupervisor;
+  #       async_stream preserves input order. timeout: :infinity because
+  #       ToolExecutor already enforces per-tool timeouts internally — an
+  #       outer timeout would double-kill.
+  #   (c) post-stage, in original call order: post_tool_use hook,
+  #       on_tool_response callback, behaviour :after_tool, merge_deps
+  # Tools cannot observe each other's context updates within a turn in either
+  # mode (run_ctx is snapshotted before the loop); what changes vs sequential
+  # is only the interleaving of external side effects, and that pre-stage
+  # hooks see the pre-turn ctx rather than earlier calls' post-stage effects.
+  defp run_tool_calls_parallel(real_calls, tools, run_ctx, behaviour, agent, ctx) do
+    decisions = Enum.map(real_calls, &pre_stage_decision(&1, tools, agent, ctx))
+
+    approved = for {:execute, call} <- decisions, do: call
+
+    # Key executions by call id rather than relying on positional alignment
+    # between `approved` and the async_stream output — robust to reordering and
+    # to any future change in how the approved list is built. Provider tool_call
+    # ids are unique within one response (they must be, to match tool results),
+    # so a map keeps every result.
+    executed_by_id =
+      Nous.TaskSupervisor
+      |> Task.Supervisor.async_stream_nolink(
+        approved,
+        fn call -> {get_tool_field(call, :id), execute_single_tool(tools, call, run_ctx)} end,
+        timeout: :infinity,
+        # Carry the input (call) on crash exits so failures keep their
+        # attribution and surface as per-call tool errors.
+        zip_input_on_exit: true
+      )
+      |> Map.new(fn
+        {:ok, {call_id, {result_msg, context_updates}}} ->
+          {call_id, {result_msg, context_updates}}
+
+        {:exit, {call, reason}} ->
+          {get_tool_field(call, :id), crashed_tool_result(call, reason)}
+      end)
+
+    {results, ctx} =
+      Enum.reduce(decisions, {[], ctx}, fn
+        {:done, result_msg}, {results, acc_ctx} ->
+          {[result_msg | results], acc_ctx}
+
+        {:execute, call}, {results, acc_ctx} ->
+          {result_msg, context_updates} = Map.fetch!(executed_by_id, get_tool_field(call, :id))
+
+          {result_msg, acc_ctx} =
+            record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx)
+
+          {[result_msg | results], acc_ctx}
+      end)
+
+    {Enum.reverse(results), ctx}
+  end
+
+  # Pre-execution stage for one call in parallel mode, mirroring the
+  # run_tool_with_hooks branches up to (but not including) the execute step.
+  # Returns {:done, result_msg} for short-circuits (invalid args, hook denial,
+  # approval rejection) or {:execute, call} with final (possibly hook/approval
+  # edited) arguments.
+  defp pre_stage_decision(call, tools, agent, ctx) do
+    call_name = get_tool_field(call, :name)
+    call_id = get_tool_field(call, :id)
+    call_arguments = get_tool_field(call, :arguments)
+    cleaned_name = clean_tool_name(call_name)
+
+    Callbacks.execute(ctx, :on_tool_call, %{
+      id: call_id,
+      name: call_name,
+      arguments: call_arguments
+    })
+
+    invalid_args = invalid_arguments(call)
+
+    if is_binary(invalid_args) do
+      {:done, invalid_arguments_result(call_id, cleaned_name, invalid_args)}
+    else
+      hook_payload = %{
+        tool_name: cleaned_name,
+        tool_id: call_id,
+        arguments: call_arguments
+      }
+
+      case Hook.Runner.run(ctx.hook_registry, :pre_tool_use, hook_payload) do
+        :deny ->
+          Logger.info("Tool '#{cleaned_name}' denied by hook")
+          {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)}
+
+        {:deny, reason} ->
+          Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
+
+          {:done,
+           Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
+
+        {:modify, %{arguments: new_args}} ->
+          modified_call = put_tool_field(call, :arguments, new_args)
+          approval_decision(modified_call, call_id, cleaned_name, tools, agent, ctx)
+
+        _ ->
+          approval_decision(call, call_id, cleaned_name, tools, agent, ctx)
+      end
+    end
+  end
+
+  defp approval_decision(call, call_id, cleaned_name, tools, agent, ctx) do
+    tool =
+      tools
+      |> Enum.find(fn t -> t.name == cleaned_name end)
+      |> enforce_policy_approval(agent.permissions)
+
+    case check_tool_approval(tool, call, ctx) do
+      :reject ->
+        Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
+
+        {:done,
+         Message.tool(call_id, "Tool call was rejected by approval handler.", name: cleaned_name)}
+
+      {:edit, new_args} ->
+        Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
+        {:execute, put_tool_field(call, :arguments, new_args)}
+
+      :approve ->
+        {:execute, call}
+    end
+  end
+
+  # A task killed/crashed outside ToolExecutor's own error handling (which
+  # already converts in-tool crashes to {:error, _}) becomes a per-call tool
+  # error so one dead task never sinks the whole turn.
+  defp crashed_tool_result(call, reason) do
+    call_id = get_tool_field(call, :id)
+    cleaned_name = clean_tool_name(get_tool_field(call, :name))
+
+    Logger.error("Tool '#{cleaned_name}' task exited: #{inspect(reason)}")
+
+    result_msg =
+      Message.tool(
+        call_id,
+        "Tool execution failed: #{cleaned_name} - task exited: #{inspect(reason)}",
+        name: cleaned_name
+      )
+
+    {result_msg, %{}}
+  end
+
+  defp invalid_arguments(call) do
+    Map.get(call, "_invalid_arguments") || Map.get(call, :_invalid_arguments)
+  end
+
+  defp invalid_arguments_result(call_id, cleaned_name, invalid_args) do
+    Logger.warning("Tool '#{cleaned_name}' called with malformed arguments JSON: #{invalid_args}")
+
+    Message.tool(
+      call_id,
+      "Error: tool arguments were not valid JSON. Please retry with a JSON object.",
+      name: cleaned_name
+    )
   end
 
   # Run hooks + execute the tool call, returning the {results, acc_ctx} pair
@@ -994,11 +1160,19 @@ defmodule Nous.AgentRunner do
 
   # Execute a tool call and record its result, returning the result message and updated context
   defp execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx) do
+    {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
+    record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx)
+  end
+
+  # Post-execution stage for one tool call: post_tool_use hook (may modify the
+  # result), on_tool_response callback, behaviour :after_tool, merge_deps.
+  # Shared by the sequential path (via execute_and_record_tool) and the
+  # parallel path, which applies it in original call order after the fan-out.
+  defp record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx) do
     call_name = get_tool_field(call, :name)
     call_id = get_tool_field(call, :id)
     call_arguments = get_tool_field(call, :arguments)
     cleaned_name = clean_tool_name(call_name)
-    {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
 
     # Run post_tool_use hooks (can modify result)
     result_msg =

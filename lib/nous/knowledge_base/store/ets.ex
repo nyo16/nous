@@ -154,6 +154,14 @@ defmodule Nous.KnowledgeBase.Store.ETS do
       {:ok, entry} ->
         now = DateTime.utc_now()
         updated = struct(entry, Map.put(updates, :updated_at, now))
+
+        updated =
+          if is_map_key(updates, :title) or is_map_key(updates, :content) do
+            Entry.with_downcase_cache(updated)
+          else
+            updated
+          end
+
         :ets.insert(state.entries, {id, updated})
 
         if updated.slug != entry.slug do
@@ -214,9 +222,12 @@ defmodule Nous.KnowledgeBase.Store.ETS do
       state.entries
       |> scoped_records(kb_id)
       |> Enum.map(fn entry ->
-        # Score against both title and content for better matching
-        title_score = String.jaro_distance(query_down, String.downcase(entry.title))
-        content_score = String.jaro_distance(query_down, String.downcase(entry.content))
+        # Score against both title and content for better matching. The || arms
+        # cover entries persisted before the *_down cache fields existed.
+        title_down = entry.title_down || String.downcase(entry.title)
+        content_down = entry.content_down || String.downcase(entry.content)
+        title_score = String.jaro_distance(query_down, title_down)
+        content_score = String.jaro_distance(query_down, content_down)
         # Weight title matches higher
         score = max(title_score * 1.2, content_score) |> min(1.0)
         {entry, score}

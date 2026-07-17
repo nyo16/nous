@@ -48,7 +48,8 @@ defmodule Nous.Agent do
           end_strategy: :early | :exhaustive,
           enable_todos: boolean(),
           behaviour_module: module() | nil,
-          permissions: Nous.Permissions.Policy.t() | nil
+          permissions: Nous.Permissions.Policy.t() | nil,
+          parallel_tool_calls: boolean()
         }
 
   @enforce_keys [:model]
@@ -70,7 +71,8 @@ defmodule Nous.Agent do
     skills: [],
     end_strategy: :early,
     enable_todos: false,
-    permissions: nil
+    permissions: nil,
+    parallel_tool_calls: false
   ]
 
   @doc """
@@ -102,6 +104,15 @@ defmodule Nous.Agent do
     * `:permissions` - Optional `Nous.Permissions.Policy` enforced at runtime:
       blocked tools are removed from the model's tool list and approval-required
       tools must pass the approval handler (see `Nous.Permissions`)
+    * `:parallel_tool_calls` - Execute multiple tool calls from one model
+      response concurrently (default: `false`). Hooks, approval checks, and
+      post-processing (callbacks, `merge_deps`) stay sequential in call order;
+      only the tool executions themselves fan out, and result messages keep
+      the original call order. Tools already cannot observe each other's
+      context updates within a turn (the run context is snapshotted before the
+      tool loop), but external side effects (HTTP calls, DB writes) will
+      interleave — leave this off if your tools depend on sequential
+      side-effect ordering within a single response
 
   ## Examples
 
@@ -151,7 +162,8 @@ defmodule Nous.Agent do
         merge_skill_dirs(Keyword.get(opts, :skills, []), Keyword.get(opts, :skill_dirs, [])),
       end_strategy: Keyword.get(opts, :end_strategy, :early),
       behaviour_module: Keyword.get(opts, :behaviour_module),
-      permissions: Keyword.get(opts, :permissions)
+      permissions: Keyword.get(opts, :permissions),
+      parallel_tool_calls: Keyword.get(opts, :parallel_tool_calls, false)
     }
   end
 
