@@ -90,7 +90,9 @@ defmodule Nous.Workflow.Scratch do
   end
 
   defp ensure_table(%Scratch{table: nil} = scratch) do
-    table = :ets.new(:"nous_scratch_#{scratch.id}", [:set, :public])
+    # Constant atom: without :named_table the name is cosmetic, and a
+    # per-run :"nous_scratch_#{id}" atom would leak (atoms are never GC'd).
+    table = :ets.new(:nous_scratch, [:set, :public])
     %{scratch | table: table}
   end
 

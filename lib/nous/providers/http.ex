@@ -102,7 +102,7 @@ defmodule Nous.Providers.HTTP do
      %ArgumentError{
        message:
          "Invalid arguments: url must be string, body must be map, headers must be list. " <>
-           "Got: url=#{inspect(url)}, body=#{inspect(body)}, headers=#{inspect(headers)}"
+           "Got: url=#{inspect(url)}, body=#{inspect(body)}, headers=#{redact_headers(headers)}"
      }}
   end
 
@@ -138,6 +138,19 @@ defmodule Nous.Providers.HTTP do
   rescue
     ArgumentError -> fallback.()
   end
+
+  # Header values carry secrets (authorization, x-api-key) — show only the
+  # keys when interpolating headers into error messages.
+  defp redact_headers(headers) when is_list(headers) or is_map(headers) do
+    headers
+    |> Enum.map(fn
+      {key, _value} -> {key, "[REDACTED]"}
+      other -> other
+    end)
+    |> inspect()
+  end
+
+  defp redact_headers(headers), do: inspect(headers)
 
   @doc """
   Make a streaming POST request.
@@ -182,7 +195,7 @@ defmodule Nous.Providers.HTTP do
      %ArgumentError{
        message:
          "Invalid arguments: url must be string, body must be map, headers must be list. " <>
-           "Got: url=#{inspect(url)}, body=#{inspect(body)}, headers=#{inspect(headers)}"
+           "Got: url=#{inspect(url)}, body=#{inspect(body)}, headers=#{redact_headers(headers)}"
      }}
   end
 

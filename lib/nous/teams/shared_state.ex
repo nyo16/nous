@@ -133,7 +133,9 @@ defmodule Nous.Teams.SharedState do
     # The old single-row-list design copied the entire growing list term on
     # every :ets.insert (O(n) per write, O(n^2) accumulation). Per-row writes
     # are O(1) and claim conflict checks become a file-scoped :ets.select.
-    table = :ets.new(:"team_state_#{team_id}", [:set, :private])
+    # Constant atom: without :named_table the name is cosmetic, and a
+    # per-team :"team_state_#{team_id}" atom would leak (atoms are never GC'd).
+    table = :ets.new(:team_state, [:set, :private])
 
     {:ok, %{team_id: team_id, table: table, claim_ttl: claim_ttl, expiry_timers: %{}, seq: 0}}
   end
