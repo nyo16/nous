@@ -43,6 +43,9 @@ defmodule Nous.Model do
           stream_normalizer: module() | nil
         }
 
+  # Keep the API key out of inspect output — crash reports, Logger metadata,
+  # and IEx would otherwise leak it.
+  @derive {Inspect, except: [:api_key]}
   @enforce_keys [:provider, :model]
   defstruct [
     :provider,

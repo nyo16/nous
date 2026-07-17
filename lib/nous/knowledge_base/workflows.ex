@@ -227,36 +227,50 @@ defmodule Nous.KnowledgeBase.Workflows do
     {:ok, entries} = store_mod.list_entries(store_state, opts)
     {:ok, docs} = store_mod.list_documents(store_state, opts)
 
-    link_count =
-      Enum.reduce(entries, 0, fn entry, acc ->
-        case store_mod.outlinks(store_state, entry.id) do
-          {:ok, links} -> acc + length(links)
-          _ -> acc
-        end
-      end)
+    link_counts = link_counts_by_source(store_mod, store_state, entries)
 
     stats = %{
       total_entries: length(entries),
-      total_links: link_count,
+      total_links: link_counts |> Map.values() |> Enum.sum(),
       total_documents: length(docs)
     }
 
     entry_summaries =
       Enum.map(entries, fn entry ->
-        {:ok, outlinks} = store_mod.outlinks(store_state, entry.id)
-
         %{
           slug: entry.slug,
           title: entry.title,
           entry_type: entry.entry_type,
           confidence: entry.confidence,
-          link_count: length(outlinks)
+          link_count: Map.get(link_counts, entry.id, 0)
         }
       end)
 
     state
     |> put_in([Access.key(:data), :stats], stats)
     |> put_in([Access.key(:data), :entry_summaries], entry_summaries)
+  end
+
+  # Use the optional bulk Store callback if implemented (single scan instead
+  # of a full links-table scan per entry); fall back to per-entry outlinks/2
+  # so older custom backends keep working without code changes. Scoped to the
+  # listed entries — the bulk callback counts links store-wide.
+  defp link_counts_by_source(store_mod, store_state, entries) do
+    entry_ids = Enum.map(entries, & &1.id)
+
+    if function_exported?(store_mod, :link_counts_by_source, 1) do
+      case store_mod.link_counts_by_source(store_state) do
+        {:ok, counts} -> Map.take(counts, entry_ids)
+        _ -> %{}
+      end
+    else
+      Map.new(entry_ids, fn id ->
+        case store_mod.outlinks(store_state, id) do
+          {:ok, links} -> {id, length(links)}
+          _ -> {id, 0}
+        end
+      end)
+    end
   end
 
   defp build_health_report(state) do
