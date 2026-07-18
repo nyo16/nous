@@ -1,12 +1,26 @@
 defmodule Nous.Plugins.SummarizationTest do
-  use ExUnit.Case, async: true
+  # async: false — mutates the global :model_dispatcher app env.
+  use ExUnit.Case, async: false
 
   alias Nous.Agent
   alias Nous.Agent.Context
   alias Nous.Message
   alias Nous.Plugins.Summarization
 
+  defmodule FailingDispatcher do
+    def request(_model, _messages, _settings), do: {:error, :summarizer_llm_down}
+    def request_stream(_model, _messages, _settings), do: {:error, :summarizer_llm_down}
+    def count_tokens(_messages), do: 0
+  end
+
   setup do
+    # The failure-path tests previously relied on "no API key" to make the
+    # summary LLM call fail — which fired a REAL request at api.openai.com
+    # (and would make a real paid call, then fail, with OPENAI_API_KEY set).
+    # A failing mock dispatcher exercises the same fail-open branch offline.
+    Application.put_env(:nous, :model_dispatcher, FailingDispatcher)
+    on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
+
     agent =
       Agent.new("openai:gpt-4",
         plugins: [Summarization],

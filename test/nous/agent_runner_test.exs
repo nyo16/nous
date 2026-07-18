@@ -446,6 +446,35 @@ defmodule Nous.AgentRunnerTest do
       end)
     end
 
+    test "emits exactly one {:complete, _} when the provider yields a duplicate finish", %{
+      model: model
+    } do
+      # OpenAI-compatible streams can yield two {:finish, _} events: one from
+      # the finish_reason chunk and one from the end-of-stream marker.
+      defmodule DoubleFinishDispatcher do
+        def request_stream(_model, _messages, _settings) do
+          {:ok,
+           [
+             {:text_delta, "Hello!"},
+             {:finish, "stop"},
+             {:finish, "stop"}
+           ]}
+        end
+
+        def request(_model, _messages, _settings), do: {:error, "Not used"}
+        def count_tokens(_messages), do: 50
+      end
+
+      with_stream_dispatcher(DoubleFinishDispatcher, fn ->
+        agent = Agent.new(model, instructions: "Be helpful")
+        {:ok, stream} = AgentRunner.run_stream(agent, "Hello")
+        events = Enum.to_list(stream)
+
+        assert [{:complete, result}] = Enum.filter(events, &match?({:complete, _}, &1))
+        assert result.output == "Hello!"
+      end)
+    end
+
     test "handles tool_call_delta with list values", %{model: model} do
       defmodule ListToolCallDispatcher do
         def request_stream(_model, _messages, _settings) do

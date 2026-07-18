@@ -34,7 +34,15 @@ defmodule Nous.StructuredOutputStreamingTest do
   end
 
   setup do
-    {:ok, _pid} = Elixir.Agent.start_link(fn -> [] end, name: ScriptedDispatcher.Script)
+    # start_supervised! (vs bare Agent.start_link) so the named process is
+    # torn down synchronously between tests — a plain link leaves it alive
+    # briefly after the test process exits, racing the next setup into
+    # {:error, {:already_started, _}}.
+    start_supervised!(%{
+      id: ScriptedDispatcher.Script,
+      start: {Elixir.Agent, :start_link, [fn -> [] end, [name: ScriptedDispatcher.Script]]}
+    })
+
     Application.put_env(:nous, :model_dispatcher, ScriptedDispatcher)
     on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
     %{model: "openai:gpt-test"}
