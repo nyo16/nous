@@ -43,6 +43,7 @@ defmodule Nous.AgentRunner do
   }
 
   alias Nous.Agent.{Behaviour, Callbacks, Context}
+  alias Nous.AgentRunner.PromptAssembly
 
   require Logger
 
@@ -308,7 +309,11 @@ defmodule Nous.AgentRunner do
     plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
     all_tools = tools ++ plugin_tools
 
-    ctx = if ctx.iteration == 0, do: apply_plugin_system_prompts(agent, ctx), else: ctx
+    ctx =
+      if ctx.iteration == 0,
+        do: PromptAssembly.apply_plugin_system_prompts(agent, ctx),
+        else: ctx
+
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
     all_tools = maybe_filter_by_policy(agent.permissions, all_tools)
 
@@ -328,7 +333,7 @@ defmodule Nous.AgentRunner do
       # Inject structured output settings for streaming
       model_settings =
         if agent.output_type != :string do
-          inject_structured_output_settings(agent, model_settings, all_tools)
+          PromptAssembly.inject_structured_output_settings(agent, model_settings, all_tools)
         else
           model_settings
         end
@@ -428,7 +433,10 @@ defmodule Nous.AgentRunner do
         # Handle todo injection if enabled
         system_prompt =
           if agent.enable_todos do
-            inject_todos_into_prompt(system_prompt || "", Keyword.get(opts, :deps, %{}))
+            PromptAssembly.inject_todos_into_prompt(
+              system_prompt || "",
+              Keyword.get(opts, :deps, %{})
+            )
           else
             system_prompt
           end
@@ -585,7 +593,10 @@ defmodule Nous.AgentRunner do
     all_tools = tools ++ plugin_tools
 
     # Apply plugin system prompt fragments only on first iteration
-    ctx = if ctx.iteration == 0, do: apply_plugin_system_prompts(agent, ctx), else: ctx
+    ctx =
+      if ctx.iteration == 0,
+        do: PromptAssembly.apply_plugin_system_prompts(agent, ctx),
+        else: ctx
 
     # Run plugin before_request hooks
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
@@ -623,7 +634,7 @@ defmodule Nous.AgentRunner do
       # Inject structured output settings
       model_settings =
         if agent.output_type != :string do
-          inject_structured_output_settings(agent, model_settings, all_tools)
+          PromptAssembly.inject_structured_output_settings(agent, model_settings, all_tools)
         else
           model_settings
         end
@@ -1289,29 +1300,6 @@ defmodule Nous.AgentRunner do
     {Message.tool(call_id, result, name: cleaned_name), context_updates}
   end
 
-  # Apply plugin system prompt fragments to context
-  # Only applied once per iteration (on first iteration, or when system prompt needs updating)
-  defp apply_plugin_system_prompts(agent, ctx) do
-    case Plugin.collect_system_prompts(agent.plugins, agent, ctx) do
-      nil ->
-        ctx
-
-      plugin_prompt ->
-        # Update the system message if it exists, otherwise inject one
-        updated_messages =
-          case ctx.messages do
-            [%Message{role: :system} = sys | rest] ->
-              updated_content = sys.content <> "\n\n" <> plugin_prompt
-              [%{sys | content: updated_content} | rest]
-
-            messages ->
-              [Message.system(plugin_prompt) | messages]
-          end
-
-        %{ctx | messages: updated_messages}
-    end
-  end
-
   # Convert ContextUpdate operations to a deps map for merging.
   #
   # `:append` previously did `existing ++ [item]`, which is O(n^2) over many
@@ -1710,78 +1698,6 @@ defmodule Nous.AgentRunner do
     Enum.map(tools, &Tool.to_openai_schema/1)
   end
 
-  # Inject todos into system prompt
-  defp inject_todos_into_prompt(instructions, deps) do
-    todos = deps[:todos] || []
-
-    if todos == [] do
-      Logger.debug("No todos to inject into system prompt")
-      instructions
-    else
-      in_progress = Enum.count(todos, &(&1.status == "in_progress"))
-      pending = Enum.count(todos, &(&1.status == "pending"))
-      completed = Enum.count(todos, &(&1.status == "completed"))
-
-      Logger.debug(
-        "Injecting #{length(todos)} todos into system prompt (in_progress: #{in_progress}, pending: #{pending}, completed: #{completed})"
-      )
-
-      todo_section = format_todos_for_prompt(todos)
-
-      """
-      #{instructions}
-
-      ## Current Task Progress
-
-      #{todo_section}
-
-      You have access to todo management tools:
-      - add_todo(text, status?, priority?) - Create new task
-      - update_todo(id, text?, status?, priority?) - Update existing task
-      - complete_todo(id) - Mark task as completed
-      - list_todos(status?, priority?) - List all tasks
-
-      Use these tools to track your progress and stay organized.
-      """
-    end
-  end
-
-  defp format_todos_for_prompt(todos) do
-    grouped = Enum.group_by(todos, & &1.status)
-
-    section_defs = [
-      {"in_progress", "In Progress",
-       fn todo ->
-         "  #{priority_icon(todo.priority)} [#{todo.id}] #{todo.text}"
-       end},
-      {"pending", "Pending",
-       fn todo ->
-         "  #{priority_icon(todo.priority)} [#{todo.id}] #{todo.text}"
-       end},
-      {"completed", "Completed",
-       fn todo ->
-         "  * [#{todo.id}] #{todo.text}"
-       end}
-    ]
-
-    sections =
-      Enum.flat_map(section_defs, fn {status, label, formatter} ->
-        case Map.get(grouped, status, []) do
-          [] ->
-            []
-
-          items ->
-            list = Enum.map_join(items, "\n", formatter)
-            ["\n#{label} (#{length(items)}):\n#{list}"]
-        end
-      end)
-
-    case sections do
-      [] -> "No tasks yet. Use add_todo() to create tasks."
-      _ -> Enum.join(sections, "\n")
-    end
-  end
-
   # Format tool errors to preserve structured information while providing LLM-friendly response
   @spec format_tool_error(term(), String.t()) :: %{summary: String.t(), response: String.t()}
   defp format_tool_error(error, tool_name) do
@@ -1815,11 +1731,6 @@ defmodule Nous.AgentRunner do
         %{summary: summary, response: response}
     end
   end
-
-  defp priority_icon("high"), do: "[HIGH]"
-  defp priority_icon("medium"), do: "[MED]"
-  defp priority_icon("low"), do: "[LOW]"
-  defp priority_icon(_), do: "-"
 
   # Request with fallback chain support.
   # When fallback models are configured, tries each model in order on eligible errors.
@@ -2027,7 +1938,11 @@ defmodule Nous.AgentRunner do
       # Re-inject structured output settings for the new provider if needed
       if agent.output_type != :string do
         # Use a temporary agent with the fallback model so provider-specific settings are correct
-        inject_structured_output_settings(%{agent | model: model}, settings, all_tools)
+        PromptAssembly.inject_structured_output_settings(
+          %{agent | model: model},
+          settings,
+          all_tools
+        )
       else
         settings
       end
@@ -2037,95 +1952,6 @@ defmodule Nous.AgentRunner do
   # Get the model dispatcher, allowing dependency injection for testing
   defp get_dispatcher do
     Application.get_env(:nous, :model_dispatcher, ModelDispatcher)
-  end
-
-  # --- Structured Output Helpers ---
-
-  # Inject structured output settings into model_settings
-  defp inject_structured_output_settings(agent, model_settings, all_tools) do
-    mode = Keyword.get(agent.structured_output, :mode, :auto)
-
-    so_settings =
-      OutputSchema.to_provider_settings(
-        agent.output_type,
-        agent.model.provider,
-        mode: mode,
-        has_other_tools: not Enum.empty?(all_tools)
-      )
-
-    merge_structured_output_settings(model_settings, so_settings, agent.model.provider)
-  end
-
-  # Merge structured output settings into model_settings
-  defp merge_structured_output_settings(model_settings, so_settings, provider) do
-    # Handle synthetic tool injection separately
-    {tool_settings, other_settings} =
-      Map.split(so_settings, [
-        :__structured_output_tool__,
-        :__structured_output_tools__,
-        :__structured_output_tool_choice__
-      ])
-
-    # Merge non-tool settings
-    merged = Map.merge(model_settings, other_settings)
-
-    # Inject synthetic tool(s) into existing tools list
-    case tool_settings do
-      # Plural: multiple synthetic tools ({:one_of, schemas})
-      %{__structured_output_tools__: tools_list} when is_list(tools_list) ->
-        existing_tools = merged[:tools] || []
-
-        formatted_tools =
-          Enum.map(tools_list, fn tool ->
-            case provider do
-              :anthropic -> convert_synthetic_tool_anthropic(tool)
-              _ -> tool
-            end
-          end)
-
-        merged = Map.put(merged, :tools, existing_tools ++ formatted_tools)
-
-        case tool_settings[:__structured_output_tool_choice__] do
-          nil -> merged
-          choice -> Map.put(merged, :tool_choice, choice)
-        end
-
-      # Singular: single synthetic tool (standard :tool_call mode)
-      %{__structured_output_tool__: tool} ->
-        existing_tools = merged[:tools] || []
-
-        # Convert synthetic tool to provider format
-        formatted_tool =
-          case provider do
-            :anthropic -> convert_synthetic_tool_anthropic(tool)
-            _ -> tool
-          end
-
-        merged = Map.put(merged, :tools, existing_tools ++ [formatted_tool])
-
-        case tool_settings[:__structured_output_tool_choice__] do
-          nil -> merged
-          choice -> Map.put(merged, :tool_choice, choice)
-        end
-
-      _ ->
-        merged
-    end
-  end
-
-  # Convert synthetic tool to Anthropic format (atom keys)
-  defp convert_synthetic_tool_anthropic(tool) do
-    func = tool["function"]
-    # Use ToolSchema.to_anthropic with a minimal Tool struct
-    %{
-      name: func["name"],
-      description: func["description"],
-      input_schema: %{
-        type: "object",
-        properties: func["parameters"]["properties"] || %{},
-        required: func["parameters"]["required"] || []
-      }
-    }
   end
 
   # Validation retry loop
