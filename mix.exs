@@ -17,6 +17,10 @@ defmodule Nous.MixProject do
       source_url: @source_url,
       package: package(),
       elixirc_paths: elixirc_paths(Mix.env()),
+      # hackney is an optional backend (see deps); without this, apps that
+      # depend on nous without hackney get ":hackney is not available"
+      # warnings when compiling the dep.
+      elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix, :ex_unit, :inets]
