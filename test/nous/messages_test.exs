@@ -339,4 +339,113 @@ defmodule Nous.MessagesTest do
       assert tool_call["name"] == "get_data"
     end
   end
+
+  describe "role helper equivalence with the changeset path" do
+    # The role helpers construct %Message{} directly (build/1 fast path, no
+    # cast/validate); these tests pin their output to what Message.new!/1
+    # (changeset path) produces for the same attrs, so the two paths cannot
+    # drift apart field-for-field.
+
+    test "system/2 matches new!/1" do
+      assert_equivalent(
+        Message.system("Be helpful"),
+        Message.new!(%{role: :system, content: "Be helpful"})
+      )
+
+      assert_equivalent(
+        Message.system("Be helpful", metadata: %{source: :config}),
+        Message.new!(%{role: :system, content: "Be helpful", metadata: %{source: :config}})
+      )
+    end
+
+    test "user/2 with binary content matches new!/1" do
+      assert_equivalent(
+        Message.user("Hello!"),
+        Message.new!(%{role: :user, content: "Hello!"})
+      )
+
+      assert_equivalent(
+        Message.user("Hello!", metadata: %{trace_id: "t1"}),
+        Message.new!(%{role: :user, content: "Hello!", metadata: %{trace_id: "t1"}})
+      )
+    end
+
+    test "user/2 with content parts matches new!/1" do
+      alias Nous.Message.ContentPart
+
+      parts = [
+        ContentPart.text("What's in this image?"),
+        ContentPart.image_url("https://example.com/image.png")
+      ]
+
+      assert_equivalent(
+        Message.user(parts),
+        Message.new!(%{
+          role: :user,
+          content: ContentPart.to_text(parts),
+          metadata: %{content_parts: parts}
+        })
+      )
+    end
+
+    test "assistant/2 matches new!/1, including nil content and tool_calls" do
+      assert_equivalent(
+        Message.assistant("Hi there"),
+        Message.new!(%{role: :assistant, content: "Hi there"})
+      )
+
+      # nil content is allowed for assistant (streaming populates it later)
+      assert_equivalent(
+        Message.assistant(nil),
+        Message.new!(%{role: :assistant, content: nil})
+      )
+
+      tool_calls = [%{"id" => "call_1", "name" => "search", "arguments" => %{"q" => "elixir"}}]
+
+      assert_equivalent(
+        Message.assistant("Searching", tool_calls: tool_calls),
+        Message.new!(%{role: :assistant, content: "Searching", tool_calls: tool_calls})
+      )
+    end
+
+    test "tool/3 matches new!/1, including name and encoded map results" do
+      assert_equivalent(
+        Message.tool("call_123", "raw result"),
+        Message.new!(%{role: :tool, content: "raw result", tool_call_id: "call_123"})
+      )
+
+      assert_equivalent(
+        Message.tool("call_123", "raw result", name: "search"),
+        Message.new!(%{
+          role: :tool,
+          content: "raw result",
+          tool_call_id: "call_123",
+          name: "search"
+        })
+      )
+
+      assert_equivalent(
+        Message.tool("call_123", %{status: "success"}),
+        Message.new!(%{
+          role: :tool,
+          content: ~s({"status":"success"}),
+          tool_call_id: "call_123"
+        })
+      )
+    end
+
+    test "unknown opts keys are dropped by both paths" do
+      assert_equivalent(
+        Message.system("x", frobnicate: 1),
+        Message.new!(%{role: :system, content: "x", frobnicate: 1})
+      )
+    end
+  end
+
+  # Compare all fields except created_at (both paths stamp their own utc_now).
+  defp assert_equivalent(%Message{} = fast, %Message{} = via_changeset) do
+    assert %DateTime{} = fast.created_at
+    assert %DateTime{} = via_changeset.created_at
+    assert %{fast | created_at: nil} == %{via_changeset | created_at: nil}
+  end
 end

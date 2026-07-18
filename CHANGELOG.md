@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in parallel tool-call execution** — `parallel_tool_calls: true` on
+  `Nous.Agent.new/2` (default `false`). When a model response contains multiple
+  tool calls, approved executions fan out under `Nous.TaskSupervisor` while
+  everything order-sensitive stays sequential in call order: `pre_tool_use`
+  hooks and approval checks run before the fan-out, and `post_tool_use` hooks,
+  `on_tool_response` callbacks, behaviour `:after_tool`, and
+  `Context.merge_deps` apply after it, in original call order. Result messages
+  keep call order (providers require it). Per-tool timeouts remain
+  `ToolExecutor`'s job (no second outer timeout); a crashed task surfaces as a
+  per-call tool error instead of sinking the turn. Off by default because tools
+  may rely on sequential external side effects within one turn — note that
+  tools already cannot observe each other's context updates within a turn (the
+  run context is snapshotted before the tool loop).
+
 ### Changed
 
 - **Agent-runtime hot-path hardening (behavior-preserving)** (#62). Eliminates
