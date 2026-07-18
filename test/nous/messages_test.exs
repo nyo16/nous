@@ -72,6 +72,21 @@ defmodule Nous.MessagesTest do
       assert result == ["Hello ", "world!"]
     end
 
+    test "returns empty string for nil content (reasoning-only assistant message)" do
+      # Thinking models truncated mid-reasoning produce assistant messages
+      # with reasoning_content set and content: nil.
+      message =
+        Message.new!(%{
+          role: :assistant,
+          reasoning_content: "Let me think about this...",
+          metadata: %{}
+        })
+
+      assert message.content == nil
+      assert Message.extract_text(message) == ""
+      assert Messages.extract_text(message) == ""
+    end
+
     test "extracts text from message with content parts" do
       alias Nous.Message.ContentPart
 

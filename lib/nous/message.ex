@@ -300,6 +300,10 @@ defmodule Nous.Message do
     ContentPart.extract_text(content)
   end
 
+  # nil content occurs on tool-call-only messages and on thinking-model
+  # responses truncated mid-reasoning (only reasoning_content is set).
+  def extract_text(%Message{content: nil}), do: ""
+
   @doc """
   Convert message content to plain text representation.
 
