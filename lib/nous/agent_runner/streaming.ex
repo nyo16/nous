@@ -69,6 +69,13 @@ defmodule Nous.AgentRunner.Streaming do
         {:thinking_delta, text} = event, acc ->
           {[event], %{acc | thinking: [text | acc.thinking]}}
 
+        {:finish, _reason} = event, %{completed: true} = acc ->
+          # OpenAI-compatible providers can emit a second {:finish, _} (the
+          # finish_reason chunk followed by the end-of-stream marker). The
+          # first one already emitted {:complete, _} with the accumulated
+          # output — pass the event through without an empty duplicate.
+          {[event], acc}
+
         {:finish, reason} = event, acc ->
           result = build_stream_result(acc, reason)
           {[event, {:complete, result}], %{acc | text: [], thinking: [], completed: true}}
