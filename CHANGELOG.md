@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-18
+
 ### Added
 
 - **Opt-in parallel tool-call execution** — `parallel_tool_calls: true` on
@@ -31,30 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Agent-runtime hot-path hardening (behavior-preserving)** (#62). Eliminates
-  confirmed super-linear and serialization hot paths in the agent runtime,
-  measured with Benchee first; all changes preserve observable behavior. Core
-  loop: tool-schema conversion is memoized once per run via a runtime-only
-  `Context.tool_schema_cache` and stripped from `Context.serialize/1`.
-  Persistence/OTP: `agent_server` context saves on the response/`clear_history`
-  paths are now fire-and-forget via `Task.Supervisor` (off the GenServer
-  mailbox); `Teams.RateLimiter` uses running-window counters so `rate_limited?/2`
-  is O(1); `Teams.SharedState` uses ETS row-per-entry for discoveries/claims.
-  Context updates replace O(n²) `++ [item]` appends with prepend + per-key
-  reverse. Memory/search: scope/kb_id/type filters are pushed into ETS via
-  matchspecs, search is single-pass, and the SQLite cosine L2 norm is hoisted
-  out of the loop.
-
 - **`Nous.AgentRunner` split into a facade + four submodules.** The
   2,188-line / 97-function module is now a 926-line facade delegating to
-  internal (`@moduledoc false`) submodules:
-  `Nous.AgentRunner.PromptAssembly` (prompt/settings assembly),
-  `Nous.AgentRunner.Streaming` (stream wrapping/consumption),
-  `Nous.AgentRunner.RequestDispatch` (fallback chains, rate limiting,
-  provider settings), and `Nous.AgentRunner.ToolExecution`
-  (sequential/parallel tool execution, hooks, approval/policy enforcement).
+  internal (`@moduledoc false`) submodules under `Nous.AgentRunner`:
+  `PromptAssembly` (prompt/settings assembly), `Streaming` (stream
+  wrapping/consumption), `RequestDispatch` (fallback chains, rate limiting,
+  provider settings), and `ToolExecution` (sequential/parallel tool
+  execution, hooks, approval/policy enforcement).
   Move-only: the public API (`run/2,3`, `run_with_context/2,3`,
   `run_stream/2,3`) and all telemetry events are unchanged.
+
+- **Internal dedup/refactor sweeps** (#66, #67): repeated logic across
+  providers, tools, and errors single-sourced; struct references adopt
+  `alias __MODULE__`. No behavior change.
 
 ### Fixed
 
@@ -74,6 +65,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:hackney`/`:hackney_pool` are declared `no_warn_undefined` — apps that
   depend on nous without the optional `floki`/`hackney` packages compile
   without warnings.
+
+- **Audit follow-ups** (#68): atom leaks, secret redaction, and O(n²)
+  knowledge-base stats.
+
+## [0.16.6] - 2026-06-27
+
+### Changed
+
+- **Agent-runtime hot-path hardening (behavior-preserving)** (#62). Eliminates
+  confirmed super-linear and serialization hot paths in the agent runtime,
+  measured with Benchee first; all changes preserve observable behavior. Core
+  loop: tool-schema conversion is memoized once per run via a runtime-only
+  `Context.tool_schema_cache` and stripped from `Context.serialize/1`.
+  Persistence/OTP: `agent_server` context saves on the response/`clear_history`
+  paths are now fire-and-forget via `Task.Supervisor` (off the GenServer
+  mailbox); `Teams.RateLimiter` uses running-window counters so `rate_limited?/2`
+  is O(1); `Teams.SharedState` uses ETS row-per-entry for discoveries/claims.
+  Context updates replace O(n²) `++ [item]` appends with prepend + per-key
+  reverse. Memory/search: scope/kb_id/type filters are pushed into ETS via
+  matchspecs, search is single-pass, and the SQLite cosine L2 norm is hoisted
+  out of the loop.
 
 ### Documentation
 
@@ -1660,7 +1672,9 @@ Initial public release with multi-provider LLM support:
 - ReAct agent implementation
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/nyo16/nous/compare/v0.16.5...HEAD
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/nyo16/nous/compare/v0.16.6...v0.17.0
+[0.16.6]: https://github.com/nyo16/nous/compare/v0.16.5...v0.16.6
 [0.16.5]: https://github.com/nyo16/nous/compare/v0.16.4...v0.16.5
 [0.16.4]: https://github.com/nyo16/nous/compare/v0.16.3...v0.16.4
 [0.16.3]: https://github.com/nyo16/nous/compare/v0.16.2...v0.16.3
