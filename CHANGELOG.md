@@ -47,12 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`Nous.AgentRunner` split into a facade + four submodules.** The
   2,188-line / 97-function module is now a 926-line facade delegating to
-  internal (`@moduledoc false`) submodules:
-  `Nous.AgentRunner.PromptAssembly` (prompt/settings assembly),
-  `Nous.AgentRunner.Streaming` (stream wrapping/consumption),
-  `Nous.AgentRunner.RequestDispatch` (fallback chains, rate limiting,
-  provider settings), and `Nous.AgentRunner.ToolExecution`
-  (sequential/parallel tool execution, hooks, approval/policy enforcement).
+  internal (`@moduledoc false`) submodules under `Nous.AgentRunner`:
+  `PromptAssembly` (prompt/settings assembly), `Streaming` (stream
+  wrapping/consumption), `RequestDispatch` (fallback chains, rate limiting,
+  provider settings), and `ToolExecution` (sequential/parallel tool
+  execution, hooks, approval/policy enforcement).
   Move-only: the public API (`run/2,3`, `run_with_context/2,3`,
   `run_stream/2,3`) and all telemetry events are unchanged.
 
