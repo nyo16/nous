@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tools already cannot observe each other's context updates within a turn (the
   run context is snapshotted before the tool loop).
 
+- **LM Studio live smoke suite** (`test/nous/lmstudio_smoke_test.exs`,
+  `:llm`-tagged, excluded by default) — one live test per runner path: plain
+  run, sequential tool loop, `parallel_tool_calls`, and the public
+  `run_stream/3` (previously uncovered by any live test). Model-agnostic
+  assertions safe for thinking models; verified against LM Studio.
+
 ### Changed
 
 - **Agent-runtime hot-path hardening (behavior-preserving)** (#62). Eliminates
@@ -38,6 +44,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reverse. Memory/search: scope/kb_id/type filters are pushed into ETS via
   matchspecs, search is single-pass, and the SQLite cosine L2 norm is hoisted
   out of the loop.
+
+- **`Nous.AgentRunner` split into a facade + four submodules.** The
+  2,188-line / 97-function module is now a 926-line facade delegating to
+  internal (`@moduledoc false`) submodules:
+  `Nous.AgentRunner.PromptAssembly` (prompt/settings assembly),
+  `Nous.AgentRunner.Streaming` (stream wrapping/consumption),
+  `Nous.AgentRunner.RequestDispatch` (fallback chains, rate limiting,
+  provider settings), and `Nous.AgentRunner.ToolExecution`
+  (sequential/parallel tool execution, hooks, approval/policy enforcement).
+  Move-only: the public API (`run/2,3`, `run_with_context/2,3`,
+  `run_stream/2,3`) and all telemetry events are unchanged.
+
+### Fixed
+
+- **`run_stream/3` no longer emits a duplicate empty `{:complete, _}`
+  event.** OpenAI-compatible streams yield two `{:finish, _}` events (the
+  `finish_reason` chunk plus the end-of-stream marker) and the result
+  wrapper emitted a `{:complete, _}` for each — the second with empty
+  output. Consumers now get exactly one, carrying the accumulated output.
+
+- **`Nous.Message.extract_text/1` no longer crashes on `content: nil`.**
+  Thinking models truncated mid-reasoning return assistant messages with
+  only `reasoning_content` set; extraction now returns `""` instead of
+  raising `FunctionClauseError` and failing the whole run.
+
+- **Optional-dep compile warnings in consumer builds silenced.**
+  `Nous.Tools.SearchScrape` is now gated on Floki (like `WebFetch`), and
+  `:hackney`/`:hackney_pool` are declared `no_warn_undefined` — apps that
+  depend on nous without the optional `floki`/`hackney` packages compile
+  without warnings.
 
 ### Documentation
 
