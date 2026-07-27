@@ -86,7 +86,7 @@ defmodule Nous.Providers.HTTP do
 
   ## Error Reasons
     * `%{status: integer(), body: term()}` - HTTP error response
-    * `%Mint.TransportError{}` - Network error (Req backend)
+    * `%Req.TransportError{}` / `%Mint.TransportError{}` - Network error (Req backend)
     * `%JSON.DecodeError{}` - JSON decode error
   """
   @spec post(String.t(), map(), list(), keyword()) :: {:ok, map()} | {:error, term()}

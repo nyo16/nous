@@ -701,13 +701,24 @@ defmodule Nous.ProviderTest do
                ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
     end
 
-    test "leaves :status_code and :retry_after_ms nil for transport errors" do
+    test "leaves :status_code and :retry_after_ms nil for Mint transport errors" do
       error = {:error, %Mint.TransportError{reason: :econnrefused}}
 
       assert {:error, %ProviderError{status_code: nil, retry_after_ms: nil} = err} =
                ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
 
       assert %Mint.TransportError{reason: :econnrefused} = err.details
+    end
+
+    # req 0.6 surfaces transport failures as %Req.TransportError{}, not Mint's.
+    # Both must stay uncategorised (no HTTP status, no server-suggested backoff).
+    test "leaves :status_code and :retry_after_ms nil for Req transport errors" do
+      error = {:error, %Req.TransportError{reason: :econnrefused}}
+
+      assert {:error, %ProviderError{status_code: nil, retry_after_ms: nil} = err} =
+               ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
+
+      assert %Req.TransportError{reason: :econnrefused} = err.details
     end
   end
 

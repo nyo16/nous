@@ -2,7 +2,7 @@ defmodule Nous.AgentRunnerParallelToolsTest do
   # async: false — swaps the global :model_dispatcher app env.
   use ExUnit.Case, async: false
 
-  alias Nous.{Agent, AgentRunner, Hook, Usage}
+  alias Nous.{Agent, AgentRunner, Hook, Tool, Usage}
 
   @moduletag :capture_log
 
@@ -54,6 +54,14 @@ defmodule Nous.AgentRunnerParallelToolsTest do
 
     def marker_fast(_ctx, _args) do
       %{result: "fast", __update_context__: %{marker: "fast"}}
+    end
+
+    # Sleeps far past any ceiling a test would set. Paired with `timeout: nil`
+    # this is the case ToolExecutor does *not* bound: it only arms its internal
+    # timer when tool.timeout is a positive number.
+    def hang(_ctx, _args) do
+      Process.sleep(5_000)
+      "hang finished"
     end
   end
 
@@ -197,6 +205,38 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       assert [failed, ok] = tool_messages(result)
       assert failed.tool_call_id == "call_1"
       assert failed.content =~ "Tool execution failed"
+      assert ok.content =~ "echo:alive"
+    end
+
+    test "a hung tool with timeout: nil is killed at the ceiling and does not block siblings" do
+      # Both tools declare timeout: nil, so the batch ceiling is the module
+      # default — overridden here so the test does not wait five minutes.
+      Application.put_env(:nous, :parallel_tool_call_timeout_ms, 200)
+      on_exit(fn -> Application.delete_env(:nous, :parallel_tool_call_timeout_ms) end)
+
+      tools = [
+        Tool.from_function(&ParallelTools.hang/2, timeout: nil, retries: 0),
+        Tool.from_function(&ParallelTools.echo/2, timeout: nil, retries: 0)
+      ]
+
+      stage_tool_calls([call("call_1", "hang"), call("call_2", "echo", %{"msg" => "alive"})])
+
+      agent = Agent.new("openai:test-model", tools: tools, parallel_tool_calls: true)
+
+      started = System.monotonic_time(:millisecond)
+      {:ok, result} = AgentRunner.run(agent, "go")
+      elapsed = System.monotonic_time(:millisecond) - started
+
+      # The run returns on the ceiling, not on the tool's 5s sleep.
+      assert elapsed < 3_000
+
+      assert [timed_out, ok] = tool_messages(result)
+      assert timed_out.tool_call_id == "call_1"
+      assert timed_out.content =~ "Tool execution timed out: hang"
+      assert timed_out.content =~ "200ms"
+
+      # The sibling call in the same batch keeps its real result.
+      assert ok.tool_call_id == "call_2"
       assert ok.content =~ "echo:alive"
     end
   end

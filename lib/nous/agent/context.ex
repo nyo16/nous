@@ -393,7 +393,15 @@ defmodule Nous.Agent.Context do
   """
   @spec to_run_context(t()) :: Nous.RunContext.t()
   def to_run_context(%Context{} = ctx) do
-    Nous.RunContext.new(ctx.deps, usage: ctx.usage)
+    # `approval_gated?: true`: the runner has already run the full approval +
+    # permission-policy pipeline (AgentRunner.ToolExecution.check_tool_approval/3)
+    # for this call, so ToolExecutor must not prompt the operator a second time.
+    # The handler is still carried through so tools can see it.
+    Nous.RunContext.new(ctx.deps,
+      usage: ctx.usage,
+      approval_handler: ctx.approval_handler,
+      approval_gated?: true
+    )
   end
 
   @doc """

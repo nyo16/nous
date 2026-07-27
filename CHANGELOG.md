@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`Nous.Plugins.HumanInTheLoop` no longer auto-approves tools outside its
+  `:tools` list.** The handler is only ever invoked for tools already flagged
+  `requires_approval: true`, so filtering it by the configured `:tools` list
+  sent every *other* approval-gated tool down an `else -> :approve` branch.
+  Configuring HITL with `tools: ["send_email"]` therefore flipped `Bash`,
+  `FileWrite`, and `FileEdit` from default-deny to silent auto-approve —
+  installing the approval plugin made an agent strictly less safe than
+  omitting it, and left unattended command execution one prompt injection
+  away. The handler is now passed through unchanged; `:tools` still tags
+  those tools as approval-requiring, but can no longer narrow the gate.
+
+- **Approval enforcement is now structural rather than positional.**
+  `requires_approval` was only checked inside `Nous.AgentRunner`, so the three
+  other paths to a tool — `Nous.LLM`'s tool loop, `Nous.Workflow` `:tool_step`,
+  and any direct `Nous.ToolExecutor.execute/3` call — executed `Bash` /
+  `FileWrite` / `FileEdit` with no approval, permission policy, or hooks. In
+  the workflow case, model-authored `:agent_step` output reached `/bin/sh -c`
+  unattended. `%Nous.RunContext{}` gains `:approval_handler` and
+  `:approval_gated?`, and `ToolExecutor.execute/3` now default-denies an
+  approval-gated tool unless the context supplies a handler that approves it
+  or is flagged as already gated. The agent runner marks its context gated, so
+  operators are not prompted twice and its behaviour is unchanged.
+
+- **`Nous.Tools.WebFetch` bounds its responses.** The model-supplied-URL egress
+  point had no size or content-type limit and fed whole bodies to Floki. It now
+  streams into a capped collector (default 5 MB, overridable via
+  `ctx.deps[:web_fetch_max_bytes]` or `config :nous, :web_fetch_max_bytes`; a
+  model-supplied `max_bytes` argument may only lower the ceiling, never raise
+  it) and rejects anything that is not `text/html`, `application/xhtml+xml`, or
+  `text/plain`. A missing `content-type` fails closed. The module previously
+  had zero tests; its redirect re-validation, metadata-IP blocking, redirect
+  cap, and relative-`Location` handling are now covered.
+
+- **Dependency advisories cleared.** `mix deps.update req finch mint hpax ecto
+  hackney` resolves req 0.6.3, finch 0.23.0, mint 1.9.3, hpax 1.0.4, hackney
+  4.6.0, quic 1.7.1, ecto 3.14.1, decimal 3.1.1. This clears the two advisories
+  reachable from production code — CVE-2026-49755 (Req decompression bomb,
+  HIGH, reachable via `WebFetch`) and CVE-2026-56810 / CVE-2026-58229 (Mint
+  HTTP/1 memory exhaustion, HIGH, on every provider call) — plus the hackney
+  and QUIC advisories. No dependency requirement in `mix.exs` changed. The only
+  remaining advisories reach the build through `bypass`
+  (`only: [:dev, :test]`) and never ship to consumers.
+
+### Fixed
+
+- **A hung tool can no longer wedge an entire agent run.** The parallel
+  tool-call path passed `timeout: :infinity` with no `on_timeout` to
+  `Task.Supervisor.async_stream_nolink/4`, relying on `ToolExecutor` to enforce
+  per-tool timeouts — but that timer is only armed when `tool.timeout` is a
+  positive integer, and `nil` is permitted. The stream now uses a finite
+  ceiling derived from the batch (each tool's own timeout times its retry
+  budget, plus headroom; five minutes when a tool declares none) with
+  `on_timeout: :kill_task`. A timed-out call returns a per-call tool error and
+  its siblings keep their real results.
+
+- **`Nous.Message.ContentPart` accepts whitespace-only text under Ecto 3.14.**
+  Ecto 3.14 moved trimming out of `:empty_values` into a separate
+  `:trim_values` option defaulting to true, so the `empty_values: [""]`
+  override stopped protecting the Gemini/Vertex `"\n\n\n"` case. Empty-content
+  rejection is now an explicit check in `validate_content/1`, giving identical
+  behaviour across Ecto 3.11-3.14.
+
+- **Transport errors are logged again under Req 0.6.** The error clause in
+  `Nous.HTTP.Backend.Req` matched only `%Mint.TransportError{}`; Req 0.6
+  surfaces `%Req.TransportError{}`, so the clause went dead and transport
+  failures fell through to the generic handler. Both structs are handled.
+
+### Removed
+
+- **`:inets` dropped from `extra_applications`.** `:httpc` was replaced by Req;
+  the entry only forced inets to boot in every downstream release.
+
 ## [0.17.0] - 2026-07-18
 
 ### Added

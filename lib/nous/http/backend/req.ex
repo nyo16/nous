@@ -52,7 +52,13 @@ defmodule Nous.HTTP.Backend.Req do
         # {name, value} pairs to match the shape other layers expect.
         {:error, %{status: status, body: response_body, headers: normalize_headers(resp_headers)}}
 
-      {:error, %Mint.TransportError{reason: reason} = error} ->
+      # req 0.6 wraps transport failures in its own %Req.TransportError{};
+      # earlier versions (and some paths that still bubble Mint errors up
+      # unwrapped) surface %Mint.TransportError{}. Match both, otherwise the
+      # clause is dead and transport failures fall through to the generic
+      # handler below, losing the "Transport error" signal.
+      {:error, %mod{reason: reason} = error}
+      when mod in [Req.TransportError, Mint.TransportError] ->
         Logger.error("Transport error: #{inspect(reason)}")
         {:error, error}
 

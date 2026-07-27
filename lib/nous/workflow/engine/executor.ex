@@ -51,7 +51,12 @@ defmodule Nous.Workflow.Engine.Executor do
     tool = Map.fetch!(node.config, :tool)
     args = resolve_args(node.config[:args] || %{}, state)
     deps = state.metadata[:deps] || %{}
-    run_ctx = Nous.RunContext.new(deps)
+    # Ungated by construction: a :tool_step runs unattended, and its args may
+    # come from an upstream :agent_step (i.e. model-authored). Without a handler
+    # in the workflow metadata, ToolExecutor default-denies approval-gated tools
+    # such as Bash/FileWrite/FileEdit rather than shelling out unsupervised.
+    run_ctx =
+      Nous.RunContext.new(deps, approval_handler: state.metadata[:approval_handler])
 
     case Nous.ToolExecutor.execute(tool, args, run_ctx) do
       {:ok, result} ->

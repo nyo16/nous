@@ -31,10 +31,12 @@ defmodule Nous.Plugins.HumanInTheLoop do
         }
       )
 
-  When `:tools` is provided, those tools are automatically tagged with
-  `requires_approval: true` and the handler is only called for matching tools.
-  When `:tools` is omitted or empty, the handler is called for all tools
-  that already have `requires_approval: true`.
+  When `:tools` is provided, those tools are additionally tagged with
+  `requires_approval: true`. The handler is always called for every tool that
+  requires approval — the tagged ones plus any that are inherently gated
+  (`Bash`, `FileWrite`, `FileEdit`) or gated by the permission policy. It is
+  never a way to *narrow* the gate: an approval-required tool outside `:tools`
+  still goes to the handler rather than being auto-approved.
 
   ## Handler Responses
 
@@ -86,21 +88,14 @@ defmodule Nous.Plugins.HumanInTheLoop do
     end
   end
 
-  defp build_handler(handler, []) do
-    handler
-  end
-
-  defp build_handler(handler, tool_names) do
-    lookup = downcase_set(tool_names)
-
-    fn tool_call ->
-      if matches?(lookup, tool_call.name) do
-        handler.(tool_call)
-      else
-        :approve
-      end
-    end
-  end
+  # The handler is invoked ONLY for tools already flagged
+  # `requires_approval: true` — `before_request/3` above does that flagging for
+  # the configured `:tools` list. Filtering the handler by the same list was a
+  # fail-open bug: any OTHER approval-gated tool (Bash, FileWrite, FileEdit)
+  # took the `else` branch and was silently auto-approved, so installing this
+  # plugin made the agent LESS safe than leaving it out (no handler at all is
+  # default-deny). Pass the handler straight through.
+  defp build_handler(handler, _tool_names), do: handler
 
   defp downcase_set(names) when is_list(names) do
     names |> Enum.map(fn n -> n |> to_string() |> String.downcase() end) |> MapSet.new()

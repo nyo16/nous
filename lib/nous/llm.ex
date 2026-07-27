@@ -53,6 +53,7 @@ defmodule Nous.LLM do
           | {:tools, [function() | Tool.t()]}
           | {:deps, map()}
           | {:fallback, [String.t() | Model.t()]}
+          | {:approval_handler, Nous.RunContext.approval_handler()}
 
   @doc """
   Generate text from a model.
@@ -82,6 +83,9 @@ defmodule Nous.LLM do
     * `:deps` - Dependencies to pass to tool functions
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
       when the primary model fails with a provider/model error
+    * `:approval_handler` - Called before any tool with `requires_approval: true`
+      runs (`Nous.Tools.Bash`, `FileWrite`, `FileEdit`). Without it those tools
+      are rejected rather than executed — this entry point has no other gate.
 
   ## Examples
 
@@ -118,7 +122,7 @@ defmodule Nous.LLM do
     tools = parse_tools(Keyword.get(opts, :tools, []))
     settings = build_settings(opts, tools, model.provider)
     deps = Keyword.get(opts, :deps, %{})
-    ctx = RunContext.new(deps)
+    ctx = RunContext.new(deps, approval_handler: Keyword.get(opts, :approval_handler))
     fallback_models = Fallback.parse_fallback_models(Keyword.get(opts, :fallback, []))
     model_chain = Fallback.build_model_chain(model, fallback_models)
 
@@ -186,7 +190,7 @@ defmodule Nous.LLM do
     tools = parse_tools(Keyword.get(opts, :tools, []))
     settings = build_settings(opts, tools, model.provider)
     deps = Keyword.get(opts, :deps, %{})
-    ctx = RunContext.new(deps)
+    ctx = RunContext.new(deps, approval_handler: Keyword.get(opts, :approval_handler))
     fallback_models = Fallback.parse_fallback_models(Keyword.get(opts, :fallback, []))
     model_chain = Fallback.build_model_chain(model, fallback_models)
 

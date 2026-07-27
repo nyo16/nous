@@ -23,14 +23,14 @@ defmodule Nous.MixProject do
       elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
-        plt_add_apps: [:mix, :ex_unit, :inets]
+        plt_add_apps: [:mix, :ex_unit]
       ]
     ]
   end
 
   def application do
     [
-      extra_applications: [:logger, :inets],
+      extra_applications: [:logger],
       mod: {Nous.Application, []},
       # hackney's :default pool starts automatically when the :hackney
       # application starts; ensuring it's listed here is just defensive.
@@ -59,8 +59,9 @@ defmodule Nous.MixProject do
       # backend, declare `{:hackney, "~> 4.0"}` in your app's deps and select
       # it via `NOUS_HTTP_BACKEND=hackney` (or the streaming variant).
       {:finch, "~> 0.19"},
-      # `or ~> 0.6` lets downstream apps adopt req 0.6.x without a resolver
-      # conflict against nous (we still lock 0.5.x until verified on 0.6).
+      # Locked on req 0.6.3. `~> 0.5` already admits 0.6.x
+      # (`Version.match?("0.6.3", "~> 0.5") == true`), so `or ~> 0.6` is a
+      # verified no-op — kept only so downstream resolvers don't churn.
       {:req, "~> 0.5 or ~> 0.6"},
       {:hackney, "~> 4.0", optional: true},
 

@@ -22,6 +22,19 @@ defmodule Nous.Tools.UrlGuard do
       Nous.Tools.UrlGuard.validate(url, allow_private_hosts: true)
 
   Do NOT enable this in production. It re-opens the SSRF channel.
+
+  ## Escape hatch: exact-IP allowlist
+
+  `config :nous, url_guard_allow_ips: [{127, 0, 0, 1}]` exempts those *exact*
+  `:inet.ip_address()` tuples from the address blocklist — nothing else. No
+  CIDR, no hostnames, no ranges; the scheme check, DNS resolution, and the
+  per-hop re-validation callers do on redirects all still run. It exists so the
+  test suite can point a fetch at a loopback-bound `Bypass` server (and so an
+  egress proxy on a fixed private IP can be whitelisted deliberately). Defaults
+  to `[]`.
+
+  Do NOT set it in production. Every address you list is an address a
+  prompt-injected agent can reach.
   """
 
   import Bitwise
@@ -174,8 +187,15 @@ defmodule Nous.Tools.UrlGuard do
     end
   end
 
+  # Exact-IP escape hatch (see moduledoc). Consulted here and nowhere else, so
+  # resolution and every other check stay exactly as they were; the default
+  # empty list means the blocklist is authoritative unless someone opts out.
+  defp address_blocked?(addr) do
+    addr not in Application.get_env(:nous, :url_guard_allow_ips, []) and blocked_range?(addr)
+  end
+
   # IPv4 address blocklist check (CIDR-style).
-  defp address_blocked?({a, b, c, d} = _addr) do
+  defp blocked_range?({a, b, c, d} = _addr) do
     Enum.any?(@blocked_v4_ranges, fn {prefix, prefix_len} ->
       addr_int = ip_to_int({a, b, c, d})
       prefix_int = ip_to_int(prefix)
@@ -186,27 +206,29 @@ defmodule Nous.Tools.UrlGuard do
 
   # IPv4-mapped IPv6 (::ffff:a.b.c.d) — normalize to the embedded v4 and reuse
   # the comprehensive v4 blocklist (otherwise ::ffff:169.254.169.254 reached
-  # cloud metadata).
-  defp address_blocked?({0, 0, 0, 0, 0, 0xFFFF, g, h}) do
-    address_blocked?(embedded_v4(g, h))
+  # cloud metadata). The embedded form is checked against the ranges only: the
+  # allowlist is exact-tuple, so allowing 127.0.0.1 must not also allow
+  # ::ffff:127.0.0.1.
+  defp blocked_range?({0, 0, 0, 0, 0, 0xFFFF, g, h}) do
+    blocked_range?(embedded_v4(g, h))
   end
 
   # NAT64 well-known prefix 64:ff9b::/96 — embeds a v4 address in the low 32 bits.
-  defp address_blocked?({0x64, 0xFF9B, 0, 0, 0, 0, g, h}) do
-    address_blocked?(embedded_v4(g, h))
+  defp blocked_range?({0x64, 0xFF9B, 0, 0, 0, 0, g, h}) do
+    blocked_range?(embedded_v4(g, h))
   end
 
   # IPv6 loopback (::1) and unspecified (::).
-  defp address_blocked?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
-  defp address_blocked?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
+  defp blocked_range?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp blocked_range?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
 
   # Unique-local fc00::/7.
-  defp address_blocked?({a, _, _, _, _, _, _, _}) when band(a, 0xFE00) == 0xFC00, do: true
+  defp blocked_range?({a, _, _, _, _, _, _, _}) when band(a, 0xFE00) == 0xFC00, do: true
 
   # Link-local fe80::/10 (the IPv6 analogue of 169.254.0.0/16).
-  defp address_blocked?({a, _, _, _, _, _, _, _}) when band(a, 0xFFC0) == 0xFE80, do: true
+  defp blocked_range?({a, _, _, _, _, _, _, _}) when band(a, 0xFFC0) == 0xFE80, do: true
 
-  defp address_blocked?(_), do: false
+  defp blocked_range?(_), do: false
 
   defp embedded_v4(g, h) do
     {band(bsr(g, 8), 0xFF), band(g, 0xFF), band(bsr(h, 8), 0xFF), band(h, 0xFF)}

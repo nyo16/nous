@@ -118,4 +118,15 @@ defmodule Nous.Tools.UrlGuardTest do
                UrlGuard.validate_pinned("http://127.0.0.1/", allow_private_hosts: true)
     end
   end
+
+  # The escape hatch that lets Bypass-backed tests reach 127.0.0.1 lives in
+  # address_blocked?/1. Pin the default so a future refactor cannot quietly
+  # ship a non-empty allowlist and silently open loopback to every caller.
+  describe ":url_guard_allow_ips escape hatch" do
+    test "defaults to empty, so loopback is still blocked with no config set" do
+      assert Application.get_env(:nous, :url_guard_allow_ips, :unset) in [:unset, []]
+      assert {:error, _} = UrlGuard.validate("http://127.0.0.1/")
+      assert {:error, _} = UrlGuard.validate_pinned("http://127.0.0.1/")
+    end
+  end
 end
