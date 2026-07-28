@@ -46,11 +46,13 @@ defmodule Nous.Providers.HTTP do
   ## Stream backpressure
 
   - `Nous.HTTP.StreamBackend.Req` (default): the `:into` callback runs in
-    a `Task` and feeds the consumer process via `send/2`. BEAM mailboxes
-    are unbounded, so a fast producer + slow consumer can grow the
-    consumer's mailbox. Acceptable for typical LLM workloads where the
-    consumer is parsing-bound (and parsing throttles naturally) or where
-    token-generation rate is the bottleneck.
+    a `Task` and feeds the consumer process via `send/2`. Producer and
+    consumer share an `:atomics` counter of in-flight chunk bytes; above
+    the 8 MB high-water mark the producer parks until the consumer drains
+    below 1 MB, which stops the socket being read. Memory per stream is
+    bounded by that window, not by the (unbounded) mailbox. A consumer
+    that stays stalled past `:backpressure_max_wait_ms` gets
+    `{:stream_error, %{reason: :backpressure_overflow}}`.
   - `Nous.HTTP.StreamBackend.Hackney`: strict pull-based — the consumer
     calls `:hackney.stream_next/1` per chunk, so the producer literally
     cannot outrun the consumer. Pick this when downstream consumers can
@@ -59,8 +61,7 @@ defmodule Nous.Providers.HTTP do
 
   require Logger
 
-  # 10MB max buffer
-  @max_buffer_size 10 * 1024 * 1024
+  alias Nous.HTTP.Buffer
 
   # ============================================================================
   # Public API
@@ -86,7 +87,7 @@ defmodule Nous.Providers.HTTP do
 
   ## Error Reasons
     * `%{status: integer(), body: term()}` - HTTP error response
-    * `%Mint.TransportError{}` - Network error (Req backend)
+    * `%Req.TransportError{}` / `%Mint.TransportError{}` - Network error (Req backend)
     * `%JSON.DecodeError{}` - JSON decode error
   """
   @spec post(String.t(), map(), list(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -270,50 +271,7 @@ defmodule Nous.Providers.HTTP do
   """
   @spec parse_sse_buffer(String.t() | nil | any()) ::
           {list(), String.t()} | {:error, :buffer_overflow}
-  def parse_sse_buffer(buffer) when is_binary(buffer) do
-    # Buffer overflow is now a HARD error, not a silent truncation. The
-    # previous behavior sliced from the front, which cut mid-event/mid-JSON
-    # and produced one parse_error followed by valid events - silent data
-    # loss. Halting here lets the consumer surface the failure cleanly.
-    if byte_size(buffer) > @max_buffer_size do
-      Logger.error("SSE buffer exceeded max size (#{@max_buffer_size} bytes), aborting stream")
-      {:error, :buffer_overflow}
-    else
-      do_parse_sse_buffer(buffer)
-    end
-  end
-
-  def parse_sse_buffer(nil), do: {[], ""}
-  def parse_sse_buffer(_), do: {[], ""}
-
-  defp do_parse_sse_buffer(buffer) when is_binary(buffer) do
-    # Split on the SSE event separator (blank line). Use `:binary.split` with a
-    # precompiled pattern instead of a regex: on a large buffer that holds an
-    # incomplete event (big tool-call args / thinking block spanning many
-    # chunks) this is re-run per chunk, and the Boyer-Moore binary matcher is
-    # dramatically cheaper than the regex engine. The two patterns cover the
-    # only real SSE separators — `\r\n\r\n` contains no `\n\n` substring, so
-    # there is no ambiguous overlap. (A stateful tail-only rescan would also
-    # cut the cumulative O(n²), but that needs call-site scan-offset tracking.)
-    parts = :binary.split(buffer, ["\r\n\r\n", "\n\n"], [:global])
-
-    case parts do
-      [incomplete] ->
-        # No complete events yet
-        {[], incomplete}
-
-      parts ->
-        # All but the last part are complete events
-        {complete, [incomplete]} = Enum.split(parts, -1)
-
-        events =
-          complete
-          |> Enum.map(&parse_sse_event/1)
-          |> Enum.reject(&is_nil/1)
-
-        {events, incomplete}
-    end
-  end
+  defdelegate parse_sse_buffer(buffer), to: Buffer
 
   @doc """
   Parse a single SSE event.
@@ -343,59 +301,28 @@ defmodule Nous.Providers.HTTP do
   """
   @spec parse_sse_event(String.t()) ::
           map() | {:stream_done, String.t()} | {:parse_error, term()} | nil
-  def parse_sse_event(event) when is_binary(event) do
-    # Trim and check for empty
-    event = String.trim(event)
-
-    if event == "" do
-      nil
-    else
-      parse_sse_event_lines(String.split(event, ~r/\r?\n/))
-    end
-  end
-
-  def parse_sse_event(_), do: nil
+  defdelegate parse_sse_event(event), to: Buffer
 
   @doc false
   # Public for stream-backend reuse only — not part of the public API
-  # surface. Translates the new `{:error, :buffer_overflow}` tuple from
-  # `parse_sse_buffer/1` into the legacy `{events, buffer}` shape so
-  # backends can stay agnostic about the failure mode.
+  # surface. Thin wrapper over `Nous.HTTP.Buffer.parse_stream_buffer/2`,
+  # retained so out-of-tree callers keep working. The transport layer now
+  # calls `Nous.HTTP.Buffer` directly: a generic transport must not reach
+  # up into `Nous.Providers.*` (arch-review: layering inversion, the one
+  # non-benign runtime cycle of the seven reported).
   @spec parse_stream_buffer(String.t(), module() | nil) :: {list(), String.t()}
-  def parse_stream_buffer(buffer, nil) do
-    case parse_sse_buffer(buffer) do
-      {:error, :buffer_overflow} -> {[{:stream_error, %{reason: :buffer_overflow}}], ""}
-      result -> result
-    end
-  end
-
-  def parse_stream_buffer(buffer, parser_mod), do: parser_mod.parse_buffer(buffer)
+  defdelegate parse_stream_buffer(buffer, parser_mod), to: Buffer
 
   @doc false
-  # Public for stream-backend reuse only. Flush remaining buffer at end
-  # of stream — SSE needs a trailing `\n\n` to force the last event
-  # through; custom parsers just re-parse the remaining buffer as-is.
-  #
-  # The chunk handler already enforces `@max_buffer_size` on every
-  # received chunk, so the buffer reaching here is by construction
-  # within limits. The synthetic `"\n\n"` is bookkeeping, not received
-  # data — bypass the public size check so a buffer at exactly the cap
-  # doesn't trip a false-positive overflow on the 2-byte append. Only
-  # surface overflow if the input itself is over.
+  # Public for stream-backend reuse only. See
+  # `Nous.HTTP.Buffer.flush_stream_buffer/2`.
   @spec flush_stream_buffer(String.t(), module() | nil) :: {list(), String.t()}
-  def flush_stream_buffer(buffer, nil) do
-    if byte_size(buffer) > @max_buffer_size do
-      {[{:stream_error, %{reason: :buffer_overflow}}], ""}
-    else
-      do_parse_sse_buffer(buffer <> "\n\n")
-    end
-  end
-
-  def flush_stream_buffer(buffer, parser_mod), do: parser_mod.parse_buffer(buffer)
+  defdelegate flush_stream_buffer(buffer, parser_mod), to: Buffer
 
   @doc false
   # Max buffer size — public for stream-backend reuse.
-  def max_buffer_size, do: @max_buffer_size
+  @spec max_buffer_size() :: pos_integer()
+  defdelegate max_buffer_size(), to: Buffer
 
   # ============================================================================
   # Header Helpers (Public for testing)
@@ -473,77 +400,6 @@ defmodule Nous.Providers.HTTP do
       headers
     else
       [{key, value} | headers]
-    end
-  end
-
-  # ============================================================================
-  # Private Functions
-  # ============================================================================
-
-  # Parse SSE event from lines
-  defp parse_sse_event_lines(lines) do
-    # Collect all data fields
-    data_parts =
-      lines
-      |> Enum.reduce([], fn line, acc ->
-        cond do
-          # Comment line (starts with :)
-          String.starts_with?(line, ":") ->
-            acc
-
-          # Data field with space
-          String.starts_with?(line, "data: ") ->
-            [String.replace_prefix(line, "data: ", "") | acc]
-
-          # Data field without space (valid per spec)
-          String.starts_with?(line, "data:") ->
-            [String.replace_prefix(line, "data:", "") | acc]
-
-          # Other fields (event:, id:, retry:) - ignore for now
-          String.contains?(line, ":") ->
-            acc
-
-          # Empty line or continuation
-          true ->
-            acc
-        end
-      end)
-      |> Enum.reverse()
-
-    if Enum.empty?(data_parts) do
-      nil
-    else
-      # Per SSE spec, multiple data fields are joined with newlines
-      data = Enum.join(data_parts, "\n")
-      parse_data_content(data)
-    end
-  end
-
-  # Parse the data content (JSON or special markers)
-  defp parse_data_content("[DONE]"), do: {:stream_done, "stop"}
-  defp parse_data_content(""), do: nil
-
-  defp parse_data_content(data) do
-    case JSON.decode(data) do
-      {:ok, parsed} ->
-        parsed
-
-      {:error, error} ->
-        # Only log at debug level - malformed data is common during streaming
-        Logger.debug(
-          "Failed to parse SSE data as JSON: #{truncate_for_log(data)}, error: #{inspect(error)}"
-        )
-
-        {:parse_error, %{data: data, error: error}}
-    end
-  end
-
-  # Truncate data for logging to avoid huge log messages
-  defp truncate_for_log(data) when is_binary(data) do
-    if byte_size(data) > 500 do
-      String.slice(data, 0, 500) <> "... (truncated)"
-    else
-      data
     end
   end
 end

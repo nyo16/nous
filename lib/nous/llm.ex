@@ -31,11 +31,14 @@ defmodule Nous.LLM do
   """
 
   alias Nous.{Fallback, Model, ModelDispatcher, Message, Tool, ToolExecutor, RunContext, Messages}
+  alias Nous.AgentRunner.RequestDispatch
   alias Nous.StreamNormalizer.ToolCallAccumulator
 
-  # Get the model dispatcher, allowing dependency injection for testing
-  defp get_dispatcher do
-    Application.get_env(:nous, :model_dispatcher, ModelDispatcher)
+  # Resolve the dispatcher for this call. `override` is the caller's
+  # `:model_dispatcher` option (usually nil); see `Nous.ModelDispatcher.resolve/1`
+  # for the full precedence chain.
+  defp get_dispatcher(override) do
+    ModelDispatcher.resolve(override)
   end
 
   require Logger
@@ -53,6 +56,8 @@ defmodule Nous.LLM do
           | {:tools, [function() | Tool.t()]}
           | {:deps, map()}
           | {:fallback, [String.t() | Model.t()]}
+          | {:approval_handler, Nous.RunContext.approval_handler()}
+          | {:model_dispatcher, module()}
 
   @doc """
   Generate text from a model.
@@ -82,6 +87,13 @@ defmodule Nous.LLM do
     * `:deps` - Dependencies to pass to tool functions
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
       when the primary model fails with a provider/model error
+    * `:approval_handler` - Called before any tool with `requires_approval: true`
+      runs (`Nous.Tools.Bash`, `FileWrite`, `FileEdit`). Without it those tools
+      are rejected rather than executed — this entry point has no other gate.
+    * `:model_dispatcher` - Override the module that performs the provider
+      request, for this call only. Takes precedence over
+      `config :nous, :model_dispatcher`. Mostly useful in tests; see
+      `Nous.ModelDispatcher.resolve/1`.
 
   ## Examples
 
@@ -118,13 +130,22 @@ defmodule Nous.LLM do
     tools = parse_tools(Keyword.get(opts, :tools, []))
     settings = build_settings(opts, tools, model.provider)
     deps = Keyword.get(opts, :deps, %{})
-    ctx = RunContext.new(deps)
+    ctx = RunContext.new(deps, approval_handler: Keyword.get(opts, :approval_handler))
     fallback_models = Fallback.parse_fallback_models(Keyword.get(opts, :fallback, []))
     model_chain = Fallback.build_model_chain(model, fallback_models)
 
+    dispatcher = Keyword.get(opts, :model_dispatcher)
+
     Fallback.with_fallback(model_chain, fn target_model ->
-      target_settings = rebuild_llm_settings(target_model, model, settings, tools)
-      run_with_tools(target_model, messages, target_settings, tools, ctx, 0)
+      target_settings =
+        RequestDispatch.rebuild_tool_settings(
+          target_model.provider,
+          model.provider,
+          settings,
+          tools
+        )
+
+      run_with_tools(target_model, messages, target_settings, tools, ctx, 0, dispatcher)
     end)
   end
 
@@ -186,21 +207,33 @@ defmodule Nous.LLM do
     tools = parse_tools(Keyword.get(opts, :tools, []))
     settings = build_settings(opts, tools, model.provider)
     deps = Keyword.get(opts, :deps, %{})
-    ctx = RunContext.new(deps)
+    ctx = RunContext.new(deps, approval_handler: Keyword.get(opts, :approval_handler))
     fallback_models = Fallback.parse_fallback_models(Keyword.get(opts, :fallback, []))
     model_chain = Fallback.build_model_chain(model, fallback_models)
 
+    dispatcher = Keyword.get(opts, :model_dispatcher)
+
     if tools == [] do
-      stream_text_simple(model_chain, model, settings, messages)
+      stream_text_simple(model_chain, model, settings, messages, dispatcher)
     else
-      {:ok, stream_text_with_tools(model_chain, model, settings, messages, tools, ctx)}
+      stream =
+        stream_text_with_tools(model_chain, model, settings, messages, tools, ctx, dispatcher)
+
+      {:ok, stream}
     end
   end
 
-  defp stream_text_simple(model_chain, original_model, settings, messages) do
+  defp stream_text_simple(model_chain, original_model, settings, messages, dispatcher) do
     case Fallback.with_fallback(model_chain, fn target_model ->
-           target_settings = rebuild_llm_settings(target_model, original_model, settings, [])
-           get_dispatcher().request_stream(target_model, messages, target_settings)
+           target_settings =
+             RequestDispatch.rebuild_tool_settings(
+               target_model.provider,
+               original_model.provider,
+               settings,
+               []
+             )
+
+           get_dispatcher(dispatcher).request_stream(target_model, messages, target_settings)
          end) do
       {:ok, stream} ->
         {:ok, text_only_stream(stream)}
@@ -223,7 +256,15 @@ defmodule Nous.LLM do
   # extract aggregated tool calls and content; text deltas are still yielded
   # to the caller as they were produced. After a turn finishes, if any tool
   # calls were made, they're executed and a follow-up stream is started.
-  defp stream_text_with_tools(model_chain, original_model, settings, initial_messages, tools, ctx) do
+  defp stream_text_with_tools(
+         model_chain,
+         original_model,
+         settings,
+         initial_messages,
+         tools,
+         ctx,
+         dispatcher
+       ) do
     Stream.resource(
       fn -> {initial_messages, 0} end,
       fn
@@ -238,9 +279,18 @@ defmodule Nous.LLM do
         {messages, iteration} ->
           case Fallback.with_fallback(model_chain, fn target_model ->
                  target_settings =
-                   rebuild_llm_settings(target_model, original_model, settings, tools)
+                   RequestDispatch.rebuild_tool_settings(
+                     target_model.provider,
+                     original_model.provider,
+                     settings,
+                     tools
+                   )
 
-                 get_dispatcher().request_stream(target_model, messages, target_settings)
+                 get_dispatcher(dispatcher).request_stream(
+                   target_model,
+                   messages,
+                   target_settings
+                 )
                end) do
             {:ok, raw_stream} ->
               {chunks, tool_calls, content} = aggregate_stream_turn(raw_stream)
@@ -327,15 +377,15 @@ defmodule Nous.LLM do
   # Private helpers
 
   # Tool execution loop
-  defp run_with_tools(model, messages, settings, tools, ctx, iteration)
+  defp run_with_tools(model, messages, settings, tools, ctx, iteration, dispatcher)
        when iteration < @max_tool_iterations do
-    case get_dispatcher().request(model, messages, settings) do
+    case get_dispatcher(dispatcher).request(model, messages, settings) do
       {:ok, response} ->
         tool_calls = Messages.extract_tool_calls([response])
 
         if tool_calls == [] do
           # No tool calls - return the text
-          {:ok, extract_text(response)}
+          {:ok, Message.extract_text(response)}
         else
           # Execute tools and continue
           Logger.debug("LLM requested #{length(tool_calls)} tool call(s), executing...")
@@ -343,7 +393,7 @@ defmodule Nous.LLM do
           tool_results = execute_tool_calls(tool_calls, tools, ctx)
           new_messages = messages ++ [response] ++ tool_results
 
-          run_with_tools(model, new_messages, settings, tools, ctx, iteration + 1)
+          run_with_tools(model, new_messages, settings, tools, ctx, iteration + 1, dispatcher)
         end
 
       {:error, _} = error ->
@@ -351,7 +401,7 @@ defmodule Nous.LLM do
     end
   end
 
-  defp run_with_tools(_model, _messages, _settings, _tools, _ctx, _iteration) do
+  defp run_with_tools(_model, _messages, _settings, _tools, _ctx, _iteration, _dispatcher) do
     {:error, Nous.Errors.MaxIterationsExceeded.exception(max_iterations: @max_tool_iterations)}
   end
 
@@ -405,44 +455,8 @@ defmodule Nous.LLM do
     if tools == [] do
       base_settings
     else
-      tool_schemas = convert_tools_for_provider(provider, tools)
+      tool_schemas = RequestDispatch.convert_tools_for_provider(provider, tools)
       Map.put(base_settings, :tools, tool_schemas)
     end
-  end
-
-  # Rebuild settings when falling back to a model with a different provider
-  defp rebuild_llm_settings(target_model, original_model, settings, tools) do
-    if target_model.provider == original_model.provider do
-      settings
-    else
-      base_settings = Map.delete(settings, :tools)
-
-      if tools == [] do
-        base_settings
-      else
-        tool_schemas = convert_tools_for_provider(target_model.provider, tools)
-        Map.put(base_settings, :tools, tool_schemas)
-      end
-    end
-  end
-
-  defp convert_tools_for_provider(:anthropic, tools) do
-    Enum.map(tools, &Nous.ToolSchema.to_anthropic/1)
-  end
-
-  defp convert_tools_for_provider(provider, tools) when provider in [:vertex_ai, :gemini] do
-    Enum.map(tools, &Nous.ToolSchema.to_gemini/1)
-  end
-
-  defp convert_tools_for_provider(_, tools) do
-    Enum.map(tools, &Tool.to_openai_schema/1)
-  end
-
-  defp extract_text(%Nous.Message{content: content}) when is_binary(content) do
-    content
-  end
-
-  defp extract_text(%Nous.Message{content: _}) do
-    ""
   end
 end

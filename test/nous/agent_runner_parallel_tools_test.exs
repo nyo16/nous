@@ -2,7 +2,7 @@ defmodule Nous.AgentRunnerParallelToolsTest do
   # async: false — swaps the global :model_dispatcher app env.
   use ExUnit.Case, async: false
 
-  alias Nous.{Agent, AgentRunner, Hook, Usage}
+  alias Nous.{Agent, AgentRunner, Hook, Tool, Usage}
 
   @moduletag :capture_log
 
@@ -33,14 +33,47 @@ defmodule Nous.AgentRunnerParallelToolsTest do
   defmodule ParallelTools do
     @moduledoc false
 
+    # The two slow tools maintain an :atomics in-flight counter with a running
+    # maximum. Wall-clock windows are the wrong instrument for proving
+    # concurrency on shared CI hardware — a GC pause inside a 300ms margin
+    # fails a correct implementation — so the tests assert the observed maximum
+    # *exactly*: 2 on the parallel path, 1 on the sequential one. A one-sided
+    # `<= 2` is worthless here; it also holds for a serial runner.
+    @slow_ms 150
+
+    def slow_ms, do: @slow_ms
+
     def slow_alpha(_ctx, _args) do
-      Process.sleep(400)
+      inflight = enter()
+      Process.sleep(@slow_ms)
+      leave(inflight)
       "alpha done"
     end
 
     def slow_beta(_ctx, _args) do
-      Process.sleep(400)
+      inflight = enter()
+      Process.sleep(@slow_ms)
+      leave(inflight)
       "beta done"
+    end
+
+    defp enter do
+      inflight = :persistent_term.get({__MODULE__, :inflight})
+      record_max(inflight, :atomics.add_get(inflight, 1, 1))
+      inflight
+    end
+
+    defp leave(inflight), do: :atomics.sub(inflight, 1, 1)
+
+    defp record_max(inflight, current) do
+      observed = :atomics.get(inflight, 2)
+
+      if current > observed do
+        case :atomics.compare_exchange(inflight, 2, observed, current) do
+          :ok -> :ok
+          _raced -> record_max(inflight, current)
+        end
+      end
     end
 
     def echo(_ctx, args), do: "echo:" <> Map.get(args, "msg", "")
@@ -48,17 +81,29 @@ defmodule Nous.AgentRunnerParallelToolsTest do
     def boom(_ctx, _args), do: raise("boom")
 
     def marker_slow(_ctx, _args) do
-      Process.sleep(250)
+      Process.sleep(100)
       %{result: "slow", __update_context__: %{marker: "slow"}}
     end
 
     def marker_fast(_ctx, _args) do
       %{result: "fast", __update_context__: %{marker: "fast"}}
     end
+
+    # Sleeps far past any ceiling a test would set. Paired with `timeout: nil`
+    # this is the case ToolExecutor does *not* bound: it only arms its internal
+    # timer when tool.timeout is a positive number.
+    def hang(_ctx, _args) do
+      Process.sleep(5_000)
+      "hang finished"
+    end
   end
 
   setup do
     Application.put_env(:nous, :model_dispatcher, Dispatcher)
+
+    # Fresh per test: index 1 is the live in-flight count, index 2 the running
+    # maximum the slow tools observed.
+    :persistent_term.put({ParallelTools, :inflight}, :atomics.new(2, signed: true))
 
     on_exit(fn ->
       Application.delete_env(:nous, :model_dispatcher)
@@ -70,6 +115,8 @@ defmodule Nous.AgentRunnerParallelToolsTest do
           _ -> :ok
         end
       end
+
+      :persistent_term.erase({ParallelTools, :inflight})
     end)
 
     :ok
@@ -86,6 +133,11 @@ defmodule Nous.AgentRunnerParallelToolsTest do
 
   defp tool_messages(result) do
     Enum.filter(result.all_messages, &(&1.role == :tool))
+  end
+
+  # Highest number of slow tools that were inside their sleep at the same instant.
+  defp observed_max_concurrency do
+    :atomics.get(:persistent_term.get({ParallelTools, :inflight}), 2)
   end
 
   describe "parallel_tool_calls: true" do
@@ -107,7 +159,7 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       assert echo.content =~ "echo:hi"
     end
 
-    test "wall clock is ~max of tool durations, not the sum" do
+    test "both tool calls in the batch are in flight at the same instant" do
       stage_tool_calls([call("call_1", "slow_alpha"), call("call_2", "slow_beta")])
 
       agent =
@@ -121,12 +173,15 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       elapsed = System.monotonic_time(:millisecond) - started
 
       assert [%{content: "alpha done"}, %{content: "beta done"}] = tool_messages(result)
-      # Two 400ms tools run concurrently: wall clock is ~max (400ms), not sum
-      # (800ms). Two-sided so a regression in EITHER direction fails — the lower
-      # bound catches "sleeps bypassed / tools not actually run", the upper
-      # bound catches "fell back to sequential". Generous margins for CI.
-      assert elapsed >= 400, "expected the 400ms tools to actually run, got #{elapsed}ms"
-      assert elapsed < 700, "expected ~400ms (max), got #{elapsed}ms (sum would be >= 800ms)"
+
+      # Structural proof of concurrency, not a stopwatch. Exact: `<= 2` would
+      # also pass for a runner that fell back to sequential execution.
+      assert observed_max_concurrency() == 2
+
+      # Lower bound only — it proves the sleeps actually ran. An upper bound
+      # here is just a scheduler stall waiting to redden a correct runner.
+      assert elapsed >= ParallelTools.slow_ms(),
+             "expected the #{ParallelTools.slow_ms()}ms tools to actually run, got #{elapsed}ms"
     end
 
     test "merge_deps applies in call order, not completion order" do
@@ -199,6 +254,38 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       assert failed.content =~ "Tool execution failed"
       assert ok.content =~ "echo:alive"
     end
+
+    test "a hung tool with timeout: nil is killed at the ceiling and does not block siblings" do
+      # Both tools declare timeout: nil, so the batch ceiling is the module
+      # default — overridden here so the test does not wait five minutes.
+      Application.put_env(:nous, :parallel_tool_call_timeout_ms, 200)
+      on_exit(fn -> Application.delete_env(:nous, :parallel_tool_call_timeout_ms) end)
+
+      tools = [
+        Tool.from_function(&ParallelTools.hang/2, timeout: nil, retries: 0),
+        Tool.from_function(&ParallelTools.echo/2, timeout: nil, retries: 0)
+      ]
+
+      stage_tool_calls([call("call_1", "hang"), call("call_2", "echo", %{"msg" => "alive"})])
+
+      agent = Agent.new("openai:test-model", tools: tools, parallel_tool_calls: true)
+
+      started = System.monotonic_time(:millisecond)
+      {:ok, result} = AgentRunner.run(agent, "go")
+      elapsed = System.monotonic_time(:millisecond) - started
+
+      # The run returns on the ceiling, not on the tool's 5s sleep.
+      assert elapsed < 3_000
+
+      assert [timed_out, ok] = tool_messages(result)
+      assert timed_out.tool_call_id == "call_1"
+      assert timed_out.content =~ "Tool execution timed out: hang"
+      assert timed_out.content =~ "200ms"
+
+      # The sibling call in the same batch keeps its real result.
+      assert ok.tool_call_id == "call_2"
+      assert ok.content =~ "echo:alive"
+    end
   end
 
   describe "parallel_tool_calls: false (default)" do
@@ -218,7 +305,7 @@ defmodule Nous.AgentRunnerParallelToolsTest do
                tool_messages(result)
     end
 
-    test "two slow tools take the sum of their durations" do
+    test "the two tool calls never overlap" do
       stage_tool_calls([call("call_1", "slow_alpha"), call("call_2", "slow_beta")])
 
       agent =
@@ -230,11 +317,10 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       {:ok, _result} = AgentRunner.run(agent, "go")
       elapsed = System.monotonic_time(:millisecond) - started
 
-      # Two 400ms tools run one after the other: sum (>= 800ms). Upper bound
-      # catches a pathological regression (e.g. a tool running more than once)
-      # short of ExUnit's 60s timeout.
-      assert elapsed >= 800
-      assert elapsed < 2000, "expected ~800ms (sum), got #{elapsed}ms"
+      # Mirror of the parallel case: never more than one tool in flight, so a
+      # runner that quietly started parallelising the default path fails here.
+      assert observed_max_concurrency() == 1
+      assert elapsed >= 2 * ParallelTools.slow_ms()
     end
   end
 end

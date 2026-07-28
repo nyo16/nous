@@ -21,16 +21,28 @@ defmodule Nous.MixProject do
       # depend on nous without hackney get ":hackney is not available"
       # warnings when compiling the dep.
       elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool]],
+      # Coverage ratchet. `mix test --cover` defaults to a 90% threshold this
+      # project has never met, and no CI job ran it, so the gate was purely
+      # decorative. 59 is the current measured floor (60.05%, :llm/:llama
+      # excluded as in CI) with ~1pp of headroom, enforced by the `coverage`
+      # job in .github/workflows/ci.yml. Raise it as coverage improves; never
+      # lower it. History: 56.80% at the audit, 57 after the perf wave, 59 once
+      # the provider/web_fetch/prompt_template suites landed.
+      #
+      # :threshold MUST be nested under :summary — a bare
+      # `test_coverage: [threshold: n]` is silently ignored and you keep the
+      # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
+      test_coverage: [summary: [threshold: 59]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
-        plt_add_apps: [:mix, :ex_unit, :inets]
+        plt_add_apps: [:mix, :ex_unit]
       ]
     ]
   end
 
   def application do
     [
-      extra_applications: [:logger, :inets],
+      extra_applications: [:logger],
       mod: {Nous.Application, []},
       # hackney's :default pool starts automatically when the :hackney
       # application starts; ensuring it's listed here is just defensive.
@@ -59,8 +71,9 @@ defmodule Nous.MixProject do
       # backend, declare `{:hackney, "~> 4.0"}` in your app's deps and select
       # it via `NOUS_HTTP_BACKEND=hackney` (or the streaming variant).
       {:finch, "~> 0.19"},
-      # `or ~> 0.6` lets downstream apps adopt req 0.6.x without a resolver
-      # conflict against nous (we still lock 0.5.x until verified on 0.6).
+      # Locked on req 0.6.3. `~> 0.5` already admits 0.6.x
+      # (`Version.match?("0.6.3", "~> 0.5") == true`), so `or ~> 0.6` is a
+      # verified no-op — kept only so downstream resolvers don't churn.
       {:req, "~> 0.5 or ~> 0.6"},
       {:hackney, "~> 4.0", optional: true},
 
@@ -103,18 +116,23 @@ defmodule Nous.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:mox, "~> 1.1", only: :test},
       # optional (not only: :test) so the `~> 2.1` constraint reaches downstream
       # resolvers — Nous.PubSub integrates with phoenix_pubsub at runtime (guarded
       # by Code.ensure_loaded?), and apps that bring their own copy should see a
       # compatible-version requirement rather than a hidden test-only pin.
       {:phoenix_pubsub, "~> 2.1", optional: true},
       # Bypass = in-test HTTP server for exercising the streaming pipeline
-      # without hitting real LLM endpoints. Available in :dev too so
-      # `bench/http_backend.exs` can spin up an in-process server.
-      {:bypass, "~> 2.1", only: [:dev, :test]},
-      # Benchee = HTTP backend benchmark (`mix run bench/http_backend.exs`).
-      {:benchee, "~> 1.3", only: :dev}
+      # without hitting real LLM endpoints. `only: :test`: nothing in :dev uses
+      # Bypass, and it drags in plug_cowboy/cowboy/ranch — currently carrying
+      # HIGH advisories (see `mix hex.audit`) — which would otherwise be
+      # compiled and loadable while `Nous.Application` runs in :dev.
+      {:bypass, "~> 2.1", only: :test},
+      # Benchee = the bench/ scripts. Also in :test because
+      # `bench/http_backend.exs` starts an in-process plug_cowboy server, and
+      # plug_cowboy now only reaches the build through Bypass in :test:
+      #
+      #     MIX_ENV=test mix run bench/http_backend.exs
+      {:benchee, "~> 1.3", only: [:dev, :test]}
     ]
   end
 
@@ -182,6 +200,21 @@ defmodule Nous.MixProject do
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,
+      # Internal modules (`@moduledoc false`). AGENTS.md's "What NOT to use"
+      # section and older CHANGELOG entries name them in code style; without
+      # this, ExDoc tries to autolink each one and warns "references module
+      # ... but it is hidden". This list is the single place the hidden set is
+      # spelled out — if you hide a module and mention it in prose, add it
+      # here; if you un-hide one, remove it and the warning tells you where
+      # the stale reference is.
+      skip_code_autolink_to: [
+        "Nous.Application",
+        "Nous.OutputSchema.UseMacro",
+        "Nous.Persistence.ETS.TableOwner",
+        "Nous.Workflow.Engine.Executor",
+        "Nous.Workflow.Engine.ParallelExecutor",
+        "Nous.Workflow.Engine.StateMerger"
+      ],
       groups_for_extras: [
         "Getting Started": [
           "readme.html",
@@ -289,7 +322,8 @@ defmodule Nous.MixProject do
           Nous.HTTP.Backend.Hackney,
           Nous.HTTP.StreamBackend,
           Nous.HTTP.StreamBackend.Req,
-          Nous.HTTP.StreamBackend.Hackney
+          Nous.HTTP.StreamBackend.Hackney,
+          Nous.HTTP.Buffer
         ],
         "Tool System": [
           Nous.Tool,
@@ -303,7 +337,6 @@ defmodule Nous.MixProject do
         ],
         "Structured Output": [
           Nous.OutputSchema,
-          Nous.OutputSchema.UseMacro,
           Nous.OutputSchema.Validator
         ],
         "Research Tools": [
@@ -520,9 +553,6 @@ defmodule Nous.MixProject do
           Nous.Workflow.State,
           Nous.Workflow.Compiler,
           Nous.Workflow.Engine,
-          Nous.Workflow.Engine.Executor,
-          Nous.Workflow.Engine.ParallelExecutor,
-          Nous.Workflow.Engine.StateMerger,
           Nous.Workflow.Mermaid,
           Nous.Workflow.Trace,
           Nous.Workflow.Checkpoint,

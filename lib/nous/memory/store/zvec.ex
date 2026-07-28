@@ -27,7 +27,9 @@ if Code.ensure_loaded?(Zvec) do
 
       with {:ok, collection} <- Zvec.create_collection(collection_path, dimension: dimension) do
         # Unnamed table - named would crash a second concurrent agent.
-        table = :ets.new(__MODULE__, [:set, :public])
+        # read_concurrency: the entries table is a read-side cache for search
+        # hydration; writes are one insert per stored entry.
+        table = :ets.new(__MODULE__, [:set, :public, read_concurrency: true])
         {:ok, %{collection: collection, entries: table}}
       end
     rescue
@@ -35,7 +37,8 @@ if Code.ensure_loaded?(Zvec) do
         case Zvec.open_collection(collection_path) do
           {:ok, collection} ->
             # Unnamed table - named would crash a second concurrent agent.
-            table = :ets.new(__MODULE__, [:set, :public])
+            # read_concurrency for the same reason as the create path above.
+            table = :ets.new(__MODULE__, [:set, :public, read_concurrency: true])
             {:ok, %{collection: collection, entries: table}}
 
           error ->
@@ -112,12 +115,15 @@ if Code.ensure_loaded?(Zvec) do
       limit = Keyword.get(opts, :limit, 10)
       min_score = Keyword.get(opts, :min_score, 0.0)
 
+      # Downcase the query ONCE, not once per row (it is loop-invariant).
+      query_down = String.downcase(query)
+
       results =
         table
         |> all_entries()
         |> filter_by_scope(scope)
         |> Enum.map(fn entry ->
-          score = String.jaro_distance(String.downcase(query), String.downcase(entry.content))
+          score = String.jaro_distance(query_down, String.downcase(entry.content))
           {entry, score}
         end)
         |> Enum.filter(fn {_entry, score} -> score > min_score end)

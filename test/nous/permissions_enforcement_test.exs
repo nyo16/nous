@@ -3,7 +3,7 @@ defmodule Nous.PermissionsEnforcementTest do
   Integration tests proving the permission policy and InputGuard are actually
   enforced in the agent runtime (previously both were dead code paths).
   """
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{Agent, AgentRunner, Permissions, Tool, Usage}
 
@@ -89,8 +89,7 @@ defmodule Nous.PermissionsEnforcementTest do
         start: {Elixir.Agent, :start_link, [fn -> %{} end, [name: CapturingDispatcher.Store]]}
       })
 
-      Application.put_env(:nous, :model_dispatcher, CapturingDispatcher)
-      on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
+      Nous.ModelDispatcher.put_dispatcher(CapturingDispatcher)
       :ok
     end
 
@@ -113,8 +112,7 @@ defmodule Nous.PermissionsEnforcementTest do
 
   describe "policy forces approval at execution time" do
     setup do
-      Application.put_env(:nous, :model_dispatcher, ToolCallDispatcher)
-      on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
+      Nous.ModelDispatcher.put_dispatcher(ToolCallDispatcher)
       :ok
     end
 
@@ -178,8 +176,7 @@ defmodule Nous.PermissionsEnforcementTest do
 
   describe "InputGuard is enforced on the streaming path" do
     setup do
-      Application.put_env(:nous, :model_dispatcher, NeverStreamDispatcher)
-      on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
+      Nous.ModelDispatcher.put_dispatcher(NeverStreamDispatcher)
       :ok
     end
 

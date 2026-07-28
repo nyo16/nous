@@ -10,6 +10,21 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   require Logger
 
+  # Outer ceiling (ms) for one parallel tool call whose tool declares no
+  # timeout of its own. `Nous.Tool.t/0` permits `timeout: nil` and ToolExecutor
+  # only arms its internal timer when `tool.timeout` is a positive number, so
+  # nothing bounds such a call from the inside: a tool that hangs holds its
+  # async_stream slot forever and wedges the entire agent run, with no
+  # supervision escape. Five minutes is longer than any sane tool call yet
+  # finite. Override with `config :nous, :parallel_tool_call_timeout_ms`.
+  @default_call_timeout_ms :timer.minutes(5)
+
+  # Slack (ms) added on top of a tool's own declared budget so the outer
+  # ceiling never races ToolExecutor's timer. ToolExecutor re-raises
+  # `ToolTimeout` into its retry path, so the inner timer must win and produce
+  # a proper per-tool timeout result rather than an opaque outer task kill.
+  @timeout_headroom_ms :timer.seconds(5)
+
   def handle_tool_calls(agent, behaviour, ctx, response, tools) do
     # Extract tool calls
     tool_calls = Messages.extract_tool_calls([response])
@@ -111,9 +126,11 @@ defmodule Nous.AgentRunner.ToolExecution do
   #   (a) pre-stage, in call order: on_tool_call callback, invalid-args
   #       short-circuit, pre_tool_use hook, approval check
   #   (b) approved calls execute concurrently under Nous.TaskSupervisor;
-  #       async_stream preserves input order. timeout: :infinity because
-  #       ToolExecutor already enforces per-tool timeouts internally — an
-  #       outer timeout would double-kill.
+  #       async_stream preserves input order. The stream carries a finite
+  #       per-call ceiling (batch_call_timeout/2) plus on_timeout: :kill_task.
+  #       ToolExecutor's per-tool timeout is *not* always armed — tool.timeout
+  #       is nil-able and only enforced when positive — so this outer bound is
+  #       all that stops one hung tool from blocking the run forever.
   #   (c) post-stage, in original call order: post_tool_use hook,
   #       on_tool_response callback, behaviour :after_tool, merge_deps
   # Tools cannot observe each other's context updates within a turn in either
@@ -125,6 +142,8 @@ defmodule Nous.AgentRunner.ToolExecution do
 
     approved = for {:execute, call} <- decisions, do: call
 
+    call_timeout = batch_call_timeout(approved, tools)
+
     # Key executions by call id rather than relying on positional alignment
     # between `approved` and the async_stream output — robust to reordering and
     # to any future change in how the approved list is built. Provider tool_call
@@ -135,14 +154,20 @@ defmodule Nous.AgentRunner.ToolExecution do
       |> Task.Supervisor.async_stream_nolink(
         approved,
         fn call -> {get_tool_field(call, :id), execute_single_tool(tools, call, run_ctx)} end,
-        timeout: :infinity,
-        # Carry the input (call) on crash exits so failures keep their
-        # attribution and surface as per-call tool errors.
+        timeout: call_timeout,
+        # Kill a task that blows the ceiling instead of blocking on it, so the
+        # rest of the batch still drains.
+        on_timeout: :kill_task,
+        # Carry the input (call) on crash and timeout exits so failures keep
+        # their attribution and surface as per-call tool errors.
         zip_input_on_exit: true
       )
       |> Map.new(fn
         {:ok, {call_id, {result_msg, context_updates}}} ->
           {call_id, {result_msg, context_updates}}
+
+        {:exit, {call, :timeout}} ->
+          {get_tool_field(call, :id), timed_out_tool_result(call, call_timeout)}
 
         {:exit, {call, reason}} ->
           {get_tool_field(call, :id), crashed_tool_result(call, reason)}
@@ -163,6 +188,55 @@ defmodule Nous.AgentRunner.ToolExecution do
       end)
 
     {Enum.reverse(results), ctx}
+  end
+
+  # Per-call ceiling for the batch. async_stream applies one timeout to every
+  # element, so take the largest budget in the batch: a shorter-lived tool is
+  # still bounded from the inside by its own ToolExecutor timer.
+  def batch_call_timeout(calls, tools) do
+    calls
+    |> Enum.map(&call_timeout_budget(&1, tools))
+    |> Enum.max(fn -> default_call_timeout_ms() end)
+  end
+
+  def call_timeout_budget(call, tools) do
+    name = clean_tool_name(get_tool_field(call, :name))
+
+    case Enum.find(tools, fn t -> t.name == name end) do
+      %Tool{timeout: timeout, retries: retries} when is_integer(timeout) and timeout > 0 ->
+        # A timeout raised inside ToolExecutor goes through its retry path, so
+        # the call may legitimately spend `timeout` ms on each of its
+        # `retries + 1` attempts before it finally gives up.
+        timeout * (retries + 1) + @timeout_headroom_ms
+
+      _ ->
+        # Unknown tool, or one declaring no timeout: nothing bounds it from the
+        # inside, so the module default is the only budget it gets.
+        default_call_timeout_ms()
+    end
+  end
+
+  def default_call_timeout_ms do
+    Application.get_env(:nous, :parallel_tool_call_timeout_ms, @default_call_timeout_ms)
+  end
+
+  # The outer ceiling fired and the task was killed mid-flight, so ToolExecutor
+  # never got to raise its own ToolTimeout. Surface a readable per-call timeout
+  # the model can route around, keeping this call's attribution intact.
+  def timed_out_tool_result(call, timeout_ms) do
+    call_id = get_tool_field(call, :id)
+    cleaned_name = clean_tool_name(get_tool_field(call, :name))
+
+    Logger.error("Tool '#{cleaned_name}' exceeded the #{timeout_ms}ms parallel execution ceiling")
+
+    result_msg =
+      Message.tool(
+        call_id,
+        "Tool execution timed out: #{cleaned_name} did not respond within #{timeout_ms}ms.",
+        name: cleaned_name
+      )
+
+    {result_msg, %{}}
   end
 
   # Pre-execution stage for one call in parallel mode, mirroring the

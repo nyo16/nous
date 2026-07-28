@@ -7,6 +7,252 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`Nous.Plugins.HumanInTheLoop` no longer auto-approves tools outside its
+  `:tools` list.** The handler is only ever invoked for tools already flagged
+  `requires_approval: true`, so filtering it by the configured `:tools` list
+  sent every *other* approval-gated tool down an `else -> :approve` branch.
+  Configuring HITL with `tools: ["send_email"]` therefore flipped `Bash`,
+  `FileWrite`, and `FileEdit` from default-deny to silent auto-approve —
+  installing the approval plugin made an agent strictly less safe than
+  omitting it, and left unattended command execution one prompt injection
+  away. The handler is now passed through unchanged; `:tools` still tags
+  those tools as approval-requiring, but can no longer narrow the gate.
+
+- **Approval enforcement is now structural rather than positional.**
+  `requires_approval` was only checked inside `Nous.AgentRunner`, so the three
+  other paths to a tool — `Nous.LLM`'s tool loop, `Nous.Workflow` `:tool_step`,
+  and any direct `Nous.ToolExecutor.execute/3` call — executed `Bash` /
+  `FileWrite` / `FileEdit` with no approval, permission policy, or hooks. In
+  the workflow case, model-authored `:agent_step` output reached `/bin/sh -c`
+  unattended. `%Nous.RunContext{}` gains `:approval_handler` and
+  `:approval_gated?`, and `ToolExecutor.execute/3` now default-denies an
+  approval-gated tool unless the context supplies a handler that approves it
+  or is flagged as already gated. The agent runner marks its context gated, so
+  operators are not prompted twice and its behaviour is unchanged.
+
+- **`Nous.Tools.WebFetch` bounds its responses.** The model-supplied-URL egress
+  point had no size or content-type limit and fed whole bodies to Floki. It now
+  streams into a capped collector (default 5 MB, overridable via
+  `ctx.deps[:web_fetch_max_bytes]` or `config :nous, :web_fetch_max_bytes`; a
+  model-supplied `max_bytes` argument may only lower the ceiling, never raise
+  it) and rejects anything that is not `text/html`, `application/xhtml+xml`, or
+  `text/plain`. A missing `content-type` fails closed. The module previously
+  had zero tests; its redirect re-validation, metadata-IP blocking, redirect
+  cap, and relative-`Location` handling are now covered.
+
+- **Dependency advisories cleared.** `mix deps.update req finch mint hpax ecto
+  hackney` resolves req 0.6.3, finch 0.23.0, mint 1.9.3, hpax 1.0.4, hackney
+  4.6.0, quic 1.7.1, ecto 3.14.1, decimal 3.1.1. This clears the two advisories
+  reachable from production code — CVE-2026-49755 (Req decompression bomb,
+  HIGH, reachable via `WebFetch`) and CVE-2026-56810 / CVE-2026-58229 (Mint
+  HTTP/1 memory exhaustion, HIGH, on every provider call) — plus the hackney
+  and QUIC advisories. No dependency requirement in `mix.exs` changed. The only
+  remaining advisories reach the build through `bypass`
+  (`only: [:dev, :test]`) and never ship to consumers.
+
+### Performance
+
+- **Gemini/Vertex JSON-array streaming is no longer O(n²).** The
+  `:stream_parser` buffer was re-walked byte-by-byte from position 0 on every
+  arriving chunk, so one large object spread across many chunks cost quadratic
+  time. `parse_buffer/2` now accepts and returns a resumable
+  `{pos, depth, in_string}` scan state that both stream backends thread through
+  their buffer state; `parse_buffer/1` is unchanged for the SSE default and any
+  third-party parser. Measured over the report's shape (one object, 1400-byte
+  chunks): 3/14/59/243 ms at 60/120/240/480 KB becomes 0/0/1/8 ms — **27-30x at
+  the larger sizes**, and linear rather than quadratic. The median path (many
+  small objects) is unchanged. Resume is byte-identical to a full rescan,
+  pinned by a test that splits 14 adversarial inputs at *every* byte boundary,
+  including a lone trailing backslash inside a string — the one case where a
+  naive resume diverges.
+
+- **The Req stream backend now bounds buffered bytes, not message count.** The
+  guard capped the consumer mailbox at 1000 messages while never inspecting
+  chunk size, so resident memory was roughly 1000 x chunk size. It now tracks
+  bytes through a shared `:atomics` counter with an 8 MB high-water mark and
+  parks the producer in a `receive` instead of polling. A/B measurement
+  streaming 100 MB to a deliberately slow consumer: peak binary memory 23.9 MB
+  bounded vs 108.5 MB unbounded, and the bounded peak is flat in stream size
+  where the unbounded one grows linearly. This also removes a cross-process
+  `Process.info/2` call that ran on every chunk, and a `Process.sleep/1`
+  busy-wait.
+
+- **Decisions graph traversal is linear again.** Both BFS frontiers in
+  `Nous.Decisions.Store.ETS` used `queue ++ [node]`, which silently defeated
+  the adjacency index built directly above them. Now `:queue`. Star graph:
+  20/74/284 ms at V=4000/8000/16000 becomes 4/10/19 ms (**14.8x at V=16000**),
+  scaling ~2x per doubling instead of ~4x. Reachable set and emission order
+  are unchanged.
+
+- **Knowledge-base link queries push filters into the match spec.**
+  `backlinks/2`, `outlinks/2`, `link_counts_by_source/1` and `related_entries/3`
+  each `tab2list`'d the entire links table, and `related_entries/3` applied its
+  limit only after fetching every neighbour. Over 20,300 links: 7.1x, 6.7x,
+  5.7x and 3.3x respectively. `related_entries/3` still returns up to `limit`
+  entries that actually exist — it fills lazily rather than truncating before
+  dangling links are rejected, so the dangling-link behaviour is preserved.
+
+- **Default `count_tokens/1` no longer inspects every message.** It used
+  `inspect |> String.length` (measured ~13,000x slower than necessary) where
+  the internal estimator already used `byte_size`. Both now agree.
+
+- **`Teams.SharedState` reads run in the caller.** The table was `:private`,
+  forcing every read through the GenServer. It is now `:protected` with
+  `read_concurrency: true`, and `get_discoveries/1` / `get_claims/1` select
+  directly. Eight concurrent readers over 1,000 discoveries: 713 ms serialized
+  vs 203 ms concurrent. Discoveries also now expire on the same
+  `Process.send_after` mechanism claims already used, via a new
+  `:discovery_ttl` option (default 1 hour, accepts `:infinity`) — previously
+  they accumulated for the lifetime of the process.
+
+- **`AgentServer.save_context/1` no longer blocks the agent process.**
+  Serialization and backend IO move to a task, mirroring `:load_context` which
+  was already offloaded. The call remains synchronous *for the caller* — the
+  reply is sent after the backend write returns — so the "the save has landed
+  when this returns" guarantee is unchanged; only the server stops blocking.
+
+- **`Persistence.ETS` is bounded** rather than growing without eviction, and
+  the global Finch pool is configurable instead of hard-capping the node at 10
+  connections per provider — which directly throttled the concurrency
+  `parallel_tool_calls` exists to enable.
+
+- Missing `read_concurrency` / `write_concurrency` flags added to the ETS
+  tables whose access pattern warrants them (not blanket-applied — the flags
+  cost memory and hurt single-writer tables).
+
+### Changed
+
+- **`Nous.HTTP.Buffer` extracted.** Both stream backends reached up into
+  `Nous.Providers.HTTP` for buffer helpers, making the transport layer depend
+  on the provider layer — the one genuine (non-benign) runtime cycle in the
+  graph. The helpers now live in `Nous.HTTP.Buffer`; `Nous.Providers.HTTP`
+  keeps delegating wrappers, so nothing external breaks. Runtime cycles drop
+  from 7 to 6; compile-time cycles remain 0.
+
+- **`Nous.AgentRunner`'s 199-line orchestration loop** moved out of the facade
+  into a new internal Nous.AgentRunner.IterationLoop, alongside the four
+  submodules added in 0.17.0. Pure move: the public API and every telemetry
+  event are unchanged.
+
+- **`AGENTS.md`'s "What NOT to use" list corrected.** It declared several
+  modules private that are in fact documented plug-in points —
+  `Nous.HTTP.Backend.*` and `Nous.HTTP.StreamBackend.*` are behaviours with a
+  published guide, `Nous.Providers.HTTP` is injected into every provider by
+  `use Nous.Provider`, `Nous.AgentRunner` holds the canonical option docs that
+  `Nous.Agent` points at, and `Nous.AgentServer` is used throughout the
+  LiveView guide. Those are now documented as public. Only
+  `Nous.Workflow.Engine.{Executor,ParallelExecutor,StateMerger}` were genuinely
+  internal; they gain `@moduledoc false` and leave the docs groups.
+
+### Tests
+
+- **Provider request shaping is now asserted.** `Nous.Providers.Gemini` sat at
+  4.35% coverage and `Anthropic` at 4.76% — message *translation* was well
+  covered, but nothing checked the URL, auth headers, or body of an outgoing
+  request. That is exactly how the malformed Gemini tool payload above shipped
+  green. New `gemini_test.exs`, `anthropic_test.exs` and `openai_test.exs`
+  decode the real request inside a Bypass plug and assert path, method, auth
+  header, system-prompt placement, and tool schema per dialect. The Gemini file
+  explicitly refutes the OpenAI `"type"` / `"function"` envelope keys inside
+  `functionDeclarations`, so that specific regression cannot recur. Coverage:
+  Gemini 4.35% → 91.30%, Anthropic 4.76% → 85.71%.
+
+- **Write-tool sandbox escapes are now tested.** `FileRead` had an escape test;
+  `FileWrite` and `FileEdit` did not, so deleting their `PathGuard.validate/2`
+  call would not have failed anything — and a write escape is strictly worse
+  than a read escape. Both now have absolute-path and `../../` traversal tests
+  that also assert the target file was not created or modified, and the real
+  `Nous.Tools.Bash` is tested for approval refusal via a filesystem side effect
+  that must not happen. Each new protection test was verified to fail under a
+  targeted mutation of the `lib/` line it defends.
+
+- **The 17 `AgentServer` cancellation tests now run in CI.** They were
+  `@moduletag :llm`-excluded, so the only cancellation coverage was a trivial
+  `{:ok, :no_execution}` assertion — cancel-while-running, double-cancel,
+  cancel-then-restart and multi-agent isolation were all unverified. They now
+  use stub dispatchers that signal readiness, so cancellation is triggered at a
+  provably-parked point instead of after a `Process.sleep`. Whole suite: 0.1s.
+
+- **Tests no longer reach the public internet.** Several tests issued live
+  requests to `api.openai.com` and `aiplatform.googleapis.com` and passed only
+  because they asserted on the resulting error — slow, broken offline, and if
+  `OPENAI_API_KEY` were ever set in CI they would have made real billed calls
+  with different behaviour. The two Vertex region tests additionally never
+  checked the thing they were named for; they now assert the resolved URL
+  directly. Full-suite wall time dropped from ~9s to ~6.4s.
+
+- **A process-scoped dispatcher seam** (`Nous.ModelDispatcher.put_dispatcher/1`,
+  resolved through `$callers`) lets tests inject a stub without mutating
+  application environment. Precedence is explicit option → process override →
+  app env → default, pinned by a test. 12 files moved from `async: false` to
+  `async: true` (39 → 30 sync). Files driving `Nous.AgentServer` stay sync and
+  say why: `$callers` does not cross `GenServer.start_link`.
+
+- **Race-hiding sleeps replaced with real synchronisation**, wall-clock
+  concurrency assertions replaced with a structural in-flight counter asserting
+  the maximum is *exactly* the expected concurrency (a `<=` bound also passes
+  for a fully sequential implementation), and several tests that could not fail
+  for their stated reason were fixed or deleted.
+
+- `Nous.Messages` doctests re-enabled (7 → 23 doctests total). Dead `:mox`
+  dependency removed; `bypass` narrowed to `only: :test` so a Cowboy server is
+  no longer on the `:dev` code path.
+
+- **CI now enforces test coverage.** Total went 56.80% → ~60%, and the gate is
+  a ratchet at 59 rather than an aspiration — the 90% threshold configured in
+  `mix.exs` was never run by any job, and was additionally mis-nested:
+  `:threshold` must sit under `:summary` or Mix silently keeps its default.
+
+- **Credo thresholds ratcheted** to the tightest values the codebase passes
+  today (`max_complexity` 24 → 23, `max_arity` 15 → 14) so they can only move
+  down. `max_nesting` was already at its floor.
+
+### Fixed
+
+- **Gemini and Vertex AI tool calls from the agent path shipped a malformed
+  payload.** `Nous.AgentRunner` fell through to the OpenAI tool schema for
+  `:gemini` / `:vertex_ai`, so the request carried
+  `[%{"functionDeclarations" => [%{"type" => "function", "function" => …}]}]`
+  — an OpenAI envelope nested inside Gemini's `functionDeclarations`, which
+  expects the bare declaration. `Nous.LLM` had a second, *correct* copy of the
+  same conversion, which is why one-shot calls worked while agent runs did not.
+  The duplicate is deleted and both paths now share
+  `RequestDispatch.convert_tools_for_provider/2`, using the Gemini shape. Any
+  agent using tools with Gemini or Vertex was affected.
+
+- **`Nous.LLM.generate_text/3` no longer returns `""` for multimodal replies.**
+  Its private `extract_text/2` copy returned `""` for any non-binary content;
+  it now uses `Nous.Message.extract_text/1`, which walks list content.
+
+- **A hung tool can no longer wedge an entire agent run.** The parallel
+  tool-call path passed `timeout: :infinity` with no `on_timeout` to
+  `Task.Supervisor.async_stream_nolink/4`, relying on `ToolExecutor` to enforce
+  per-tool timeouts — but that timer is only armed when `tool.timeout` is a
+  positive integer, and `nil` is permitted. The stream now uses a finite
+  ceiling derived from the batch (each tool's own timeout times its retry
+  budget, plus headroom; five minutes when a tool declares none) with
+  `on_timeout: :kill_task`. A timed-out call returns a per-call tool error and
+  its siblings keep their real results.
+
+- **`Nous.Message.ContentPart` accepts whitespace-only text under Ecto 3.14.**
+  Ecto 3.14 moved trimming out of `:empty_values` into a separate
+  `:trim_values` option defaulting to true, so the `empty_values: [""]`
+  override stopped protecting the Gemini/Vertex `"\n\n\n"` case. Empty-content
+  rejection is now an explicit check in `validate_content/1`, giving identical
+  behaviour across Ecto 3.11-3.14.
+
+- **Transport errors are logged again under Req 0.6.** The error clause in
+  `Nous.HTTP.Backend.Req` matched only `%Mint.TransportError{}`; Req 0.6
+  surfaces `%Req.TransportError{}`, so the clause went dead and transport
+  failures fell through to the generic handler. Both structs are handled.
+
+### Removed
+
+- **`:inets` dropped from `extra_applications`.** `:httpc` was replaced by Req;
+  the entry only forced inets to boot in every downstream release.
+
 ## [0.17.0] - 2026-07-18
 
 ### Added

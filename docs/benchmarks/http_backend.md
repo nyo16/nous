@@ -18,8 +18,10 @@ gap shrinking but never vanishing as response time grows.
 ## Reproducing
 
 ```sh
-# Localhost — pure client overhead.
-mix run bench/http_backend.exs
+# Localhost — pure client overhead. MIX_ENV=test because the in-process
+# Plug.Cowboy server reaches the build through Bypass, which is `only: :test`
+# (keeping cowboy/ranch off the :dev code path).
+MIX_ENV=test mix run bench/http_backend.exs
 
 # Real endpoint — needs creds in env (no secrets land in source).
 OPENROUTER_API_KEY=sk-or-... \

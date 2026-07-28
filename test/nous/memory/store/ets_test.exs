@@ -13,6 +13,10 @@ defmodule Nous.Memory.Store.ETSTest do
     test "creates a table" do
       {:ok, table} = ETS.init([])
       assert is_reference(table)
+
+      # Read-dominated store: recalls vastly outnumber writes.
+      assert :ets.info(table, :read_concurrency) == true
+      assert :ets.info(table, :write_concurrency) == false
     end
   end
 
@@ -105,6 +109,20 @@ defmodule Nous.Memory.Store.ETSTest do
       assert length(results) == 1
       {found, _score} = hd(results)
       assert found.agent_id == "agent-1"
+    end
+
+    test "scores are independent of query casing", %{table: table} do
+      {:ok, _} = ETS.store(table, Entry.new(%{content: "User Prefers DARK Mode"}))
+
+      # The query downcase is hoisted out of the per-entry loop; hoisting it
+      # must not change what any casing scores.
+      {:ok, [{_, lower}]} = ETS.search_text(table, "dark mode", [])
+      {:ok, [{_, upper}]} = ETS.search_text(table, "DARK MODE", [])
+      {:ok, [{_, mixed}]} = ETS.search_text(table, "DaRk MoDe", [])
+
+      assert lower == upper
+      assert lower == mixed
+      assert lower > 0.0
     end
   end
 

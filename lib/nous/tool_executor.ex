@@ -46,7 +46,15 @@ defmodule Nous.ToolExecutor do
 
   - `{:ok, result}` - Tool executed successfully
   - `{:ok, result, context_update}` - Tool executed and wants to update context
-  - `{:error, reason}` - Tool failed after all retries
+  - `{:error, reason}` - Tool failed after all retries, or the tool requires
+    approval and the context could not supply it
+
+  ## Approval
+
+  A tool with `requires_approval: true` is REJECTED unless the context either
+  carries an `:approval_handler` that approves it, or is flagged
+  `approval_gated?: true` by a caller that already ran its own approval
+  pipeline. `Nous.AgentRunner` sets that flag; other entry points do not.
 
   ## Examples
 
@@ -75,10 +83,71 @@ defmodule Nous.ToolExecutor do
       "Executing tool '#{tool.name}' (retries: #{tool.retries}, takes_ctx: #{tool.takes_ctx}, timeout: #{tool.timeout}ms)"
     )
 
-    case maybe_validate(tool, arguments) do
-      :ok -> do_execute(tool, arguments, ctx, 0)
-      {:error, _} = err -> err
+    with {:ok, arguments} <- check_approval(tool, arguments, ctx),
+         :ok <- maybe_validate(tool, arguments) do
+      do_execute(tool, arguments, ctx, 0)
     end
+  end
+
+  # Structural default-deny for approval-gated tools.
+  #
+  # `Nous.AgentRunner` runs the full approval + permission-policy pipeline
+  # (ToolExecution.check_tool_approval/3) before a call reaches here and marks
+  # the context `approval_gated?: true`, so we must not prompt twice. Every
+  # OTHER entry point — `Nous.LLM`'s tool loop, `Nous.Workflow` `:tool_step`,
+  # and any direct `ToolExecutor.execute/3` call — used to arrive with no gate
+  # at all, which made `requires_approval` only as strong as each caller's
+  # memory and left Bash/FileWrite/FileEdit reachable unattended under prompt
+  # injection. Enforcing here makes the guarantee structural instead of
+  # positional.
+  defp check_approval(%Tool{requires_approval: false}, arguments, _ctx), do: {:ok, arguments}
+
+  defp check_approval(_tool, arguments, %RunContext{approval_gated?: true}), do: {:ok, arguments}
+
+  defp check_approval(%Tool{} = tool, arguments, %RunContext{approval_handler: handler})
+       when is_function(handler, 1) do
+    # Same payload shape the runner hands its handler, so one handler serves
+    # both paths. `:id` is nil here: a provider tool-call id only exists inside
+    # the runner loop.
+    decision = handler.(%{name: tool.name, id: nil, arguments: arguments, tool: tool})
+
+    case decision do
+      :approve ->
+        {:ok, arguments}
+
+      {:edit, new_args} when is_map(new_args) ->
+        {:ok, new_args}
+
+      other ->
+        if other != :reject do
+          Logger.warning(
+            "Approval handler for tool '#{tool.name}' returned #{inspect(other)}; " <>
+              "expected :approve | :reject | {:edit, map}. Treating as :reject."
+          )
+        end
+
+        {:error,
+         Errors.ToolError.exception(
+           tool_name: tool.name,
+           message: "Tool call '#{tool.name}' was rejected by the approval handler."
+         )}
+    end
+  end
+
+  defp check_approval(%Tool{} = tool, _arguments, %RunContext{}) do
+    Logger.warning(
+      "Tool '#{tool.name}' has requires_approval: true but the RunContext has no " <>
+        ":approval_handler and is not marked approval_gated?. Rejecting. Run this tool " <>
+        "through Nous.run/3, or pass approval_handler: fun when building the context."
+    )
+
+    {:error,
+     Errors.ToolError.exception(
+       tool_name: tool.name,
+       message:
+         "Tool '#{tool.name}' requires approval but no approval handler is configured. " <>
+           "Wire an :approval_handler to allow it."
+     )}
   end
 
   # Validate arguments against tool.parameters JSON schema when tool.validate_args is true.

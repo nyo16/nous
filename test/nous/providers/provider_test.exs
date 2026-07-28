@@ -201,6 +201,41 @@ defmodule Nous.ProviderTest do
       # Custom provider returns 10 * message_count
       assert CustomTokenProvider.count_tokens(messages) == 30
     end
+
+    test "estimates ~4 bytes per token of binary content" do
+      messages = [
+        %{role: "user", content: String.duplicate("a", 400)},
+        %{role: "assistant", content: String.duplicate("b", 200)}
+      ]
+
+      assert TestProvider.count_tokens(messages) == 150
+    end
+
+    test "counts bytes, not graphemes, for multi-byte content" do
+      # Four 4-byte emoji = 16 bytes.
+      assert TestProvider.count_tokens([%{role: "user", content: "🌍🌍🌍🌍"}]) == 4
+    end
+
+    test "skips non-binary content instead of crashing" do
+      messages = [
+        %{role: "assistant", content: nil, tool_calls: [%{id: "call_1"}]},
+        %{role: "user", content: [%{type: "text", text: "multimodal"}]},
+        %{role: "user", content: "12345678"}
+      ]
+
+      assert TestProvider.count_tokens(messages) == 2
+    end
+
+    test "scales with content length instead of saturating" do
+      # The old inspect/String.length estimator capped out at inspect's
+      # 4096-character :printable_limit, so a 40 KB message scored the same
+      # ~1048 tokens as a 4 KB one.
+      assert TestProvider.count_tokens([%{role: "user", content: String.duplicate("x", 4_000)}]) ==
+               1_000
+
+      assert TestProvider.count_tokens([%{role: "user", content: String.duplicate("x", 40_000)}]) ==
+               10_000
+    end
   end
 
   describe "chat/2 callback" do
@@ -557,18 +592,12 @@ defmodule Nous.ProviderTest do
       assert {:request_stream, 3} in functions
     end
 
-    test "respects LMSTUDIO_BASE_URL environment variable" do
-      System.put_env("LMSTUDIO_BASE_URL", "http://custom:5000/v1")
-
-      try do
-        # The provider should check this env var in get_base_url
-        Code.ensure_loaded!(Nous.Providers.LMStudio)
-        # We can't easily test the internal function, but we verify the module loads
-        assert Nous.Providers.LMStudio.provider_id() == :lmstudio
-      after
-        System.delete_env("LMSTUDIO_BASE_URL")
-      end
-    end
+    # No "respects LMSTUDIO_BASE_URL" test lives here on purpose. The env var
+    # is read by the macro-generated private `chat_resolve_base_url/1`, so the
+    # only honest way to observe it is to issue a request and see where it
+    # lands — which is what `test/nous/providers/lmstudio_test.exs` ("env var
+    # wins over default" / "opts wins over env var") does against Bypass. Doing
+    # it here would mean mutating a global env var from this async module.
   end
 
   describe "Nous.Providers.VLLM" do
@@ -590,17 +619,6 @@ defmodule Nous.ProviderTest do
       assert {:request, 3} in functions
       assert {:request_stream, 3} in functions
     end
-
-    test "respects VLLM_BASE_URL environment variable" do
-      System.put_env("VLLM_BASE_URL", "http://gpu-server:8000/v1")
-
-      try do
-        Code.ensure_loaded!(Nous.Providers.VLLM)
-        assert Nous.Providers.VLLM.provider_id() == :vllm
-      after
-        System.delete_env("VLLM_BASE_URL")
-      end
-    end
   end
 
   describe "Nous.Providers.SGLang" do
@@ -621,17 +639,6 @@ defmodule Nous.ProviderTest do
       assert {:count_tokens, 1} in functions
       assert {:request, 3} in functions
       assert {:request_stream, 3} in functions
-    end
-
-    test "respects SGLANG_BASE_URL environment variable" do
-      System.put_env("SGLANG_BASE_URL", "http://sglang-server:30000/v1")
-
-      try do
-        Code.ensure_loaded!(Nous.Providers.SGLang)
-        assert Nous.Providers.SGLang.provider_id() == :sglang
-      after
-        System.delete_env("SGLANG_BASE_URL")
-      end
     end
   end
 
@@ -701,13 +708,24 @@ defmodule Nous.ProviderTest do
                ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
     end
 
-    test "leaves :status_code and :retry_after_ms nil for transport errors" do
+    test "leaves :status_code and :retry_after_ms nil for Mint transport errors" do
       error = {:error, %Mint.TransportError{reason: :econnrefused}}
 
       assert {:error, %ProviderError{status_code: nil, retry_after_ms: nil} = err} =
                ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
 
       assert %Mint.TransportError{reason: :econnrefused} = err.details
+    end
+
+    # req 0.6 surfaces transport failures as %Req.TransportError{}, not Mint's.
+    # Both must stay uncategorised (no HTTP status, no server-suggested backoff).
+    test "leaves :status_code and :retry_after_ms nil for Req transport errors" do
+      error = {:error, %Req.TransportError{reason: :econnrefused}}
+
+      assert {:error, %ProviderError{status_code: nil, retry_after_ms: nil} = err} =
+               ErrorWrappingProvider.request(err_model(error), [Message.user("hi")], %{})
+
+      assert %Req.TransportError{reason: :econnrefused} = err.details
     end
   end
 

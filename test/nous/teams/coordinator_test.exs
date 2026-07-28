@@ -3,6 +3,23 @@ defmodule Nous.Teams.CoordinatorTest do
 
   alias Nous.Teams.Coordinator
 
+  # Bounded poll. Returns the instant the condition holds; unlike a fixed sleep
+  # it cannot turn a real regression green, it only bounds how long we wait for
+  # an asynchronous handler to run.
+  defp eventually(fun, retries \\ 200, delay \\ 5) do
+    cond do
+      fun.() ->
+        true
+
+      retries == 0 ->
+        false
+
+      true ->
+        Process.sleep(delay)
+        eventually(fun, retries - 1, delay)
+    end
+  end
+
   setup do
     team_id = "coord_test_#{System.unique_integer([:positive])}"
 
@@ -140,14 +157,16 @@ defmodule Nous.Teams.CoordinatorTest do
 
       {:ok, pid} = Coordinator.spawn_agent(coordinator, "alice", config)
 
-      # Kill the agent process
+      # Monitor first, so the kill is observed rather than waited out.
+      ref = Process.monitor(pid)
       Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1_000
 
-      # Give the monitor time to trigger
-      Process.sleep(50)
-
-      agents = Coordinator.list_agents(coordinator)
-      assert agents == []
+      # The coordinator's own :DOWN is handled in its mailbox, which we cannot
+      # observe from here — poll with a bounded deadline instead of betting the
+      # test on a fixed 50ms. This returns as soon as the handler has run and
+      # still fails a coordinator that never deregisters the dead agent.
+      assert eventually(fn -> Coordinator.list_agents(coordinator) == [] end)
     end
   end
 end

@@ -1,161 +1,218 @@
 defmodule Nous.AgentCancellationTest do
-  use ExUnit.Case, async: true
+  # async: false — swaps the global :model_dispatcher app env. The runs here go
+  # through Nous.AgentServer, which is a GenServer, and `$callers` does not
+  # cross GenServer.start_link — so the process-scoped
+  # `Nous.ModelDispatcher.put_dispatcher/1` seam cannot reach the server.
+  use ExUnit.Case, async: false
 
-  # These tests require a real LLM (LM Studio)
-  # Run with: mix test --include llm
-  @moduletag :llm
+  alias Nous.{Agent, AgentServer, Errors, Message, Tool, Usage}
 
-  alias Nous.{Agent, Tool, Errors}
+  @moduletag :capture_log
 
-  describe "cancellation via cancellation_check" do
-    test "agent stops when cancellation check throws" do
-      # Create a simple tool
-      tool =
-        Tool.from_function(
-          fn _ctx, %{"input" => input} -> "Result: #{input}" end,
-          name: "echo",
-          description: "Echo input"
-        )
+  # Cancellation does not need a real model — it needs one that is slow enough
+  # to cancel. These stubs replace the LM Studio dependency that kept the whole
+  # file behind `@moduletag :llm`, i.e. out of CI, leaving `cancel_execution/1`
+  # covered only by the trivial `{:ok, :no_execution}` case in agent_server_test.
+  #
+  # Every stub signals the test process the instant the model request begins.
+  # `assert_receive {:model_request_started, task_pid}` is the deterministic
+  # replacement for `Process.sleep(10)`: once it lands, the run is provably
+  # parked inside the model call, so there is something real to cancel. A
+  # cancellation test that races is worse than no cancellation test.
 
-      agent =
-        Agent.new(Nous.LLMTestHelper.test_model(),
-          instructions: "Use the echo tool",
-          tools: [tool]
-        )
+  defmodule Stub do
+    @moduledoc false
 
-      # Create cancellation flag
-      cancellation_ref = :atomics.new(1, [])
-      :atomics.put(cancellation_ref, 1, 0)
+    @key {__MODULE__, :test_pid}
 
-      # Cancellation check function
-      check_fn = fn ->
-        case :atomics.get(cancellation_ref, 1) do
-          1 -> throw({:cancelled, "Test cancellation"})
-          0 -> :ok
-        end
+    def register(pid), do: :persistent_term.put(@key, pid)
+    def erase, do: :persistent_term.erase(@key)
+
+    def request_started do
+      case :persistent_term.get(@key, nil) do
+        nil -> :ok
+        pid -> send(pid, {:model_request_started, self()})
       end
-
-      # Run in a task so we can trigger cancellation
-      task =
-        Task.async(fn ->
-          Agent.run(agent, "Echo hello",
-            cancellation_check: check_fn,
-            max_iterations: 5
-          )
-        end)
-
-      # Trigger cancellation after a tiny delay
-      Process.sleep(10)
-      :atomics.put(cancellation_ref, 1, 1)
-
-      # Wait for result (model request may take up to 120s before cancellation is checked)
-      result = Task.await(task, 150_000)
-
-      # Should get cancellation error
-      assert {:error, %Errors.ExecutionCancelled{reason: "Test cancellation"}} = result
     end
 
-    test "agent completes normally without cancellation check" do
-      # This test just verifies that without cancellation check, things work normally
-      # We can't actually run the model in tests, so we expect a model error
+    def text(content, opts \\ []) do
+      usage = %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15, requests: 1}
+      {:ok, %{Message.assistant(content, opts) | metadata: %{usage: usage}}}
+    end
+  end
+
+  defmodule BlockingDispatcher do
+    @moduledoc false
+    # Parks the run inside the model call forever: the "slow model" the
+    # cancellation path needs, with none of the wall-clock nondeterminism.
+
+    def request(_model, _messages, _settings) do
+      Stub.request_started()
+      Process.sleep(:infinity)
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 50
+  end
+
+  defmodule CompletingDispatcher do
+    @moduledoc false
+
+    def request(_model, _messages, _settings) do
+      Stub.request_started()
+      Stub.text("done")
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 50
+  end
+
+  defmodule ToolLoopDispatcher do
+    @moduledoc false
+    # Answers every request with the same tool call, so the loop iterates until
+    # something stops it. Nothing here is slow — the tool raises the cancellation
+    # flag and the loop's next `check_cancellation/1` has to catch it.
+
+    def request(_model, _messages, _settings) do
+      Stub.request_started()
+      Stub.text("", tool_calls: [%{"id" => "call_1", "name" => "waiter", "arguments" => %{}}])
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 50
+  end
+
+  setup do
+    original = Application.get_env(:nous, :model_dispatcher)
+    Stub.register(self())
+    use_dispatcher(BlockingDispatcher)
+
+    on_exit(fn ->
+      Stub.erase()
+
+      if original,
+        do: Application.put_env(:nous, :model_dispatcher, original),
+        else: Application.delete_env(:nous, :model_dispatcher)
+    end)
+
+    :ok
+  end
+
+  defp use_dispatcher(module), do: Application.put_env(:nous, :model_dispatcher, module)
+
+  defp start_agent(config_overrides \\ []) do
+    session_id = "cancel-test-#{System.unique_integer([:positive])}"
+
+    config =
+      %{model: "openai:test-model", instructions: "Test agent", tools: []}
+      |> Map.merge(Map.new(config_overrides))
+
+    start_supervised!(
+      Supervisor.child_spec(
+        {AgentServer, [session_id: session_id, agent_config: config]},
+        id: {AgentServer, session_id}
+      )
+    )
+  end
+
+  describe "cancellation via cancellation_check" do
+    test "a run is cancelled between iterations once the check throws" do
+      use_dispatcher(ToolLoopDispatcher)
+      test_pid = self()
+      cancel_ref = :atomics.new(1, [])
+
       tool =
         Tool.from_function(
-          fn _ctx, %{"input" => input} -> "Result: #{input}" end,
-          name: "echo",
-          description: "Echo input"
+          fn _ctx, _args ->
+            send(test_pid, :tool_ran)
+            :atomics.put(cancel_ref, 1, 1)
+            "waited"
+          end,
+          name: "waiter",
+          description: "Raises the cancellation flag once the run is underway"
         )
 
-      agent =
-        Agent.new(Nous.LLMTestHelper.test_model(),
-          instructions: "Use the echo tool",
-          tools: [tool]
-        )
+      check_fn = fn ->
+        if :atomics.get(cancel_ref, 1) == 1, do: throw({:cancelled, "Test cancellation"})
+      end
 
-      # Run without cancellation check (will fail on model call, but that's expected)
-      result = Agent.run(agent, "Echo hello", max_iterations: 1)
+      agent = Agent.new("openai:test-model", instructions: "Use the waiter tool", tools: [tool])
 
-      # Should get model error, not cancellation error
-      assert {:error, error} = result
-      refute match?(%Errors.ExecutionCancelled{}, error)
+      assert {:error, %Errors.ExecutionCancelled{reason: "Test cancellation"}} =
+               Agent.run(agent, "go", cancellation_check: check_fn, max_iterations: 5)
+
+      # Exactly one iteration ran. The dispatcher never stops asking for the
+      # tool, so without a working cancellation check the run would end in
+      # MaxIterationsExceeded after five tool executions — which is why the
+      # single :tool_ran is the proof that *cancellation* ended the loop.
+      assert_received :tool_ran
+      refute_received :tool_ran
+    end
+
+    test "a run without a cancellation check completes normally" do
+      use_dispatcher(CompletingDispatcher)
+
+      agent = Agent.new("openai:test-model", instructions: "Be brief", tools: [])
+
+      assert {:ok, result} = Agent.run(agent, "hello", max_iterations: 1)
+      assert result.output == "done"
     end
   end
 
   describe "AgentServer cancellation" do
-    test "tracks current task" do
-      {:ok, pid} =
-        Nous.AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "cancelling a running execution clears current_task and kills the task" do
+      pid = start_agent()
 
-      # Initially no task
       state = :sys.get_state(pid)
       assert state.current_task == nil
-      assert state.cancelled_ref != nil
+      assert :atomics.get(state.cancelled_ref, 1) == 0
 
-      # Send message starts a task
-      Nous.AgentServer.send_message(pid, "Test")
-      Process.sleep(10)
+      AgentServer.send_message(pid, "Test")
+      assert_receive {:model_request_started, task_pid}, 1_000
 
       state = :sys.get_state(pid)
       assert state.current_task != nil
+      assert state.current_task.pid == task_pid
 
-      # Cancel clears the task
-      {:ok, :cancelled} = Nous.AgentServer.cancel_execution(pid)
-      Process.sleep(10)
+      task_ref = Process.monitor(task_pid)
+
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
+
+      # The runaway process is actually gone, not merely forgotten by the server.
+      assert_receive {:DOWN, ^task_ref, :process, ^task_pid, _}, 1_000
 
       state = :sys.get_state(pid)
       assert state.current_task == nil
+      # Reset, so the next execution is not born cancelled.
+      assert :atomics.get(state.cancelled_ref, 1) == 0
     end
 
-    test "returns :no_execution when nothing is running" do
-      {:ok, pid} =
-        Nous.AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "cancel_execution returns :no_execution when nothing is running" do
+      pid = start_agent()
 
-      # No execution running
-      {:ok, :no_execution} = Nous.AgentServer.cancel_execution(pid)
+      assert {:ok, :no_execution} = AgentServer.cancel_execution(pid)
+      assert :sys.get_state(pid).current_task == nil
     end
 
-    test "cancels existing task when new message arrives" do
-      {:ok, pid} =
-        Nous.AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "a new message cancels and replaces the in-flight task" do
+      pid = start_agent()
 
-      # Start first execution
-      Nous.AgentServer.send_message(pid, "First message")
-      Process.sleep(10)
+      AgentServer.send_message(pid, "First message")
+      assert_receive {:model_request_started, first_task_pid}, 1_000
 
-      state = :sys.get_state(pid)
-      first_task = state.current_task
-      assert first_task != nil
+      first_task = :sys.get_state(pid).current_task
+      assert first_task.pid == first_task_pid
 
-      # Send second message should cancel first
-      Nous.AgentServer.send_message(pid, "Second message")
-      Process.sleep(10)
+      AgentServer.send_message(pid, "Second message")
+      assert_receive {:model_request_started, second_task_pid}, 1_000
 
-      state = :sys.get_state(pid)
-      second_task = state.current_task
+      second_task = :sys.get_state(pid).current_task
+      assert second_task.ref != first_task.ref
+      assert second_task.pid == second_task_pid
 
-      # Should have a new task (different reference)
-      assert second_task != nil
-      assert first_task != second_task
+      # handle_cast shuts the previous task down synchronously before spawning
+      # its replacement, so by the time the new run signals, the old one is dead.
+      refute Process.alive?(first_task_pid)
     end
   end
 end

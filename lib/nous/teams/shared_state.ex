@@ -28,6 +28,13 @@ defmodule Nous.Teams.SharedState do
 
   @default_claim_ttl :timer.minutes(5)
 
+  # Discoveries used to live for the whole team lifetime while only claims
+  # expired (P-2: "never prunes"). One hour is deliberately generous — longer
+  # than any realistic single team run, so no existing caller loses a
+  # discovery it would still have read — while still bounding a long-lived
+  # supervised team. Pass `discovery_ttl: :infinity` to opt out.
+  @default_discovery_ttl :timer.hours(1)
+
   # Client API
 
   @doc """
@@ -37,6 +44,7 @@ defmodule Nous.Teams.SharedState do
 
   - `:team_id` (required) — unique identifier for the team
   - `:claim_ttl` — claim expiration in ms (default: 5 minutes)
+  - `:discovery_ttl` — discovery expiration in ms, or `:infinity` (default: 1 hour)
   - `:name` — optional GenServer name
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -71,8 +79,11 @@ defmodule Nous.Teams.SharedState do
       # [%{agent: "alice", topic: "Bug", content: "...", timestamp: ~U[...]}]
   """
   @spec get_discoveries(pid()) :: [map()]
-  def get_discoveries(pid) do
-    GenServer.call(pid, :get_discoveries)
+  def get_discoveries(server) do
+    # Runs in the CALLER against the :protected table — no handle_call. The
+    # table is an :ordered_set keyed by {:discovery, seq}, so select traverses
+    # in seq order and the old per-read Enum.sort_by is gone.
+    :ets.select(table_for(server), [{{{:discovery, :_}, :"$1"}, [], [:"$1"]}])
   end
 
   @doc """
@@ -116,8 +127,14 @@ defmodule Nous.Teams.SharedState do
       # [%{agent: "alice", file: "lib/parser.ex", start_line: 10, end_line: 20, expires_at: ~U[...]}]
   """
   @spec get_claims(pid()) :: [map()]
-  def get_claims(pid) do
-    GenServer.call(pid, :get_claims)
+  def get_claims(server) do
+    # Runs in the CALLER (see get_discoveries/1). Claims are keyed by
+    # {agent, file}, so :ordered_set order is lexicographic rather than
+    # insertion order — the stored seq still decides the returned order.
+    table_for(server)
+    |> :ets.select([{{{:claim, :_, :_}, :"$1"}, [], [:"$1"]}])
+    |> Enum.sort_by(fn {seq, _claim} -> seq end)
+    |> Enum.map(fn {_seq, claim} -> claim end)
   end
 
   # Server
@@ -126,6 +143,7 @@ defmodule Nous.Teams.SharedState do
   def init(opts) do
     team_id = Keyword.fetch!(opts, :team_id)
     claim_ttl = Keyword.get(opts, :claim_ttl, @default_claim_ttl)
+    discovery_ttl = Keyword.get(opts, :discovery_ttl, @default_discovery_ttl)
 
     # One ETS row PER entry instead of a single growing list term:
     #   {{:discovery, seq}, entry}            — discoveries, ordered by seq
@@ -135,9 +153,23 @@ defmodule Nous.Teams.SharedState do
     # are O(1) and claim conflict checks become a file-scoped :ets.select.
     # Constant atom: without :named_table the name is cosmetic, and a
     # per-team :"team_state_#{team_id}" atom would leak (atoms are never GC'd).
-    table = :ets.new(:team_state, [:set, :private])
+    #
+    # P-2: was [:set, :private], which forced every read through handle_call —
+    # the whole team serialized behind one mailbox for what are pure reads.
+    # :protected keeps writes owner-only while letting reads run concurrently
+    # in the caller; :ordered_set makes discovery reads come back in seq order
+    # for free; read_concurrency because reads now vastly outnumber writes.
+    table = :ets.new(:team_state, [:ordered_set, :protected, read_concurrency: true])
 
-    {:ok, %{team_id: team_id, table: table, claim_ttl: claim_ttl, expiry_timers: %{}, seq: 0}}
+    {:ok,
+     %{
+       team_id: team_id,
+       table: table,
+       claim_ttl: claim_ttl,
+       discovery_ttl: discovery_ttl,
+       expiry_timers: %{},
+       seq: 0
+     }}
   end
 
   @impl true
@@ -153,18 +185,18 @@ defmodule Nous.Teams.SharedState do
     # on read) — no list term copied.
     :ets.insert(state.table, {{:discovery, state.seq}, entry})
 
+    # Bound the discovery set with the same Process.send_after mechanism
+    # claims already use, rather than adding a second eviction scheme.
+    schedule_discovery_expiry(state.seq, state.discovery_ttl)
+
     {:reply, :ok, %{state | seq: state.seq + 1}}
   end
 
   @impl true
-  def handle_call(:get_discoveries, _from, state) do
-    discoveries =
-      state.table
-      |> :ets.match_object({{:discovery, :_}, :_})
-      |> Enum.sort_by(fn {{:discovery, seq}, _entry} -> seq end)
-      |> Enum.map(fn {_key, entry} -> entry end)
-
-    {:reply, discoveries, state}
+  def handle_call(:get_table, _from, state) do
+    # Reads happen in the caller; they only need the tid. Callers resolve it
+    # through here once and cache it — see table_for/1.
+    {:reply, state.table, state}
   end
 
   @impl true
@@ -226,21 +258,19 @@ defmodule Nous.Teams.SharedState do
   end
 
   @impl true
-  def handle_call(:get_claims, _from, state) do
-    claims =
-      state.table
-      |> :ets.match_object({{:claim, :_, :_}, :_})
-      |> Enum.sort_by(fn {_key, {seq, _claim}} -> seq end)
-      |> Enum.map(fn {_key, {_seq, claim}} -> claim end)
-
-    {:reply, claims, state}
-  end
-
-  @impl true
   def handle_info({:expire_claim, {agent_name, file_path}}, state) do
     :ets.delete(state.table, {:claim, agent_name, file_path})
 
     state = %{state | expiry_timers: Map.delete(state.expiry_timers, {agent_name, file_path})}
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:expire_discovery, seq}, state) do
+    # Mirrors {:expire_claim, _} above. No expiry_timers bookkeeping: unlike a
+    # claim, a discovery is never re-keyed or released, so its timer is never
+    # cancelled and there is nothing to track.
+    :ets.delete(state.table, {:discovery, seq})
     {:noreply, state}
   end
 
@@ -256,6 +286,54 @@ defmodule Nous.Teams.SharedState do
   # Private
 
   defp ranges_overlap?(s1, e1, s2, e2), do: s1 <= e2 and s2 <= e1
+
+  defp schedule_discovery_expiry(_seq, :infinity), do: :ok
+
+  defp schedule_discovery_expiry(seq, ttl) do
+    Process.send_after(self(), {:expire_discovery, seq}, ttl)
+    :ok
+  end
+
+  # Reads run in the caller process against the :protected table instead of
+  # serializing behind the owner's mailbox (P-2). Callers hold only a pid or a
+  # registered name, so resolve the tid once per caller process and cache it in
+  # the process dictionary: one GenServer.call on a caller's first read, direct
+  # concurrent ETS reads for every read after that.
+  defp table_for(server) do
+    case GenServer.whereis(server) do
+      owner when is_pid(owner) and node(owner) == node() ->
+        cached_table(server, owner)
+
+      # Unregistered name, or a remote/{name, node} reference whose table id
+      # would mean nothing locally: pay the round-trip. An unregistered name
+      # still exits :noproc here, exactly as the old call-per-read did.
+      _ ->
+        GenServer.call(server, :get_table)
+    end
+  end
+
+  # The cache is validated, not trusted: ETS reuses table identifiers, so a tid
+  # cached before an owner crash could otherwise alias an unrelated table.
+  # :ets.info(tid, :owner) is an O(1) BIF returning :undefined for a dead table,
+  # so any mismatch just re-resolves through the (restarted) owner.
+  defp cached_table(server, owner) do
+    key = {__MODULE__, :table, owner}
+
+    case Process.get(key) do
+      nil ->
+        table = GenServer.call(server, :get_table)
+        Process.put(key, table)
+        table
+
+      table ->
+        if :ets.info(table, :owner) == owner do
+          table
+        else
+          Process.delete(key)
+          cached_table(server, owner)
+        end
+    end
+  end
 
   defp cancel_timer(state, key) do
     case Map.get(state.expiry_timers, key) do

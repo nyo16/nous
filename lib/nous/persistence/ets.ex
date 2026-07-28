@@ -31,6 +31,25 @@ defmodule Nous.Persistence.ETS do
 
     @table :nous_persistence
 
+    # Unbounded growth (P-2): this table is owned by a supervised GenServer that
+    # lives for the node's lifetime and retains every session's full serialized
+    # message history. Bound it on both axes, because either alone leaves a
+    # hole: a TTL does not stop a burst of short-lived sessions inside the
+    # window, and a size cap alone lets one idle session pin memory forever.
+    #
+    # Defaults are deliberately loose so no existing user notices an eviction:
+    # 24h is far longer than the dev/test sessions this backend is scoped to,
+    # and 10_000 retained sessions is orders of magnitude past normal use.
+    # Override (either bound may be :infinity to disable it):
+    #
+    #     config :nous, :persistence_ets,
+    #       ttl: :timer.hours(1),
+    #       max_entries: 500,
+    #       sweep_interval: :timer.minutes(1)
+    @default_ttl :timer.hours(24)
+    @default_max_entries 10_000
+    @default_sweep_interval :timer.minutes(5)
+
     def start_link(_opts) do
       GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
     end
@@ -49,7 +68,18 @@ defmodule Nous.Persistence.ETS do
             @table
         end
 
-      {:ok, %{table: table}}
+      opts = Application.get_env(:nous, :persistence_ets, [])
+
+      state = %{
+        table: table,
+        ttl: Keyword.get(opts, :ttl, @default_ttl),
+        max_entries: Keyword.get(opts, :max_entries, @default_max_entries),
+        sweep_interval: Keyword.get(opts, :sweep_interval, @default_sweep_interval)
+      }
+
+      schedule_sweep(state)
+
+      {:ok, state}
     end
 
     @impl true
@@ -58,7 +88,8 @@ defmodule Nous.Persistence.ETS do
       # normal operation (it only raises on a bad table reference). Don't wrap it
       # in try/rescue — that would mask a genuine bug (wrong table) as a confusing
       # {:ets_insert_failed, _}. Let it crash so the supervisor restarts clean.
-      true = :ets.insert(table, {session_id, data})
+      true = :ets.insert(table, {session_id, data, System.monotonic_time(:millisecond)})
+      enforce_max_entries(state)
       {:reply, :ok, state}
     end
 
@@ -70,6 +101,58 @@ defmodule Nous.Persistence.ETS do
     def handle_call(:clear, _from, %{table: table} = state) do
       :ets.delete_all_objects(table)
       {:reply, :ok, state}
+    end
+
+    @impl true
+    def handle_info(:sweep, state) do
+      expire(state)
+      schedule_sweep(state)
+      {:noreply, state}
+    end
+
+    # Defining any handle_info/2 clause overrides the one `use GenServer`
+    # injects, so the catch-all has to be explicit or a stray message crashes
+    # the owner and takes the whole table with it.
+    def handle_info(_msg, state), do: {:noreply, state}
+
+    defp schedule_sweep(%{ttl: :infinity}), do: :ok
+
+    defp schedule_sweep(%{sweep_interval: interval}) do
+      Process.send_after(self(), :sweep, interval)
+      :ok
+    end
+
+    # TTL sweep. `saved_at` is write time, not access time: load/1 reads ETS
+    # directly from the caller process (the whole point of :protected +
+    # read_concurrency), so refreshing it on read would put a write through this
+    # owner on every read. Eviction is therefore least-recently-*written*.
+    defp expire(%{ttl: :infinity}), do: 0
+
+    defp expire(%{table: table, ttl: ttl}) do
+      cutoff = System.monotonic_time(:millisecond) - ttl
+      :ets.select_delete(table, [{{:_, :_, :"$1"}, [{:<, :"$1", cutoff}], [true]}])
+    end
+
+    defp enforce_max_entries(%{max_entries: :infinity}), do: :ok
+
+    defp enforce_max_entries(%{table: table, max_entries: max}) do
+      case :ets.info(table, :size) - max do
+        over when over > 0 ->
+          # Trim in one batch down to ~90% of the cap instead of one row per
+          # over-cap save: finding the oldest rows in a :set is an O(n) scan, so
+          # a block eviction amortizes it over ~max/10 saves rather than paying
+          # it on every single save once the table is full.
+          drop = over + div(max, 10)
+
+          table
+          |> :ets.select([{{:"$1", :_, :"$2"}, [], [{{:"$2", :"$1"}}]}])
+          |> Enum.sort()
+          |> Enum.take(drop)
+          |> Enum.each(fn {_saved_at, session_id} -> :ets.delete(table, session_id) end)
+
+        _ ->
+          :ok
+      end
     end
   end
 
@@ -88,7 +171,7 @@ defmodule Nous.Persistence.ETS do
     ensure_table()
 
     case :ets.lookup(@table, session_id) do
-      [{^session_id, data}] -> {:ok, data}
+      [{^session_id, data, _saved_at}] -> {:ok, data}
       [] -> {:error, :not_found}
     end
   end
@@ -101,7 +184,7 @@ defmodule Nous.Persistence.ETS do
   @impl true
   def list do
     ensure_table()
-    keys = :ets.foldl(fn {key, _val}, acc -> [key | acc] end, [], @table)
+    keys = :ets.foldl(fn {key, _val, _saved_at}, acc -> [key | acc] end, [], @table)
     {:ok, keys}
   end
 

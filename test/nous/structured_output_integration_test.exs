@@ -1,5 +1,5 @@
 defmodule Nous.StructuredOutputIntegrationTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{Agent, AgentRunner, Message, Usage}
   alias Nous.Errors
@@ -172,12 +172,12 @@ defmodule Nous.StructuredOutputIntegrationTest do
   end
 
   setup do
-    Application.put_env(:nous, :model_dispatcher, MockDispatcher)
+    # Process-scoped stub. The :persistent_term scratchpad stays global, but
+    # its key is module-scoped so no other module contends for it.
+    Nous.ModelDispatcher.put_dispatcher(MockDispatcher)
     :persistent_term.put({MockDispatcher, :call_count}, 0)
 
     on_exit(fn ->
-      Application.delete_env(:nous, :model_dispatcher)
-
       try do
         :persistent_term.erase({MockDispatcher, :call_count})
       rescue
@@ -485,7 +485,7 @@ defmodule Nous.StructuredOutputIntegrationTest do
         def request_stream(_model, _messages, _settings), do: {:ok, []}
       end
 
-      Application.put_env(:nous, :model_dispatcher, ToolCallMockDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(ToolCallMockDispatcher)
 
       agent =
         Agent.new(model,
@@ -542,7 +542,7 @@ defmodule Nous.StructuredOutputIntegrationTest do
         def request_stream(_model, _messages, _settings), do: {:ok, []}
       end
 
-      Application.put_env(:nous, :model_dispatcher, StandardSynthMockDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(StandardSynthMockDispatcher)
 
       agent =
         Agent.new(model,
@@ -626,7 +626,7 @@ defmodule Nous.StructuredOutputIntegrationTest do
         def request_stream(_model, _messages, _settings), do: {:ok, []}
       end
 
-      Application.put_env(:nous, :model_dispatcher, MixedToolCallMock)
+      Nous.ModelDispatcher.put_dispatcher(MixedToolCallMock)
       :persistent_term.put({MixedToolCallMock, :call_count}, 0)
 
       get_data_tool = %Nous.Tool{

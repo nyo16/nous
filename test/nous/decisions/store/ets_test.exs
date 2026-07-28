@@ -14,6 +14,11 @@ defmodule Nous.Decisions.Store.ETSTest do
       {:ok, state} = ETS.init([])
       assert is_reference(state.nodes)
       assert is_reference(state.edges)
+
+      # Both tables are read-dominated (adjacency rebuild + a lookup per
+      # visited neighbour), so they opt into read_concurrency.
+      assert :ets.info(state.nodes, :read_concurrency) == true
+      assert :ets.info(state.edges, :read_concurrency) == true
     end
   end
 
@@ -293,4 +298,82 @@ defmodule Nous.Decisions.Store.ETSTest do
       assert goals == []
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # BFS queue discipline
+  #
+  # The frontier used to be a list grown with `q ++ [nid]`, which copies the
+  # whole queue per enqueue and makes traversal O(V^2). These build a graph with
+  # a deliberately wide frontier (the worst case for that append) and pin down
+  # both the reachable set and the breadth-first ordering the queue guarantees.
+  # ---------------------------------------------------------------------------
+
+  describe "BFS traversal over a wide graph" do
+    setup %{state: state} do
+      {:ok, state} = ETS.add_node(state, graph_node("n-root", :goal))
+
+      level1 = for i <- 1..1000, do: graph_node("n-l1-#{i}", :decision)
+      level2 = for i <- 1..100, j <- 1..20, do: graph_node("n-l2-#{i}-#{j}", :action)
+
+      for n <- level1 ++ level2, do: {:ok, _} = ETS.add_node(state, n)
+
+      for n <- level1 do
+        {:ok, _} = ETS.add_edge(state, edge("n-root", n.id))
+      end
+
+      for i <- 1..100, j <- 1..20 do
+        {:ok, _} = ETS.add_edge(state, edge("n-l1-#{i}", "n-l2-#{i}-#{j}"))
+      end
+
+      %{
+        state: state,
+        level1_ids: MapSet.new(level1, & &1.id),
+        level2_ids: MapSet.new(level2, & &1.id)
+      }
+    end
+
+    test "descendants returns exactly the reachable set, once each", ctx do
+      {:ok, desc} = ETS.query(ctx.state, :descendants, node_id: "n-root")
+      ids = Enum.map(desc, & &1.id)
+
+      assert length(ids) == 3000
+      assert MapSet.new(ids) == MapSet.union(ctx.level1_ids, ctx.level2_ids)
+    end
+
+    test "descendants are emitted in breadth-first level order", ctx do
+      {:ok, desc} = ETS.query(ctx.state, :descendants, node_id: "n-root")
+
+      depths =
+        Enum.map(desc, fn node ->
+          if MapSet.member?(ctx.level1_ids, node.id), do: 1, else: 2
+        end)
+
+      # A FIFO frontier drains level 1 completely before touching level 2.
+      # A LIFO frontier (or a mis-ordered queue) interleaves the two.
+      assert depths == Enum.sort(depths)
+      assert Enum.count(depths, &(&1 == 1)) == 1000
+    end
+
+    test "ancestors walks the same graph in reverse", ctx do
+      {:ok, anc} = ETS.query(ctx.state, :ancestors, node_id: "n-l2-7-3")
+      assert Enum.map(anc, & &1.id) == ["n-l1-7", "n-root"]
+    end
+
+    test "path_between crosses the wide frontier", ctx do
+      {:ok, path} = ETS.query(ctx.state, :path_between, from_id: "n-root", to_id: "n-l2-42-11")
+      assert Enum.map(path, & &1.id) == ["n-root", "n-l1-42", "n-l2-42-11"]
+    end
+
+    test "path_between returns [] for an unreachable target", ctx do
+      {:ok, _} = ETS.add_node(ctx.state, graph_node("n-orphan", :observation))
+
+      assert {:ok, []} =
+               ETS.query(ctx.state, :path_between, from_id: "n-root", to_id: "n-orphan")
+    end
+  end
+
+  defp graph_node(id, type), do: Node.new(%{id: id, type: type, label: id})
+
+  defp edge(from_id, to_id),
+    do: Edge.new(%{from_id: from_id, to_id: to_id, edge_type: :leads_to})
 end

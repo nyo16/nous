@@ -82,4 +82,88 @@ defmodule Nous.Persistence.ETSTest do
       assert :protected = :ets.info(:nous_persistence, :protection)
     end
   end
+
+  describe "eviction bounds (P-2)" do
+    test "max_entries caps the table, evicting the oldest writes first" do
+      with_persistence_config!(max_entries: 20, ttl: :infinity)
+
+      for i <- 1..5, do: :ok = ETS.save("old_#{i}", %{version: 1})
+
+      # saved_at has millisecond resolution; a gap makes eviction order
+      # unambiguous rather than tie-broken by session id.
+      Process.sleep(5)
+
+      for i <- 1..20, do: :ok = ETS.save("new_#{i}", %{version: 1})
+
+      assert :ets.info(:nous_persistence, :size) <= 20
+
+      for i <- 1..5 do
+        assert {:error, :not_found} == ETS.load("old_#{i}")
+      end
+
+      assert {:ok, %{version: 1}} = ETS.load("new_20")
+    end
+
+    test "the ttl sweep drops entries that have aged out" do
+      with_persistence_config!(ttl: 100, sweep_interval: 30, max_entries: :infinity)
+
+      :ok = ETS.save("stale", %{version: 1})
+      assert {:ok, %{version: 1}} = ETS.load("stale")
+
+      # ttl plus several sweep intervals.
+      Process.sleep(250)
+
+      assert {:error, :not_found} == ETS.load("stale")
+
+      :ok = ETS.save("fresh", %{version: 1})
+      assert {:ok, %{version: 1}} = ETS.load("fresh")
+    end
+
+    test "both bounds can be disabled with :infinity" do
+      with_persistence_config!(ttl: :infinity, max_entries: :infinity)
+
+      for i <- 1..50, do: :ok = ETS.save("unbounded_#{i}", %{version: 1})
+
+      assert :ets.info(:nous_persistence, :size) == 50
+      assert {:ok, %{version: 1}} = ETS.load("unbounded_1")
+    end
+
+    test "defaults evict nothing a normal run writes" do
+      # No app env: 10_000 entries / 24h, so the defaults are invisible.
+      for i <- 1..100, do: :ok = ETS.save("default_#{i}", %{version: 1})
+
+      assert :ets.info(:nous_persistence, :size) == 100
+      assert {:ok, %{version: 1}} = ETS.load("default_1")
+    end
+  end
+
+  # The owner is a supervised singleton that reads its bounds from app env at
+  # init, so exercising them means restarting it. terminate_child +
+  # restart_child is deterministic (no monitors, no restart-intensity churn),
+  # and this file is async: false — nothing else touches :nous_persistence
+  # while it runs.
+  defp with_persistence_config!(config) do
+    previous = Application.get_env(:nous, :persistence_ets)
+
+    on_exit(fn ->
+      case previous do
+        nil -> Application.delete_env(:nous, :persistence_ets)
+        prev -> Application.put_env(:nous, :persistence_ets, prev)
+      end
+
+      restart_owner!()
+    end)
+
+    Application.put_env(:nous, :persistence_ets, config)
+    restart_owner!()
+  end
+
+  defp restart_owner! do
+    :ok = Supervisor.terminate_child(Nous.Supervisor, Nous.Persistence.ETS)
+
+    case Supervisor.restart_child(Nous.Supervisor, Nous.Persistence.ETS) do
+      {:ok, _pid} -> :ok
+      {:ok, _pid, _info} -> :ok
+    end
+  end
 end

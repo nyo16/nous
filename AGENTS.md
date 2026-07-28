@@ -168,12 +168,14 @@ config :nous, :hackney_pool,
   timeout: 1_500   # idle keepalive ms (hackney 4 caps at 2_000)
 ```
 
-Streaming defaults to `Nous.HTTP.StreamBackend.Req` (push-based with a
-best-effort mailbox-watching backpressure guard). For STRICT pull-based
-backpressure (`:async, :once` — a slow consumer can't OOM under a fast LLM),
-opt into the Hackney stream backend via `config :nous, :http_stream_backend,
-Nous.HTTP.StreamBackend.Hackney`, `NOUS_HTTP_STREAM_BACKEND=hackney`, or the
-per-call `stream_backend:` option. See `docs/benchmarks/http_backend.md`.
+Streaming defaults to `Nous.HTTP.StreamBackend.Req` (push-based, with an
+8 MB in-flight-byte window that parks the producer — and therefore the
+socket — until the consumer drains). For STRICT pull-based backpressure
+(`:async, :once` — one chunk read per consumer request, no in-flight window
+at all), opt into the Hackney stream backend via
+`config :nous, :http_stream_backend, Nous.HTTP.StreamBackend.Hackney`,
+`NOUS_HTTP_STREAM_BACKEND=hackney`, or the per-call `stream_backend:` option.
+See `docs/benchmarks/http_backend.md`.
 
 ## Critical rules (security & correctness)
 
@@ -218,9 +220,9 @@ end)
 ```
 
 For strict backpressure under LiveView fan-out (so the stream paces itself to
-match diff/push throughput with no mailbox accumulation), opt into the Hackney
-stream backend (see the HTTP backend section); the default Req stream backend
-uses a best-effort mailbox-watching guard.
+match diff/push throughput, one chunk at a time), opt into the Hackney stream
+backend (see the HTTP backend section); the default Req stream backend bounds
+in-flight chunks at 8 MB rather than pacing per chunk.
 
 ### Tool-using agent loop
 
@@ -292,14 +294,28 @@ Don't mock `Req`/`hackney` directly — Bypass is the supported test seam.
 
 ## What NOT to use
 
-The public API is `Nous.*` and `Nous.Tools.*`. These are NOT public:
+The public API is `Nous.*` and `Nous.Tools.*`. The rule is mechanical:
+**if a module carries a `@moduledoc` and appears in <https://hexdocs.pm/nous>,
+it is public and covered by semver; if it is `@moduledoc false`, it is not.**
+Nothing here is "internal by convention" — the code is the contract.
 
-- `Nous.HTTP.Backend.*` — internal; use `HTTP.post/4`'s `:backend` opt instead
-- `Nous.Providers.HTTP` — internal helper for provider authors
-- `Nous.AgentRunner`, `Nous.AgentServer` — internal supervision; use `Nous.run/3`
-- Nous.Application, Nous.Persistence.ETS.TableOwner — internal supervision tree
-- Anything under `Nous.Workflow.Engine.*` — internal; the public API is `Nous.Workflow`
-- Anything marked `@moduledoc false` — hidden on purpose; will change without notice
+Currently hidden, do not call:
+
+- `Nous.Application`, `Nous.Persistence.ETS.TableOwner` — internal supervision tree
+- every `Nous.AgentRunner.*` submodule (prompt assembly, request dispatch,
+  the iteration loop, streaming, tool execution) — internal to the runner;
+  the entry point is `Nous.AgentRunner` itself
+- `Nous.OutputSchema.UseMacro` — implementation of `use Nous.OutputSchema`
+- `Nous.Workflow.Engine.Executor`, `Nous.Workflow.Engine.ParallelExecutor`,
+  `Nous.Workflow.Engine.StateMerger` — internal node dispatch; use
+  `Nous.Workflow` to build and `Nous.Workflow.Engine.execute/1,2` to run
+
+Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
+`Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and
+`Nous.Workflow.Engine` were private. They never were: all six are documented
+extension points that this file, `docs/guides/http_backends.md`, the LiveView
+guide and `examples/` already tell you to call. The list was wrong, not the
+code — they stay public.
 
 Stick to the documented modules and your code will survive minor version bumps.
 

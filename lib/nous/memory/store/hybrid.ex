@@ -35,8 +35,10 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
       with {:ok, index} <- open_or_create_index(index_path, schema),
            {:ok, collection} <- open_or_create_collection(collection_path, dimension) do
         # Unnamed table - a named table would crash a second concurrent
-        # agent (named tables are global per BEAM node).
-        table = :ets.new(Hybrid, [:set, :public])
+        # agent (named tables are global per BEAM node). read_concurrency
+        # because this table is only a read-side hydration cache for the
+        # Muninn/Zvec search results; writes are one insert per stored entry.
+        table = :ets.new(Hybrid, [:set, :public, read_concurrency: true])
 
         {:ok,
          %{

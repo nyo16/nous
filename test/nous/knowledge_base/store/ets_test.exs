@@ -19,6 +19,14 @@ defmodule Nous.KnowledgeBase.Store.ETSTest do
       assert is_reference(state.documents)
       assert is_reference(state.entries)
       assert is_reference(state.links)
+      assert is_reference(state.slugs)
+
+      # A KB session is read-dominated, so every table opts into
+      # read_concurrency (and none into write_concurrency).
+      for table <- [state.documents, state.entries, state.links, state.slugs] do
+        assert :ets.info(table, :read_concurrency) == true
+        assert :ets.info(table, :write_concurrency) == false
+      end
     end
   end
 
@@ -384,6 +392,117 @@ defmodule Nous.KnowledgeBase.Store.ETSTest do
 
       {:ok, related} = ETS.related_entries(state, "isolated", [])
       assert related == []
+    end
+  end
+
+  describe "link_counts_by_source/1" do
+    test "counts outgoing links per source entry", %{state: state} do
+      ETS.store_link(state, Link.new(%{from_entry_id: "a", to_entry_id: "b"}))
+      ETS.store_link(state, Link.new(%{from_entry_id: "a", to_entry_id: "c"}))
+      ETS.store_link(state, Link.new(%{from_entry_id: "b", to_entry_id: "c"}))
+
+      assert {:ok, %{"a" => 2, "b" => 1}} = ETS.link_counts_by_source(state)
+    end
+
+    test "omits entries with no outgoing links", %{state: state} do
+      ETS.store_link(state, Link.new(%{from_entry_id: "a", to_entry_id: "b"}))
+
+      {:ok, counts} = ETS.link_counts_by_source(state)
+      assert counts == %{"a" => 1}
+    end
+
+    test "returns an empty map for an empty links table", %{state: state} do
+      assert {:ok, counts} = ETS.link_counts_by_source(state)
+      assert counts == %{}
+    end
+  end
+
+  # The link queries push their predicate into an ETS match spec instead of
+  # copying the whole links table out. These pin the behaviour that pushdown
+  # has to preserve: only matching rows, unaffected by unrelated traffic.
+  describe "link queries with unrelated links in the table" do
+    setup %{state: state} do
+      for i <- 1..200 do
+        ETS.store_link(state, Link.new(%{from_entry_id: "noise-#{i}", to_entry_id: "noise-x"}))
+      end
+
+      ETS.store_link(state, Link.new(%{from_entry_id: "hub", to_entry_id: "spoke-1"}))
+      ETS.store_link(state, Link.new(%{from_entry_id: "hub", to_entry_id: "spoke-2"}))
+      ETS.store_link(state, Link.new(%{from_entry_id: "spoke-3", to_entry_id: "hub"}))
+
+      %{state: state}
+    end
+
+    test "outlinks returns only the source's own links", %{state: state} do
+      {:ok, links} = ETS.outlinks(state, "hub")
+
+      assert length(links) == 2
+      assert Enum.map(links, & &1.to_entry_id) |> Enum.sort() == ["spoke-1", "spoke-2"]
+      assert Enum.all?(links, &(&1.from_entry_id == "hub"))
+    end
+
+    test "backlinks returns only the target's own links", %{state: state} do
+      {:ok, links} = ETS.backlinks(state, "hub")
+
+      assert length(links) == 1
+      assert hd(links).from_entry_id == "spoke-3"
+    end
+
+    test "outlinks and backlinks are empty for an unknown id", %{state: state} do
+      assert {:ok, []} = ETS.outlinks(state, "nobody")
+      assert {:ok, []} = ETS.backlinks(state, "nobody")
+    end
+  end
+
+  describe "related_entries/3 with dangling links" do
+    setup %{state: state} do
+      ETS.store_entry(state, Entry.new(%{title: "Source", content: "s", id: "source"}))
+
+      # Six neighbours, only three of which were ever stored as entries.
+      live = ["t2", "t4", "t6"]
+
+      for i <- 1..6 do
+        id = "t#{i}"
+        if id in live, do: ETS.store_entry(state, Entry.new(%{title: id, content: id, id: id}))
+        ETS.store_link(state, Link.new(%{from_entry_id: "source", to_entry_id: id}))
+      end
+
+      %{state: state, live: live}
+    end
+
+    test "fills the limit from live entries, skipping dangling ids", ctx do
+      {:ok, related} = ETS.related_entries(ctx.state, "source", limit: 2)
+
+      # Taking the limit before fetching would return fewer than 2 whenever a
+      # dangling id landed in the first two slots.
+      assert length(related) == 2
+      assert Enum.all?(related, &(&1.id in ctx.live))
+    end
+
+    test "returns every live neighbour when the limit exceeds them", ctx do
+      {:ok, related} = ETS.related_entries(ctx.state, "source", limit: 10)
+
+      assert Enum.map(related, & &1.id) |> Enum.sort() == ctx.live
+    end
+  end
+
+  describe "related_entries/3 edge cases" do
+    test "counts a self-link once and returns the entry itself", %{state: state} do
+      ETS.store_entry(state, Entry.new(%{title: "Loop", content: "l", id: "loop"}))
+      ETS.store_link(state, Link.new(%{from_entry_id: "loop", to_entry_id: "loop"}))
+
+      {:ok, related} = ETS.related_entries(state, "loop", [])
+      assert Enum.map(related, & &1.id) == ["loop"]
+    end
+
+    test "deduplicates entries linked in both directions", %{state: state} do
+      ETS.store_entry(state, Entry.new(%{title: "A", content: "a", id: "a"}))
+      ETS.store_entry(state, Entry.new(%{title: "B", content: "b", id: "b"}))
+      ETS.store_link(state, Link.new(%{from_entry_id: "a", to_entry_id: "b"}))
+      ETS.store_link(state, Link.new(%{from_entry_id: "b", to_entry_id: "a"}))
+
+      {:ok, related} = ETS.related_entries(state, "a", [])
+      assert Enum.map(related, & &1.id) == ["b"]
     end
   end
 end

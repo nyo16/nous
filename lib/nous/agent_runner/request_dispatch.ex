@@ -169,20 +169,8 @@ defmodule Nous.AgentRunner.RequestDispatch do
     if model.provider == agent.model.provider do
       model_settings
     else
-      # Strip existing tool schemas and re-convert for the new provider
-      base_settings =
-        model_settings
-        |> Map.delete(:tools)
-        |> Map.delete(:tool_choice)
-        |> Map.delete(:response_format)
-
       settings =
-        if Enum.empty?(all_tools) do
-          base_settings
-        else
-          tool_schemas = convert_tools_for_provider(model.provider, all_tools)
-          Map.put(base_settings, :tools, tool_schemas)
-        end
+        rebuild_tool_settings(model.provider, agent.model.provider, model_settings, all_tools)
 
       # Re-inject structured output settings for the new provider if needed
       if agent.output_type != :string do
@@ -198,15 +186,47 @@ defmodule Nous.AgentRunner.RequestDispatch do
     end
   end
 
-  # Get the model dispatcher, allowing dependency injection for testing
-  def get_dispatcher do
-    Application.get_env(:nous, :model_dispatcher, ModelDispatcher)
+  # Strip the previous provider's tool settings and re-convert the tool schemas
+  # for `target_provider`. Split out of rebuild_settings_for_model/4 so
+  # `Nous.LLM` — which runs the same fallback-across-providers path but has no
+  # %Agent{} and therefore no structured-output stage — can share it instead of
+  # keeping the divergent private copy the arch review found.
+  def rebuild_tool_settings(provider, provider, model_settings, _all_tools), do: model_settings
+
+  def rebuild_tool_settings(target_provider, _source_provider, model_settings, all_tools) do
+    base_settings =
+      model_settings
+      |> Map.delete(:tools)
+      |> Map.delete(:tool_choice)
+      |> Map.delete(:response_format)
+
+    if Enum.empty?(all_tools) do
+      base_settings
+    else
+      Map.put(base_settings, :tools, convert_tools_for_provider(target_provider, all_tools))
+    end
   end
+
+  # Resolve the model dispatcher. The runner has no per-call override to thread
+  # (agents carry no dispatcher field), so this is the process-override →
+  # app-env → default chain. See `Nous.ModelDispatcher.resolve/1`.
+  def get_dispatcher, do: ModelDispatcher.resolve()
 
   # Convert tools to provider-specific format
   def convert_tools_for_provider(:anthropic, tools) do
     # Anthropic uses atom keys and different format
     Enum.map(tools, &Nous.ToolSchema.to_anthropic/1)
+  end
+
+  # Gemini/Vertex take BARE function declarations, not OpenAI's
+  # %{"type" => "function", "function" => …} envelope: Nous.Messages.Gemini
+  # drops this list straight into %{"functionDeclarations" => list}
+  # (messages/gemini.ex:481). Falling through to the OpenAI clause below shipped
+  # a malformed declaration on every agent-path Gemini/Vertex call with tools.
+  # Nous.LLM carried the correct clause; this side was the bug (arch-review:
+  # "Nous.LLM re-implements the runner's tool loop and has DIVERGED").
+  def convert_tools_for_provider(provider, tools) when provider in [:vertex_ai, :gemini] do
+    Enum.map(tools, &Nous.ToolSchema.to_gemini/1)
   end
 
   def convert_tools_for_provider(_, tools) do

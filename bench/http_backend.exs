@@ -3,9 +3,10 @@
 # Compares Nous.HTTP.Backend.Req vs Nous.HTTP.Backend.Hackney across three
 # scenarios: single small POST, 50-way parallel, and a large body.
 #
-# Run with:
+# Run with (test env: plug_cowboy reaches the build through Bypass, which is
+# `only: :test` so :dev no longer carries cowboy):
 #
-#     mix run bench/http_backend.exs
+#     MIX_ENV=test mix run bench/http_backend.exs
 #
 # Spins up an in-process Cowboy server on a random port — the network is
 # local loopback only, so the numbers reflect HTTP-client overhead

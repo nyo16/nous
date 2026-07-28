@@ -78,7 +78,6 @@ defmodule Nous.AgentFunctionalTest do
   }
 
   describe "simple agent responses" do
-    @tag :requires_lmstudio
     test "agent provides informative response" do
       agent =
         Agent.new(Nous.LLMTestHelper.test_model(),
@@ -107,7 +106,6 @@ defmodule Nous.AgentFunctionalTest do
       assert length(result.all_messages) == fixture.message_count
     end
 
-    @tag :requires_lmstudio
     test "agent response contains expected content" do
       agent =
         Agent.new(Nous.LLMTestHelper.test_model(),
@@ -123,7 +121,6 @@ defmodule Nous.AgentFunctionalTest do
   end
 
   describe "tool calling" do
-    @tag :requires_lmstudio
     test "agent uses tool when needed" do
       search_tool =
         Tool.from_function(
@@ -160,7 +157,6 @@ defmodule Nous.AgentFunctionalTest do
       assert result.usage.tool_calls == fixture.tool_calls
     end
 
-    @tag :requires_lmstudio
     test "agent uses multiple tools" do
       calculator =
         Tool.from_function(
@@ -205,7 +201,6 @@ defmodule Nous.AgentFunctionalTest do
   end
 
   describe "conversation history" do
-    @tag :requires_lmstudio
     test "agent maintains context across messages" do
       agent =
         Agent.new(Nous.LLMTestHelper.test_model(),
@@ -249,7 +244,6 @@ defmodule Nous.AgentFunctionalTest do
   end
 
   describe "error handling and tool failures" do
-    @tag :requires_lmstudio
     test "agent handles tool success gracefully" do
       reliable_tool =
         Tool.from_function(
@@ -278,7 +272,6 @@ defmodule Nous.AgentFunctionalTest do
       assert fixture.scenario == "tool_success"
     end
 
-    @tag :requires_lmstudio
     test "agent recovers from tool errors" do
       flaky_tool =
         Tool.from_function(
@@ -322,7 +315,6 @@ defmodule Nous.AgentFunctionalTest do
   end
 
   describe "usage tracking" do
-    @tag :requires_lmstudio
     test "accurately tracks token usage" do
       agent =
         Agent.new(Nous.LLMTestHelper.test_model(),
@@ -340,7 +332,6 @@ defmodule Nous.AgentFunctionalTest do
       assert result.usage.tool_calls == 0
     end
 
-    @tag :requires_lmstudio
     test "tracks cumulative usage across tool calls" do
       tool =
         Tool.from_function(
@@ -368,7 +359,6 @@ defmodule Nous.AgentFunctionalTest do
   end
 
   describe "model settings" do
-    @tag :requires_lmstudio
     test "respects temperature settings" do
       # Low temperature should be more deterministic
       agent_deterministic =
@@ -386,7 +376,6 @@ defmodule Nous.AgentFunctionalTest do
       assert result2.output =~ ~r/4/
     end
 
-    @tag :requires_lmstudio
     test "respects max_tokens limit" do
       agent =
         Agent.new(Nous.LLMTestHelper.test_model(),

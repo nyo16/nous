@@ -141,7 +141,10 @@ defmodule Nous.Providers.Gemini do
     "#{base_url}/models/#{model}:streamGenerateContent"
   end
 
+  # Route through HTTP.api_key_header/2 like Anthropic and OpenAI do: it drops
+  # the header for a nil/empty key so the request fails as a 401 from the API
+  # rather than raising inside Req on a nil header value.
   defp build_headers(api_key) do
-    [{"x-goog-api-key", api_key} | HTTP.json_headers()]
+    HTTP.api_key_header(api_key, "x-goog-api-key") ++ HTTP.json_headers()
   end
 end

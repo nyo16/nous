@@ -142,8 +142,20 @@ defmodule Nous.ToolExecutorTest do
       GenServer.cast(__MODULE__, {:event, event, measurements, metadata})
     end
 
+    # Unfiltered — only safe when nothing else in the VM is executing a tool.
     def get_events do
       GenServer.call(__MODULE__, :get_events)
+    end
+
+    # The handlers are global, so this collector sees EVERY tool execution in
+    # the VM, including those from other `async: true` modules running
+    # concurrently. Always scope assertions to the tool under test; the
+    # unfiltered counts flake as soon as a sibling test executes a tool at the
+    # same moment.
+    def get_events(tool_name) do
+      Enum.filter(get_events(), fn {_event, _measurements, metadata} ->
+        metadata[:tool_name] == tool_name
+      end)
     end
 
     def clear_events do
@@ -459,7 +471,7 @@ defmodule Nous.ToolExecutorTest do
 
       assert {:ok, _result} = ToolExecutor.execute(tool, %{"value" => 5}, ctx)
 
-      events = TelemetryCapture.get_events()
+      events = TelemetryCapture.get_events("telemetry_test")
       assert length(events) == 2
 
       # Check start event
@@ -492,7 +504,7 @@ defmodule Nous.ToolExecutorTest do
         ToolExecutor.execute(tool, %{}, ctx)
       end)
 
-      events = TelemetryCapture.get_events()
+      events = TelemetryCapture.get_events("telemetry_fail")
 
       # Should have: start -> exception -> start -> exception (2 attempts)
       assert length(events) == 4
@@ -529,7 +541,7 @@ defmodule Nous.ToolExecutorTest do
         ToolExecutor.execute(tool, %{"error_type" => "runtime"}, ctx)
       end)
 
-      events = TelemetryCapture.get_events()
+      events = TelemetryCapture.get_events("stacktrace_test")
 
       exception_events =
         Enum.filter(events, fn {event, _, _} ->
@@ -671,7 +683,7 @@ defmodule Nous.ToolExecutorTest do
       assert result.success == true
 
       # Check telemetry recorded duration
-      events = TelemetryCapture.get_events()
+      events = TelemetryCapture.get_events("slow_tool")
 
       stop_events =
         Enum.filter(events, fn {event, _, _} ->

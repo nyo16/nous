@@ -1,17 +1,11 @@
 defmodule Nous.Workflow.Engine.ParallelExecutor do
-  @moduledoc """
-  Parallel fan-out/fan-in execution for workflow nodes.
-
-  Handles two parallelism patterns:
-
-  - **Static parallel** (`:parallel` nodes) — runs named branches concurrently,
-    each branch is a subgraph starting from a known node ID.
-  - **Dynamic parallel** (`:parallel_map` nodes) — maps over a runtime-computed
-    list, spawning one task per item.
-
-  Uses `Task.Supervisor.async_stream_nolink/4` on `Nous.TaskSupervisor`,
-  matching the pattern from `Nous.Plugins.SubAgent`.
-  """
+  @moduledoc false
+  # Parallel fan-out/fan-in for `Nous.Workflow.Engine`. Two patterns:
+  # `:parallel` nodes run named branch subgraphs concurrently; `:parallel_map`
+  # nodes map over a runtime-computed list, one task per item. Both use
+  # `Task.Supervisor.async_stream_nolink/4` on `Nous.TaskSupervisor`, matching
+  # `Nous.Plugins.SubAgent`. Internal to the engine — the public entry point
+  # is `Nous.Workflow.Engine.execute/2`.
 
   alias Nous.Workflow.{State, Node}
   alias Nous.Workflow.Engine.{Executor, StateMerger}

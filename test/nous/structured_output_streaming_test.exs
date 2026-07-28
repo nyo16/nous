@@ -1,5 +1,5 @@
 defmodule Nous.StructuredOutputStreamingTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{AgentRunner, Tool, Usage}
 
@@ -43,8 +43,8 @@ defmodule Nous.StructuredOutputStreamingTest do
       start: {Elixir.Agent, :start_link, [fn -> [] end, [name: ScriptedDispatcher.Script]]}
     })
 
-    Application.put_env(:nous, :model_dispatcher, ScriptedDispatcher)
-    on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
+    # Process-scoped, so this module no longer needs the global app env.
+    Nous.ModelDispatcher.put_dispatcher(ScriptedDispatcher)
     %{model: "openai:gpt-test"}
   end
 

@@ -55,15 +55,25 @@
           ## Refactoring Opportunities
           {Credo.Check.Refactor.Apply, false},
           {Credo.Check.Refactor.CondStatements, false},
-          {Credo.Check.Refactor.CyclomaticComplexity, [max_complexity: 24]},
+          # RATCHET (Credo default: 9). 24 -> 23 is the current floor: the most
+          # complex function in the tree is Mix.Tasks.Nous.Optimize.build_opts
+          # (lib/mix/tasks/nous.optimize.ex:234) at 23. Only ever move this DOWN.
+          {Credo.Check.Refactor.CyclomaticComplexity, [max_complexity: 23]},
           {Credo.Check.Refactor.FilterCount, []},
           {Credo.Check.Refactor.FilterFilter, []},
-          {Credo.Check.Refactor.FunctionArity, [max_arity: 15]},
+          # RATCHET (Credo default: 8). 15 -> 14 is the current floor: two
+          # Nous.Eval.Optimizer.Strategies.Bayesian helpers take 14 positional
+          # args (bayesian.ex:172,192). Only ever move this DOWN.
+          {Credo.Check.Refactor.FunctionArity, [max_arity: 14]},
           {Credo.Check.Refactor.LongQuoteBlocks, false},
           {Credo.Check.Refactor.MapJoin, false},
           {Credo.Check.Refactor.MatchInCondition, []},
           {Credo.Check.Refactor.NegatedConditionsInUnless, []},
           {Credo.Check.Refactor.NegatedConditionsWithElse, []},
+          # RATCHET (Credo default: 2). 5 is ALREADY the floor — the three
+          # lib/nous/eval/optimizer/strategies/*.ex run/2 bodies nest 5 deep
+          # (bayesian.ex:147, grid_search.ex:94, random.ex:85), so this cannot
+          # tighten until they are flattened. Only ever move this DOWN.
           {Credo.Check.Refactor.Nesting, [max_nesting: 5]},
           {Credo.Check.Refactor.RedundantWithClauseResult, false},
           {Credo.Check.Refactor.RejectReject, []},

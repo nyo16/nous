@@ -1,5 +1,5 @@
 defmodule Nous.AgentRunnerTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{Agent, AgentRunner, Message, Tool, Usage}
   alias Nous.Errors
@@ -128,12 +128,9 @@ defmodule Nous.AgentRunnerTest do
   end
 
   setup do
-    # Mock the model dispatcher for tests
-    Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
-
-    on_exit(fn ->
-      Application.delete_env(:nous, :model_dispatcher)
-    end)
+    # Process-scoped stub: dies with the test process, so there is nothing to
+    # restore and no global state for a concurrent module to observe.
+    Nous.ModelDispatcher.put_dispatcher(MockModelDispatcher)
 
     test_tool =
       Tool.from_function(&TestTool.test_function/2,
@@ -397,7 +394,7 @@ defmodule Nous.AgentRunnerTest do
         def count_tokens(_messages), do: 50
       end
 
-      Application.put_env(:nous, :model_dispatcher, FailingMockDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(FailingMockDispatcher)
 
       agent = Agent.new(model, instructions: "Be helpful")
 
@@ -405,7 +402,7 @@ defmodule Nous.AgentRunnerTest do
       # Let's test that the function exists and handles errors appropriately
       assert {:error, _error} = AgentRunner.run_stream(agent, "Hello")
 
-      Application.put_env(:nous, :model_dispatcher, MockModelDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(MockModelDispatcher)
     end
 
     test "emits {:complete, result} with accumulated text", %{model: model} do
@@ -896,29 +893,26 @@ defmodule Nous.AgentRunnerTest do
 
   defp with_mock_dispatcher(mock_fn, test_fn)
        when is_function(mock_fn) and is_function(test_fn, 0) do
-    original_dispatcher = Application.get_env(:nous, :model_dispatcher, MockModelDispatcher)
-
     # Store the mock function temporarily
     :persistent_term.put({__MODULE__, :mock_fn}, mock_fn)
-    Application.put_env(:nous, :model_dispatcher, __MODULE__.CustomMockDispatcher)
+    Nous.ModelDispatcher.put_dispatcher(__MODULE__.CustomMockDispatcher)
 
     try do
       test_fn.()
     after
-      Application.put_env(:nous, :model_dispatcher, original_dispatcher)
+      Nous.ModelDispatcher.put_dispatcher(MockModelDispatcher)
       :persistent_term.erase({__MODULE__, :mock_fn})
     end
   end
 
   # Swap dispatcher to a specific module with guaranteed cleanup
   defp with_stream_dispatcher(dispatcher_mod, test_fn) when is_function(test_fn, 0) do
-    original = Application.get_env(:nous, :model_dispatcher, MockModelDispatcher)
-    Application.put_env(:nous, :model_dispatcher, dispatcher_mod)
+    Nous.ModelDispatcher.put_dispatcher(dispatcher_mod)
 
     try do
       test_fn.()
     after
-      Application.put_env(:nous, :model_dispatcher, original)
+      Nous.ModelDispatcher.put_dispatcher(MockModelDispatcher)
     end
   end
 end

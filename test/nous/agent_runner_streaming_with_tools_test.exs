@@ -1,5 +1,5 @@
 defmodule Nous.AgentRunnerStreamingWithToolsTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{AgentRunner, Tool, Usage}
 
@@ -34,13 +34,18 @@ defmodule Nous.AgentRunnerStreamingWithToolsTest do
   end
 
   setup do
-    {:ok, _pid} = Elixir.Agent.start_link(fn -> [] end, name: ScriptedDispatcher.Script)
+    # start_supervised! (vs bare Agent.start_link) so the named process is torn
+    # down synchronously between tests — a plain link leaves it alive briefly
+    # after the test process exits, racing the next setup into
+    # {:error, {:already_started, _}}. Same fix as structured_output_streaming_test.
+    start_supervised!(%{
+      id: ScriptedDispatcher.Script,
+      start: {Elixir.Agent, :start_link, [fn -> [] end, [name: ScriptedDispatcher.Script]]}
+    })
 
-    Application.put_env(:nous, :model_dispatcher, ScriptedDispatcher)
-
-    on_exit(fn ->
-      Application.delete_env(:nous, :model_dispatcher)
-    end)
+    # Process-scoped. `ScriptedDispatcher.Script` is a module-unique process
+    # name, so nothing here is visible to a concurrently running module.
+    Nous.ModelDispatcher.put_dispatcher(ScriptedDispatcher)
 
     tool =
       Tool.from_function(&TestTool.lookup/2, name: "lookup", description: "Look something up")
