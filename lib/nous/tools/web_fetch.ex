@@ -265,8 +265,6 @@ if Code.ensure_loaded?(Floki) do
       end
     end
 
-    defp header(_headers, _name), do: nil
-
     defp parse_html(body) when is_binary(body) do
       case Floki.parse_document(body) do
         {:ok, doc} -> {:ok, doc}
