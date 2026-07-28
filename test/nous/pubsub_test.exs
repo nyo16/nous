@@ -1,5 +1,8 @@
 defmodule Nous.PubSubTest do
-  use ExUnit.Case, async: true
+  # async: false — the `configured_pubsub/0` tests below mutate the global
+  # `:nous, :pubsub` key, which `Nous.Agent.Context.new/1` reads on every
+  # context it builds. `teams_test.exs` is sync for the same key.
+  use ExUnit.Case, async: false
 
   alias Nous.PubSub
 

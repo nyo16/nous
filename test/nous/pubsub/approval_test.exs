@@ -46,13 +46,18 @@ defmodule Nous.PubSub.ApprovalTest do
 
       tool_call = %{id: "call_2", name: "delete_file", arguments: %{"path" => "/tmp/x"}}
 
+      # Watch the agent topic: wait_for_approval/4 subscribes to the approval
+      # topic *before* it broadcasts :approval_required, so receiving the
+      # broadcast proves the handler is already listening. Responding on a fixed
+      # 50ms hunch instead raced the subscribe and silently dropped the reply.
+      PubSub.subscribe(pubsub, PubSub.agent_topic(session_id))
+
       task =
         Task.async(fn ->
           handler.(tool_call)
         end)
 
-      # Small delay to let handler subscribe
-      Process.sleep(50)
+      assert_receive {:approval_required, %{tool_call_id: "call_2"}}, 2_000
 
       :ok = Approval.respond(pubsub, session_id, "call_2", :reject)
 
@@ -64,12 +69,14 @@ defmodule Nous.PubSub.ApprovalTest do
 
       tool_call = %{id: "call_3", name: "send_email", arguments: %{"to" => "bob"}}
 
+      PubSub.subscribe(pubsub, PubSub.agent_topic(session_id))
+
       task =
         Task.async(fn ->
           handler.(tool_call)
         end)
 
-      Process.sleep(50)
+      assert_receive {:approval_required, %{tool_call_id: "call_3"}}, 2_000
 
       new_args = %{"to" => "alice"}
       :ok = Approval.respond(pubsub, session_id, "call_3", {:edit, new_args})

@@ -132,8 +132,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from 7 to 6; compile-time cycles remain 0.
 
 - **`Nous.AgentRunner`'s 199-line orchestration loop** moved out of the facade
-  into `Nous.AgentRunner.IterationLoop`, alongside the four submodules added in
-  0.17.0. Pure move: the public API and every telemetry event are unchanged.
+  into a new internal Nous.AgentRunner.IterationLoop, alongside the four
+  submodules added in 0.17.0. Pure move: the public API and every telemetry
+  event are unchanged.
 
 - **`AGENTS.md`'s "What NOT to use" list corrected.** It declared several
   modules private that are in fact documented plug-in points —
@@ -145,10 +146,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Nous.Workflow.Engine.{Executor,ParallelExecutor,StateMerger}` were genuinely
   internal; they gain `@moduledoc false` and leave the docs groups.
 
-- **CI now enforces test coverage** with a ratchet floor (currently 58.42%, up
-  from 56.80%). The 90% threshold configured in `mix.exs` was never run by any
-  job, and was additionally mis-nested — `:threshold` must sit under
-  `:summary` or Mix silently keeps its default.
+### Tests
+
+- **Provider request shaping is now asserted.** `Nous.Providers.Gemini` sat at
+  4.35% coverage and `Anthropic` at 4.76% — message *translation* was well
+  covered, but nothing checked the URL, auth headers, or body of an outgoing
+  request. That is exactly how the malformed Gemini tool payload above shipped
+  green. New `gemini_test.exs`, `anthropic_test.exs` and `openai_test.exs`
+  decode the real request inside a Bypass plug and assert path, method, auth
+  header, system-prompt placement, and tool schema per dialect. The Gemini file
+  explicitly refutes the OpenAI `"type"` / `"function"` envelope keys inside
+  `functionDeclarations`, so that specific regression cannot recur. Coverage:
+  Gemini 4.35% → 91.30%, Anthropic 4.76% → 85.71%.
+
+- **Write-tool sandbox escapes are now tested.** `FileRead` had an escape test;
+  `FileWrite` and `FileEdit` did not, so deleting their `PathGuard.validate/2`
+  call would not have failed anything — and a write escape is strictly worse
+  than a read escape. Both now have absolute-path and `../../` traversal tests
+  that also assert the target file was not created or modified, and the real
+  `Nous.Tools.Bash` is tested for approval refusal via a filesystem side effect
+  that must not happen. Each new protection test was verified to fail under a
+  targeted mutation of the `lib/` line it defends.
+
+- **The 17 `AgentServer` cancellation tests now run in CI.** They were
+  `@moduletag :llm`-excluded, so the only cancellation coverage was a trivial
+  `{:ok, :no_execution}` assertion — cancel-while-running, double-cancel,
+  cancel-then-restart and multi-agent isolation were all unverified. They now
+  use stub dispatchers that signal readiness, so cancellation is triggered at a
+  provably-parked point instead of after a `Process.sleep`. Whole suite: 0.1s.
+
+- **Tests no longer reach the public internet.** Several tests issued live
+  requests to `api.openai.com` and `aiplatform.googleapis.com` and passed only
+  because they asserted on the resulting error — slow, broken offline, and if
+  `OPENAI_API_KEY` were ever set in CI they would have made real billed calls
+  with different behaviour. The two Vertex region tests additionally never
+  checked the thing they were named for; they now assert the resolved URL
+  directly. Full-suite wall time dropped from ~9s to ~6.4s.
+
+- **A process-scoped dispatcher seam** (`Nous.ModelDispatcher.put_dispatcher/1`,
+  resolved through `$callers`) lets tests inject a stub without mutating
+  application environment. Precedence is explicit option → process override →
+  app env → default, pinned by a test. 12 files moved from `async: false` to
+  `async: true` (39 → 30 sync). Files driving `Nous.AgentServer` stay sync and
+  say why: `$callers` does not cross `GenServer.start_link`.
+
+- **Race-hiding sleeps replaced with real synchronisation**, wall-clock
+  concurrency assertions replaced with a structural in-flight counter asserting
+  the maximum is *exactly* the expected concurrency (a `<=` bound also passes
+  for a fully sequential implementation), and several tests that could not fail
+  for their stated reason were fixed or deleted.
+
+- `Nous.Messages` doctests re-enabled (7 → 23 doctests total). Dead `:mox`
+  dependency removed; `bypass` narrowed to `only: :test` so a Cowboy server is
+  no longer on the `:dev` code path.
+
+- **CI now enforces test coverage.** Total went 56.80% → ~60%, and the gate is
+  a ratchet at 59 rather than an aspiration — the 90% threshold configured in
+  `mix.exs` was never run by any job, and was additionally mis-nested:
+  `:threshold` must sit under `:summary` or Mix silently keeps its default.
 
 - **Credo thresholds ratcheted** to the tightest values the codebase passes
   today (`max_complexity` 24 → 23, `max_arity` 15 → 14) so they can only move

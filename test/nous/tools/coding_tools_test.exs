@@ -123,6 +123,39 @@ defmodule Nous.Tools.CodingToolsTest do
       assert File.read!(path) == "deep"
       File.rm_rf!(Path.join(@test_dir, "new_dir"))
     end
+
+    # AGENTS.md invariant 3: file tools enforce a workspace root via PathGuard.
+    # FileRead's escape test is at the top of this file; a *write* escape is
+    # strictly worse, so both the absolute and the relative-traversal form are
+    # pinned here. Deleting the `Nous.Tools.PathGuard.validate/2` call in
+    # lib/nous/tools/file_write.ex fails both.
+    test "rejects an absolute path outside the workspace root and writes nothing" do
+      target =
+        Path.join(System.tmp_dir!(), "nous_write_escape_#{System.unique_integer([:positive])}")
+
+      refute File.exists?(target)
+
+      assert {:error, msg} =
+               FileWrite.execute(ctx(), %{"file_path" => target, "content" => "pwned"})
+
+      assert msg =~ "escapes the workspace root"
+
+      # Asserting the return value alone would still pass if the tool errored
+      # *after* writing, so pin the side effect that must never happen.
+      refute File.exists?(target)
+    end
+
+    test "rejects a ../../ relative traversal and writes nothing" do
+      name = "nous_write_traversal_#{System.unique_integer([:positive])}"
+      target = Path.expand("../../#{name}", @test_dir)
+      refute File.exists?(target)
+
+      assert {:error, msg} =
+               FileWrite.execute(ctx(), %{"file_path" => "../../#{name}", "content" => "pwned"})
+
+      assert msg =~ "escapes the workspace root"
+      refute File.exists?(target)
+    end
   end
 
   # -- FileEdit --
@@ -193,6 +226,62 @@ defmodule Nous.Tools.CodingToolsTest do
                })
 
       assert msg =~ "not found"
+    end
+
+    # As for FileWrite: deleting the `Nous.Tools.PathGuard.validate/2` call in
+    # lib/nous/tools/file_edit.ex fails all three of these. The sentinel files
+    # live outside the workspace root, so an unguarded FileEdit would rewrite
+    # them and the content assertions would catch it.
+    test "rejects an absolute path outside the workspace root and leaves the file untouched" do
+      outside =
+        Path.join(System.tmp_dir!(), "nous_edit_escape_#{System.unique_integer([:positive])}")
+
+      File.write!(outside, "SENTINEL\n")
+      on_exit(fn -> File.rm_rf!(outside) end)
+
+      assert {:error, msg} =
+               FileEdit.execute(ctx(), %{
+                 "file_path" => outside,
+                 "old_string" => "SENTINEL",
+                 "new_string" => "PWNED"
+               })
+
+      assert msg =~ "escapes the workspace root"
+      assert File.read!(outside) == "SENTINEL\n"
+    end
+
+    test "rejects a ../ relative traversal and leaves the file untouched" do
+      name = "nous_edit_traversal_#{System.unique_integer([:positive])}"
+      outside = Path.expand("../#{name}", @test_dir)
+      File.write!(outside, "SENTINEL\n")
+      on_exit(fn -> File.rm_rf!(outside) end)
+
+      assert {:error, msg} =
+               FileEdit.execute(ctx(), %{
+                 "file_path" => "../#{name}",
+                 "old_string" => "SENTINEL",
+                 "new_string" => "PWNED"
+               })
+
+      assert msg =~ "escapes the workspace root"
+      assert File.read!(outside) == "SENTINEL\n"
+    end
+
+    test "rejects a ../../ relative traversal before it ever reads the file" do
+      # A missing-file failure would report "Failed to access"; asserting the
+      # PathGuard wording proves the escape is refused at the guard rather than
+      # by File.read/1 happening to miss.
+      name = "nous_edit_deep_#{System.unique_integer([:positive])}"
+
+      assert {:error, msg} =
+               FileEdit.execute(ctx(), %{
+                 "file_path" => "../../#{name}",
+                 "old_string" => "a",
+                 "new_string" => "b"
+               })
+
+      assert msg =~ "escapes the workspace root"
+      refute File.exists?(Path.expand("../../#{name}", @test_dir))
     end
   end
 

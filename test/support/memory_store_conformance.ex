@@ -69,14 +69,19 @@ defmodule Nous.MemoryStoreConformance do
 
       test "update/3 modifies fields and bumps updated_at", %{state: state} do
         {state, entry} = put(state, %{content: "before", importance: 0.5})
-        # Ensure a measurable time delta for updated_at.
-        Process.sleep(2)
+
+        # Taken after store/2 and before update/3: any timestamp at or after it
+        # can only have been produced by the update itself. That replaces the
+        # old `Process.sleep(2)` + `in [:gt, :eq]` pair, which cost 2ms per
+        # backend and admitted the exact regression it was meant to catch —
+        # update/3 carrying the stored timestamp through untouched.
+        before_update = DateTime.utc_now()
 
         assert {:ok, state} = @store.update(state, entry.id, %{content: "after", importance: 0.9})
         assert {:ok, updated} = @store.fetch(state, entry.id)
         assert updated.content == "after"
         assert updated.importance == 0.9
-        assert DateTime.compare(updated.updated_at, entry.updated_at) in [:gt, :eq]
+        assert DateTime.compare(updated.updated_at, before_update) != :lt
       end
 
       test "update/3 on a missing id returns {:error, :not_found}", %{state: state} do

@@ -344,8 +344,14 @@ defmodule Nous.Providers.VertexAI do
     HTTP.json_headers() ++ HTTP.bearer_auth_header(token)
   end
 
-  # Build default base URL from environment variables
-  defp build_default_base_url(model) do
+  @doc false
+  # Build default base URL from environment variables.
+  #
+  # Public (but undocumented) so the env-var precedence rules can be asserted
+  # directly. The tests used to cover this by calling chat/2 with base_url: nil
+  # and checking the error was not :no_base_url — which issued a real request
+  # to aiplatform.googleapis.com and never actually verified which region won.
+  def build_default_base_url(model) do
     project = System.get_env("GOOGLE_CLOUD_PROJECT") || System.get_env("GCLOUD_PROJECT")
 
     region =

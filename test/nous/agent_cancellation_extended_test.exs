@@ -1,372 +1,357 @@
 defmodule Nous.AgentCancellationExtendedTest do
-  use ExUnit.Case, async: true
+  # async: false — swaps the global :model_dispatcher app env; see
+  # agent_cancellation_test.exs. The AgentServer runs in its own GenServer, so
+  # the process-scoped dispatcher override cannot reach it.
+  use ExUnit.Case, async: false
 
-  # These tests require a real LLM (LM Studio)
-  # Run with: mix test --include llm
-  @moduletag :llm
+  alias Nous.{Agent, AgentServer, Errors, Message, ReActAgent, Usage}
 
-  alias Nous.{Agent, AgentServer, ReActAgent}
+  @moduletag :capture_log
+
+  # See agent_cancellation_test.exs for the rationale: these tests need a model
+  # that is slow enough to cancel, not a real one. Every stub signals the test
+  # process the instant the model request begins, so `assert_receive` replaces
+  # the `Process.sleep(10)` (and one `Process.sleep(130_000)`) this file used to
+  # rely on to guess when a run had become cancellable.
+
+  defmodule Stub do
+    @moduledoc false
+
+    @key {__MODULE__, :test_pid}
+
+    def register(pid), do: :persistent_term.put(@key, pid)
+    def erase, do: :persistent_term.erase(@key)
+
+    def request_started, do: notify({:model_request_started, self()})
+    def unexpected_request, do: notify({:unexpected_model_request, self()})
+
+    defp notify(message) do
+      case :persistent_term.get(@key, nil) do
+        nil -> :ok
+        pid -> send(pid, message)
+      end
+    end
+
+    def text(content, opts \\ []) do
+      usage = %Usage{input_tokens: 10, output_tokens: 5, total_tokens: 15, requests: 1}
+      {:ok, %{Message.assistant(content, opts) | metadata: %{usage: usage}}}
+    end
+  end
+
+  defmodule BlockingDispatcher do
+    @moduledoc false
+
+    def request(_model, _messages, _settings) do
+      Stub.request_started()
+      Process.sleep(:infinity)
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 50
+  end
+
+  defmodule CompletingDispatcher do
+    @moduledoc false
+
+    def request(_model, _messages, _settings) do
+      Stub.request_started()
+      Stub.text("done")
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 50
+  end
+
+  defmodule NeverCalledDispatcher do
+    @moduledoc false
+    # Installed by tests that assert cancellation short-circuits *before* the
+    # model is reached. `refute_received {:unexpected_model_request, _}` turns
+    # "we think it never dispatched" into an assertion that can actually fail.
+
+    def request(_model, _messages, _settings) do
+      Stub.unexpected_request()
+      {:error, %Nous.Errors.ModelError{message: "should not have been called", provider: :test}}
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:error, "should not be called"}
+    def count_tokens(_messages), do: 50
+  end
+
+  setup do
+    original = Application.get_env(:nous, :model_dispatcher)
+    Stub.register(self())
+    use_dispatcher(BlockingDispatcher)
+
+    on_exit(fn ->
+      Stub.erase()
+
+      if original,
+        do: Application.put_env(:nous, :model_dispatcher, original),
+        else: Application.delete_env(:nous, :model_dispatcher)
+    end)
+
+    :ok
+  end
+
+  defp use_dispatcher(module), do: Application.put_env(:nous, :model_dispatcher, module)
+
+  defp start_agent(config_overrides \\ []) do
+    session_id = "cancel-ext-#{System.unique_integer([:positive])}"
+
+    config =
+      %{model: "openai:test-model", instructions: "Test agent", tools: []}
+      |> Map.merge(Map.new(config_overrides))
+
+    start_supervised!(
+      Supervisor.child_spec(
+        {AgentServer, [session_id: session_id, agent_config: config]},
+        id: {AgentServer, session_id}
+      )
+    )
+  end
+
+  # Bounded poll for the two facts the server only reaches via handle_info, which
+  # a caller cannot observe synchronously. Unlike a fixed sleep it returns the
+  # instant the condition holds and still fails a genuinely broken server at the
+  # deadline — it hides no race, it only bounds one.
+  defp eventually(fun, retries \\ 200, delay \\ 5) do
+    cond do
+      fun.() ->
+        true
+
+      retries == 0 ->
+        false
+
+      true ->
+        Process.sleep(delay)
+        eventually(fun, retries - 1, delay)
+    end
+  end
 
   describe "AgentServer edge cases" do
-    test "multiple rapid cancel calls are safe" do
-      {:ok, pid} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "repeated cancel_execution calls are idempotent" do
+      pid = start_agent()
 
-      # Start execution
       AgentServer.send_message(pid, "Test message")
-      Process.sleep(10)
+      assert_receive {:model_request_started, _}, 1_000
 
-      # Call cancel multiple times rapidly
-      {:ok, :cancelled} = AgentServer.cancel_execution(pid)
-      {:ok, :no_execution} = AgentServer.cancel_execution(pid)
-      {:ok, :no_execution} = AgentServer.cancel_execution(pid)
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
+      assert {:ok, :no_execution} = AgentServer.cancel_execution(pid)
+      assert {:ok, :no_execution} = AgentServer.cancel_execution(pid)
 
-      # State should be clean
       state = :sys.get_state(pid)
       assert state.current_task == nil
-      assert state.cancelled_ref != nil
+      assert :atomics.get(state.cancelled_ref, 1) == 0
     end
 
-    test "conversation history is preserved after cancellation" do
-      {:ok, pid} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "history from a completed run survives a later cancellation" do
+      pid = start_agent()
 
-      # Send a message
+      use_dispatcher(CompletingDispatcher)
       AgentServer.send_message(pid, "First message")
-      Process.sleep(10)
+      assert_receive {:model_request_started, _}, 1_000
+      assert eventually(fn -> AgentServer.get_history(pid) != [] end)
 
-      # Get history (should have user message)
       history_before = AgentServer.get_history(pid)
-      assert length(history_before) == 1
-      assert hd(history_before).content == "First message"
+      assert Enum.any?(history_before, &(&1.role == :user and &1.content == "First message"))
 
-      # Cancel
-      AgentServer.cancel_execution(pid)
-      Process.sleep(10)
+      use_dispatcher(BlockingDispatcher)
+      AgentServer.send_message(pid, "Second message")
+      assert_receive {:model_request_started, _}, 1_000
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
 
-      # History should still be there
-      history_after = AgentServer.get_history(pid)
-      assert history_after == history_before
+      # A cancelled run must not clobber the context the completed one saved.
+      assert AgentServer.get_history(pid) == history_before
     end
 
-    test "cancelled flag is reset for next execution" do
-      {:ok, pid} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "the cancelled flag is reset so the next execution is not born cancelled" do
+      pid = start_agent()
 
-      # Start first execution
       AgentServer.send_message(pid, "First")
-      Process.sleep(10)
+      assert_receive {:model_request_started, _}, 1_000
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
 
-      # Cancel
-      AgentServer.cancel_execution(pid)
-      Process.sleep(10)
-
-      # Start second execution
       AgentServer.send_message(pid, "Second")
-      Process.sleep(10)
 
-      # Should have new task with cancelled=false
+      # Reaching the model at all is the assertion: run_agent_and_respond
+      # short-circuits before the first iteration while the flag is still set,
+      # so a stale flag means this signal never arrives.
+      assert_receive {:model_request_started, _}, 1_000
+
       state = :sys.get_state(pid)
       assert state.current_task != nil
-      assert state.cancelled_ref != nil
+      assert :atomics.get(state.cancelled_ref, 1) == 0
     end
 
-    @tag timeout: 180_000
-    test "handles :DOWN message for completed task" do
-      {:ok, pid} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "current_task is cleared when the task completes on its own" do
+      use_dispatcher(CompletingDispatcher)
+      pid = start_agent()
 
-      # Start execution
       AgentServer.send_message(pid, "Test")
-      Process.sleep(10)
+      assert_receive {:model_request_started, task_pid}, 1_000
+      assert :sys.get_state(pid).current_task != nil
 
-      state_before = :sys.get_state(pid)
-      assert state_before.current_task != nil
+      task_ref = Process.monitor(task_pid)
+      assert_receive {:DOWN, ^task_ref, :process, ^task_pid, _}, 2_000
 
-      # Task will complete, :DOWN message should clear task
-      # Wait longer for model to respond and task to finish
-      Process.sleep(130_000)
-
-      state_after = :sys.get_state(pid)
-      assert state_after.current_task == nil
+      assert eventually(fn -> :sys.get_state(pid).current_task == nil end)
     end
 
-    test "clear_history works independently of cancellation" do
-      {:ok, pid} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "clear_history empties the context even after a cancellation" do
+      pid = start_agent()
 
-      # Send message and cancel
+      use_dispatcher(CompletingDispatcher)
       AgentServer.send_message(pid, "Test")
-      Process.sleep(10)
-      AgentServer.cancel_execution(pid)
-      Process.sleep(10)
+      assert_receive {:model_request_started, _}, 1_000
+      assert eventually(fn -> AgentServer.get_history(pid) != [] end)
 
-      # History should exist
-      assert length(AgentServer.get_history(pid)) > 0
+      use_dispatcher(BlockingDispatcher)
+      AgentServer.send_message(pid, "Another")
+      assert_receive {:model_request_started, _}, 1_000
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
 
-      # Clear history
+      assert AgentServer.get_history(pid) != []
+
+      # clear_history is a cast and get_history is a call on the same mailbox,
+      # so the call is already serialised behind it. No sleep required.
       AgentServer.clear_history(pid)
-
-      # History should be empty
       assert AgentServer.get_history(pid) == []
     end
   end
 
   describe "ReActAgent cancellation" do
-    test "ReActAgent passes through cancellation_check" do
-      # Create cancellation flag - start cancelled
-      cancellation_ref = :atomics.new(1, [])
-      # Already cancelled
-      :atomics.put(cancellation_ref, 1, 1)
+    test "ReActAgent.run stops before the first model call when already cancelled" do
+      use_dispatcher(NeverCalledDispatcher)
+
+      cancel_ref = :atomics.new(1, [])
+      :atomics.put(cancel_ref, 1, 1)
 
       check_fn = fn ->
-        case :atomics.get(cancellation_ref, 1) do
-          1 -> throw({:cancelled, "ReAct test"})
-          0 -> :ok
-        end
+        if :atomics.get(cancel_ref, 1) == 1, do: throw({:cancelled, "ReAct test"})
       end
 
-      # Create ReActAgent
-      agent =
-        ReActAgent.new(Nous.LLMTestHelper.test_model(),
-          instructions: "Test agent"
-        )
+      agent = ReActAgent.new("openai:test-model", instructions: "Test agent")
 
-      # Run with cancellation check - should cancel immediately
-      result =
-        ReActAgent.run(agent, "Test task",
-          cancellation_check: check_fn,
-          max_iterations: 5
-        )
+      assert {:error, %Errors.ExecutionCancelled{reason: "ReAct test"}} =
+               ReActAgent.run(agent, "Test task", cancellation_check: check_fn, max_iterations: 5)
 
-      # Should get cancellation error
-      assert {:error, %Nous.Errors.ExecutionCancelled{reason: "ReAct test"}} = result
+      refute_received {:unexpected_model_request, _}
     end
 
-    test "AgentServer works with ReActAgent type" do
-      {:ok, pid} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: [],
-            type: :react
-          }
-        )
+    test "an AgentServer of type :react cancels like a standard one" do
+      pid = start_agent(type: :react)
 
-      # Should initialize with react type
-      state = :sys.get_state(pid)
-      assert state.agent_type == :react
+      assert :sys.get_state(pid).agent_type == :react
 
-      # Cancellation should work the same
       AgentServer.send_message(pid, "Test")
-      Process.sleep(10)
-      {:ok, :cancelled} = AgentServer.cancel_execution(pid)
+      assert_receive {:model_request_started, task_pid}, 1_000
+
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
+      refute Process.alive?(task_pid)
+      assert :sys.get_state(pid).current_task == nil
     end
   end
 
   describe "concurrent agent executions" do
-    test "multiple AgentServers can run and cancel independently" do
-      # Start 3 agents
-      {:ok, pid1} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Agent 1",
-            tools: []
-          }
-        )
+    test "cancelling one AgentServer leaves the others running" do
+      pid1 = start_agent()
+      pid2 = start_agent()
+      pid3 = start_agent()
 
-      {:ok, pid2} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Agent 2",
-            tools: []
-          }
-        )
-
-      {:ok, pid3} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Agent 3",
-            tools: []
-          }
-        )
-
-      # Start all executions
       AgentServer.send_message(pid1, "Task 1")
       AgentServer.send_message(pid2, "Task 2")
       AgentServer.send_message(pid3, "Task 3")
-      Process.sleep(20)
 
-      # All should have tasks
-      assert :sys.get_state(pid1).current_task != nil
-      assert :sys.get_state(pid2).current_task != nil
-      assert :sys.get_state(pid3).current_task != nil
+      for _ <- 1..3, do: assert_receive({:model_request_started, _}, 1_000)
 
-      # Cancel only agent 2
-      {:ok, :cancelled} = AgentServer.cancel_execution(pid2)
-      Process.sleep(10)
+      task1 = :sys.get_state(pid1).current_task
+      task2 = :sys.get_state(pid2).current_task
+      task3 = :sys.get_state(pid3).current_task
 
-      # Agent 2 should be cancelled, others still running
+      assert task1 != nil
+      assert task2 != nil
+      assert task3 != nil
+
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid2)
+
       assert :sys.get_state(pid2).current_task == nil
+      refute Process.alive?(task2.pid)
 
-      # Note: pid1 and pid3 tasks will eventually die due to model error,
-      # but at this moment they should still be trying
+      # Isolation: neither neighbour lost its task to its sibling's cancel.
+      assert :sys.get_state(pid1).current_task.pid == task1.pid
+      assert :sys.get_state(pid3).current_task.pid == task3.pid
+      assert Process.alive?(task1.pid)
+      assert Process.alive?(task3.pid)
     end
 
-    test "rapid message sending cancels previous executions" do
-      {:ok, pid} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "each new message shuts down the run before it" do
+      pid = start_agent()
 
-      # Send 5 messages rapidly
-      AgentServer.send_message(pid, "Message 1")
-      Process.sleep(50)
-      AgentServer.send_message(pid, "Message 2")
-      Process.sleep(50)
-      AgentServer.send_message(pid, "Message 3")
-      Process.sleep(50)
-      AgentServer.send_message(pid, "Message 4")
-      Process.sleep(50)
-      AgentServer.send_message(pid, "Message 5")
-      Process.sleep(100)
+      task_pids =
+        for i <- 1..5 do
+          AgentServer.send_message(pid, "Message #{i}")
+          assert_receive {:model_request_started, task_pid}, 1_000
+          task_pid
+        end
 
-      # Each message should be added to history
-      # (task may or may not be running depending on model speed)
-      history = AgentServer.get_history(pid)
-      assert length(history) == 5
+      assert Enum.uniq(task_pids) == task_pids
+
+      [current | previous] = Enum.reverse(task_pids)
+
+      # handle_cast calls Task.shutdown on the in-flight task before spawning
+      # its successor, and the successor's signal is what we just received —
+      # so every earlier task is provably dead by now, no sleep needed.
+      assert Enum.all?(previous, &(not Process.alive?(&1)))
+      assert Process.alive?(current)
+      assert :sys.get_state(pid).current_task.pid == current
     end
   end
 
   describe "cancellation timing" do
-    test "cancellation before any iteration" do
-      cancellation_ref = :atomics.new(1, [])
-      # Already cancelled
-      :atomics.put(cancellation_ref, 1, 1)
+    test "a run cancelled before the first iteration never reaches the model" do
+      use_dispatcher(NeverCalledDispatcher)
+
+      cancel_ref = :atomics.new(1, [])
+      :atomics.put(cancel_ref, 1, 1)
 
       check_fn = fn ->
-        case :atomics.get(cancellation_ref, 1) do
-          1 -> throw({:cancelled, "Immediate cancel"})
-          0 -> :ok
-        end
+        if :atomics.get(cancel_ref, 1) == 1, do: throw({:cancelled, "Immediate cancel"})
       end
 
-      agent =
-        Agent.new(Nous.LLMTestHelper.test_model(),
-          instructions: "Test",
-          tools: []
-        )
+      agent = Agent.new("openai:test-model", instructions: "Test", tools: [])
 
-      # Should cancel immediately on first check
-      result =
-        Agent.run(agent, "Test",
-          cancellation_check: check_fn,
-          max_iterations: 5
-        )
+      assert {:error, %Errors.ExecutionCancelled{reason: "Immediate cancel"}} =
+               Agent.run(agent, "Test", cancellation_check: check_fn, max_iterations: 5)
 
-      assert {:error, %Nous.Errors.ExecutionCancelled{reason: "Immediate cancel"}} = result
+      refute_received {:unexpected_model_request, _}
     end
 
-    @tag timeout: 150_000
-    test "nil cancellation_check is safe" do
-      agent =
-        Agent.new(Nous.LLMTestHelper.test_model(),
-          instructions: "Test",
-          tools: []
-        )
+    test "a nil cancellation_check runs the agent to completion" do
+      use_dispatcher(CompletingDispatcher)
 
-      # Should not crash with nil cancellation_check
-      result =
-        Agent.run(agent, "Test",
-          cancellation_check: nil,
-          max_iterations: 1
-        )
+      agent = Agent.new("openai:test-model", instructions: "Test", tools: [])
 
-      # With working model and nil cancellation, should succeed OR fail
-      # Either way, it shouldn't be a cancellation error
-      case result do
-        {:ok, _} ->
-          # Model worked, that's fine
-          assert true
-
-        {:error, error} ->
-          # Model failed for some reason, but not cancellation
-          refute match?(%Nous.Errors.ExecutionCancelled{}, error)
-      end
+      assert {:ok, result} = Agent.run(agent, "Test", cancellation_check: nil, max_iterations: 1)
+      assert result.output == "done"
     end
   end
 
   describe "error handling" do
-    test "cancellation during model request returns cancellation error" do
-      # This would require mocking the model to take time,
-      # but we can at least verify the structure is correct
-      {:ok, pid} =
-        AgentServer.start_link(
-          session_id: "test-#{:rand.uniform(10000)}",
-          agent_config: %{
-            model: Nous.LLMTestHelper.test_model(),
-            instructions: "Test agent",
-            tools: []
-          }
-        )
+    test "the server survives a cancellation and accepts further work" do
+      pid = start_agent()
 
-      # The task will be created and will attempt to run
       AgentServer.send_message(pid, "Test")
-      Process.sleep(5)
+      assert_receive {:model_request_started, _}, 1_000
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
 
-      # Cancel very quickly (might catch during first iteration)
-      result = AgentServer.cancel_execution(pid)
+      assert Process.alive?(pid)
 
-      # Should either cancel or report no execution (if it finished quickly)
-      assert result in [{:ok, :cancelled}, {:ok, :no_execution}]
+      use_dispatcher(CompletingDispatcher)
+      AgentServer.send_message(pid, "After cancel")
+      assert_receive {:model_request_started, _}, 1_000
+      assert eventually(fn -> AgentServer.get_history(pid) != [] end)
+
+      assert Enum.any?(AgentServer.get_history(pid), &(&1.content == "After cancel"))
     end
   end
 end

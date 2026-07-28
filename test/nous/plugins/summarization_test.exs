@@ -1,6 +1,5 @@
 defmodule Nous.Plugins.SummarizationTest do
-  # async: false — mutates the global :model_dispatcher app env.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.Agent
   alias Nous.Agent.Context
@@ -18,8 +17,9 @@ defmodule Nous.Plugins.SummarizationTest do
     # summary LLM call fail — which fired a REAL request at api.openai.com
     # (and would make a real paid call, then fail, with OPENAI_API_KEY set).
     # A failing mock dispatcher exercises the same fail-open branch offline.
-    Application.put_env(:nous, :model_dispatcher, FailingDispatcher)
-    on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
+    # Process-scoped, so this module no longer serialises with the rest of the
+    # suite to hold a stub in the application environment.
+    Nous.ModelDispatcher.put_dispatcher(FailingDispatcher)
 
     agent =
       Agent.new("openai:gpt-4",

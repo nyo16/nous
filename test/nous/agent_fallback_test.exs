@@ -1,5 +1,5 @@
 defmodule Nous.AgentFallbackTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{Agent, AgentRunner, Message, Model, Usage}
   alias Nous.Errors
@@ -128,16 +128,9 @@ defmodule Nous.AgentFallbackTest do
   end
 
   setup do
-    Application.put_env(:nous, :model_dispatcher, FallbackMockDispatcher)
-
-    on_exit(fn ->
-      Application.delete_env(:nous, :model_dispatcher)
-
-      if :ets.whereis(:fallback_mock_config) != :undefined do
-        :ets.delete(:fallback_mock_config)
-      end
-    end)
-
+    # Process-scoped, so no global env to restore. The named ETS table is
+    # unique to this module and dies with the test process that created it.
+    Nous.ModelDispatcher.put_dispatcher(FallbackMockDispatcher)
     :ok
   end
 

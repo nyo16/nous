@@ -99,7 +99,11 @@ defmodule Nous.Application do
   # Apps that want a fully isolated pool should pass `pool: :my_pool` per
   # call after starting it with `:hackney_pool.start_pool/2` rather than
   # mutating the shared `:default` pool here.
-  defp configure_hackney_pool do
+  #
+  # Public (but `@doc false`), like `finch_pools/0` above, so the config
+  # contract is testable without restarting the application supervisor.
+  @doc false
+  def configure_hackney_pool do
     case Application.get_env(:nous, :hackney_pool) do
       nil ->
         :ok
@@ -115,6 +119,15 @@ defmodule Nous.Application do
     # so guard on a successful start instead of ignoring the return value.
     case Application.ensure_all_started(:hackney) do
       {:ok, _started} ->
+        # hackney creates the `:default` pool LAZILY, on first checkout, and
+        # `set_max_connections/2` / `set_timeout/2` are casts to
+        # `find_pool(:default)` — which is `undefined` at boot. `GenServer.cast`
+        # to an unregistered name succeeds silently, so without this line the
+        # whole `config :nous, :hackney_pool` block was dropped on the floor
+        # every time. `start_pool/2` is idempotent: it returns `:ok` for a pool
+        # that already exists, which is why the casts below still run.
+        :hackney_pool.start_pool(:default, [])
+
         if max = Keyword.get(opts, :max_connections) do
           :hackney_pool.set_max_connections(:default, max)
         end

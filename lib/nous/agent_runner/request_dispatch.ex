@@ -207,10 +207,10 @@ defmodule Nous.AgentRunner.RequestDispatch do
     end
   end
 
-  # Get the model dispatcher, allowing dependency injection for testing
-  def get_dispatcher do
-    Application.get_env(:nous, :model_dispatcher, ModelDispatcher)
-  end
+  # Resolve the model dispatcher. The runner has no per-call override to thread
+  # (agents carry no dispatcher field), so this is the process-override →
+  # app-env → default chain. See `Nous.ModelDispatcher.resolve/1`.
+  def get_dispatcher, do: ModelDispatcher.resolve()
 
   # Convert tools to provider-specific format
   def convert_tools_for_provider(:anthropic, tools) do

@@ -1,6 +1,5 @@
 defmodule Nous.Research.PlannerTest do
-  # async: false — swaps the global :model_dispatcher.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.Research.Planner
   alias Nous.Usage
@@ -34,8 +33,9 @@ defmodule Nous.Research.PlannerTest do
   end
 
   setup do
-    Application.put_env(:nous, :model_dispatcher, ScriptedDispatcher)
-    on_exit(fn -> Application.delete_env(:nous, :model_dispatcher) end)
+    # Process-scoped: dies with the test process, so nothing to restore and
+    # nothing for a concurrent module to observe.
+    Nous.ModelDispatcher.put_dispatcher(ScriptedDispatcher)
     :ok
   end
 

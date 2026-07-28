@@ -7,7 +7,24 @@ defmodule Nous.Plugins.MemoryAutoUpdateTest do
   alias Nous.Message
   alias Nous.Plugins.Memory, as: MemoryPlugin
 
+  # `auto_update_every: 1` below means any `after_run/3` in this file triggers
+  # a reflection call. Without a stub that reached the real api.openai.com on
+  # every run: slow, offline-fragile, and — if OPENAI_API_KEY were ever set in
+  # CI — a real billed request whose result would change what these tests see.
+  # The failure is what the reflection path already handled (it logs and keeps
+  # the context), so returning an error here preserves the observed behaviour
+  # while keeping the suite hermetic.
+  defmodule OfflineDispatcher do
+    @moduledoc false
+
+    def request(_model, _messages, _settings), do: {:error, :offline_in_tests}
+    def request_stream(_model, _messages, _settings), do: {:error, :offline_in_tests}
+    def count_tokens(_messages), do: 0
+  end
+
   setup do
+    Nous.ModelDispatcher.put_dispatcher(OfflineDispatcher)
+
     agent =
       Agent.new("openai:gpt-4",
         plugins: [MemoryPlugin],

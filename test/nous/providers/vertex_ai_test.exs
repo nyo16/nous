@@ -124,12 +124,10 @@ defmodule Nous.Providers.VertexAITest do
       System.delete_env("GOOGLE_CLOUD_REGION")
 
       try do
-        # The URL should resolve successfully (will fail at HTTP level, not config level)
-        {:error, reason} =
-          VertexAI.chat(%{"model" => "gemini-2.0-flash"}, api_key: "test", base_url: nil)
+        assert {:ok, url} = VertexAI.build_default_base_url("gemini-2.0-flash")
 
-        # If we get an HTTP error (map with :status), the URL was resolved correctly
-        refute is_map(reason) and reason[:reason] == :no_base_url
+        assert url ==
+                 "https://asia-northeast1-aiplatform.googleapis.com/v1/projects/test-project/locations/asia-northeast1"
       after
         System.delete_env("GOOGLE_CLOUD_PROJECT")
         System.delete_env("GOOGLE_CLOUD_LOCATION")
@@ -142,10 +140,11 @@ defmodule Nous.Providers.VertexAITest do
       System.put_env("GOOGLE_CLOUD_LOCATION", "asia-northeast1")
 
       try do
-        {:error, reason} =
-          VertexAI.chat(%{"model" => "gemini-2.0-flash"}, api_key: "test", base_url: nil)
+        assert {:ok, url} = VertexAI.build_default_base_url("gemini-2.0-flash")
 
-        refute is_map(reason) and reason[:reason] == :no_base_url
+        # Precedence is the whole point: the losing value must not appear.
+        assert url =~ "europe-west1"
+        refute url =~ "asia-northeast1"
       after
         System.delete_env("GOOGLE_CLOUD_PROJECT")
         System.delete_env("GOOGLE_CLOUD_REGION")

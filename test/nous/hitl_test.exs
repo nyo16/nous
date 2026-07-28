@@ -1,5 +1,5 @@
 defmodule Nous.HITLTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{Agent, Tool, Message, Usage}
   alias Nous.Agent.Context
@@ -142,16 +142,8 @@ defmodule Nous.HITLTest do
 
   describe "approval handler responses via full agent run" do
     setup do
-      original = Application.get_env(:nous, :model_dispatcher)
-      Application.put_env(:nous, :model_dispatcher, __MODULE__.MockDispatcher)
-
-      on_exit(fn ->
-        if original do
-          Application.put_env(:nous, :model_dispatcher, original)
-        else
-          Application.delete_env(:nous, :model_dispatcher)
-        end
-      end)
+      # Process-scoped, so this describe no longer forces the whole module sync.
+      Nous.ModelDispatcher.put_dispatcher(__MODULE__.MockDispatcher)
 
       tool =
         Tool.from_function(&dummy_tool/2,

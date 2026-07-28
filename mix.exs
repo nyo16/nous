@@ -23,15 +23,16 @@ defmodule Nous.MixProject do
       elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool]],
       # Coverage ratchet. `mix test --cover` defaults to a 90% threshold this
       # project has never met, and no CI job ran it, so the gate was purely
-      # decorative. 57 is the measured floor (57.73% at 064c452, :llm/:llama
-      # excluded as in CI) rounded down — a number we actually pass, enforced
-      # by the `coverage` job in .github/workflows/ci.yml. Raise it as
-      # coverage improves; never lower it.
+      # decorative. 59 is the current measured floor (60.05%, :llm/:llama
+      # excluded as in CI) with ~1pp of headroom, enforced by the `coverage`
+      # job in .github/workflows/ci.yml. Raise it as coverage improves; never
+      # lower it. History: 56.80% at the audit, 57 after the perf wave, 59 once
+      # the provider/web_fetch/prompt_template suites landed.
       #
       # :threshold MUST be nested under :summary — a bare
       # `test_coverage: [threshold: n]` is silently ignored and you keep the
       # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
-      test_coverage: [summary: [threshold: 57]],
+      test_coverage: [summary: [threshold: 59]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix, :ex_unit]
@@ -115,18 +116,23 @@ defmodule Nous.MixProject do
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:mox, "~> 1.1", only: :test},
       # optional (not only: :test) so the `~> 2.1` constraint reaches downstream
       # resolvers — Nous.PubSub integrates with phoenix_pubsub at runtime (guarded
       # by Code.ensure_loaded?), and apps that bring their own copy should see a
       # compatible-version requirement rather than a hidden test-only pin.
       {:phoenix_pubsub, "~> 2.1", optional: true},
       # Bypass = in-test HTTP server for exercising the streaming pipeline
-      # without hitting real LLM endpoints. Available in :dev too so
-      # `bench/http_backend.exs` can spin up an in-process server.
-      {:bypass, "~> 2.1", only: [:dev, :test]},
-      # Benchee = HTTP backend benchmark (`mix run bench/http_backend.exs`).
-      {:benchee, "~> 1.3", only: :dev}
+      # without hitting real LLM endpoints. `only: :test`: nothing in :dev uses
+      # Bypass, and it drags in plug_cowboy/cowboy/ranch — currently carrying
+      # HIGH advisories (see `mix hex.audit`) — which would otherwise be
+      # compiled and loadable while `Nous.Application` runs in :dev.
+      {:bypass, "~> 2.1", only: :test},
+      # Benchee = the bench/ scripts. Also in :test because
+      # `bench/http_backend.exs` starts an in-process plug_cowboy server, and
+      # plug_cowboy now only reaches the build through Bypass in :test:
+      #
+      #     MIX_ENV=test mix run bench/http_backend.exs
+      {:benchee, "~> 1.3", only: [:dev, :test]}
     ]
   end
 

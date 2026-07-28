@@ -92,8 +92,9 @@ defmodule Nous.Messages do
   ## Examples
 
       iex> conversation = [Message.system("Be helpful"), Message.user("Hello")]
-      iex> Messages.find_by_role(conversation, :system)
-      [%Message{role: :system, content: "Be helpful"}]
+      iex> [system] = Messages.find_by_role(conversation, :system)
+      iex> {system.role, system.content}
+      {:system, "Be helpful"}
 
   """
   @spec find_by_role([Message.t()], atom()) :: [Message.t()]
@@ -107,8 +108,9 @@ defmodule Nous.Messages do
   ## Examples
 
       iex> conversation = [Message.user("Hi"), Message.assistant("Hello")]
-      iex> Messages.last_message(conversation)
-      %Message{role: :assistant, content: "Hello"}
+      iex> last = Messages.last_message(conversation)
+      iex> {last.role, last.content}
+      {:assistant, "Hello"}
 
   """
   @spec last_message([Message.t()]) :: Message.t() | nil
@@ -197,6 +199,7 @@ defmodule Nous.Messages do
       iex> Messages.to_provider_format(conversation, :openai)
       [%{"role" => "system", "content" => "Be helpful"}, %{"role" => "user", "content" => "Hello"}]
 
+      iex> conversation = [Message.system("Be helpful"), Message.user("Hello")]
       iex> Messages.to_provider_format(conversation, :anthropic)
       {"Be helpful", [%{"role" => "user", "content" => "Hello"}]}
 
@@ -269,8 +272,9 @@ defmodule Nous.Messages do
       ...>   "choices" => [%{"message" => %{"role" => "assistant", "content" => "Hello"}}],
       ...>   "usage" => %{"total_tokens" => 10}
       ...> }
-      iex> Messages.from_openai_response(openai_response)
-      %Message{role: :assistant, content: "Hello"}
+      iex> message = Messages.from_openai_response(openai_response)
+      iex> {message.role, message.content}
+      {:assistant, "Hello"}
 
   """
   @spec from_openai_response(map()) :: Message.t()
@@ -285,8 +289,9 @@ defmodule Nous.Messages do
       ...>   "content" => [%{"type" => "text", "text" => "Hello"}],
       ...>   "model" => "claude-3-sonnet"
       ...> }
-      iex> Messages.from_anthropic_response(anthropic_response)
-      %Message{role: :assistant, content: "Hello"}
+      iex> message = Messages.from_anthropic_response(anthropic_response)
+      iex> {message.role, message.content}
+      {:assistant, "Hello"}
 
   """
   @spec from_anthropic_response(map()) :: Message.t()
@@ -300,8 +305,9 @@ defmodule Nous.Messages do
       iex> gemini_response = %{
       ...>   "candidates" => [%{"content" => %{"parts" => [%{"text" => "Hello"}]}}]
       ...> }
-      iex> Messages.from_gemini_response(gemini_response)
-      %Message{role: :assistant, content: "Hello"}
+      iex> message = Messages.from_gemini_response(gemini_response)
+      iex> {message.role, message.content}
+      {:assistant, "Hello"}
 
   """
   @spec from_gemini_response(map()) :: Message.t()
@@ -314,8 +320,13 @@ defmodule Nous.Messages do
 
   ## Examples
 
-      iex> Messages.from_provider_response(openai_response, :openai)
-      %Message{role: :assistant, content: "Hello"}
+      iex> openai_response = %{
+      ...>   "choices" => [%{"message" => %{"role" => "assistant", "content" => "Hello"}}],
+      ...>   "usage" => %{"total_tokens" => 10}
+      ...> }
+      iex> message = Messages.from_provider_response(openai_response, :openai)
+      iex> {message.role, message.content}
+      {:assistant, "Hello"}
 
   """
   @spec from_provider_response(map(), atom()) :: Message.t()
@@ -382,8 +393,9 @@ defmodule Nous.Messages do
 
   ## Examples
 
-      iex> Messages.normalize_format([%{"role" => "user", "content" => "Hi"}])
-      [%Message{role: :user, content: "Hi"}]
+      iex> [message] = Messages.normalize_format([%{"role" => "user", "content" => "Hi"}])
+      iex> {message.role, message.content}
+      {:user, "Hi"}
 
   """
   @spec normalize_format(any()) :: [Message.t()]

@@ -1,5 +1,5 @@
 defmodule Nous.Plugins.SubAgentTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{Agent, Message, Usage}
   alias Nous.Agent.Context
@@ -65,14 +65,10 @@ defmodule Nous.Plugins.SubAgentTest do
   end
 
   setup do
-    original = Application.get_env(:nous, :model_dispatcher)
-    Application.put_env(:nous, :model_dispatcher, MockDispatcher)
-
-    on_exit(fn ->
-      if original,
-        do: Application.put_env(:nous, :model_dispatcher, original),
-        else: Application.delete_env(:nous, :model_dispatcher)
-    end)
+    # Process-scoped: `spawn_agents` fans out through
+    # `Task.Supervisor.async_stream_nolink`, which propagates `$callers`, so
+    # the sub-agent tasks resolve the same stub without any global state.
+    Nous.ModelDispatcher.put_dispatcher(MockDispatcher)
 
     templates = %{
       "researcher" =>
@@ -238,7 +234,7 @@ defmodule Nous.Plugins.SubAgentTest do
     end
 
     test "handles LLM errors gracefully", %{ctx: ctx} do
-      Application.put_env(:nous, :model_dispatcher, FailingDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(FailingDispatcher)
       ctx = SubAgent.init(%Agent{model: nil}, ctx)
 
       result =
@@ -386,7 +382,7 @@ defmodule Nous.Plugins.SubAgentTest do
     end
 
     test "handles LLM errors gracefully without crashing other tasks", %{ctx: ctx} do
-      Application.put_env(:nous, :model_dispatcher, FailingDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(FailingDispatcher)
 
       ctx = SubAgent.init(%Agent{model: nil}, ctx)
 
@@ -468,9 +464,19 @@ defmodule Nous.Plugins.SubAgentTest do
           {:ok, Message.from_legacy(legacy)}
         end
 
+        # Compare-exchange retry loop: a plain get/put would let two tasks read
+        # the same stale max and have the loser clobber the winner's higher
+        # value, which is precisely the observation the `== 2` assertion below
+        # depends on.
         defp loop_max(atomic, value) do
           current_max = :atomics.get(atomic, 1)
-          if value > current_max, do: :atomics.put(atomic, 1, value)
+
+          if value > current_max do
+            case :atomics.compare_exchange(atomic, 1, current_max, value) do
+              :ok -> :ok
+              _raced -> loop_max(atomic, value)
+            end
+          end
         end
 
         def request_stream(_model, _messages, _settings), do: {:ok, []}
@@ -478,7 +484,7 @@ defmodule Nous.Plugins.SubAgentTest do
       end
 
       :persistent_term.put({ConcurrencyTracker, :counters}, {counter, max_seen})
-      Application.put_env(:nous, :model_dispatcher, ConcurrencyTracker)
+      Nous.ModelDispatcher.put_dispatcher(ConcurrencyTracker)
 
       ctx =
         Context.new(
@@ -503,14 +509,18 @@ defmodule Nous.Plugins.SubAgentTest do
       assert result.total == 6
       assert result.succeeded == 6
 
+      # Exactly 2, not `<= 2`: the one-sided bound also passes when the
+      # implementation regresses to fully sequential execution, which is the
+      # only regression this test exists to catch. Six tasks at a limit of two,
+      # each holding the counter for 50ms, deterministically reach the ceiling.
       observed_max = :atomics.get(max_seen, 1)
-      assert observed_max <= 2
+      assert observed_max == 2
 
       :persistent_term.erase({ConcurrencyTracker, :counters})
     end
 
     test "handles task timeout gracefully" do
-      Application.put_env(:nous, :model_dispatcher, SlowDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(SlowDispatcher)
 
       ctx =
         Context.new(

@@ -1,5 +1,5 @@
 defmodule Nous.LLMTest do
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.{Model, Message, Usage}
 
@@ -77,9 +77,9 @@ defmodule Nous.LLMTest do
 
   setup do
     CapturingDispatcher.configure()
-    prev = Application.get_env(:nous, :model_dispatcher)
-    Application.put_env(:nous, :model_dispatcher, CapturingDispatcher)
-    on_exit(fn -> Application.put_env(:nous, :model_dispatcher, prev) end)
+    # Process-scoped, so no global env to save or restore. The named ETS table
+    # is unique to this module and dies with the test process.
+    Nous.ModelDispatcher.put_dispatcher(CapturingDispatcher)
     :ok
   end
 
@@ -153,7 +153,7 @@ defmodule Nous.LLMTest do
       # Before fix: stream_text_with_tools silently :halt'd on Fallback error,
       # so the consumer saw a clean empty stream with no signal that the LLM
       # call had failed. Now an {:error, _} event is emitted before halt.
-      Application.put_env(:nous, :model_dispatcher, FailingStreamDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(FailingStreamDispatcher)
 
       tool = %Nous.Tool{
         name: "noop",
@@ -176,7 +176,7 @@ defmodule Nous.LLMTest do
 
   describe "generate_text/3 tool-schema wire format" do
     setup do
-      Application.put_env(:nous, :model_dispatcher, SettingsCapturingDispatcher)
+      Nous.ModelDispatcher.put_dispatcher(SettingsCapturingDispatcher)
       :ok
     end
 

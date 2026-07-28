@@ -592,18 +592,12 @@ defmodule Nous.ProviderTest do
       assert {:request_stream, 3} in functions
     end
 
-    test "respects LMSTUDIO_BASE_URL environment variable" do
-      System.put_env("LMSTUDIO_BASE_URL", "http://custom:5000/v1")
-
-      try do
-        # The provider should check this env var in get_base_url
-        Code.ensure_loaded!(Nous.Providers.LMStudio)
-        # We can't easily test the internal function, but we verify the module loads
-        assert Nous.Providers.LMStudio.provider_id() == :lmstudio
-      after
-        System.delete_env("LMSTUDIO_BASE_URL")
-      end
-    end
+    # No "respects LMSTUDIO_BASE_URL" test lives here on purpose. The env var
+    # is read by the macro-generated private `chat_resolve_base_url/1`, so the
+    # only honest way to observe it is to issue a request and see where it
+    # lands — which is what `test/nous/providers/lmstudio_test.exs` ("env var
+    # wins over default" / "opts wins over env var") does against Bypass. Doing
+    # it here would mean mutating a global env var from this async module.
   end
 
   describe "Nous.Providers.VLLM" do
@@ -625,17 +619,6 @@ defmodule Nous.ProviderTest do
       assert {:request, 3} in functions
       assert {:request_stream, 3} in functions
     end
-
-    test "respects VLLM_BASE_URL environment variable" do
-      System.put_env("VLLM_BASE_URL", "http://gpu-server:8000/v1")
-
-      try do
-        Code.ensure_loaded!(Nous.Providers.VLLM)
-        assert Nous.Providers.VLLM.provider_id() == :vllm
-      after
-        System.delete_env("VLLM_BASE_URL")
-      end
-    end
   end
 
   describe "Nous.Providers.SGLang" do
@@ -656,17 +639,6 @@ defmodule Nous.ProviderTest do
       assert {:count_tokens, 1} in functions
       assert {:request, 3} in functions
       assert {:request_stream, 3} in functions
-    end
-
-    test "respects SGLANG_BASE_URL environment variable" do
-      System.put_env("SGLANG_BASE_URL", "http://sglang-server:30000/v1")
-
-      try do
-        Code.ensure_loaded!(Nous.Providers.SGLang)
-        assert Nous.Providers.SGLang.provider_id() == :sglang
-      after
-        System.delete_env("SGLANG_BASE_URL")
-      end
     end
   end
 

@@ -3,7 +3,13 @@ defmodule Nous.MessagesTest do
 
   alias Nous.{Message, Messages}
 
-  # doctest Messages  # TODO: Re-enable after fixing circular dependency
+  # Re-enabled. The "circular dependency" it was disabled for was a misread
+  # compiler hint: the examples use bare `Message`/`Messages`, which resolve
+  # only through the aliases above, and without them struct expansion fails
+  # with "you likely have cyclic module usage in your code". There is no
+  # cycle — the examples just needed the aliases and, in seven cases, an
+  # expected value that does not include `Message.created_at`.
+  doctest Messages
 
   describe "Message.system/1" do
     test "creates system message" do

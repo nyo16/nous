@@ -80,10 +80,11 @@ defmodule Nous.Providers.Anthropic do
       anthropic_beta_headers(opts)
   end
 
-  # Collect long-context and custom beta features into the single
-  # `anthropic-beta` header. Anthropic accepts a comma-separated list per
-  # header, but emitting one header per beta is just as valid; we use
-  # separate headers so each beta is independently inspectable in logs.
+  # Collect long-context and custom beta features into `anthropic-beta`
+  # headers. We emit one header line per beta; note that HTTP/1.1 field-value
+  # combining folds repeated field lines into a single comma-separated value,
+  # so the API (and anything downstream of the transport) sees one header
+  # either way. Anthropic accepts both forms.
   defp anthropic_beta_headers(opts) do
     long_context =
       if Keyword.get(opts, :enable_long_context, false),

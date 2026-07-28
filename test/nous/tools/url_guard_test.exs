@@ -16,15 +16,24 @@ defmodule Nous.Tools.UrlGuardTest do
     end
 
     test "rejects gopher:// scheme" do
-      assert {:error, _} = UrlGuard.validate("gopher://example.com/foo")
+      assert {:error, reason} = UrlGuard.validate("gopher://example.com/foo")
+      assert reason =~ ~s(scheme "gopher" is blocked)
     end
 
     test "rejects URLs without a scheme" do
-      assert {:error, _} = UrlGuard.validate("example.com/foo")
+      # "example.com/foo" has no authority at all, so URI parses the whole
+      # thing as a path and the host check fires first. The scheme-missing
+      # branch is reached by the protocol-relative form below. Both refuse.
+      assert {:error, reason} = UrlGuard.validate("example.com/foo")
+      assert reason =~ "no host"
+
+      assert {:error, reason} = UrlGuard.validate("//example.com/foo")
+      assert reason =~ "must include a scheme"
     end
 
     test "rejects URLs without a host" do
-      assert {:error, _} = UrlGuard.validate("https:///")
+      assert {:error, reason} = UrlGuard.validate("https:///")
+      assert reason =~ "no host"
     end
 
     test "rejects AWS metadata IP (169.254.169.254)" do
@@ -33,21 +42,28 @@ defmodule Nous.Tools.UrlGuardTest do
     end
 
     test "rejects loopback (127.0.0.1)" do
-      assert {:error, _} = UrlGuard.validate("http://127.0.0.1:8080/")
+      assert {:error, reason} = UrlGuard.validate("http://127.0.0.1:8080/")
+      assert reason =~ "private/loopback/link-local"
     end
 
     test "rejects RFC1918 private ranges" do
       for host <- ["10.0.0.1", "192.168.1.1", "172.16.0.1"] do
-        assert {:error, _} = UrlGuard.validate("http://#{host}/")
+        assert {:error, reason} = UrlGuard.validate("http://#{host}/")
+        assert reason =~ "private/loopback/link-local"
+        # The message names the offending host, so a copy/paste regression that
+        # checked the wrong URL would be visible.
+        assert reason =~ host
       end
     end
 
     test "rejects IPv6 loopback ::1" do
-      assert {:error, _} = UrlGuard.validate("http://[::1]/")
+      assert {:error, reason} = UrlGuard.validate("http://[::1]/")
+      assert reason =~ "private/loopback/link-local"
     end
 
     test "rejects IPv6 unspecified ::" do
-      assert {:error, _} = UrlGuard.validate("http://[::]/")
+      assert {:error, reason} = UrlGuard.validate("http://[::]/")
+      assert reason =~ "private/loopback/link-local"
     end
 
     test "rejects IPv4-mapped IPv6 pointing at cloud metadata" do
@@ -58,15 +74,18 @@ defmodule Nous.Tools.UrlGuardTest do
     end
 
     test "rejects IPv4-mapped IPv6 loopback" do
-      assert {:error, _} = UrlGuard.validate("http://[::ffff:127.0.0.1]/")
+      assert {:error, reason} = UrlGuard.validate("http://[::ffff:127.0.0.1]/")
+      assert reason =~ "private/loopback/link-local"
     end
 
     test "rejects IPv6 link-local fe80::/10" do
-      assert {:error, _} = UrlGuard.validate("http://[fe80::1]/")
+      assert {:error, reason} = UrlGuard.validate("http://[fe80::1]/")
+      assert reason =~ "private/loopback/link-local"
     end
 
     test "rejects NAT64-embedded metadata (64:ff9b::169.254.169.254)" do
-      assert {:error, _} = UrlGuard.validate("http://[64:ff9b::a9fe:a9fe]/")
+      assert {:error, reason} = UrlGuard.validate("http://[64:ff9b::a9fe:a9fe]/")
+      assert reason =~ "private/loopback/link-local"
     end
 
     test "rejects alternate-encoding IP forms for loopback/metadata" do
@@ -86,7 +105,16 @@ defmodule Nous.Tools.UrlGuardTest do
       ]
 
       for url <- bypasses do
-        assert {:error, _} = UrlGuard.validate(url), "expected #{url} to be refused"
+        assert {:error, reason} = UrlGuard.validate(url), "expected #{url} to be refused"
+
+        # Unlike the IP-literal cases above, which stage catches these depends
+        # on the host resolver: an expanding resolver hands back 127.0.0.1 and
+        # the blocklist fires, a strict one fails to resolve the bogus name.
+        # Either is a correct refusal; a scheme- or parse-stage rejection is
+        # NOT, because it would mean the host was never examined and the same
+        # address in a plain dotted-quad wrapper could slip through.
+        assert reason =~ "private/loopback/link-local" or reason =~ "Could not resolve",
+               "#{url} was refused at the wrong stage: #{reason}"
       end
     end
 
@@ -95,7 +123,8 @@ defmodule Nous.Tools.UrlGuardTest do
     end
 
     test "non-binary input is rejected" do
-      assert {:error, _} = UrlGuard.validate(123)
+      assert {:error, reason} = UrlGuard.validate(123)
+      assert reason =~ "must be a string"
     end
   end
 
@@ -106,11 +135,13 @@ defmodule Nous.Tools.UrlGuardTest do
     end
 
     test "rejects a blocked address (no IP returned to pin)" do
-      assert {:error, _} = UrlGuard.validate_pinned("http://169.254.169.254/")
+      assert {:error, reason} = UrlGuard.validate_pinned("http://169.254.169.254/")
+      assert reason =~ "private/loopback/link-local"
     end
 
     test "rejects IPv4-mapped IPv6 metadata via pinned path too" do
-      assert {:error, _} = UrlGuard.validate_pinned("http://[::ffff:169.254.169.254]/")
+      assert {:error, reason} = UrlGuard.validate_pinned("http://[::ffff:169.254.169.254]/")
+      assert reason =~ "private/loopback/link-local"
     end
 
     test "skips resolution and returns nil IP when allow_private_hosts: true" do
@@ -125,8 +156,12 @@ defmodule Nous.Tools.UrlGuardTest do
   describe ":url_guard_allow_ips escape hatch" do
     test "defaults to empty, so loopback is still blocked with no config set" do
       assert Application.get_env(:nous, :url_guard_allow_ips, :unset) in [:unset, []]
-      assert {:error, _} = UrlGuard.validate("http://127.0.0.1/")
-      assert {:error, _} = UrlGuard.validate_pinned("http://127.0.0.1/")
+
+      assert {:error, reason} = UrlGuard.validate("http://127.0.0.1/")
+      assert reason =~ "private/loopback/link-local"
+
+      assert {:error, reason} = UrlGuard.validate_pinned("http://127.0.0.1/")
+      assert reason =~ "private/loopback/link-local"
     end
   end
 end
