@@ -481,8 +481,11 @@ defmodule Nous.AgentServerTest do
       ref = Process.monitor(pid)
       assert Process.alive?(pid)
 
-      # Wait for the timeout
-      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 500
+      # The assertion is that the inactivity timer fires at all, not that it
+      # fires promptly — so give it real headroom. At 500ms against a 100ms
+      # timeout this raced on a loaded runner, with the :DOWN arriving just
+      # after the deadline.
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 5_000
     end
 
     test "does not terminate when set to infinity" do

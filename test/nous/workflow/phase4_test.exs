@@ -122,11 +122,16 @@ defmodule Nous.Workflow.Phase4Test do
       _test_pid = self()
       events = :ets.new(:node_events, [:bag, :public])
 
+      # The handlers are global: without the workflow_id guard this bag collects
+      # node events from every other `async: true` workflow test running at the
+      # same moment, and `starts` comes back with a dozen unrelated node ids.
+      wf_id = "node_telemetry"
+
       :telemetry.attach(
         "test-node-start-#{inspect(ref)}",
         [:nous, :workflow, :node, :start],
         fn _event, _measurements, metadata, _config ->
-          :ets.insert(events, {:start, metadata.node_id})
+          if metadata.workflow_id == wf_id, do: :ets.insert(events, {:start, metadata.node_id})
         end,
         nil
       )
@@ -135,13 +140,14 @@ defmodule Nous.Workflow.Phase4Test do
         "test-node-stop-#{inspect(ref)}",
         [:nous, :workflow, :node, :stop],
         fn _event, _measurements, metadata, _config ->
-          :ets.insert(events, {:stop, metadata.node_id, metadata.success})
+          if metadata.workflow_id == wf_id,
+            do: :ets.insert(events, {:stop, metadata.node_id, metadata.success})
         end,
         nil
       )
 
       graph =
-        Workflow.new("node_telemetry")
+        Workflow.new(wf_id)
         |> Workflow.add_node(:a, :transform, tf(&Function.identity/1))
         |> Workflow.add_node(:b, :transform, tf(&Function.identity/1))
         |> Workflow.chain([:a, :b])
@@ -212,17 +218,24 @@ defmodule Nous.Workflow.Phase4Test do
     test "list returns checkpoints for workflow" do
       state = Nous.Workflow.State.new()
 
-      cp1 = Checkpoint.new(%{workflow_id: "wf_list", node_id: "a", state: state})
-      cp2 = Checkpoint.new(%{workflow_id: "wf_list", node_id: "b", state: state})
-      cp3 = Checkpoint.new(%{workflow_id: "other_wf", node_id: "c", state: state})
+      # Unique ids: the ETS store is process-independent and never cleared
+      # between tests, so a fixed "wf_list" accumulates rows on any second run
+      # in the same VM (e.g. `mix test --repeat-until-failure`) and the count
+      # assertion drifts.
+      wf = "wf_list_#{System.unique_integer([:positive])}"
+      other = "other_wf_#{System.unique_integer([:positive])}"
+
+      cp1 = Checkpoint.new(%{workflow_id: wf, node_id: "a", state: state})
+      cp2 = Checkpoint.new(%{workflow_id: wf, node_id: "b", state: state})
+      cp3 = Checkpoint.new(%{workflow_id: other, node_id: "c", state: state})
 
       Store.save(cp1)
       Store.save(cp2)
       Store.save(cp3)
 
-      {:ok, results} = Store.list("wf_list")
+      {:ok, results} = Store.list(wf)
       assert length(results) == 2
-      assert Enum.all?(results, &(&1.workflow_id == "wf_list"))
+      assert Enum.all?(results, &(&1.workflow_id == wf))
     end
 
     test "delete removes checkpoint" do

@@ -3,9 +3,32 @@ defmodule Nous.Teams.SharedStateTest do
 
   alias Nous.Teams.SharedState
 
+  # Bounded poll for a condition that becomes true once a timer fires. Fixed
+  # sleeps sized just over a TTL flake on a loaded runner, because the timer
+  # itself is scheduled late.
+  defp eventually(fun, timeout_ms \\ 2_000, interval_ms \\ 10) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    Stream.repeatedly(fn ->
+      if fun.() do
+        true
+      else
+        Process.sleep(interval_ms)
+        false
+      end
+    end)
+    |> Enum.find(fn ok -> ok or System.monotonic_time(:millisecond) > deadline end)
+  end
+
   setup do
     team_id = "state_test_#{System.unique_integer([:positive])}"
-    {:ok, pid} = start_supervised({SharedState, team_id: team_id, claim_ttl: 200})
+    # Generous claim TTL: no test in this file should be able to outrun it.
+    # Expiry is exercised by "claims auto-expire after TTL" below, which starts
+    # its own short-TTL server. A short TTL here silently raced every other
+    # get_claims/1 assertion — the P-2 read test could spend >200ms warming the
+    # table cache before it even reached its assertion, and did fail that way
+    # under load.
+    {:ok, pid} = start_supervised({SharedState, team_id: team_id, claim_ttl: :timer.minutes(1)})
     %{pid: pid, team_id: team_id}
   end
 
@@ -88,14 +111,22 @@ defmodule Nous.Teams.SharedStateTest do
       assert agents == ["alice", "bob"]
     end
 
-    test "claims auto-expire after TTL", %{pid: pid} do
+    test "claims auto-expire after TTL" do
+      team_id = "claim_ttl_#{System.unique_integer([:positive])}"
+
+      pid =
+        start_supervised!({SharedState, team_id: team_id, claim_ttl: 200},
+          id: :"claim_ttl_#{team_id}"
+        )
+
       :ok = SharedState.claim_region(pid, "alice", "lib/parser.ex", 10, 20)
 
-      # Wait for expiry (TTL is 200ms in setup)
-      Process.sleep(300)
-
-      # Bob should be able to claim the same region now
-      assert :ok = SharedState.claim_region(pid, "bob", "lib/parser.ex", 10, 20)
+      # Poll rather than sleeping a fixed margin over the TTL: a loaded runner
+      # can fire the expiry timer late, and a bare Process.sleep(300) would then
+      # fail for a reason that has nothing to do with the behaviour under test.
+      assert eventually(fn ->
+               SharedState.claim_region(pid, "bob", "lib/parser.ex", 10, 20) == :ok
+             end)
     end
   end
 
@@ -219,9 +250,9 @@ defmodule Nous.Teams.SharedStateTest do
       :ok = SharedState.share_discovery(pid, "alice", %{topic: "A", content: "First"})
       assert length(SharedState.get_discoveries(pid)) == 1
 
-      Process.sleep(300)
-
-      assert SharedState.get_discoveries(pid) == []
+      # Poll: a loaded runner schedules the expiry timer late, so a fixed
+      # sleep sized just over the TTL fails for reasons unrelated to pruning.
+      assert eventually(fn -> SharedState.get_discoveries(pid) == [] end)
     end
 
     test "discovery_ttl: :infinity opts out of pruning" do

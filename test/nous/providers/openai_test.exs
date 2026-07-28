@@ -40,7 +40,9 @@ defmodule Nous.Providers.OpenAITest do
         model: "gpt-4o",
         base_url: base,
         api_key: @api_key,
-        receive_timeout: 5_000
+        # Generous: the peer is a local Bypass server, so this bound exists only
+        # to stop a hung test hanging forever — it is never the thing under test.
+        receive_timeout: 30_000
       },
       overrides
     )

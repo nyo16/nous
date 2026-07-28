@@ -44,7 +44,11 @@ defmodule Nous.Providers.GeminiTest do
       model: "gemini-2.0-flash",
       base_url: base,
       api_key: @api_key,
-      receive_timeout: 5_000
+      # Generous: the peer is a local Bypass server, so this bound exists only
+      # to stop a hung test hanging forever — it is never the thing under test.
+      # At 5s it flaked on a loaded runner, timing out a round trip that would
+      # have succeeded.
+      receive_timeout: 30_000
     }
   end
 
