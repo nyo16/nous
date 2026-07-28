@@ -13,7 +13,11 @@ defmodule Nous.Memory.Store.ETS do
 
   @impl true
   def init(_opts) do
-    table = :ets.new(:memory_store, [:set, :public])
+    # read_concurrency only: memory is recalled far more often than it is
+    # written, and every search/list is a concurrent read from the agent loop
+    # plus its tool tasks. write_concurrency would add a per-scheduler lock
+    # stripe to what is effectively a single-writer table.
+    table = :ets.new(:memory_store, [:set, :public, read_concurrency: true])
     {:ok, table}
   end
 
@@ -57,11 +61,14 @@ defmodule Nous.Memory.Store.ETS do
     limit = Keyword.get(opts, :limit, 10)
     min_score = Keyword.get(opts, :min_score, 0.0)
 
+    # Downcase the query ONCE, not once per row (it is loop-invariant).
+    query_down = String.downcase(query)
+
     results =
       table
       |> scoped_entries(scope)
       |> Enum.map(fn entry ->
-        score = String.jaro_distance(String.downcase(query), String.downcase(entry.content))
+        score = String.jaro_distance(query_down, String.downcase(entry.content))
         {entry, score}
       end)
       |> Enum.filter(fn {_entry, score} -> score > min_score end)

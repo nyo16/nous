@@ -170,4 +170,134 @@ defmodule Nous.Providers.HTTP.JSONArrayParserTest do
       assert remaining == ""
     end
   end
+
+  # The resumable arity is only safe if a scan resumed from a saved
+  # {pos, depth, in_string} produces byte-identical output to a full
+  # rescan. The hazards are all chunk-boundary artefacts: a `\` split from
+  # the byte it escapes, a multi-byte UTF-8 codepoint cut in half, a quote
+  # as the last byte of a chunk, and nesting that spans many chunks.
+  # So: feed every input split at EVERY byte boundary and assert the event
+  # stream matches both the one-shot parse and the legacy rescan-per-chunk
+  # driver. (perf-audit HIGH: O(n²) rescan.)
+  @equivalence_inputs [
+    {"simple array", ~s|[{"a":1},{"b":2},{"c":3}]|},
+    {"escaped quotes", ~s|[{"text":"say \\"hello\\" now"}]|},
+    {"backslash pairs", ~s|[{"path":"C:\\\\Users\\\\x\\\\y"}]|},
+    {"escaped backslash at end of string", ~s|[{"t":"a\\\\","u":"b"}]|},
+    {"escaped backslash then object break", ~s|[{"t":"end\\\\"},{"v":2}]|},
+    {"braces inside strings", ~s|[{"text":"a {curly} }}} thing"}]|},
+    {"multibyte", ~s|[{"emoji":"🎉","jp":"日本語ですよ","mix":"a🎉b"}]|},
+    {"escape adjacent to multibyte", ~s|[{"t":"x\\\\🎉y","u":"\\"🎉\\""}]|},
+    {"deep nesting", ~s|[{"a":{"b":{"c":{"d":{"e":[1,2,{"f":"g"}]}}}}}]|},
+    {"whitespace and separators", "[ {\"a\":1}\n , {\"b\":2} \t,\r\n {\"c\":3} ]"},
+    {"unterminated tail", ~s|[{"a":1},{"b":|},
+    {"control-char escapes", ~s|[{"t":"line1\\nline2\\ttab"}]|},
+    {"empty", ""},
+    {"bare opening bracket", "["}
+  ]
+
+  # Thread scan_state exactly as the stream backends now do.
+  defp drive_resumable(chunks) do
+    {events, buffer, _scan_state} =
+      Enum.reduce(chunks, {[], "", nil}, fn chunk, {acc, buffer, scan_state} ->
+        {events, buffer, scan_state} = JSONArrayParser.parse_buffer(buffer <> chunk, scan_state)
+        {acc ++ events, buffer, scan_state}
+      end)
+
+    {events, buffer}
+  end
+
+  # Pre-fix behaviour: full rescan of the accumulated buffer on every chunk.
+  defp drive_rescan(chunks) do
+    Enum.reduce(chunks, {[], ""}, fn chunk, {acc, buffer} ->
+      {events, buffer} = JSONArrayParser.parse_buffer(buffer <> chunk)
+      {acc ++ events, buffer}
+    end)
+  end
+
+  defp assert_split_equivalence(input) do
+    one_shot = JSONArrayParser.parse_buffer(input)
+
+    for k <- 0..byte_size(input) do
+      <<head::binary-size(^k), tail::binary>> = input
+      chunks = Enum.reject([head, tail], &(&1 == ""))
+      resumed = drive_resumable(chunks)
+
+      assert resumed == drive_rescan(chunks),
+             "resumed scan diverged from a full rescan, split at byte #{k} of #{inspect(input)}"
+
+      assert resumed == one_shot,
+             "resumed scan diverged from the one-shot parse, split at byte #{k} of #{inspect(input)}"
+    end
+  end
+
+  describe "parse_buffer/2 (resumable)" do
+    for {name, input} <- @equivalence_inputs do
+      @equiv_input input
+
+      test "resumed scan matches a full rescan at every split point — #{name}" do
+        assert_split_equivalence(@equiv_input)
+      end
+
+      test "byte-at-a-time delivery matches the one-shot parse — #{name}" do
+        chunks = for <<b <- @equiv_input>>, do: <<b>>
+        assert drive_resumable(chunks) == JSONArrayParser.parse_buffer(@equiv_input)
+      end
+    end
+
+    test "returns a {pos, depth, in_string} resume token for an incomplete object" do
+      assert {[], ~s|{"a":1|, {6, 1, false}} = JSONArrayParser.parse_buffer(~s|[{"a":1|, nil)
+    end
+
+    test "returns a nil scan_state once the object closes" do
+      assert {[%{"a" => 1}], "", nil} = JSONArrayParser.parse_buffer(~s|{"a":1}]|, {6, 1, false})
+    end
+
+    test "carries in_string across a chunk that ends on a quote" do
+      # `[{"` — the `[` is skipped, two bytes scanned, ending inside a string.
+      assert {[], ~s|{"|, {2, 1, true}} = JSONArrayParser.parse_buffer(~s|[{"|, nil)
+    end
+
+    test "stops before a lone trailing backslash so the escape stays intact" do
+      # The `\` must NOT be consumed: the byte it escapes is in the next chunk.
+      assert {[], remaining, {pos, _depth, true}} =
+               JSONArrayParser.parse_buffer(~s|[{"t":"a\\|, nil)
+
+      assert binary_part(remaining, pos, byte_size(remaining) - pos) == "\\"
+    end
+
+    test "drops a scan_state when the buffer no longer starts at an object" do
+      # A caller that didn't hand back the buffer we returned: the token is
+      # meaningless, so re-trim and do a correct (merely slower) full parse.
+      assert {[%{"a" => 1}], "", nil} =
+               JSONArrayParser.parse_buffer(~s|[{"a":1}]|, {999, 7, true})
+    end
+
+    test "drops a scan_state whose offset outruns the buffer" do
+      assert {[%{"a" => 1}], "", nil} =
+               JSONArrayParser.parse_buffer(~s|{"a":1}|, {999, 7, true})
+    end
+
+    test "handles a non-binary buffer" do
+      assert JSONArrayParser.parse_buffer(nil, nil) == {[], "", nil}
+    end
+
+    test "resumes a single object spanning hundreds of chunks" do
+      text = String.duplicate("x", 60 * 1024)
+      input = ~s|[{"candidates":[{"content":{"parts":[{"text":"| <> text <> ~s|"}]}}]}]|
+
+      chunks =
+        input
+        |> Stream.unfold(fn
+          <<>> -> nil
+          <<h::binary-size(1400), t::binary>> -> {h, t}
+          b -> {b, <<>>}
+        end)
+        |> Enum.to_list()
+
+      assert length(chunks) > 40
+      assert drive_resumable(chunks) == JSONArrayParser.parse_buffer(input)
+      assert {[%{"candidates" => [_]}], ""} = drive_resumable(chunks)
+    end
+  end
 end

@@ -42,7 +42,7 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
 
   require Logger
 
-  alias Nous.Providers.HTTP
+  alias Nous.HTTP.Buffer
 
   # 3 minutes — LLM streams (especially with reasoning) can sit silent
   # between chunks long enough to trip a tighter timeout. Per-call
@@ -113,6 +113,7 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
         %{
           ref: ref,
           buffer: "",
+          scan_state: nil,
           done: false,
           status: nil,
           timeout: timeout,
@@ -130,6 +131,7 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
         %{
           ref: nil,
           buffer: "",
+          scan_state: nil,
           done: false,
           status: nil,
           timeout: timeout,
@@ -168,7 +170,8 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
         next_chunk(state)
 
       {:hackney_response, ^ref, :done} ->
-        {events, _} = HTTP.flush_stream_buffer(state.buffer, state.stream_parser)
+        {events, _, _} =
+          Buffer.flush_stream_buffer(state.buffer, state.stream_parser, state.scan_state)
 
         final_events =
           Enum.reject(events, fn
@@ -180,7 +183,7 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
         if Enum.empty?(final_events) do
           {:halt, %{state | done: true}}
         else
-          {final_events, %{state | done: true, buffer: ""}}
+          {final_events, %{state | done: true, buffer: "", scan_state: nil}}
         end
 
       {:hackney_response, ^ref, {:error, reason}} ->
@@ -190,12 +193,12 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
       {:hackney_response, ^ref, chunk} when is_binary(chunk) ->
         new_buffer = state.buffer <> chunk
 
-        if byte_size(new_buffer) > HTTP.max_buffer_size() do
+        if byte_size(new_buffer) > Buffer.max_buffer_size() do
           Logger.error("SSE buffer overflow, terminating stream")
           {[{:stream_error, %{reason: :buffer_overflow}}], %{state | done: true}}
         else
-          {events, remaining_buffer} =
-            HTTP.parse_stream_buffer(new_buffer, state.stream_parser)
+          {events, remaining_buffer, scan_state} =
+            Buffer.parse_stream_buffer(new_buffer, state.stream_parser, state.scan_state)
 
           {valid_events, errors} =
             Enum.split_with(events, fn
@@ -207,10 +210,12 @@ defmodule Nous.HTTP.StreamBackend.Hackney do
             Logger.debug("SSE parse error (ignored): #{inspect(err)}")
           end
 
+          state = %{state | buffer: remaining_buffer, scan_state: scan_state}
+
           if Enum.empty?(valid_events) do
-            next_chunk(%{state | buffer: remaining_buffer})
+            next_chunk(state)
           else
-            {valid_events, %{state | buffer: remaining_buffer}}
+            {valid_events, state}
           end
         end
     after

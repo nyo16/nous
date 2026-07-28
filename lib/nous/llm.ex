@@ -31,6 +31,7 @@ defmodule Nous.LLM do
   """
 
   alias Nous.{Fallback, Model, ModelDispatcher, Message, Tool, ToolExecutor, RunContext, Messages}
+  alias Nous.AgentRunner.RequestDispatch
   alias Nous.StreamNormalizer.ToolCallAccumulator
 
   # Get the model dispatcher, allowing dependency injection for testing
@@ -127,7 +128,14 @@ defmodule Nous.LLM do
     model_chain = Fallback.build_model_chain(model, fallback_models)
 
     Fallback.with_fallback(model_chain, fn target_model ->
-      target_settings = rebuild_llm_settings(target_model, model, settings, tools)
+      target_settings =
+        RequestDispatch.rebuild_tool_settings(
+          target_model.provider,
+          model.provider,
+          settings,
+          tools
+        )
+
       run_with_tools(target_model, messages, target_settings, tools, ctx, 0)
     end)
   end
@@ -203,7 +211,14 @@ defmodule Nous.LLM do
 
   defp stream_text_simple(model_chain, original_model, settings, messages) do
     case Fallback.with_fallback(model_chain, fn target_model ->
-           target_settings = rebuild_llm_settings(target_model, original_model, settings, [])
+           target_settings =
+             RequestDispatch.rebuild_tool_settings(
+               target_model.provider,
+               original_model.provider,
+               settings,
+               []
+             )
+
            get_dispatcher().request_stream(target_model, messages, target_settings)
          end) do
       {:ok, stream} ->
@@ -242,7 +257,12 @@ defmodule Nous.LLM do
         {messages, iteration} ->
           case Fallback.with_fallback(model_chain, fn target_model ->
                  target_settings =
-                   rebuild_llm_settings(target_model, original_model, settings, tools)
+                   RequestDispatch.rebuild_tool_settings(
+                     target_model.provider,
+                     original_model.provider,
+                     settings,
+                     tools
+                   )
 
                  get_dispatcher().request_stream(target_model, messages, target_settings)
                end) do
@@ -339,7 +359,7 @@ defmodule Nous.LLM do
 
         if tool_calls == [] do
           # No tool calls - return the text
-          {:ok, extract_text(response)}
+          {:ok, Message.extract_text(response)}
         else
           # Execute tools and continue
           Logger.debug("LLM requested #{length(tool_calls)} tool call(s), executing...")
@@ -409,44 +429,8 @@ defmodule Nous.LLM do
     if tools == [] do
       base_settings
     else
-      tool_schemas = convert_tools_for_provider(provider, tools)
+      tool_schemas = RequestDispatch.convert_tools_for_provider(provider, tools)
       Map.put(base_settings, :tools, tool_schemas)
     end
-  end
-
-  # Rebuild settings when falling back to a model with a different provider
-  defp rebuild_llm_settings(target_model, original_model, settings, tools) do
-    if target_model.provider == original_model.provider do
-      settings
-    else
-      base_settings = Map.delete(settings, :tools)
-
-      if tools == [] do
-        base_settings
-      else
-        tool_schemas = convert_tools_for_provider(target_model.provider, tools)
-        Map.put(base_settings, :tools, tool_schemas)
-      end
-    end
-  end
-
-  defp convert_tools_for_provider(:anthropic, tools) do
-    Enum.map(tools, &Nous.ToolSchema.to_anthropic/1)
-  end
-
-  defp convert_tools_for_provider(provider, tools) when provider in [:vertex_ai, :gemini] do
-    Enum.map(tools, &Nous.ToolSchema.to_gemini/1)
-  end
-
-  defp convert_tools_for_provider(_, tools) do
-    Enum.map(tools, &Tool.to_openai_schema/1)
-  end
-
-  defp extract_text(%Nous.Message{content: content}) when is_binary(content) do
-    content
-  end
-
-  defp extract_text(%Nous.Message{content: _}) do
-    ""
   end
 end

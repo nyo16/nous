@@ -57,7 +57,30 @@ defmodule Nous.HTTP.StreamBackend do
     * `:stream_parser` — module implementing `parse_buffer/1` for non-SSE
       formats (e.g. JSON-array streams). Defaults to SSE.
 
+      A parser MAY additionally export the resumable arity
+      `parse_buffer(buffer, scan_state)` returning
+      `{events, remaining_buffer, scan_state}`. `scan_state` is an opaque
+      token the parser hands back to itself on the next chunk so it can
+      resume scanning instead of re-walking the accumulated buffer from
+      byte 0 — the difference between O(n) and O(n²) when one object spans
+      many chunks. `Nous.HTTP.Buffer` probes for it with
+      `function_exported?/3`; parsers exporting only `parse_buffer/1` are
+      unaffected. See `Nous.Providers.HTTP.JSONArrayParser`.
+
   Backends MAY accept additional options; unknown options should be ignored.
+
+  ## Enumerate in a process with a quiet mailbox
+
+  Both bundled backends drive their `Stream.resource/3` from a `receive`
+  that matches on a ref carried in the resource state. The BEAM can only
+  emit receive markers — skip straight to messages newer than the ref —
+  when `make_ref/0` and the `receive` sit in the *same* function, which
+  `Stream.resource/3`'s split between start_fun and next_fun rules out.
+  Every chunk therefore rescans the mailbox from the head. That is free in
+  a dedicated consumer and O(pending x chunks) in a process also taking
+  PubSub, timer, or monitor traffic. Under LiveView fan-out, enumerate the
+  stream in a `Task` and forward results, rather than in the LiveView
+  process itself.
   """
   @callback stream(
               url :: String.t(),

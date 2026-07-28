@@ -53,6 +53,28 @@ defmodule Nous.LLMTest do
       do: {:error, %Nous.Errors.ModelError{message: "boom", provider: :test}}
   end
 
+  # Captures the settings map handed to the dispatcher, so tests can assert the
+  # exact tool-schema wire format Nous.LLM builds per provider.
+  defmodule SettingsCapturingDispatcher do
+    @moduledoc false
+
+    def request(_model, _messages, settings) do
+      send(self(), {:captured_settings, settings})
+
+      {:ok,
+       %Message{
+         role: :assistant,
+         content: "ok",
+         metadata: %{usage: %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2}}
+       }}
+    end
+
+    def request_stream(_model, _messages, settings) do
+      send(self(), {:captured_settings, settings})
+      {:ok, [{:text_delta, "ok"}, {:finish, "stop"}]}
+    end
+  end
+
   setup do
     CapturingDispatcher.configure()
     prev = Application.get_env(:nous, :model_dispatcher)
@@ -150,5 +172,60 @@ defmodule Nous.LLMTest do
              end),
              "stream should emit an {:error, _} event when the dispatcher fails, got: #{inspect(events)}"
     end
+  end
+
+  describe "generate_text/3 tool-schema wire format" do
+    setup do
+      Application.put_env(:nous, :model_dispatcher, SettingsCapturingDispatcher)
+      :ok
+    end
+
+    test "gemini gets bare function declarations, not the OpenAI envelope" do
+      tool = sample_tool()
+
+      assert {:ok, "ok"} = Nous.LLM.generate_text("gemini:gemini-2.0-flash", "hi", tools: [tool])
+
+      assert_received {:captured_settings, settings}
+      assert settings.tools == [Nous.ToolSchema.to_gemini(tool)]
+    end
+
+    test "vertex_ai gets the same bare function declarations" do
+      tool = sample_tool()
+
+      assert {:ok, "ok"} =
+               Nous.LLM.generate_text("vertex_ai:gemini-2.0-flash", "hi", tools: [tool])
+
+      assert_received {:captured_settings, settings}
+      assert settings.tools == [Nous.ToolSchema.to_gemini(tool)]
+    end
+
+    test "openai gets the OpenAI function envelope" do
+      tool = sample_tool()
+
+      assert {:ok, "ok"} = Nous.LLM.generate_text("openai:gpt-4", "hi", tools: [tool])
+
+      assert_received {:captured_settings, settings}
+      assert settings.tools == [Nous.Tool.to_openai_schema(tool)]
+    end
+
+    test "anthropic gets the atom-keyed input_schema form" do
+      tool = sample_tool()
+
+      assert {:ok, "ok"} =
+               Nous.LLM.generate_text("anthropic:claude-haiku-4-5", "hi", tools: [tool])
+
+      assert_received {:captured_settings, settings}
+      assert settings.tools == [Nous.ToolSchema.to_anthropic(tool)]
+    end
+  end
+
+  defp sample_tool do
+    %Nous.Tool{
+      name: "lookup",
+      description: "Look something up",
+      parameters: %{"type" => "object", "properties" => %{"q" => %{"type" => "string"}}},
+      function: fn _, _ -> {:ok, "x"} end,
+      takes_ctx: false
+    }
   end
 end

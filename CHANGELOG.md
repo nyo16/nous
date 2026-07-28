@@ -52,7 +52,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining advisories reach the build through `bypass`
   (`only: [:dev, :test]`) and never ship to consumers.
 
+### Performance
+
+- **Gemini/Vertex JSON-array streaming is no longer O(n²).** The
+  `:stream_parser` buffer was re-walked byte-by-byte from position 0 on every
+  arriving chunk, so one large object spread across many chunks cost quadratic
+  time. `parse_buffer/2` now accepts and returns a resumable
+  `{pos, depth, in_string}` scan state that both stream backends thread through
+  their buffer state; `parse_buffer/1` is unchanged for the SSE default and any
+  third-party parser. Measured over the report's shape (one object, 1400-byte
+  chunks): 3/14/59/243 ms at 60/120/240/480 KB becomes 0/0/1/8 ms — **27-30x at
+  the larger sizes**, and linear rather than quadratic. The median path (many
+  small objects) is unchanged. Resume is byte-identical to a full rescan,
+  pinned by a test that splits 14 adversarial inputs at *every* byte boundary,
+  including a lone trailing backslash inside a string — the one case where a
+  naive resume diverges.
+
+- **The Req stream backend now bounds buffered bytes, not message count.** The
+  guard capped the consumer mailbox at 1000 messages while never inspecting
+  chunk size, so resident memory was roughly 1000 x chunk size. It now tracks
+  bytes through a shared `:atomics` counter with an 8 MB high-water mark and
+  parks the producer in a `receive` instead of polling. A/B measurement
+  streaming 100 MB to a deliberately slow consumer: peak binary memory 23.9 MB
+  bounded vs 108.5 MB unbounded, and the bounded peak is flat in stream size
+  where the unbounded one grows linearly. This also removes a cross-process
+  `Process.info/2` call that ran on every chunk, and a `Process.sleep/1`
+  busy-wait.
+
+- **Decisions graph traversal is linear again.** Both BFS frontiers in
+  `Nous.Decisions.Store.ETS` used `queue ++ [node]`, which silently defeated
+  the adjacency index built directly above them. Now `:queue`. Star graph:
+  20/74/284 ms at V=4000/8000/16000 becomes 4/10/19 ms (**14.8x at V=16000**),
+  scaling ~2x per doubling instead of ~4x. Reachable set and emission order
+  are unchanged.
+
+- **Knowledge-base link queries push filters into the match spec.**
+  `backlinks/2`, `outlinks/2`, `link_counts_by_source/1` and `related_entries/3`
+  each `tab2list`'d the entire links table, and `related_entries/3` applied its
+  limit only after fetching every neighbour. Over 20,300 links: 7.1x, 6.7x,
+  5.7x and 3.3x respectively. `related_entries/3` still returns up to `limit`
+  entries that actually exist — it fills lazily rather than truncating before
+  dangling links are rejected, so the dangling-link behaviour is preserved.
+
+- **Default `count_tokens/1` no longer inspects every message.** It used
+  `inspect |> String.length` (measured ~13,000x slower than necessary) where
+  the internal estimator already used `byte_size`. Both now agree.
+
+- **`Teams.SharedState` reads run in the caller.** The table was `:private`,
+  forcing every read through the GenServer. It is now `:protected` with
+  `read_concurrency: true`, and `get_discoveries/1` / `get_claims/1` select
+  directly. Eight concurrent readers over 1,000 discoveries: 713 ms serialized
+  vs 203 ms concurrent. Discoveries also now expire on the same
+  `Process.send_after` mechanism claims already used, via a new
+  `:discovery_ttl` option (default 1 hour, accepts `:infinity`) — previously
+  they accumulated for the lifetime of the process.
+
+- **`AgentServer.save_context/1` no longer blocks the agent process.**
+  Serialization and backend IO move to a task, mirroring `:load_context` which
+  was already offloaded. The call remains synchronous *for the caller* — the
+  reply is sent after the backend write returns — so the "the save has landed
+  when this returns" guarantee is unchanged; only the server stops blocking.
+
+- **`Persistence.ETS` is bounded** rather than growing without eviction, and
+  the global Finch pool is configurable instead of hard-capping the node at 10
+  connections per provider — which directly throttled the concurrency
+  `parallel_tool_calls` exists to enable.
+
+- Missing `read_concurrency` / `write_concurrency` flags added to the ETS
+  tables whose access pattern warrants them (not blanket-applied — the flags
+  cost memory and hurt single-writer tables).
+
+### Changed
+
+- **`Nous.HTTP.Buffer` extracted.** Both stream backends reached up into
+  `Nous.Providers.HTTP` for buffer helpers, making the transport layer depend
+  on the provider layer — the one genuine (non-benign) runtime cycle in the
+  graph. The helpers now live in `Nous.HTTP.Buffer`; `Nous.Providers.HTTP`
+  keeps delegating wrappers, so nothing external breaks. Runtime cycles drop
+  from 7 to 6; compile-time cycles remain 0.
+
+- **`Nous.AgentRunner`'s 199-line orchestration loop** moved out of the facade
+  into `Nous.AgentRunner.IterationLoop`, alongside the four submodules added in
+  0.17.0. Pure move: the public API and every telemetry event are unchanged.
+
+- **`AGENTS.md`'s "What NOT to use" list corrected.** It declared several
+  modules private that are in fact documented plug-in points —
+  `Nous.HTTP.Backend.*` and `Nous.HTTP.StreamBackend.*` are behaviours with a
+  published guide, `Nous.Providers.HTTP` is injected into every provider by
+  `use Nous.Provider`, `Nous.AgentRunner` holds the canonical option docs that
+  `Nous.Agent` points at, and `Nous.AgentServer` is used throughout the
+  LiveView guide. Those are now documented as public. Only
+  `Nous.Workflow.Engine.{Executor,ParallelExecutor,StateMerger}` were genuinely
+  internal; they gain `@moduledoc false` and leave the docs groups.
+
+- **CI now enforces test coverage** with a ratchet floor (currently 58.42%, up
+  from 56.80%). The 90% threshold configured in `mix.exs` was never run by any
+  job, and was additionally mis-nested — `:threshold` must sit under
+  `:summary` or Mix silently keeps its default.
+
+- **Credo thresholds ratcheted** to the tightest values the codebase passes
+  today (`max_complexity` 24 → 23, `max_arity` 15 → 14) so they can only move
+  down. `max_nesting` was already at its floor.
+
 ### Fixed
+
+- **Gemini and Vertex AI tool calls from the agent path shipped a malformed
+  payload.** `Nous.AgentRunner` fell through to the OpenAI tool schema for
+  `:gemini` / `:vertex_ai`, so the request carried
+  `[%{"functionDeclarations" => [%{"type" => "function", "function" => …}]}]`
+  — an OpenAI envelope nested inside Gemini's `functionDeclarations`, which
+  expects the bare declaration. `Nous.LLM` had a second, *correct* copy of the
+  same conversion, which is why one-shot calls worked while agent runs did not.
+  The duplicate is deleted and both paths now share
+  `RequestDispatch.convert_tools_for_provider/2`, using the Gemini shape. Any
+  agent using tools with Gemini or Vertex was affected.
+
+- **`Nous.LLM.generate_text/3` no longer returns `""` for multimodal replies.**
+  Its private `extract_text/2` copy returned `""` for any non-binary content;
+  it now uses `Nous.Message.extract_text/1`, which walks list content.
 
 - **A hung tool can no longer wedge an entire agent run.** The parallel
   tool-call path passed `timeout: :infinity` with no `on_timeout` to

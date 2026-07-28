@@ -258,19 +258,40 @@ defmodule Nous.KnowledgeBase.Workflows do
   defp link_counts_by_source(store_mod, store_state, entries) do
     entry_ids = Enum.map(entries, & &1.id)
 
-    if function_exported?(store_mod, :link_counts_by_source, 1) do
+    if bulk_counts_supported?(store_mod) do
       case store_mod.link_counts_by_source(store_state) do
         {:ok, counts} -> Map.take(counts, entry_ids)
         _ -> %{}
       end
     else
-      Map.new(entry_ids, fn id ->
-        case store_mod.outlinks(store_state, id) do
-          {:ok, links} -> {id, length(links)}
-          _ -> {id, 0}
-        end
-      end)
+      count_links_per_entry(store_mod, store_state, entry_ids)
     end
+  end
+
+  # Code.ensure_loaded?/1 FIRST: function_exported?/3 answers false for a
+  # module that merely has not been loaded yet (interactive code loading),
+  # which silently drops even the first-party ETS store — which does export
+  # the callback — into the quadratic fallback below. #68 removed the
+  # O(entries × links) shape from the main path; a false negative here puts
+  # it straight back.
+  defp bulk_counts_supported?(store_mod) do
+    Code.ensure_loaded?(store_mod) and function_exported?(store_mod, :link_counts_by_source, 1)
+  end
+
+  # Compatibility path for backends predating link_counts_by_source/1. Each
+  # outlinks/2 call is a whole-store scan on a naive backend, so this is the
+  # old O(entries × links). It cannot be collapsed the way the main path was:
+  # the Store behaviour exposes no other bulk link primitive, so n round-trips
+  # is the floor. Kept as cheap as the behaviour allows — one pass, whose map
+  # also feeds total_links, so there is no second traversal. A third-party
+  # backend opts out by implementing link_counts_by_source/1.
+  defp count_links_per_entry(store_mod, store_state, entry_ids) do
+    Map.new(entry_ids, fn id ->
+      case store_mod.outlinks(store_state, id) do
+        {:ok, links} -> {id, length(links)}
+        _ -> {id, 0}
+      end
+    end)
   end
 
   defp build_health_report(state) do

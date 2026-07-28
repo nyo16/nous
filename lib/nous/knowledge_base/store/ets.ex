@@ -41,13 +41,18 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
   @impl true
   def init(_opts) do
+    # read_concurrency: true on all four — a KB session is read-dominated
+    # (search/list/backlinks/related on every tool call) and written only when
+    # an entry or link is created. write_concurrency is deliberately omitted:
+    # it buys nothing for these bursty single-writer inserts and costs a
+    # per-scheduler lock stripe of memory on every table.
     state = %{
-      documents: :ets.new(:kb_documents, [:set, :public]),
-      entries: :ets.new(:kb_entries, [:set, :public]),
-      links: :ets.new(:kb_links, [:set, :public]),
+      documents: :ets.new(:kb_documents, [:set, :public, read_concurrency: true]),
+      entries: :ets.new(:kb_entries, [:set, :public, read_concurrency: true]),
+      links: :ets.new(:kb_links, [:set, :public, read_concurrency: true]),
       # slug -> id secondary index so fetch_entry_by_slug is O(1) instead of a
       # full table scan (slug lookup is a hot path: kb_read/backlinks/link).
-      slugs: :ets.new(:kb_slugs, [:set, :public])
+      slugs: :ets.new(:kb_slugs, [:set, :public, read_concurrency: true])
     }
 
     {:ok, state}
@@ -257,30 +262,23 @@ defmodule Nous.KnowledgeBase.Store.ETS do
 
   @impl true
   def backlinks(state, entry_id) do
-    links =
-      state.links
-      |> all_records()
-      |> Enum.filter(fn link -> link.to_entry_id == entry_id end)
-
-    {:ok, links}
+    {:ok, select_links(state.links, %{to_entry_id: entry_id})}
   end
 
   @impl true
   def outlinks(state, entry_id) do
-    links =
-      state.links
-      |> all_records()
-      |> Enum.filter(fn link -> link.from_entry_id == entry_id end)
-
-    {:ok, links}
+    {:ok, select_links(state.links, %{from_entry_id: entry_id})}
   end
 
   @impl true
   def link_counts_by_source(state) do
+    # Project just the source id inside ETS: this is the one link query that
+    # genuinely visits every row, so at least don't copy whole Link structs
+    # out to count them.
     counts =
       state.links
-      |> all_records()
-      |> Enum.frequencies_by(& &1.from_entry_id)
+      |> select_link_field(%{from_entry_id: :"$1"})
+      |> Enum.frequencies()
 
     {:ok, counts}
   end
@@ -289,29 +287,22 @@ defmodule Nous.KnowledgeBase.Store.ETS do
   def related_entries(state, entry_id, opts) do
     limit = Keyword.get(opts, :limit, 10)
 
-    # Get all linked entry IDs (both directions)
-    linked_ids =
-      state.links
-      |> all_records()
-      |> Enum.flat_map(fn link ->
-        cond do
-          link.from_entry_id == entry_id -> [link.to_entry_id]
-          link.to_entry_id == entry_id -> [link.from_entry_id]
-          true -> []
-        end
-      end)
-      |> Enum.uniq()
+    # Two matchspec-pushed selects (out-edges, then in-edges) projecting only
+    # the neighbour id, instead of tab2list-copying the whole links table and
+    # flat_mapping it in Elixir.
+    out_ids = select_link_field(state.links, %{from_entry_id: entry_id, to_entry_id: :"$1"})
+    in_ids = select_link_field(state.links, %{to_entry_id: entry_id, from_entry_id: :"$1"})
+    linked_ids = Enum.uniq(out_ids ++ in_ids)
 
-    # Fetch the actual entries
+    # Lazy fetch + Enum.take: stops reading entry rows once `limit` live ones
+    # are found, instead of fetching every neighbour and discarding the tail.
+    # Still skips dangling links, so the result is the same list the eager
+    # version produced — "up to `limit` entries that actually exist".
     entries =
       linked_ids
-      |> Enum.map(fn id ->
-        case fetch_entry(state, id) do
-          {:ok, entry} -> entry
-          _ -> nil
-        end
-      end)
-      |> Enum.reject(&is_nil/1)
+      |> Stream.map(&fetch_entry(state, &1))
+      |> Stream.filter(&match?({:ok, _}, &1))
+      |> Stream.map(fn {:ok, entry} -> entry end)
       |> Enum.take(limit)
 
     {:ok, entries}
@@ -335,6 +326,20 @@ defmodule Nous.KnowledgeBase.Store.ETS do
     table
     |> :ets.select([{{:_, %{kb_id: kb_id}}, [], [:"$_"]}])
     |> Enum.map(fn {_id, record} -> record end)
+  end
+
+  # Same pushdown for the link graph: `backlinks`/`outlinks` used to
+  # tab2list-copy the ENTIRE links table and filter one field in Elixir.
+  defp select_links(table, field_match) do
+    table
+    |> :ets.select([{{:_, field_match}, [], [:"$_"]}])
+    |> Enum.map(fn {_id, link} -> link end)
+  end
+
+  # Variant that returns a single projected field (bind it to :"$1" in the
+  # pattern) so no Link struct is copied out of the table at all.
+  defp select_link_field(table, field_match) do
+    :ets.select(table, [{{:_, field_match}, [], [:"$1"]}])
   end
 
   defp maybe_filter(records, fun), do: Enum.filter(records, fun)

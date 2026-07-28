@@ -201,6 +201,41 @@ defmodule Nous.ProviderTest do
       # Custom provider returns 10 * message_count
       assert CustomTokenProvider.count_tokens(messages) == 30
     end
+
+    test "estimates ~4 bytes per token of binary content" do
+      messages = [
+        %{role: "user", content: String.duplicate("a", 400)},
+        %{role: "assistant", content: String.duplicate("b", 200)}
+      ]
+
+      assert TestProvider.count_tokens(messages) == 150
+    end
+
+    test "counts bytes, not graphemes, for multi-byte content" do
+      # Four 4-byte emoji = 16 bytes.
+      assert TestProvider.count_tokens([%{role: "user", content: "🌍🌍🌍🌍"}]) == 4
+    end
+
+    test "skips non-binary content instead of crashing" do
+      messages = [
+        %{role: "assistant", content: nil, tool_calls: [%{id: "call_1"}]},
+        %{role: "user", content: [%{type: "text", text: "multimodal"}]},
+        %{role: "user", content: "12345678"}
+      ]
+
+      assert TestProvider.count_tokens(messages) == 2
+    end
+
+    test "scales with content length instead of saturating" do
+      # The old inspect/String.length estimator capped out at inspect's
+      # 4096-character :printable_limit, so a 40 KB message scored the same
+      # ~1048 tokens as a 4 KB one.
+      assert TestProvider.count_tokens([%{role: "user", content: String.duplicate("x", 4_000)}]) ==
+               1_000
+
+      assert TestProvider.count_tokens([%{role: "user", content: String.duplicate("x", 40_000)}]) ==
+               10_000
+    end
   end
 
   describe "chat/2 callback" do

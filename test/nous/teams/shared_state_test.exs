@@ -136,4 +136,106 @@ defmodule Nous.Teams.SharedStateTest do
       assert length(SharedState.get_claims(pid)) == 10
     end
   end
+
+  describe "concurrent reads (P-2)" do
+    test "reads run in the caller, not the owner's mailbox", %{pid: pid} do
+      :ok = SharedState.share_discovery(pid, "alice", %{topic: "A", content: "First"})
+      :ok = SharedState.claim_region(pid, "alice", "lib/parser.ex", 10, 20)
+
+      # Warm the caller-side table cache (one call), then freeze the owner.
+      _ = SharedState.get_discoveries(pid)
+      _ = SharedState.get_claims(pid)
+
+      :sys.suspend(pid)
+
+      try do
+        # A suspended GenServer answers no calls at all, so these returning at
+        # all proves the reads run in this process against the :protected
+        # table instead of serializing behind handle_call.
+        assert [%{topic: "A"}] = SharedState.get_discoveries(pid)
+        assert [%{file: "lib/parser.ex"}] = SharedState.get_claims(pid)
+      after
+        :sys.resume(pid)
+      end
+    end
+
+    test "50 processes read concurrently and all see the same ordered set", %{pid: pid} do
+      for i <- 1..20 do
+        :ok = SharedState.share_discovery(pid, "agent_#{i}", %{topic: "t#{i}", content: "c#{i}"})
+      end
+
+      expected = Enum.map(1..20, &"t#{&1}")
+
+      results =
+        1..50
+        |> Task.async_stream(fn _ -> SharedState.get_discoveries(pid) end,
+          max_concurrency: 50,
+          ordered: false
+        )
+        |> Enum.map(fn {:ok, discoveries} -> Enum.map(discoveries, & &1.topic) end)
+
+      assert length(results) == 50
+      assert Enum.all?(results, &(&1 == expected))
+    end
+
+    test "a cached table id is not reused after the owner is replaced" do
+      team_id = "ss_restart_#{System.unique_integer([:positive])}"
+      name = :"ss_restart_#{team_id}"
+
+      {:ok, first} = SharedState.start_link(team_id: team_id, name: name)
+      Process.unlink(first)
+
+      :ok = SharedState.share_discovery(name, "alice", %{topic: "A", content: "First"})
+      assert [%{topic: "A"}] = SharedState.get_discoveries(name)
+
+      ref = Process.monitor(first)
+      Process.exit(first, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^first, :killed}, 1_000
+
+      # This process still holds the dead table id. The next read must notice
+      # the owner changed and re-resolve rather than raise or serve rows from
+      # whatever table inherited the identifier.
+      {:ok, second} = SharedState.start_link(team_id: team_id, name: name)
+      Process.unlink(second)
+
+      assert SharedState.get_discoveries(name) == []
+
+      :ok = SharedState.share_discovery(name, "bob", %{topic: "B", content: "Second"})
+      assert [%{topic: "B"}] = SharedState.get_discoveries(name)
+
+      Process.exit(second, :kill)
+    end
+  end
+
+  describe "discovery pruning (P-2)" do
+    test "discoveries expire after :discovery_ttl" do
+      team_id = "disc_ttl_#{System.unique_integer([:positive])}"
+
+      pid =
+        start_supervised!({SharedState, team_id: team_id, discovery_ttl: 200},
+          id: :"disc_ttl_#{team_id}"
+        )
+
+      :ok = SharedState.share_discovery(pid, "alice", %{topic: "A", content: "First"})
+      assert length(SharedState.get_discoveries(pid)) == 1
+
+      Process.sleep(300)
+
+      assert SharedState.get_discoveries(pid) == []
+    end
+
+    test "discovery_ttl: :infinity opts out of pruning" do
+      team_id = "disc_inf_#{System.unique_integer([:positive])}"
+
+      pid =
+        start_supervised!({SharedState, team_id: team_id, discovery_ttl: :infinity},
+          id: :"disc_inf_#{team_id}"
+        )
+
+      :ok = SharedState.share_discovery(pid, "alice", %{topic: "A", content: "First"})
+      Process.sleep(300)
+
+      assert [%{topic: "A"}] = SharedState.get_discoveries(pid)
+    end
+  end
 end

@@ -1,14 +1,11 @@
 defmodule Nous.Workflow.Engine.StateMerger do
-  @moduledoc """
-  Merge strategies for combining parallel branch results back into workflow state.
-
-  After parallel branches complete, their results need to be merged into a
-  single state. Three built-in strategies are provided:
-
-  - `:deep_merge` — deep-merges all branch result maps into `state.data`
-  - `:list_collect` — collects branch results into a list under a key
-  - Custom function — `fn branch_results, state -> updated_state`
-  """
+  @moduledoc false
+  # Merge strategies used by `ParallelExecutor` to fold parallel branch
+  # results back into workflow state: `:deep_merge` (deep-merges branch
+  # result maps into `state.data`), `:list_collect` (collects results into a
+  # list under a key), or a custom `fn branch_results, state -> state` fun.
+  # Internal to the engine — strategies are selected declaratively on the
+  # node, see `Nous.Workflow.Node`.
 
   alias Nous.Workflow.State
 

@@ -1,24 +1,12 @@
 defmodule Nous.Workflow.Engine.Executor do
-  @moduledoc """
-  Per-node execution dispatch.
-
-  Routes node execution to the appropriate handler based on node type.
-  Each handler receives the node and current workflow state, and returns
-  `{:ok, result, updated_state}` or `{:error, reason}`.
-
-  ## Phase 1 Node Types
-
-  - `:agent_step` — runs a `Nous.Agent` via `AgentRunner.run/3`
-  - `:tool_step` — executes a tool via `ToolExecutor.execute/3`
-  - `:transform` — applies a pure function to the state
-
-  ## Later Phases
-
-  - `:branch` — conditional routing (Phase 2)
-  - `:parallel` / `:parallel_map` — fan-out (Phase 3)
-  - `:human_checkpoint` — HITL pause (Phase 2)
-  - `:subworkflow` — nested workflow (Phase 5)
-  """
+  @moduledoc false
+  # Per-node execution dispatch for `Nous.Workflow.Engine`. Routes a node to
+  # its handler by `node.type` and returns `{:ok, result, updated_state}` or
+  # `{:error, reason}`. Handled types: `:agent_step` (runs a `Nous.Agent` via
+  # `Nous.AgentRunner.run/3`), `:tool_step`, `:transform`, `:branch`,
+  # `:human_checkpoint`, `:parallel` / `:parallel_map` (delegated to
+  # `ParallelExecutor`) and `:subworkflow`. Internal to the engine — the
+  # public entry point is `Nous.Workflow.Engine.execute/2`.
 
   alias Nous.Workflow.{Node, State}
 

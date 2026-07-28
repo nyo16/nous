@@ -374,8 +374,16 @@ else
        )}
     end
 
+    # ≈4 bytes/token over binary content only — same estimator as the
+    # `Nous.Provider` default and `RequestDispatch.estimate_request_tokens/1`.
+    # The old `inspect |> String.length |> div(4)` copied and escaped the whole
+    # message, then walked it grapheme-by-grapheme (135 µs vs 0.01 µs / 10 KB).
     @impl true
-    def count_tokens(messages),
-      do: messages |> Enum.map(&(inspect(&1) |> String.length() |> div(4))) |> Enum.sum()
+    def count_tokens(messages) do
+      Enum.reduce(messages, 0, fn
+        %{content: content}, acc when is_binary(content) -> acc + div(byte_size(content), 4)
+        _message, acc -> acc
+      end)
+    end
   end
 end

@@ -21,6 +21,17 @@ defmodule Nous.MixProject do
       # depend on nous without hackney get ":hackney is not available"
       # warnings when compiling the dep.
       elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool]],
+      # Coverage ratchet. `mix test --cover` defaults to a 90% threshold this
+      # project has never met, and no CI job ran it, so the gate was purely
+      # decorative. 57 is the measured floor (57.73% at 064c452, :llm/:llama
+      # excluded as in CI) rounded down — a number we actually pass, enforced
+      # by the `coverage` job in .github/workflows/ci.yml. Raise it as
+      # coverage improves; never lower it.
+      #
+      # :threshold MUST be nested under :summary — a bare
+      # `test_coverage: [threshold: n]` is silently ignored and you keep the
+      # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
+      test_coverage: [summary: [threshold: 57]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix, :ex_unit]
@@ -183,6 +194,21 @@ defmodule Nous.MixProject do
       ],
       source_ref: "v#{@version}",
       source_url: @source_url,
+      # Internal modules (`@moduledoc false`). AGENTS.md's "What NOT to use"
+      # section and older CHANGELOG entries name them in code style; without
+      # this, ExDoc tries to autolink each one and warns "references module
+      # ... but it is hidden". This list is the single place the hidden set is
+      # spelled out — if you hide a module and mention it in prose, add it
+      # here; if you un-hide one, remove it and the warning tells you where
+      # the stale reference is.
+      skip_code_autolink_to: [
+        "Nous.Application",
+        "Nous.OutputSchema.UseMacro",
+        "Nous.Persistence.ETS.TableOwner",
+        "Nous.Workflow.Engine.Executor",
+        "Nous.Workflow.Engine.ParallelExecutor",
+        "Nous.Workflow.Engine.StateMerger"
+      ],
       groups_for_extras: [
         "Getting Started": [
           "readme.html",
@@ -290,7 +316,8 @@ defmodule Nous.MixProject do
           Nous.HTTP.Backend.Hackney,
           Nous.HTTP.StreamBackend,
           Nous.HTTP.StreamBackend.Req,
-          Nous.HTTP.StreamBackend.Hackney
+          Nous.HTTP.StreamBackend.Hackney,
+          Nous.HTTP.Buffer
         ],
         "Tool System": [
           Nous.Tool,
@@ -304,7 +331,6 @@ defmodule Nous.MixProject do
         ],
         "Structured Output": [
           Nous.OutputSchema,
-          Nous.OutputSchema.UseMacro,
           Nous.OutputSchema.Validator
         ],
         "Research Tools": [
@@ -521,9 +547,6 @@ defmodule Nous.MixProject do
           Nous.Workflow.State,
           Nous.Workflow.Compiler,
           Nous.Workflow.Engine,
-          Nous.Workflow.Engine.Executor,
-          Nous.Workflow.Engine.ParallelExecutor,
-          Nous.Workflow.Engine.StateMerger,
           Nous.Workflow.Mermaid,
           Nous.Workflow.Trace,
           Nous.Workflow.Checkpoint,

@@ -9,7 +9,7 @@ defmodule Nous.Application do
 
     children =
       [
-        {Finch, name: Nous.Finch, pools: %{default: [size: 10, count: 1]}},
+        {Finch, name: Nous.Finch, pools: finch_pools()},
         # Task supervisor for async agent tasks
         {Task.Supervisor, name: Nous.TaskSupervisor},
         # Agent process registry and dynamic supervisor
@@ -51,6 +51,40 @@ defmodule Nous.Application do
     end
   else
     defp optional_bumblebee_children, do: []
+  end
+
+  # Finch pool sizing (P-2). This was `size: 10, count: 1`, which capped the
+  # whole node at 10 in-flight requests per provider host — below Finch's own
+  # default of 50 — and funnelled every checkout through a single pool process,
+  # which is precisely the contention `parallel_tool_calls` exists to avoid.
+  #
+  # - `size: 50` is Finch's stock default: 50 connections per pool per
+  #   destination. Five times the old ceiling, and a number Finch itself
+  #   considers safe as a default.
+  # - `count: min(schedulers_online(), 4)` shards checkouts across up to four
+  #   pool processes so the pool manager is no longer a single serialization
+  #   point. Capped at 4 rather than one-per-scheduler because a checkout is
+  #   pinned to the shard it picked: more shards fragment the connection pool
+  #   (a request waits on its own shard while another shard sits idle), and on
+  #   a 64-core box one-per-scheduler would imply a 3200-connection ceiling per
+  #   provider host, which no provider wants.
+  #
+  # Connections are opened lazily, so `size * count` is a ceiling, not an
+  # allocation. Finch keys pools by destination, so every provider host gets
+  # its own pool instance from this one spec — the numbers are shared, the
+  # connections are not. Per-host tuning goes in the same map:
+  #
+  #     config :nous, :finch_pools, %{
+  #       "https://api.openai.com" => [size: 200, count: 8],
+  #       default: [size: 50, count: 4]
+  #     }
+  # Public (but @doc false) so the config contract is testable without
+  # restarting the application supervisor.
+  @doc false
+  def finch_pools do
+    Application.get_env(:nous, :finch_pools, %{
+      default: [size: 50, count: min(System.schedulers_online(), 4)]
+    })
   end
 
   # Reconfigure hackney's `:default` pool from app config. Used by both the

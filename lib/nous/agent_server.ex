@@ -515,9 +515,47 @@ defmodule Nous.AgentServer do
   end
 
   @impl true
-  def handle_call(:save_context, _from, state) do
-    result = do_save_context(state)
-    {:reply, result, state}
+  def handle_call(:save_context, from, state) do
+    case state.persistence do
+      nil ->
+        {:reply, {:error, :no_persistence}, state}
+
+      _backend ->
+        # Same reasoning as {:load_context, _} below: Context.serialize/1 over
+        # the full message history plus a user-supplied backend doing arbitrary
+        # IO (S3, Postgres under load) must not run on the server process, or
+        # it stalls concurrent get_context / cancel_execution calls.
+        #
+        # The caller still sees a synchronous call: it stays blocked in
+        # GenServer.call/3 until the task answers with GenServer.reply/2, so
+        # the return value and the "save has landed when this returns"
+        # guarantee are both preserved. Only the server stops blocking.
+        #
+        # Snapshot just the three fields do_save_context/1 needs, exactly as
+        # save_context_async/1 does — not the whole state, which holds a live
+        # %Task{} and atomics we don't want copied into the spawned process.
+        snapshot = %{
+          persistence: state.persistence,
+          session_id: state.session_id,
+          context: state.context
+        }
+
+        Task.Supervisor.start_child(Nous.TaskSupervisor, fn ->
+          try do
+            GenServer.reply(from, do_save_context(snapshot))
+          rescue
+            # The caller is blocked in GenServer.call/3. If serialize or
+            # backend.save RAISES (rather than returning {:error, _}), an
+            # unguarded task crash would never reply, wedging the caller until
+            # its call timeout. Always answer.
+            e -> GenServer.reply(from, {:error, Exception.message(e)})
+          catch
+            kind, reason -> GenServer.reply(from, {:error, {kind, reason}})
+          end
+        end)
+
+        {:noreply, state}
+    end
   end
 
   @impl true
@@ -737,8 +775,9 @@ defmodule Nous.AgentServer do
   # Fire-and-forget context save, off the GenServer mailbox, so a slow
   # persistence backend (S3/Postgres under load) never blocks the agent loop
   # or stalls concurrent get_context/cancel calls. Used on the hot response
-  # path and clear_history. The explicit :save_context call stays synchronous
-  # (callers want the result). Errors are logged inside do_save_context/1.
+  # path and clear_history. The explicit :save_context call is off-mailbox too
+  # (P-2), but stays synchronous from the caller's side by replying from the
+  # task. Errors are logged inside do_save_context/1.
   #
   # Ordering note: saves are NOT serialized, so two overlapping saves could in
   # principle land out of order. In practice saves are spaced by LLM latency
@@ -757,7 +796,9 @@ defmodule Nous.AgentServer do
 
   defp save_context_async(_state), do: :ok
 
-  defp do_save_context(%{persistence: nil}), do: {:error, :no_persistence}
+  # No %{persistence: nil} clause: both callers screen it out first —
+  # handle_call(:save_context) replies {:error, :no_persistence} without
+  # spawning a task, and save_context_async/1 is a no-op without a backend.
 
   defp do_save_context(%{persistence: backend, session_id: session_id, context: context}) do
     data = Context.serialize(context)

@@ -39,8 +39,13 @@ defmodule Nous.Decisions.Store.ETS do
   """
   @spec init(keyword()) :: {:ok, map()}
   def init(_opts) do
-    nodes = :ets.new(:decision_nodes, [:set, :public])
-    edges = :ets.new(:decision_edges, [:set, :public])
+    # read_concurrency only: both tables are read far more than written — every
+    # traversal rebuilds the adjacency index from `edges` and does a `nodes`
+    # lookup per visited neighbour, while writes are one-off graph construction.
+    # write_concurrency is deliberately omitted: it costs a per-scheduler lock
+    # stripe of memory and slows the single-writer inserts these stores do.
+    nodes = :ets.new(:decision_nodes, [:set, :public, read_concurrency: true])
+    edges = :ets.new(:decision_edges, [:set, :public, read_concurrency: true])
     {:ok, %{nodes: nodes, edges: edges}}
   end
 
@@ -174,20 +179,33 @@ defmodule Nous.Decisions.Store.ETS do
   # BFS to find a path between two nodes, returning nodes along the path.
   # Build the edge adjacency index ONCE per traversal (was: a full edge-table
   # scan per visited node, giving O(V*E)).
+  #
+  # The frontier is an Erlang `:queue` (amortized O(1) in/out), not a list with
+  # `rest ++ new`: tail-appending copied the whole frontier per enqueue, which
+  # made the traversal O(V^2) and threw away the adjacency index's O(V+E) win.
   defp bfs_path(state, from_id, to_id) do
     case get_node(state, from_id) do
       {:ok, start_node} ->
         adj = build_adjacency(state)
-        do_bfs_path(state, adj, [[start_node]], to_id, MapSet.new([from_id]))
+        queue = :queue.in([start_node], :queue.new())
+        do_bfs_path(state, adj, queue, to_id, MapSet.new([from_id]))
 
       {:error, :not_found} ->
         []
     end
   end
 
-  defp do_bfs_path(_state, _adj, [], _to_id, _visited), do: []
+  defp do_bfs_path(state, adj, queue, to_id, visited) do
+    case :queue.out(queue) do
+      {:empty, _queue} ->
+        []
 
-  defp do_bfs_path(state, adj, [current_path | rest], to_id, visited) do
+      {{:value, current_path}, rest} ->
+        visit_path(state, adj, current_path, rest, to_id, visited)
+    end
+  end
+
+  defp visit_path(state, adj, current_path, rest, to_id, visited) do
     current_node = hd(current_path)
 
     if current_node.id == to_id do
@@ -195,60 +213,66 @@ defmodule Nous.Decisions.Store.ETS do
     else
       edges = edges_for(adj, current_node.id, :outgoing)
 
-      {new_paths, new_visited} =
-        Enum.reduce(edges, {[], visited}, fn edge, {paths, vis} ->
+      {new_queue, new_visited} =
+        Enum.reduce(edges, {rest, visited}, fn edge, {q, vis} ->
           if MapSet.member?(vis, edge.to_id) do
-            {paths, vis}
+            {q, vis}
           else
             case get_node(state, edge.to_id) do
               {:ok, next_node} ->
-                {[[next_node | current_path] | paths], MapSet.put(vis, edge.to_id)}
+                {:queue.in([next_node | current_path], q), MapSet.put(vis, edge.to_id)}
 
               {:error, :not_found} ->
-                {paths, vis}
+                {q, vis}
             end
           end
         end)
 
-      do_bfs_path(state, adj, rest ++ Enum.reverse(new_paths), to_id, new_visited)
+      do_bfs_path(state, adj, new_queue, to_id, new_visited)
     end
   end
 
-  # BFS to find all reachable nodes in a given direction.
+  # BFS to find all reachable nodes in a given direction. Same `:queue`
+  # frontier as bfs_path/3, for the same reason.
   defp bfs_reachable(state, start_id, direction) do
     adj = build_adjacency(state)
-    do_bfs_reachable(state, adj, [start_id], direction, MapSet.new([start_id]), [])
+    queue = :queue.in(start_id, :queue.new())
+    do_bfs_reachable(state, adj, queue, direction, MapSet.new([start_id]), [])
   end
 
-  defp do_bfs_reachable(_state, _adj, [], _direction, _visited, acc), do: Enum.reverse(acc)
+  defp do_bfs_reachable(state, adj, queue, direction, visited, acc) do
+    case :queue.out(queue) do
+      {:empty, _queue} ->
+        Enum.reverse(acc)
 
-  defp do_bfs_reachable(state, adj, [current_id | rest], direction, visited, acc) do
-    edges = edges_for(adj, current_id, direction)
+      {{:value, current_id}, rest} ->
+        edges = edges_for(adj, current_id, direction)
 
-    neighbor_ids =
-      Enum.map(edges, fn edge ->
-        case direction do
-          :outgoing -> edge.to_id
-          :incoming -> edge.from_id
-        end
-      end)
+        neighbor_ids =
+          Enum.map(edges, fn edge ->
+            case direction do
+              :outgoing -> edge.to_id
+              :incoming -> edge.from_id
+            end
+          end)
 
-    {new_queue, new_visited, new_acc} =
-      Enum.reduce(neighbor_ids, {rest, visited, acc}, fn nid, {q, vis, a} ->
-        if MapSet.member?(vis, nid) do
-          {q, vis, a}
-        else
-          case get_node(state, nid) do
-            {:ok, node} ->
-              {q ++ [nid], MapSet.put(vis, nid), [node | a]}
-
-            {:error, :not_found} ->
+        {new_queue, new_visited, new_acc} =
+          Enum.reduce(neighbor_ids, {rest, visited, acc}, fn nid, {q, vis, a} ->
+            if MapSet.member?(vis, nid) do
               {q, vis, a}
-          end
-        end
-      end)
+            else
+              case get_node(state, nid) do
+                {:ok, node} ->
+                  {:queue.in(nid, q), MapSet.put(vis, nid), [node | a]}
 
-    do_bfs_reachable(state, adj, new_queue, direction, new_visited, new_acc)
+                {:error, :not_found} ->
+                  {q, vis, a}
+              end
+            end
+          end)
+
+        do_bfs_reachable(state, adj, new_queue, direction, new_visited, new_acc)
+    end
   end
 
   # Index every edge once into outgoing (by from_id) and incoming (by to_id)

@@ -11,53 +11,58 @@ defmodule Nous.JSON do
 
   defp pretty_print(json) when is_binary(json) do
     json
-    |> String.graphemes()
     |> do_pretty(0, false, [])
     |> Enum.reverse()
     |> IO.iodata_to_binary()
   end
 
-  defp do_pretty([], _indent, _in_string, acc), do: acc
+  # Walks the encoded binary directly. The old String.graphemes/1 pass built a
+  # list cell plus a binary ref for every character before the walk even
+  # started. Byte-prefix matching is equivalent here for any UTF-8 input:
+  # every byte of a multi-byte sequence is >= 0x80, so none can collide with
+  # the ASCII delimiters matched below, and every other byte is re-emitted
+  # verbatim into the iodata — so the output binary is identical.
+  defp do_pretty(<<>>, _indent, _in_string, acc), do: acc
 
-  defp do_pretty(["\\" | [next | rest]], indent, true, acc),
+  defp do_pretty(<<"\\", next::binary-size(1), rest::binary>>, indent, true, acc),
     do: do_pretty(rest, indent, true, [next, "\\" | acc])
 
-  defp do_pretty(["\"" | rest], indent, in_string, acc),
+  defp do_pretty(<<"\"", rest::binary>>, indent, in_string, acc),
     do: do_pretty(rest, indent, !in_string, ["\"" | acc])
 
-  defp do_pretty([char | rest], indent, true, acc),
+  defp do_pretty(<<char::binary-size(1), rest::binary>>, indent, true, acc),
     do: do_pretty(rest, indent, true, [char | acc])
 
-  defp do_pretty(["{" | rest], indent, false, acc),
+  defp do_pretty(<<"{", rest::binary>>, indent, false, acc),
     do: open_bracket(rest, indent, "{", acc)
 
-  defp do_pretty(["[" | rest], indent, false, acc),
+  defp do_pretty(<<"[", rest::binary>>, indent, false, acc),
     do: open_bracket(rest, indent, "[", acc)
 
-  defp do_pretty(["}" | rest], indent, false, acc),
+  defp do_pretty(<<"}", rest::binary>>, indent, false, acc),
     do: close_bracket(rest, indent, "}", acc)
 
-  defp do_pretty(["]" | rest], indent, false, acc),
+  defp do_pretty(<<"]", rest::binary>>, indent, false, acc),
     do: close_bracket(rest, indent, "]", acc)
 
-  defp do_pretty(["," | rest], indent, false, acc),
+  defp do_pretty(<<",", rest::binary>>, indent, false, acc),
     do: do_pretty(rest, indent, false, [pad(indent), "\n", "," | acc])
 
-  defp do_pretty([":" | rest], indent, false, acc),
+  defp do_pretty(<<":", rest::binary>>, indent, false, acc),
     do: do_pretty(rest, indent, false, [" ", ":" | acc])
 
-  defp do_pretty([" " | rest], indent, false, acc),
+  defp do_pretty(<<" ", rest::binary>>, indent, false, acc),
     do: do_pretty(rest, indent, false, acc)
 
-  defp do_pretty([char | rest], indent, false, acc),
+  defp do_pretty(<<char::binary-size(1), rest::binary>>, indent, false, acc),
     do: do_pretty(rest, indent, false, [char | acc])
 
   defp open_bracket(rest, indent, bracket, acc) do
     # Peek ahead to check for empty container
-    trimmed = Enum.drop_while(rest, &(&1 == " "))
+    trimmed = skip_spaces(rest)
 
     case trimmed do
-      [close | _] when close in ["}", "]"] ->
+      <<close::binary-size(1), _::binary>> when close in ["}", "]"] ->
         do_pretty(trimmed, indent, false, [bracket | acc])
 
       _ ->
@@ -65,6 +70,9 @@ defmodule Nous.JSON do
         do_pretty(rest, new_indent, false, [pad(new_indent), "\n", bracket | acc])
     end
   end
+
+  defp skip_spaces(<<" ", rest::binary>>), do: skip_spaces(rest)
+  defp skip_spaces(bin), do: bin
 
   defp close_bracket(rest, indent, bracket, acc) do
     new_indent = max(indent - 1, 0)

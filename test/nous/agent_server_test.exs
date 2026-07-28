@@ -339,6 +339,37 @@ defmodule Nous.AgentServerTest do
       assert {:error, :no_persistence} = AgentServer.save_context(pid)
       GenServer.stop(pid)
     end
+
+    test "serializes and writes off the GenServer, but stays synchronous (P-2)" do
+      session_id = "test_save_offload_#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          pubsub: nil,
+          persistence: SlowPersistence,
+          inactivity_timeout: :infinity
+        )
+
+      # SlowPersistence.save/2 sleeps 300ms.
+      saver = Task.async(fn -> AgentServer.save_context(pid) end)
+
+      # Let the handler hand the work to its task before probing the mailbox.
+      Process.sleep(50)
+
+      {elapsed_us, _ctx} = :timer.tc(fn -> AgentServer.get_context(pid) end)
+
+      assert elapsed_us < 150_000,
+             "get_context blocked for #{div(elapsed_us, 1000)}ms (>150ms) — :save_context still runs on the server process"
+
+      # The caller's contract is unchanged: :ok comes back only once the
+      # backend write has actually landed.
+      assert :ok = Task.await(saver, 5_000)
+      assert {:ok, %{version: 1}} = SlowPersistence.load(session_id)
+
+      GenServer.stop(pid)
+    end
   end
 
   describe "load_context/2" do
