@@ -79,6 +79,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   have cost. All three spawn sites route through it and the dead `env:` options
   are gone.
 
+- **A hook program whose path contains `=` is no longer mis-exec'd.**
+  `Env.scrub_argv/1` concatenates the argv straight after the `NAME=VALUE`
+  assignments, and `env` treats **every** operand containing `=` as another
+  assignment — measured against BSD `env`, which tests `strchr(operand, '=')`
+  rather than validating a variable name, so neither an absolute path nor a
+  `./`-anchored one escapes it. A hook configured
+  `["/opt/tools/v=2/check", "--strict"]` therefore set a bogus variable and
+  exec'd `--strict`; the resulting non-zero exit **fails open** by default, so a
+  security-gating hook silently degraded to *allow*. Such a utility is now routed
+  through a `=`-free trampoline (`nice -n 0 --`, POSIX, which execs in place so
+  `NetRunner`'s process-tree kill still covers the child), and the one shape that
+  cannot be expressed — a bare PATH-resolved program name containing `=`, which
+  is indistinguishable from an operator trying to set a variable — is refused
+  with a clear error instead of guessed at. `bash` and `file_grep` were never
+  affected: their argv heads are a literal and a `find_executable` result.
+
 - **`Nous.Tool.from_function/2` inherits `requires_approval` instead of
   hardcoding `false`.** `tools: [&Nous.Tools.Bash.execute/2]` was ungated on
   every path, while the `from_module/2` sibling had already been fixed and
@@ -123,6 +139,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   confined to the repository root. The confinement floor is now inherited
   independently of the opt-in deps list, and may only be *narrowed*, via the new
   `:sub_agent_workspace_root` key.
+
+- **The sub-agent workspace clamp now compares canonical paths, not lexical
+  ones.** `clamp_root/2` tested `String.starts_with?/2` on the unresolved path,
+  so a parent jailed at `/srv/ws/t1` containing `scratch -> /etc` accepted
+  `sub_agent_workspace_root: "/srv/ws/t1/scratch"`: the prefix test passed, the
+  child's own `PathGuard` then canonicalised **both** sides to `/etc`, agreed
+  with itself, and the child held a jail strictly **wider** than its parent's —
+  the one thing the clamp exists to prevent. Reachable by the parent agent itself
+  through an approved `Bash` call, which is deliberately not PathGuard-confined.
+  Admission is now decided on the same canonical form the guard enforces (new
+  `@doc false PathGuard.canonical_root/1`) and fails closed if either side cannot
+  be resolved. The clamp still returns the **unresolved** expanded path, so the
+  child's own guard behaves exactly as it does for an operator-configured root,
+  and narrowing *through* a symlink is still accepted.
 
 - **`Nous.Tools.PathGuard` fails closed on an unusable `workspace_root`.** A
   non-binary value raised out of the guard. It now returns an error, and a path
@@ -370,6 +400,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registry itself — which is what the streaming path was actually missing, and
   what the `:pre_request` deny gate depends on — is built as before.
 
+- **`Nous.AgentServer` no longer re-broadcasts the events it receives on its own
+  topic** (behaviour change). The server subscribes to its own topic so external
+  publishers can reach it, `Nous.PubSub.broadcast/3` maps to
+  `Phoenix.PubSub.broadcast/3` (which delivers to the publisher), and its
+  `handle_info` forwarders answered a runner event by publishing the same event —
+  which arrived again, without bound. `Nous.Agent.Callbacks` was **already**
+  publishing those exact shapes to that exact topic, so with a PubSub configured
+  every delta, tool call, tool result, completion and error looped. Fixed as one
+  publisher: new `Nous.PubSub.broadcast_from/4`; the Callbacks bridge excludes
+  `ctx.notify_pid` from its topic broadcast (that process was already handed the
+  event by direct send, so the topic copy was a second delivery); the server's
+  five duplicate forwarders are now no-ops; and everything the server itself
+  publishes excludes the server. **What subscribers see:** the documented event
+  table is unchanged, each event now arrives exactly once, and events are
+  published from the runner process rather than being funnelled through the
+  server's mailbox. The self-subscription is kept — external publishers still
+  reach the server — and `{:agent_status, :started}` is still translated from
+  `:agent_start` by the server, now exactly once.
+
+- **`Nous.Memory.Store`'s `update/3` callback contract is documented.** An
+  `updates` key that is not a `Nous.Memory.Entry` field raises `ArgumentError` in
+  the SQL-backed stores (`SQLite`, `DuckDB`) rather than returning an error
+  tuple, and the allowlist is validated **before** the row lookup — so an update
+  carrying both an unknown field and an unknown id raises instead of returning
+  `{:error, :not_found}`. This is the shipped behaviour, previously undocumented
+  and changed silently by the 2026-08 remediation. It is kept: an unknown field
+  is a caller bug, not a missing row, and validating ahead of I/O is what keeps
+  the SQL-identifier allowlist reachable in CI without a live driver. Stores that
+  build no SQL keep `struct/2` semantics.
+
+- **A tool call refused at the concurrent-task ceiling no longer tells the model
+  to "retry shortly".** `async_stream` discards results already produced before
+  it raises, so the refusal cannot distinguish a call that never started from one
+  that ran and had its result thrown away — for `Bash` or `FileWrite` the old
+  wording invited a duplicated side effect. The per-call result now says the call
+  may already have taken effect and asks the model to check before repeating it.
+  Batch-level granularity is unchanged.
+
+- **`Nous.Tools.WebFetch` reports an unexpected pinned-pool startup failure with
+  its real reason.** `Finch.start_link/1` answers more than `{:ok, _}` and
+  `{:error, {:already_started, _}}`; the other shapes fell off the `case` as a
+  `CaseClauseError` that `fetch_url/2`'s rescue laundered into a generic "Request
+  error", and were not mislabelled as slot exhaustion. The failure is now logged
+  with the slot name and the raw term. It deliberately does not walk to the next
+  slot: a non-contention failure repeats on all 64 and would then answer "too
+  many concurrent web fetches", which would be false.
+
+- **In builds without `floki`, `Nous.Tools.SearchScrape.scrape_results/2` returns
+  `%{results: [], error: message}`** instead of `%{success: false, error: …}`. The
+  two compilation arms declared `@spec`s that shared no key, so no caller could
+  match one result shape; the fallback now returns a member of the union the
+  Floki arm declares, which is the relationship `Nous.Tools.WebFetch` already has
+  between its two arms.
+
+- **`Nous.PromEx.Plugin`'s model-request duration histogram no longer disappears
+  when a provider omits `:has_tool_calls`.** A `Telemetry.Metrics` reporter
+  *drops* an event whose `tag_values` map is missing a tag the metric declares —
+  it does not record it with a blank label — and `model_tag_values/1` added the
+  key conditionally. Unreachable today (`Nous.Provider` always sets it), but the
+  failure mode was a silently absent metric rather than a missing label. Verified
+  against prom_ex 1.12 with a Prometheus core reporter: metadata without the key
+  now records, and the conditional form recorded nothing. The
+  `tool_execution_attempts` distribution was checked at the same time and does
+  record, now that `Nous.ToolExecutor` emits `attempt` in the event's
+  *measurements* rather than only its metadata.
+
 ### Tests
 
 - **Provider request shaping is now asserted.** `Nous.Providers.Gemini` sat at
@@ -474,6 +570,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A test now pins the doc contract mechanically** — no `@moduledoc false`
   module may appear in `groups_for_modules`, and no published module may be
   missing from it — so the drift that arch F-7/F-9 found cannot recur silently.
+
+- **The DNS pin is now asserted on the request path, at the wire.** It is the
+  only part of the SSRF battery that closes the rebinding window, and it had
+  three tests exercising it in *isolation* and none that would have noticed if
+  `do_get/3` stopped calling it — the original CRITICAL's shape one layer above
+  where the last cycle looked. A new test reads `[:finch, :connect, :start]`'s
+  `:host`, the address Mint is about to open a socket to, and asserts it is the
+  pinned IP while the Bypass plug asserts the `Host` header still carries the
+  hostname. Skipping the pin reddens it; dropping the `hostname:` connection
+  option reddens it.
+
+- **`file_grep`'s two argv hardenings are individually pinned.** No test in the
+  suite could distinguish the `--` end-of-options terminator being present from
+  absent — `PathGuard.validate/2` returns an absolute path, which can never begin
+  with `-` — so a refactor could have deleted it silently and left `--regexp` as
+  a single point of failure. The argv builder is now separately reachable and
+  `--` and `--regexp` are asserted in different tests: deleting either reddens
+  exactly one.
+
+- **Assertions that any run satisfies were replaced with the values they claim to
+  defend.** Six in total, each validated by breaking the production behaviour it
+  guards and observing that test — and only that test — go red: three
+  permission/hook stream tests now pin the exact event list and assert the model
+  was never called (previously a raising dispatcher was the only thing failing,
+  which is accidental revert-sensitivity rather than an asserted contract), plus
+  a skill-registry `is_list/1`, a plugin-init shape check, and `web_fetch_test`'s
+  hosts-table teardown, which deleted **every** name registered for 127.0.0.1
+  rather than the ones it added.
+
+- **The task-supervisor saturation harness can no longer produce a false RED.**
+  It dropped the shared supervisor's ceiling to `active + 1` and took the slot,
+  which depended on no other synchronous module holding tasks concurrently. The
+  ceiling is now set to 0 — a `DynamicSupervisor` admits a child only while
+  `map_size(children) < max_children`, so refusal is unconditional and no count
+  is read — the precondition is asserted rather than assumed, and
+  `use Nous.TaskSupervisorSaturation` now refuses to **compile** an `async: true`
+  module. The shared supervisor is kept deliberately: `Nous.Tasks` names it
+  literally, so a private one would swap one global for another while losing the
+  guarantee that the assertions run through the real refusal path.
+
+- **CI compiles the optional-dependency arms, and installs ripgrep.** Eight
+  `Code.ensure_loaded?`-gated modules (the DuckDB/Muninn/Zvec/Hybrid stores, the
+  DuckDB decision store, the Bumblebee embedder, the PromEx plugin, and
+  `Nous.Application`'s Bumblebee gate) were compiled by nothing and excluded from
+  the coverage denominator, and that population produced three real defects in
+  one cycle. A new non-gating `optional-deps` job opts them in via
+  `MIX_OPTIONAL_DEPS=1` (an env switch, so `mix.lock` and downstream resolution
+  are untouched), asserts every optional dep is actually loadable — otherwise the
+  placeholder arm compiled and the job proves nothing — then runs
+  `mix compile --force --warnings-as-errors`: 256 files instead of 252. It covers
+  five of the eight arms (`muninn`/`zvec` are excluded — see the next entry), and
+  it demonstrably catches the defect class that motivated it: injecting a
+  function-level `rescue` that references a body-bound variable into the DuckDB
+  memory store leaves the default build green and turns the canary into a
+  `CompileError`. Separately, the `test` and `coverage` jobs now install ripgrep:
+  without it the `Nous.Tools.Env` child-environment assertion for the `file_grep`
+  spawn site and its paired control both skipped, so that spawn site had never
+  been proven in CI.
+
+- **Known, unfixed, and now on the record: `Nous.Memory.Store.Muninn`,
+  `Nous.Memory.Store.Zvec` and `Nous.Memory.Store.Hybrid` call an API that no
+  published version of `muninn` or `zvec` exports.** The new canary found it.
+  Installing `{:muninn, "~> 0.4"}` — the requirement those modules' own docs give
+  — yields a top-level `Muninn` whose only export is `hello/0`; the real surface
+  is `Muninn.Index`/`Muninn.IndexWriter`/`Muninn.Searcher`, and muninn 0.4.0 has
+  no top-level module at all. `zvec`'s surface is `Zvec.Collection`. All 28 call
+  sites across the three modules are undefined, so this is not version drift: the
+  three backends have never worked and cannot be made to work by pinning a
+  version. They are therefore excluded from the canary rather than pinning it
+  permanently red, and they need their own change — rewrite against the real APIs
+  or remove. `Nous.Memory.Store.SQLite` and `Nous.Memory.Store.ETS` are
+  unaffected.
 
 ### Fixed
 
@@ -626,6 +794,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to kill): the tool fan-out keeps its per-call timeout and its per-call error
   results, and `file_grep`'s pure-Elixir fallback keeps the timeout that bounds
   an LLM-supplied regex.
+
+- **`Nous.AgentRunner.run_stream/3` patches dangling tool calls like the
+  non-streaming paths.** A streamed run resumed from a saved context or a
+  `:message_history` containing an assistant tool call whose result never arrived
+  sent that history to the provider verbatim, and providers reject it with a 400.
+  The patch now lives in the runner's shared context builder, so `:context` and
+  `:message_history` are covered on both paths.
+
+- **The provider-payload memo is released at the end of a run.**
+  `Nous.Messages.Cache` lives in the process dictionary, and the formatters that
+  warm it are public API run in the *caller's* process — documented as a
+  LiveView — so the whole converted history stayed alive for that process's
+  lifetime with no way to release it. `run/3`, `run_with_context/3`,
+  `run_stream/3`, `Nous.LLM.generate_text/3` and `Nous.LLM.stream_text/3` now
+  clear it in an `after`, so error and raising paths release it too. Ownership
+  rule: whoever warms the cache releases it — a host calling
+  `Nous.Messages.to_openai_format/1` and friends directly keeps its own memo,
+  which is now documented on `Nous.Messages.to_provider_format/2`. The memo was
+  never observable except in the allocation profile.
+
+- **`PathGuard`'s resolution cap counts symlink hops, not path components.** It
+  incremented on every component, so any path deeper than ~40 segments — a nested
+  monorepo or a `node_modules` tree crosses that routinely — was refused with
+  `"contains a symlink loop; refusing"`, which was simply false. It failed
+  closed, so it was never an escape; it was an undocumented depth cap plus a
+  wrong diagnosis, which is worse for the operator debugging it. A genuine loop
+  and a chain longer than the cap are still rejected.
 
 ### Removed
 

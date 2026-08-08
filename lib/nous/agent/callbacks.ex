@@ -332,8 +332,18 @@ defmodule Nous.Agent.Callbacks do
   defp broadcast_event(%Context{pubsub: nil}, _event, _payload), do: :ok
   defp broadcast_event(%Context{pubsub_topic: nil}, _event, _payload), do: :ok
 
-  defp broadcast_event(%Context{pubsub: pubsub, pubsub_topic: topic}, event, payload) do
+  # `notify_pid` is excluded from the topic delivery: `send_notification/3` above
+  # already handed it this exact event, so a topic copy is a second delivery of
+  # one event. It is also how an unbounded re-broadcast loop formed —
+  # `Nous.AgentServer` sets itself as `notify_pid` AND subscribes to its own
+  # topic (so external publishers can reach it), so the duplicate landed in its
+  # mailbox, its forwarder published it again, and that arrived again.
+  defp broadcast_event(
+         %Context{pubsub: pubsub, pubsub_topic: topic, notify_pid: notify_pid},
+         event,
+         payload
+       ) do
     message = to_message(event, payload)
-    Nous.PubSub.broadcast(pubsub, topic, message)
+    Nous.PubSub.broadcast_from(pubsub, notify_pid, topic, message)
   end
 end

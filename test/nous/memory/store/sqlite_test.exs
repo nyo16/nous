@@ -144,7 +144,16 @@ if Code.ensure_loaded?(Exqlite) do
         assert SQLite.update(conn, "no-such-id", %{importance: 0.1}) == {:error, :not_found}
       end
 
-      test "an unlisted column is rejected before any driver call", %{conn: conn} do
+      # `Nous.Memory.Store`'s `update/3` callback documents this precedence:
+      # validation runs BEFORE the row lookup, so an unknown field raises even
+      # when the id is also unknown — it does not degrade to `{:error,
+      # :not_found}`. An unknown field is a caller bug, not a missing row, and
+      # checking ahead of I/O is what keeps the SQL-identifier allowlist
+      # reachable without a live driver. The `:not_found` control is the test
+      # directly above: same absent id, allowlisted field, tuple not raise.
+      test "an unlisted column raises before the lookup, even for an unknown id", %{conn: conn} do
+        assert SQLite.fetch(conn, "any-id") == {:error, :not_found}
+
         assert_raise ArgumentError, ~r/unknown memory column/, fn ->
           SQLite.update(conn, "any-id", %{"content = '' OR 1=1 --" => "x"})
         end

@@ -216,6 +216,13 @@ defmodule Nous.Messages do
   the tail, so the per-message payloads are memoized per calling process and
   only the new tail is converted. See `Nous.Messages.Cache`.
 
+  The memo lives in the calling process's dictionary, so it keeps the most
+  recently converted history alive until that process converts another one or
+  exits. `Nous.AgentRunner` and `Nous.LLM` release it when a run ends. A host
+  that calls these converters itself — `AGENTS.md` documents that host as a
+  LiveView — retains it for the life of that process; convert per render at your
+  own cost, or let the runner own the conversion.
+
   ## Examples
 
       iex> conversation = [Message.system("Be helpful"), Message.user("Hello")]

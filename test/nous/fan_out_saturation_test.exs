@@ -1,16 +1,17 @@
 defmodule Nous.FanOutSaturationTest do
-  # async: false — `Nous.TaskSupervisorSaturation.saturate!/0` drops a GLOBAL
-  # supervisor's `:max_children` for the duration of a test, so while it is in
-  # effect every spawn under `Nous.TaskSupervisor` anywhere in the VM is refused.
-  # Nothing else may be running.
+  # async: false — `saturate!/0` drops a GLOBAL supervisor's `:max_children` for
+  # the duration of a test, so while it is in effect every spawn under
+  # `Nous.TaskSupervisor` anywhere in the VM is refused. Nothing else may be
+  # running. `use Nous.TaskSupervisorSaturation` will not compile in an
+  # `async: true` module.
   use ExUnit.Case, async: false
+  use Nous.TaskSupervisorSaturation
 
   alias Nous.{Agent, Message, Usage}
   alias Nous.Agent.Context
   alias Nous.Eval.{Runner, Suite, TestCase}
   alias Nous.Plugins.{InputGuard, SubAgent}
   alias Nous.RunContext
-  alias Nous.TaskSupervisorSaturation
   alias Nous.Tools.SearchScrape
   alias Nous.Workflow
   alias Nous.Workflow.{Graph, Node, State}
@@ -43,7 +44,7 @@ defmodule Nous.FanOutSaturationTest do
 
   describe "workflow :parallel node under a saturated supervisor" do
     test "still runs every branch and merges them" do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       graph =
         Graph.new("deep_merge_saturated")
@@ -62,7 +63,7 @@ defmodule Nous.FanOutSaturationTest do
       # the same `{:exit, {branch_id, {exception, stacktrace}}}` async_stream
       # reports under `zip_input_on_exit`. If that conversion were wrong the
       # raise would escape `Workflow.run/1` rather than land in state.errors.
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       graph =
         Graph.new("partial_fail_saturated")
@@ -82,7 +83,7 @@ defmodule Nous.FanOutSaturationTest do
     end
 
     test "on_branch_error: :fail_fast still trips, naming the failed branch" do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       graph =
         Graph.new("fail_fast_saturated")
@@ -104,7 +105,7 @@ defmodule Nous.FanOutSaturationTest do
 
   describe "workflow :parallel_map node under a saturated supervisor" do
     test "maps every item, in input order" do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       node = map_node(%{items: fn _state -> [1, 2, 3] end, handler: fn i, _ -> {:ok, i * 2} end})
 
@@ -113,7 +114,7 @@ defmodule Nous.FanOutSaturationTest do
     end
 
     test "a failing item is collected against its own index" do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       node =
         map_node(%{
@@ -132,7 +133,7 @@ defmodule Nous.FanOutSaturationTest do
     end
 
     test "on_error: :fail_fast still trips" do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       node =
         map_node(%{
@@ -190,7 +191,7 @@ defmodule Nous.FanOutSaturationTest do
 
   describe "InputGuard strategies under a saturated supervisor" do
     test "every strategy still runs exactly once and the input is still blocked" do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       # SafeStrategy is first, so a fallback that only screened what it had room
       # for would aggregate to :safe and wave the input through — that is the
@@ -261,7 +262,7 @@ defmodule Nous.FanOutSaturationTest do
     end
 
     test "fetches every URL instead of returning none", %{bypass: bypass} do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       Bypass.expect(bypass, "GET", "/a", &html_page/1)
       Bypass.expect(bypass, "GET", "/b", &html_page/1)
@@ -303,7 +304,7 @@ defmodule Nous.FanOutSaturationTest do
       # refuses each case's own inner spawn, so every case finalizes as an error
       # result — the point is that all of them come back, in order, instead of
       # the refused fan-out taking the whole suite down with a RuntimeError.
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       suite =
         Suite.new(
@@ -366,7 +367,7 @@ defmodule Nous.FanOutSaturationTest do
     end
 
     test "runs every sub-agent instead of refusing the batch", %{ctx: ctx} do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       assert %{total: 2, succeeded: 2, failed: 0, results: results} =
                SubAgent.spawn_agents(ctx, %{

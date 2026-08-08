@@ -202,9 +202,16 @@ else
     Add `{:floki, "~> 0.36"}` to your deps.
     """
 
-    @spec scrape_results(Nous.RunContext.t(), map()) :: %{success: false, error: String.t()}
+    # One contract for both arms, the way `Nous.Tools.WebFetch` does it: the
+    # shape this arm returns is a *member* of the union the Floki arm declares
+    # (`%{results: [], error: _}`, the same map it answers "No URLs provided"
+    # with), so a caller can match one result shape without knowing which arm
+    # it compiled against. The old `%{success: false, error: _}` shared no key
+    # with the Floki arm at all — `:success` is `WebFetch.fetch_page/2`'s
+    # convention, and this tool has never used it.
+    @spec scrape_results(Nous.RunContext.t(), map()) :: %{results: [], error: String.t()}
     def scrape_results(_ctx, _args) do
-      %{success: false, error: "Floki is required. Add {:floki, \"~> 0.36\"} to your deps."}
+      %{results: [], error: "Floki is required. Add {:floki, \"~> 0.36\"} to your deps."}
     end
   end
 end

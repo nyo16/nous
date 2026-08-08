@@ -343,12 +343,22 @@ end
 # Nous.AgentRunner.ToolExecution). Everything else above is process-scoped, so
 # quarantining them here is what lets the main module — three 150ms tools and a
 # 5s hang stub, the slowest sync file in the suite — run async.
+#
+# This module ALSO leans on ExUnit's module ORDERING, which is worth saying out
+# loud because nothing else does. It aliases the async module's stubs above and
+# therefore shares their `:persistent_term` keys verbatim — {Dispatcher, :calls},
+# {Dispatcher, :tool_calls}, {ParallelTools, :inflight}. Two modules writing one
+# key concurrently would interleave and both would read garbage; they never do,
+# because ExUnit runs every async module to completion before it starts the
+# first sync one. Flipping this module to async: true breaks that, silently.
+# (`use Nous.TaskSupervisorSaturation` below turns that particular mistake into
+# a compile error, but the persistent_term sharing is the older reason.)
 defmodule Nous.AgentRunnerParallelToolsGlobalConfigTest do
   use ExUnit.Case, async: false
+  use Nous.TaskSupervisorSaturation
 
   alias Nous.{Agent, AgentRunner, Tool}
   alias Nous.AgentRunnerParallelToolsTest.{Dispatcher, ParallelTools}
-  alias Nous.TaskSupervisorSaturation
 
   @moduletag :capture_log
 
@@ -410,7 +420,7 @@ defmodule Nous.AgentRunnerParallelToolsGlobalConfigTest do
   # agent run — a worse failure than the unbounded supervisor the ceiling
   # replaced.
   test "a saturated task supervisor degrades to tool errors instead of raising" do
-    TaskSupervisorSaturation.saturate!()
+    saturate!()
 
     stage_tool_calls([
       call("call_1", "echo", %{"msg" => "a"}),
@@ -430,6 +440,16 @@ defmodule Nous.AgentRunnerParallelToolsGlobalConfigTest do
     assert first.content =~ "concurrent-task ceiling"
     assert second.tool_call_id == "call_2"
     assert second.content =~ "concurrent-task ceiling"
+
+    # async_stream discards already-produced results before raising, so a
+    # refused batch cannot tell the model the call did not run — a `Bash` or
+    # `FileWrite` that reached its tool kept its effect. The message must
+    # report that uncertainty and must NOT invite a bare retry.
+    for msg <- [first, second] do
+      assert msg.content =~ "is unknown"
+      assert msg.content =~ "may already have taken effect"
+      refute msg.content =~ ~r/retry .* shortly/i
+    end
   end
 
   test "a hung tool with timeout: nil is killed at the ceiling and does not block siblings" do

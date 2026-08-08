@@ -102,7 +102,7 @@ defmodule Nous.Providers.HTTP.JSONArrayParser do
     end
   end
 
-  # ## Why this file never matches on `buffer` with bit syntax
+  # ## What this file guarantees about the accumulator — and what it does not
   #
   # The stream backends grow the accumulator with `buffer <> chunk`. ERTS
   # extends such a binary in place — O(chunk) per append — but only while
@@ -114,11 +114,34 @@ defmodule Nous.Providers.HTTP.JSONArrayParser do
   # perf audit measured the same shape here as 125 ms of concat vs 11 ms
   # of parse at 1920 KB, 2.68 s at 8 MB (F-3).
   #
-  # So: inspect the accumulator only through BIFs (`:binary.at/2`,
-  # `binary_part/3`, `byte_size/1`), and hand the byte walker a
-  # `:binary.copy/1` of the unscanned tail — one chunk's worth, not the
-  # accumulated buffer. Rewriting any of this back into idiomatic binary
-  # pattern matching restores the quadratic.
+  # GUARANTEED: no bit-syntax match ever starts on the accumulator. It is
+  # inspected only through BIFs (`:binary.at/2`, `binary_part/3`,
+  # `byte_size/1`). `find_object_end/4` below *is* written in bit syntax —
+  # that is safe because `scan_object/2` hands it a `:binary.copy/1` of the
+  # unscanned tail, a fresh binary with no tie to the accumulator, one
+  # chunk's worth rather than the whole array.
+  #
+  # GUARANTEED: the `:incomplete` path — the one taken on every chunk while
+  # the accumulator is still growing — returns the accumulator itself, so
+  # the append that follows it is still the in-place one. That is what
+  # `drop_prefix/3`'s `pos == 0` clause exists for.
+  #
+  # NOT guaranteed: `scan_object/2`'s object-complete exit returns
+  # `binary_part/3` sub-binaries, so the `rest` handed back after an object
+  # is extracted aliases the accumulator and is *not* writable; the next
+  # append copies it once. That is bounded and accepted, not overlooked —
+  # the copy is the size of the unconsumed tail, since everything up to
+  # `end_pos` was just yielded as a decoded object, and it happens once per
+  # extracted object rather than once per chunk. Measured over the real
+  # `buffer <> chunk` + `parse_buffer/2` loop, 5000 x 1 KB chunks (~5 MB):
+  # 35.4 ms when nothing completes (pure `:incomplete` path), 35.3 ms when an
+  # object completes on every chunk so this exit runs 5000 times, 1271 ms for
+  # the control that bit-syntax-matches the accumulator each round. The exit
+  # is free; the match is 36x. Do not read the paragraphs above as promising
+  # in-place extension here — but do not "fix" it by inspection either.
+  #
+  # Rewriting any of this back into idiomatic binary pattern matching on the
+  # accumulator restores the quadratic.
 
   # A live scan_state means the buffer already starts at the `{` of the
   # object being scanned: there is no array syntax left to skip, and
@@ -162,6 +185,10 @@ defmodule Nous.Providers.HTTP.JSONArrayParser do
     end
   end
 
+  # `tail` is a `:binary.copy/1` precisely so find_object_end/4's bit syntax
+  # never starts a match on the accumulator. The `{:ok, _, _}` exit is the one
+  # place that hands back aliasing sub-binaries — see "NOT guaranteed" above
+  # before touching it.
   defp scan_object(buffer, {pos, depth, in_string}) do
     size = byte_size(buffer)
     tail = :binary.copy(binary_part(buffer, pos, size - pos))

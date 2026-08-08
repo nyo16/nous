@@ -52,6 +52,7 @@ end
 
 defmodule Nous.AgentServerTest do
   use ExUnit.Case, async: false
+  use Nous.TaskSupervisorSaturation
 
   alias Nous.AgentServer
   alias Nous.Agent.Context
@@ -581,8 +582,8 @@ defmodule Nous.AgentServerTest do
   # Nous.TaskSupervisor carries a finite :max_children (see Nous.Application),
   # so every spawn this module makes can be REFUSED. All three of them used to
   # assume success: two owe a blocked GenServer.call its reply, and the third is
-  # the context checkpoint. `Nous.TaskSupervisorSaturation` is async: false-only,
-  # and this module is async: false.
+  # the context checkpoint. `use Nous.TaskSupervisorSaturation` will not compile
+  # in an async module, and this module is async: false.
   describe "task supervisor saturation" do
     test "save_context/1 answers the caller instead of leaving it blocked" do
       session_id = "test_sat_save_#{System.unique_integer([:positive])}"
@@ -596,7 +597,7 @@ defmodule Nous.AgentServerTest do
           inactivity_timeout: :infinity
         )
 
-      Nous.TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       {elapsed_us, result} = :timer.tc(fn -> AgentServer.save_context(pid) end)
 
@@ -632,7 +633,7 @@ defmodule Nous.AgentServerTest do
           inactivity_timeout: :infinity
         )
 
-      Nous.TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       {elapsed_us, result} = :timer.tc(fn -> AgentServer.load_context(pid, session_id) end)
 
@@ -665,7 +666,7 @@ defmodule Nous.AgentServerTest do
         |> Context.add_message(Message.user("Hello"))
         |> Context.add_message(Message.assistant("Hi!"))
 
-      Nous.TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       log =
         ExUnit.CaptureLog.capture_log(fn ->
@@ -683,6 +684,68 @@ defmodule Nous.AgentServerTest do
       # What the drop costs: this checkpoint never lands. The in-memory context
       # is unaffected and the next successful save supersedes it.
       assert {:error, :not_found} = PersistenceETS.load(session_id)
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+  end
+
+  describe "PubSub: the server never re-broadcasts its own topic" do
+    setup do
+      pubsub = :"agent_server_pubsub_#{System.unique_integer([:positive])}"
+      start_supervised!({Phoenix.PubSub, name: pubsub})
+      %{pubsub: pubsub}
+    end
+
+    test "an event arriving on its own topic is not published again", %{pubsub: pubsub} do
+      session_id = "test_pubsub_loop_#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          pubsub: pubsub,
+          inactivity_timeout: :infinity
+        )
+
+      topic = Nous.PubSub.agent_topic(session_id)
+      Phoenix.PubSub.subscribe(pubsub, topic)
+
+      # The server subscribes to this topic itself so external publishers can
+      # reach it. It used to answer a runner event arriving there by publishing
+      # the same event back — which arrived again, without bound. One copy on the
+      # wire must stay one copy.
+      Phoenix.PubSub.broadcast(pubsub, topic, {:agent_error, "boom"})
+
+      assert_receive {:agent_error, "boom"}, 500
+      refute_receive {:agent_error, "boom"}, 300
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "control: the server still publishes the events it owns", %{pubsub: pubsub} do
+      session_id = "test_pubsub_owned_#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          pubsub: pubsub,
+          inactivity_timeout: :infinity
+        )
+
+      Phoenix.PubSub.subscribe(pubsub, Nous.PubSub.agent_topic(session_id))
+
+      # `:agent_start` is the one runner event the server translates rather than
+      # ignores, and the documented `{:agent_status, :started}` is its output. If
+      # this stopped arriving, "publishes nothing at all" would read as a pass
+      # above. Exactly once, too: the server excludes itself from its own
+      # publications, so nothing loops back for a second translation.
+      send(pid, {:agent_start, %{}})
+
+      assert_receive {:agent_status, :started}, 500
+      refute_receive {:agent_status, :started}, 300
 
       assert Process.alive?(pid)
       GenServer.stop(pid)

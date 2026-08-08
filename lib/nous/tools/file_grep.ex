@@ -44,29 +44,45 @@ defmodule Nous.Tools.FileGrep do
     end
   end
 
-  # Resolve rg's absolute path once at module load to avoid PATH-poisoning
-  # (a user-controlled `rg` binary earlier on PATH would shadow the real one).
-  # Returns nil if rg isn't installed.
-  defp rg_path do
-    case System.find_executable("rg") do
-      nil -> nil
-      path -> path
-    end
-  end
+  # `rg` is resolved per call, against the BEAM's own PATH. That PATH is
+  # operator-owned — no tool can alter the BEAM's environment, and
+  # `Env.scrub_argv/1` re-establishes only that same PATH for the child while
+  # dropping everything else — so nothing the model supplies takes part in the
+  # lookup. Per call and not a compile-time attribute on purpose: a baked path
+  # is the *build* image's, so a release run elsewhere, or a host that installs
+  # rg after the build, would exec a stale path or take the pure-Elixir
+  # fallback forever. The `stat` is free next to the fork/exec that follows it
+  # (the same trade as `Env.env_executable/0`). Returns nil if rg isn't
+  # installed.
+  defp rg_path, do: System.find_executable("rg")
 
   defp rg_available?, do: not is_nil(rg_path())
 
+  # SECURITY: the LLM controls `pattern`/`glob`. Pass the pattern with an
+  # explicit `--regexp` flag (rg consumes the following token as its value
+  # even if it starts with `-`) and terminate option parsing with `--` before
+  # the positional `path`. Without this, a pattern like `-f/etc/passwd` or
+  # `--pre=/bin/sh` would be reinterpreted as an rg flag and escape PathGuard.
+  #
+  # Public but `@doc false` (like `PathGuard.canonical_root/1`) so each
+  # hardening can be pinned on its own. Measured against rg 15.1.0: dropping
+  # `--regexp` reddens the end-to-end `--pre` canary (the pattern sits *before*
+  # the terminator, so `--` cannot shield it), but dropping the `--` reddens
+  # nothing — it only shields the trailing positional, and
+  # `PathGuard.validate/2` hands back an absolute path that can never start
+  # with `-`. The argv assertions in `coding_tools_test.exs` are the only thing
+  # that can tell the `--` present from absent.
+  @doc false
+  @spec rg_argv(String.t(), String.t(), String.t() | nil, String.t()) :: [String.t()]
+  def rg_argv(pattern, path, glob, output_mode) do
+    ["--regexp", pattern] ++
+      mode_flag(output_mode) ++
+      glob_flag(glob) ++
+      ["--max-count", "#{@default_limit}", "--", path]
+  end
+
   defp run_rg(pattern, path, glob, output_mode) do
-    # SECURITY: the LLM controls `pattern`/`glob`. Pass the pattern with an
-    # explicit `--regexp` flag (rg consumes the following token as its value
-    # even if it starts with `-`) and terminate option parsing with `--` before
-    # the positional `path`. Without this, a pattern like `-f/etc/passwd` or
-    # `--pre=/bin/sh` would be reinterpreted as an rg flag and escape PathGuard.
-    args =
-      ["--regexp", pattern] ++
-        mode_flag(output_mode) ++
-        glob_flag(glob) ++
-        ["--max-count", "#{@default_limit}", "--", path]
+    args = rg_argv(pattern, path, glob, output_mode)
 
     # `env -i` wrapping, not an `env:` option: System.cmd/3's `:env` MERGES into
     # the inherited environment, so it can never remove OPENAI_API_KEY et al.

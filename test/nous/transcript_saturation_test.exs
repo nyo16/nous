@@ -2,7 +2,9 @@ defmodule Nous.TranscriptSaturationTest do
   # Saturating Nous.TaskSupervisor mutates a process-wide supervisor, so it is
   # only safe from a sync module — and transcript_test.exs is async: true and
   # should stay that way. Hence a separate module for the refusal paths.
+  # `use Nous.TaskSupervisorSaturation` will not compile in an async module.
   use ExUnit.Case, async: false
+  use Nous.TaskSupervisorSaturation
 
   import ExUnit.CaptureLog
 
@@ -10,7 +12,7 @@ defmodule Nous.TranscriptSaturationTest do
   alias Nous.Transcript
 
   setup do
-    Nous.TaskSupervisorSaturation.saturate!()
+    saturate!()
     :ok
   end
 

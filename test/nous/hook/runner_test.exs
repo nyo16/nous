@@ -265,4 +265,53 @@ defmodule Nous.Hook.RunnerTest do
       assert Runner.run_hooks([], :pre_tool_use, %{}) == :allow
     end
   end
+
+  describe "command hooks: the program must not parse as an env assignment" do
+    # `Env.scrub_argv/1` prefixes `env -i NAME=VALUE ...`, and `env` treats EVERY
+    # following operand containing `=` as another assignment. A bare program name
+    # holding one is therefore indistinguishable from an operator trying to set a
+    # variable, and executing it anyway mis-execs the NEXT argument — which then
+    # fails open (non-0/2 exit codes do, by default), degrading a security-gating
+    # hook to "allow".
+    test "a bare program name containing = is refused instead of mis-exec'd" do
+      hook = make_hook(:pre_tool_use, ["FOO=bar", "--strict"], type: :command)
+
+      {result, log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          Runner.run_hooks([hook], :pre_tool_use, %{tool_name: "probe"})
+        end)
+
+      assert log =~ "parses as an environment assignment"
+      assert log =~ "Refusing to execute"
+      # Refusal is an error, and errors fail open by default — the point is that
+      # nothing was exec'd, not that the run was blocked.
+      assert result == :allow
+    end
+
+    test "the refusal is a real deny for a fail_closed hook" do
+      hook = make_hook(:pre_tool_use, ["FOO=bar"], type: :command, fail_closed: true)
+
+      {result, _log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          Runner.run_hooks([hook], :pre_tool_use, %{tool_name: "probe"})
+        end)
+
+      assert {:deny, reason} = result
+      assert reason =~ "invalid_command_handler"
+    end
+
+    test "control: the same argv with the = anchored as a path is accepted" do
+      # Proves the guard is narrow. `./FOO=bar` cannot be an assignment operand
+      # by intent, so it reaches the spawn (and fails there, as a missing program
+      # should) rather than being refused as configuration.
+      hook = make_hook(:pre_tool_use, ["./FOO=bar"], type: :command)
+
+      {_result, log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          Runner.run_hooks([hook], :pre_tool_use, %{tool_name: "probe"})
+        end)
+
+      refute log =~ "parses as an environment assignment"
+    end
+  end
 end

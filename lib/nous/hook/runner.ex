@@ -201,7 +201,19 @@ defmodule Nous.Hook.Runner do
          payload
        )
        when is_binary(program) do
-    execute_command_hook(argv, event, payload, hook.timeout, hook.fail_closed)
+    if bare_name_with_assignment?(program) do
+      Logger.warning(
+        "Command hook program #{inspect(program)} is a bare name containing `=`, which " <>
+          "env(1) parses as an environment assignment rather than as the program to run. " <>
+          "Refusing to execute it: anchor it as a path (e.g. \"./#{program}\") if it really " <>
+          "is a program name, or drop it if an environment variable was intended — hook " <>
+          "subprocesses get a fixed allowlisted environment (see Nous.Tools.Env)."
+      )
+
+      {:error, :invalid_command_handler}
+    else
+      execute_command_hook(argv, event, payload, hook.timeout, hook.fail_closed)
+    end
   end
 
   defp execute_hook(%Hook{type: :command, handler: handler}, _event, _payload) do
@@ -217,6 +229,15 @@ defmodule Nous.Hook.Runner do
   defp execute_hook(hook, _event, _payload) do
     Logger.warning("Invalid hook configuration: #{inspect(hook)}")
     {:error, :invalid_hook}
+  end
+
+  # `env -i` swallows any operand containing `=` as an assignment, so a bare
+  # PATH-resolved program name holding one is indistinguishable from an operator
+  # trying to set a variable. `Env.scrub_argv/1` can run it (via its trampoline)
+  # but should not: refuse rather than guess. A path — which is what a program
+  # named with an `=` realistically is — carries a `/` and is accepted.
+  defp bare_name_with_assignment?(program) do
+    not String.contains?(program, "/") and String.contains?(program, "=")
   end
 
   # Execute a command hook via NetRunner. The argv list is passed

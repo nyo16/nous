@@ -304,6 +304,10 @@ defmodule Nous.AgentServer do
 
     state = %{
       session_id: session_id,
+      # Every broadcast excludes this pid (see `broadcast/2`). Held in state
+      # rather than taken from `self()` because the run task publishes with the
+      # same helper, and there `self()` is the task, not the server.
+      server_pid: self(),
       agent: agent,
       context: context,
       pubsub: pubsub,
@@ -651,45 +655,37 @@ defmodule Nous.AgentServer do
     handle_cast({:user_message, message}, state)
   end
 
-  # Handle events from agent runner via notify_pid
+  # Runner events arrive here through `notify_pid` (see `do_agent_run/5`). They
+  # are NOT forwarded to the topic: `Nous.Agent.Callbacks` already publishes each
+  # one there — directly from the runner process, instead of serialising every
+  # streaming delta through this GenServer's mailbox — and this server's
+  # forwarding of them was the engine of an unbounded re-broadcast loop, since it
+  # is subscribed to the very topic it published on. The documented event table
+  # in @moduledoc is unchanged; only the publisher is.
   @impl true
-  def handle_info({:agent_delta, text}, state) do
-    # Forward streaming delta to PubSub subscribers
-    broadcast(state, {:agent_delta, text})
-    {:noreply, state}
-  end
+  def handle_info({:agent_delta, _text}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info({:tool_call, call}, state) do
-    # Forward tool call to PubSub subscribers
-    broadcast(state, {:tool_call, call})
-    {:noreply, state}
-  end
+  def handle_info({:agent_thinking, _text}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info({:tool_result, result}, state) do
-    # Forward tool result to PubSub subscribers
-    broadcast(state, {:tool_result, result})
-    {:noreply, state}
-  end
+  def handle_info({:tool_call, _call}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info({:agent_complete, result}, state) do
-    # Forward completion to PubSub subscribers
-    broadcast(state, {:agent_complete, result})
-    {:noreply, state}
-  end
+  def handle_info({:tool_result, _result}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info({:agent_error, error}, state) do
-    # Forward error to PubSub subscribers
-    broadcast(state, {:agent_error, error})
-    {:noreply, state}
-  end
+  def handle_info({:agent_complete, _result}, state), do: {:noreply, state}
 
+  @impl true
+  def handle_info({:agent_error, _error}, state), do: {:noreply, state}
+
+  # The one runner event the topic does NOT already carry in this shape: the
+  # server translates `:agent_start` into the documented `{:agent_status,
+  # :started}`. Exactly one copy arrives to translate, because the Callbacks
+  # bridge excludes `notify_pid` from its own broadcast.
   @impl true
   def handle_info({:agent_start, _payload}, state) do
-    # Forward start event
     broadcast(state, {:agent_status, :started})
     {:noreply, state}
   end
@@ -933,8 +929,13 @@ defmodule Nous.AgentServer do
     end
   end
 
+  # `broadcast_from`, never `broadcast`: this server subscribes to its own topic
+  # so external publishers can reach it (see `init/1`), and `Phoenix.PubSub`
+  # delivers to the publisher, so anything published here would land back in this
+  # mailbox. Where a forwarder answered such a message by publishing again, the
+  # loop had no bound.
   defp broadcast(state, message) do
-    Nous.PubSub.broadcast(state.pubsub, state.topic, message)
+    Nous.PubSub.broadcast_from(state.pubsub, state.server_pid, state.topic, message)
   end
 
   defp bump_generation(state) do

@@ -131,11 +131,17 @@ if Code.ensure_loaded?(Exqlite) do
       end)
     end
 
+    # Behaviour contract, documented on `Nous.Memory.Store`'s `update/3`
+    # callback: an unknown key in `updates` RAISES `ArgumentError`, it does not
+    # return an error tuple. Validation runs before the `fetch/2` lookup, so an
+    # update carrying an unknown field AND an unknown id raises rather than
+    # answering `{:error, :not_found}`. That ordering is deliberate — an
+    # unknown field is a caller bug rather than a missing row, it rejects bad
+    # input before any driver round trip, and checking ahead of I/O is what
+    # keeps this SQL-identifier allowlist reachable in CI without a live
+    # `exqlite` connection.
     @impl true
     def update(conn, id, updates) when is_map(updates) do
-      # Reject unknown identifiers before any driver call: fail fast on bad
-      # input rather than after a round trip, and keep the control reachable
-      # without a live connection.
       :ok = Columns.validate!(updates)
 
       case fetch(conn, id) do

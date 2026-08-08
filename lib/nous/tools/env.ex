@@ -61,27 +61,57 @@ defmodule Nous.Tools.Env do
 
       iex> ["env", "-i" | _] = Nous.Tools.Env.scrub_argv(["/bin/sh", "-c", "id"]) |> then(&[Path.basename(hd(&1)) | tl(&1)])
 
-  Raises if no `env(1)` can be located, which fails the spawn closed rather
-  than silently running with an unscrubbed environment.
+  A utility whose name contains `=` is routed through a `=`-free trampoline so
+  `env` cannot swallow it as an assignment (see `exec_argv/1`).
+
+  Raises if no `env(1)` can be located — or, for that one case, no `nice(1)` —
+  which fails the spawn closed rather than silently running with an unscrubbed
+  environment.
   """
   @spec scrub_argv([String.t(), ...]) :: [String.t(), ...]
-  def scrub_argv([_ | _] = argv) do
+  def scrub_argv([utility | _] = argv) when is_binary(utility) do
     assignments = Enum.map(scrubbed(), fn {name, value} -> name <> "=" <> value end)
 
     # No `--` terminator: `env` stops option parsing at the first operand, and
     # the `NAME=VALUE` assignments are already operands. A trailing `--` after
     # them is taken as the *utility name* by BSD env (verified: exit 127), so
     # adding one breaks the spawn instead of hardening it.
-    [env_executable(), "-i" | assignments] ++ argv
+    [env_executable(), "-i" | assignments] ++ exec_argv(argv)
+  end
+
+  # `env` treats EVERY operand containing `=` as an assignment, so the utility
+  # position is not self-delimiting: measured against BSD env, both
+  # `/abs/v=2/check` and `./v=2/check` are consumed as assignments and the NEXT
+  # operand (`--strict`) is exec'd as the utility. Anchoring with `./` does not
+  # help — the check is a bare `strchr(operand, '=')`, not a variable-name
+  # validation — and `--` cannot terminate assignment parsing (only option
+  # parsing, which has already stopped). The only expressible form is a utility
+  # with no `=` in it, so such an argv is routed through `nice -n 0 --`: POSIX
+  # requires it to `exec` its operands without parsing them, in-place (no extra
+  # process, so NetRunner's process-tree kill still covers the child).
+  defp exec_argv([utility | _] = argv) do
+    if String.contains?(utility, "=") do
+      [exec_trampoline(), "-n", "0", "--" | argv]
+    else
+      argv
+    end
   end
 
   # Resolved per call rather than memoized: a `stat` is free next to the fork
   # and exec that immediately follows it.
   defp env_executable do
+    locate("env", "/usr/bin/env")
+  end
+
+  defp exec_trampoline do
+    locate("nice", "/usr/bin/nice")
+  end
+
+  defp locate(name, well_known) do
     cond do
-      File.regular?("/usr/bin/env") -> "/usr/bin/env"
-      path = System.find_executable("env") -> path
-      true -> raise "no env(1) executable found; cannot scrub the subprocess environment"
+      File.regular?(well_known) -> well_known
+      path = System.find_executable(name) -> path
+      true -> raise "no #{name}(1) executable found; cannot scrub the subprocess environment"
     end
   end
 end

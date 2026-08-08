@@ -1,13 +1,14 @@
 defmodule Nous.HTTP.StreamBackend.ReqSaturationTest do
-  # async: false — Nous.TaskSupervisorSaturation drops the VM-wide
-  # Nous.TaskSupervisor ceiling for the duration of each test.
+  # async: false — `saturate!/0` drops the VM-wide Nous.TaskSupervisor ceiling
+  # for the duration of each test. `use Nous.TaskSupervisorSaturation` will not
+  # compile in an `async: true` module.
   use ExUnit.Case, async: false
+  use Nous.TaskSupervisorSaturation
 
   import ExUnit.CaptureLog, only: [with_log: 1]
 
   alias Nous.HTTP.StreamBackend.Req
   alias Nous.StreamNormalizer
-  alias Nous.TaskSupervisorSaturation
 
   # Req is the DEFAULT streaming backend for every provider, and it holds one
   # task for a stream's whole duration — so `:max_children` is really the ceiling
@@ -23,7 +24,7 @@ defmodule Nous.HTTP.StreamBackend.ReqSaturationTest do
   @unused_url "http://127.0.0.1:1/v1/sse"
 
   test "a refused producer task yields {:stream_error, %{reason: :saturated}} and halts" do
-    TaskSupervisorSaturation.saturate!()
+    saturate!()
 
     # stream/4 still succeeds. Construction cannot know — the task is only
     # spawned once a consumer starts enumerating, in the consumer's process.
@@ -39,7 +40,7 @@ defmodule Nous.HTTP.StreamBackend.ReqSaturationTest do
   end
 
   test "the refusal reaches a consumer as {:error, _} through the normalizer" do
-    TaskSupervisorSaturation.saturate!()
+    saturate!()
 
     {:ok, stream} = Req.stream(@unused_url, %{}, [], [])
     {events, _log} = with_log(fn -> stream |> StreamNormalizer.normalize() |> Enum.to_list() end)
@@ -50,7 +51,7 @@ defmodule Nous.HTTP.StreamBackend.ReqSaturationTest do
   end
 
   test "halting a refused stream early still runs cleanup with no task to shut down" do
-    TaskSupervisorSaturation.saturate!()
+    saturate!()
 
     {:ok, stream} = Req.stream(@unused_url, %{}, [], [])
 

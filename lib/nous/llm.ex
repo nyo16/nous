@@ -172,6 +172,12 @@ defmodule Nous.LLM do
 
       run_with_tools(target_model, messages, target_settings, tools, ctx, 0, dispatcher)
     end)
+  after
+    # This entry point warmed the provider-payload cache in the caller's own
+    # process (`Nous.Messages.Cache`); release it rather than retain the whole
+    # converted history. `after`, so a raising tool or provider does not leak
+    # it. generate_text!/3 rides on this clause.
+    Messages.Cache.clear()
   end
 
   @doc """
@@ -246,6 +252,12 @@ defmodule Nous.LLM do
 
       {:ok, stream}
     end
+  after
+    # Covers the tool-free branch, whose request -- and therefore the payload
+    # conversion -- is issued before the stream is handed back. The tool branch
+    # converts once per turn while the CONSUMER enumerates, so it clears from
+    # the Stream.resource after-fun in stream_text_with_tools/7 instead.
+    Messages.Cache.clear()
   end
 
   defp stream_text_simple(model_chain, original_model, settings, messages, dispatcher) do
@@ -331,7 +343,7 @@ defmodule Nous.LLM do
               {[{:error, reason}], :done}
           end
       end,
-      fn _ -> :ok end
+      fn _ -> Messages.Cache.clear() end
     )
   end
 

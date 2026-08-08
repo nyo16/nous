@@ -66,10 +66,27 @@ defmodule Nous.PermissionsEnforcementTest do
   end
 
   # Streaming dispatcher that MUST NOT be called when input is blocked.
+  #
+  # It records the call before raising. The raise is a backstop — it makes an
+  # un-honoured block fail today — but a backstop is not an assertion: the day
+  # the runner grows a rescue that turns a provider exception into
+  # `{:error, _}`, or someone swaps in a benign stub, the raise stops firing.
+  # The recorded message is what the tests actually assert on, so they keep
+  # discriminating without it. `put_dispatcher/1` is `Process.put/2`, so the
+  # dispatcher can only be resolved in the process that installed it — `self()`
+  # here IS the test process.
   defmodule NeverStreamDispatcher do
     @moduledoc false
-    def request(_m, _ms, _s), do: raise("request should not be called")
-    def request_stream(_m, _ms, _s), do: raise("request_stream should not be called when blocked")
+    def request(_m, _ms, _s) do
+      send(self(), {:model_called, :request})
+      raise("request should not be called")
+    end
+
+    def request_stream(_m, _ms, _s) do
+      send(self(), {:model_called, :request_stream})
+      raise("request_stream should not be called when blocked")
+    end
+
     def count_tokens(_), do: 0
   end
 
@@ -188,9 +205,9 @@ defmodule Nous.PermissionsEnforcementTest do
 
       events = Enum.to_list(stream)
 
-      # A terminal :complete event is produced from the guard's block message,
-      # and NeverStreamDispatcher proves the model was never invoked.
-      assert Enum.any?(events, &match?({:complete, _}, &1))
+      # "Without calling the model" is the name of the test, so it is asserted
+      # rather than left to the dispatcher's raise.
+      refute_received {:model_called, _}
 
       complete =
         Enum.find_value(events, fn
@@ -211,8 +228,7 @@ defmodule Nous.PermissionsEnforcementTest do
     # run_stream/3 used to hand-roll its own request pipeline and never built a
     # hook registry, so Hook.Runner.run(nil, _, _) -> :allow made the entire
     # hook layer — the :pre_request deny gate included — a no-op on every
-    # streamed run. NeverStreamDispatcher raises if the model is reached, so
-    # these tests go red the moment the registry stops being built.
+    # streamed run.
     test "a :pre_request hook returning :deny stops run_stream before the model call" do
       agent =
         Agent.new("openai:test-model",
@@ -220,7 +236,17 @@ defmodule Nous.PermissionsEnforcementTest do
         )
 
       assert {:ok, stream} = AgentRunner.run_stream(agent, "go")
-      assert Enum.any?(Enum.to_list(stream), &match?({:complete, _}, &1))
+
+      # The whole event list, not "a :complete is in there somewhere" — which
+      # every run_stream/3 outcome satisfies. A bare :deny carries no reason to
+      # surface, so `denied_stream/2` falls to `terminal_stream(ctx, "")`
+      # (agent_runner.ex:220) and the consumer gets a finish and an EMPTY
+      # output. Any run that actually reached a model emits {:text_delta, _}
+      # first and a non-empty output here.
+      assert [{:finish, "stop"}, {:complete, %{output: "", finish_reason: "stop"}}] =
+               Enum.to_list(stream)
+
+      refute_received {:model_called, _}
     end
 
     test "a :pre_request hook returning {:deny, reason} also stops run_stream" do
@@ -236,7 +262,14 @@ defmodule Nous.PermissionsEnforcementTest do
         )
 
       assert {:ok, stream} = AgentRunner.run_stream(agent, "go")
-      assert {:text_delta, "blocked by policy"} in Enum.to_list(stream)
+
+      assert [
+               {:text_delta, "blocked by policy"},
+               {:finish, "stop"},
+               {:complete, %{output: "blocked by policy", finish_reason: "stop"}}
+             ] = Enum.to_list(stream)
+
+      refute_received {:model_called, _}
     end
 
     test "run/3 honours the {:deny, reason} shape too" do
@@ -254,9 +287,20 @@ defmodule Nous.PermissionsEnforcementTest do
           ]
         )
 
-      AgentRunner.run(agent, "go", max_iterations: 1)
+      # The OUTCOME, not the side channel. `prepare_tools/3` runs :pre_request
+      # hooks unconditionally (iteration_loop.ex:162), so a consulted hook
+      # proves nothing about the gate — that is the separate `Hook.denied?/1`
+      # at :117. What a honoured deny produces is a run that never called the
+      # model and therefore has no output to extract.
+      #
+      # MEASURED, and worth recording: run/3 discards the deny's reason
+      # entirely. Unlike run_stream/3, which surfaces it through
+      # `denied_stream/2`, this path reports the generic `:no_output`. If that
+      # asymmetry is ever closed, this assertion is where it will be noticed.
+      assert AgentRunner.run(agent, "go", max_iterations: 1) == {:error, :no_output}
 
       assert_receive :pre_request_consulted
+      refute_received {:model_called, _}
     end
   end
 end

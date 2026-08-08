@@ -32,6 +32,8 @@ if Code.ensure_loaded?(Floki) do
     taken fails rather than queueing.
     """
 
+    require Logger
+
     # Ceiling on the response body we are willing to buffer, in bytes. The URL
     # is model-controlled, so an uncapped fetch of a multi-gigabyte file (or of
     # an endpoint that never stops sending) would take the node down with it.
@@ -255,6 +257,9 @@ if Code.ensure_loaded?(Floki) do
 
         :error ->
           {:error, "Too many concurrent web fetches (#{@max_pinned_pools} in flight)"}
+
+        {:error, _reason} = error ->
+          error
       end
     end
 
@@ -277,7 +282,27 @@ if Code.ensure_loaded?(Floki) do
       case Finch.start_link(name: name, pools: pools) do
         {:ok, pool} -> {:ok, name, pool}
         {:error, {:already_started, _pid}} -> claim_pinned_pool(rest, hostname)
+        other -> pool_start_failed(name, other)
       end
+    end
+
+    # `Finch.start_link/1` is `Supervisor.start_link/3` underneath, so its
+    # failure set is open: besides `{:already_started, _}` it can answer
+    # `{:error, {:shutdown, {:failed_to_start_child, ...}}}` (one of Finch's
+    # own registries or its pool manager refused to start) or `:ignore`. Those
+    # used to fall off the `case` as a `CaseClauseError`, which `fetch_url/2`'s
+    # rescue laundered into a generic failure with the real reason discarded.
+    #
+    # We do NOT walk to the next slot: a start failure that is not contention
+    # will repeat on all 64 of them and then answer "too many concurrent web
+    # fetches", which would be false. Report the real reason instead, and log
+    # it because the model only ever sees the sentence, not the term.
+    defp pool_start_failed(name, result) do
+      Logger.warning(
+        "WebFetch: pinned connection pool #{inspect(name)} failed to start: #{inspect(result)}"
+      )
+
+      {:error, "Could not start a pinned connection pool: #{inspect(result)}"}
     end
 
     # Stream the body instead of letting Req buffer it whole: we get each chunk

@@ -3,6 +3,8 @@ defmodule Nous.Tools.WebFetchTest do
   # are read from the global application environment.
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Nous.RunContext
   alias Nous.Tools.WebFetch
 
@@ -323,6 +325,45 @@ defmodule Nous.Tools.WebFetchTest do
       assert Enum.all?(results, &match?({:ok, %{title: "Test Page"}}, &1))
       assert live_pinned_pools() == []
     end
+
+    # claim_pinned_pool/2's third clause. Finch.start_link/1 is a
+    # Supervisor.start_link/3 underneath, so besides {:already_started, _} —
+    # the contention answer, produced when the *supervisor* name is taken — it
+    # can answer {:error, {:shutdown, {:failed_to_start_child, ...}}} when one
+    # of Finch's own children refuses to start. Occupying the slot's registry
+    # name (Finch names its duplicate-key Registry after the instance itself,
+    # and the supervisor "<instance>.Supervisor") produces exactly that shape.
+    #
+    # The failing supervisor is linked, so a caller that does not trap exits is
+    # killed by the signal before it can act on the return value; a host that
+    # runs its agent from a trapping GenServer sees the tuple, and that is the
+    # process this clause protects. Before it existed the tuple fell off the
+    # case as a CaseClauseError, which fetch_url/2's rescue laundered into
+    # "Request error: no case clause matching..." with the real reason gone.
+    test "an unexpected pool start failure is reported with its reason and logged", %{
+      bypass: bypass
+    } do
+      Process.flag(:trap_exit, true)
+
+      slot = Module.concat([WebFetch, Finch, "Slot0"])
+      {:ok, blocker} = Agent.start(fn -> :ok end, name: slot)
+      on_exit(fn -> if Process.alive?(blocker), do: Agent.stop(blocker) end)
+
+      log =
+        capture_log(fn ->
+          assert {:error, reason} = WebFetch.do_fetch(url(bypass, "/page"))
+
+          # The real reason survives, rather than being rewritten as a rescue
+          # of a CaseClauseError or mislabelled as slot exhaustion.
+          assert reason =~ "Could not start a pinned connection pool"
+          assert reason =~ "failed_to_start_child"
+          refute reason =~ "Too many concurrent web fetches"
+          refute reason =~ "no case clause"
+        end)
+
+      assert log =~ "pinned connection pool"
+      assert log =~ "Slot0"
+    end
   end
 
   describe "retry policy" do
@@ -376,6 +417,53 @@ defmodule Nous.Tools.WebFetchTest do
     end
   end
 
+  describe "the request path still routes through the DNS pin" do
+    test "the connection targets the pinned IP while Host carries the hostname",
+         %{bypass: bypass} do
+      # The pin is the only part of this SSRF battery that closes the DNS-
+      # rebinding window, and it had three tests exercising it in ISOLATION and
+      # none that would notice if `do_get/3` stopped calling it — a control with
+      # excellent-looking coverage, not wired to the thing it guards.
+      #
+      # `[:finch, :connect, :start]`'s `:host` is the address Mint is about to
+      # open a socket to, so this is the transport target itself rather than a
+      # helper's return value. (Finch skips the event on a reused connection;
+      # web_fetch starts a fresh instance per fetch, so it always fires.)
+      test_pid = self()
+      stub_hosts(["pinned.test"])
+
+      handler_id = {__MODULE__, :connect_probe, System.unique_integer([:positive])}
+
+      :telemetry.attach(
+        handler_id,
+        [:finch, :connect, :start],
+        fn _event, _measurements, meta, _config ->
+          send(test_pid, {:connect_to, to_string(meta.host), meta.port})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      Bypass.expect_once(bypass, "GET", "/page", fn conn ->
+        # ...and the request must still present the HOSTNAME. Mint's `:hostname`
+        # option drives the Host header, SNI and certificate verification off one
+        # value; the Host header is the half observable over plaintext Bypass.
+        # Connecting to a bare IP and announcing that IP is how a pinned fetch
+        # breaks vhosts and TLS verification at the same time.
+        send(test_pid, {:host_header, conn.host})
+        html(conn)
+      end)
+
+      assert {:ok, %{title: "Test Page"}} =
+               WebFetch.do_fetch("http://pinned.test:#{bypass.port}/page")
+
+      assert_receive {:connect_to, "127.0.0.1", connected_port}
+      assert connected_port == bypass.port
+      assert_receive {:host_header, "pinned.test"}
+    end
+  end
+
   # Each pinned Finch instance registers its supervisor, registries and pool
   # manager under the slot name, so "no process left with that prefix" is the
   # reclamation assertion. No hardcoded slot count, no atoms minted here.
@@ -392,11 +480,25 @@ defmodule Nous.Tools.WebFetchTest do
   # order for it to be consulted at all.
   defp stub_hosts(hosts) do
     previous_lookup = :inet_db.res_option(:lookup)
+
+    # `del_host/1` drops EVERY name registered for the address, not just the ones
+    # added here, and `:inet_db` exposes no per-name delete. On a host whose
+    # resolver already carries 127.0.0.1 entries, the teardown used to delete
+    # them for the rest of the run — a test that quietly reconfigures name
+    # resolution for everything after it. Snapshot and put them back. The ETS
+    # table is where `add_host/2` writes; there is no public read for it.
+    previous_names =
+      case :ets.lookup(:inet_hosts_byaddr, {:inet, {127, 0, 0, 1}}) do
+        [{_key, names}] -> names
+        _ -> []
+      end
+
     :inet_db.set_lookup([:file, :native])
     :inet_db.add_host({127, 0, 0, 1}, Enum.map(hosts, &String.to_charlist/1))
 
     on_exit(fn ->
       :inet_db.del_host({127, 0, 0, 1})
+      if previous_names != [], do: :inet_db.add_host({127, 0, 0, 1}, previous_names)
       :inet_db.set_lookup(previous_lookup)
     end)
   end

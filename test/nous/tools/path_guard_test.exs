@@ -5,7 +5,8 @@ defmodule Nous.Tools.PathGuardTest do
 
   alias Nous.Tools.PathGuard
 
-  # Mirrors @max_symlink_depth in Nous.Tools.PathGuard.
+  # Mirrors @max_symlink_depth in Nous.Tools.PathGuard. It bounds symlink
+  # FOLLOWS, not path components.
   @resolution_cap 40
 
   setup do
@@ -100,11 +101,10 @@ defmodule Nous.Tools.PathGuardTest do
     end
 
     test "rejects a symlink chain deeper than the resolution cap", %{root: root, ctx: ctx} do
-      # The cap counts every resolved component, not just symlink hops, so a
-      # chain of @max_symlink_depth + 1 links exceeds it whatever the workspace
-      # root's own depth. The chain terminates at a real file inside the
-      # workspace, so nothing but the cap can reject it — raising the cap lets
-      # this resolve, lowering it to 0 breaks the single-hop test above.
+      # A chain of @max_symlink_depth + 1 links exceeds the cap on follows alone.
+      # The chain terminates at a real file inside the workspace, so nothing but
+      # the cap can reject it — raising the cap lets this resolve, lowering it to
+      # 0 breaks the single-hop test above.
       dir = Path.join(root, "chain")
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "target.txt"), "x")
@@ -117,6 +117,19 @@ defmodule Nous.Tools.PathGuardTest do
 
       assert {:error, reason} = PathGuard.validate("chain/#{last}", ctx)
       assert reason =~ "symlink loop"
+    end
+
+    test "accepts a path far deeper than the cap when nothing in it is a symlink",
+         %{ctx: ctx} do
+      # The counter used to increment on EVERY component, so the guard refused any
+      # path past ~40 segments — a nested monorepo or `node_modules` tree crosses
+      # that routinely — and blamed a "symlink loop" that did not exist. It fails
+      # closed, so it was never an escape; it was a silent depth cap plus a false
+      # diagnosis, which is worse for the operator debugging it.
+      deep = Enum.map_join(1..(@resolution_cap + 10), "/", &"d#{&1}")
+
+      assert {:ok, resolved} = PathGuard.validate(deep <> "/file.txt", ctx)
+      assert Path.basename(resolved) == "file.txt"
     end
   end
 

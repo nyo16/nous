@@ -129,6 +129,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-
 
+      # `Nous.Tools.EnvTest`'s FileGrep child-environment assertion and its
+      # paired control both skip without ripgrep, so the scrubbing proof for one
+      # of the three subprocess spawn sites had never run in CI at all.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - run: mix deps.get
       - run: mix deps.clean --unused
       - run: mix deps.compile
@@ -161,6 +167,11 @@ jobs:
           key: ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+
+      # Same reason as the test job: without rg, two of the tests this job's
+      # coverage number is computed from do not execute.
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - run: mix deps.get
       - run: mix deps.clean --unused
@@ -213,6 +224,70 @@ jobs:
       - run: mix deps.compile
       - run: mix compile
       - run: mix dialyzer
+
+  optional-deps:
+    name: Optional deps (compile canary)
+    runs-on: ubuntu-latest
+    # Deliberately absent from `publish.needs` and required by nothing: this job
+    # compiles the `Code.ensure_loaded?`-gated arms the default build never sees
+    # (see `optional_backend_deps/0` in mix.exs), and `duckdbex` builds DuckDB
+    # from source, so its wall-clock is unpredictable. It is a canary — visible
+    # when it goes red, never able to block a release. `continue-on-error` is
+    # deliberately NOT set: a canary nobody can see is theatre.
+    env:
+      MIX_OPTIONAL_DEPS: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      # Its own cache namespace: this tree holds the optional deps, and sharing a
+      # key with the other jobs would leak them into the jobs whose whole job is
+      # to prove the code compiles WITHOUT them. mix.lock is not authoritative
+      # here — the optional deps are resolved fresh and never locked — so the key
+      # carries mix.exs too.
+      - name: Cache deps & build (optional-deps tree)
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-optional-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('mix.exs', 'mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-optional-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+
+      # duckdbex compiles DuckDB from source. ubuntu-latest already ships
+      # build-essential and cmake; this pins that rather than inheriting it.
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake
+
+      - run: mix deps.get
+      - run: mix deps.compile
+
+      # If a dep did not become loadable, the placeholder arm compiled instead
+      # and this whole job proves nothing. Assert the precondition before
+      # believing the compile. (`Muninn`/`Zvec` are deliberately not here — see
+      # `optional_backend_deps/0` in mix.exs for the measurement.)
+      - name: Assert every optional dep is loadable
+        run: |
+          mix run --no-start -e '
+            for mod <- [Duckdbex, Bumblebee, PromEx] do
+              Code.ensure_loaded?(mod) ||
+                raise "#{inspect(mod)} is not loadable — the arm it gates was NOT compiled"
+            end
+          '
+
+      # --force so a restored _build cannot skip the arms, and
+      # --warnings-as-errors because a drifted optional-dep API shows up as an
+      # undefined remote call: a warning that fails nothing is exactly how
+      # `Nous.Memory.Store.SQLite` shipped broken against every `exqlite` its own
+      # constraint allowed. No tests here: these deps are heavy and unpinned, and
+      # a canary that flakes gets ignored.
+      - name: Compile every optional arm
+        run: mix compile --force --warnings-as-errors
 
   publish:
     name: Publish to Hex

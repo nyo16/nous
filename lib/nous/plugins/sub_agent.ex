@@ -431,7 +431,10 @@ defmodule Nous.Plugins.SubAgent do
     # OS cwd, which is the only reading that cannot widen.
     expanded = Path.expand(requested, parent_root)
 
-    if expanded == parent_root or String.starts_with?(expanded, parent_root <> "/") do
+    if within_canonical_root?(expanded, parent_root) do
+      # Return the UNRESOLVED expanded path: only the admission decision moves
+      # to canonical form, so the child's own PathGuard behaves exactly as it
+      # does for an operator-configured root.
       expanded
     else
       Logger.warning(
@@ -453,6 +456,21 @@ defmodule Nous.Plugins.SubAgent do
     )
 
     parent_root
+  end
+
+  # A LEXICAL prefix test admits `<parent>/scratch` where `scratch -> /etc`: the
+  # child's `effective_root/1` hands its own guard the unresolved path, that
+  # guard canonicalises BOTH sides to `/etc`, and every `/etc` path validates.
+  # The child's jail would be strictly wider than its parent's — the one thing
+  # this clamp exists to prevent. Decide admission on the canonical form the
+  # guard actually enforces, and fail closed if either side cannot be resolved.
+  defp within_canonical_root?(expanded, parent_root) do
+    with {:ok, real_requested} <- PathGuard.canonical_root(expanded),
+         {:ok, real_parent} <- PathGuard.canonical_root(parent_root) do
+      real_requested == real_parent or String.starts_with?(real_requested, real_parent <> "/")
+    else
+      _ -> false
+    end
   end
 
   defp resolve_agent(ctx, template_name, _args) when is_binary(template_name) do

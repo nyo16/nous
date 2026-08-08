@@ -283,6 +283,14 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   # Mirrors timed_out_tool_result/2: a readable, per-call result the model can
   # route around, keeping this call's attribution intact.
+  #
+  # The wording is deliberately non-committal about execution. `stream_close`
+  # discards results that were already produced, so by the time the refusal
+  # reaches us we cannot distinguish a call that never started from one that
+  # ran to completion and had its result thrown away — and for `Bash` or
+  # `FileWrite` the difference is a duplicated side effect. Telling the model
+  # to "retry shortly" asserted the stronger of the two, which is the one we
+  # cannot support; say what is actually known instead.
   @spec saturated_tool_result(tool_call()) :: tool_outcome()
   def saturated_tool_result(call) do
     call_id = get_tool_field(call, :id)
@@ -292,7 +300,8 @@ defmodule Nous.AgentRunner.ToolExecution do
       Message.tool(
         call_id,
         "Tool execution unavailable: the node is at its concurrent-task ceiling. " <>
-          "Retry #{cleaned_name} shortly.",
+          "Whether #{cleaned_name} ran before the batch was refused is unknown, so it " <>
+          "may already have taken effect. Check its effects before repeating it.",
         name: cleaned_name
       )
 

@@ -891,4 +891,92 @@ defmodule Nous.Plugins.SubAgentTest do
       refute output =~ "defmodule Nous.MixProject"
     end
   end
+
+  describe "workspace confinement: symlinked roots" do
+    setup do
+      Nous.ModelDispatcher.put_dispatcher(FileReadingDispatcher)
+
+      raw = Path.join(System.tmp_dir!(), "sub_agent_link_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(raw)
+      on_exit(fn -> File.rm_rf!(raw) end)
+
+      # The fixture must be spelled in the SAME form the guard resolves paths to,
+      # or the attack below is masked by the lexical pre-check rather than by the
+      # clamp: macOS's tmp dir is itself symlinked (`/var` -> `/private/var`).
+      # Canonicalised with getcwd(3) out-of-process, not with the resolver under
+      # test — a fixture that agrees with the code it probes proves nothing.
+      base = physical_path(raw)
+      parent_root = Path.join(base, "parent")
+      inner = Path.join(parent_root, "inner")
+      File.mkdir_p!(inner)
+      File.write!(Path.join(base, "outside.txt"), "OUTSIDE")
+      File.write!(Path.join(inner, "inner.txt"), "INNER")
+
+      templates = %{
+        "reader" =>
+          Agent.new("openai:test-model",
+            instructions: "Read the file you are asked for.",
+            tools: [Nous.Tools.FileRead]
+          )
+      }
+
+      %{base: base, parent_root: parent_root, inner: inner, templates: templates}
+    end
+
+    test "a :sub_agent_workspace_root that only lexically looks inside the parent is clamped", %{
+      base: base,
+      parent_root: parent_root,
+      templates: templates
+    } do
+      # `scratch` sits inside the parent's root and points OUT of it. A lexical
+      # prefix test admits it; the child's own guard then canonicalises both
+      # sides, agrees with itself, and the child holds a jail strictly WIDER than
+      # its parent's — the one thing this clamp exists to prevent.
+      File.ln_s!(base, Path.join(parent_root, "scratch"))
+
+      deps = %{
+        workspace_root: parent_root,
+        sub_agent_workspace_root: Path.join(parent_root, "scratch")
+      }
+
+      {result, log} =
+        with_log(fn -> delegate_read(deps, Path.join(base, "outside.txt"), templates) end)
+
+      refute result.result =~ "OUTSIDE"
+      assert result.result =~ "escapes the workspace root"
+      assert result.result =~ parent_root
+      assert log =~ "clamping to the parent's root"
+    end
+
+    test "control: a narrower non-symlinked root is still accepted", %{
+      parent_root: parent_root,
+      inner: inner,
+      templates: templates
+    } do
+      # Without this, "every root is rejected" would read as a pass above.
+      deps = %{workspace_root: parent_root, sub_agent_workspace_root: inner}
+
+      assert delegate_read(deps, Path.join(inner, "inner.txt"), templates).result =~ "INNER"
+    end
+
+    test "control: a symlink resolving INSIDE the parent's root is accepted", %{
+      parent_root: parent_root,
+      inner: inner,
+      templates: templates
+    } do
+      # Canonical admission must reject only what actually widens the jail;
+      # narrowing THROUGH a symlink is legitimate.
+      link = Path.join(parent_root, "inner_link")
+      File.ln_s!(inner, link)
+
+      deps = %{workspace_root: parent_root, sub_agent_workspace_root: link}
+
+      assert delegate_read(deps, Path.join(inner, "inner.txt"), templates).result =~ "INNER"
+    end
+  end
+
+  defp physical_path(dir) do
+    {out, 0} = System.cmd("/bin/pwd", ["-P"], cd: dir)
+    String.trim(out)
+  end
 end

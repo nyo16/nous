@@ -1,8 +1,10 @@
 defmodule Nous.TaskSaturationDegradationTest do
-  # async: false — Nous.TaskSupervisorSaturation drops the VM-wide
-  # Nous.TaskSupervisor ceiling for the duration of each test, so nothing else
-  # may be spawning tasks concurrently.
+  # async: false — `saturate!/0` drops the VM-wide Nous.TaskSupervisor ceiling
+  # for the duration of each test, so nothing else may be spawning tasks
+  # concurrently. `use Nous.TaskSupervisorSaturation` will not compile in an
+  # `async: true` module.
   use ExUnit.Case, async: false
+  use Nous.TaskSupervisorSaturation
 
   import ExUnit.CaptureLog, only: [with_log: 1]
 
@@ -10,7 +12,6 @@ defmodule Nous.TaskSaturationDegradationTest do
   alias Nous.Eval.{Result, Runner, TestCase}
   alias Nous.Memory.{Entry, Search}
   alias Nous.Research.Coordinator
-  alias Nous.TaskSupervisorSaturation
   alias Nous.Tools.FileGrep
   alias Nous.Transcript
 
@@ -48,7 +49,7 @@ defmodule Nous.TaskSaturationDegradationTest do
     test "runs the compaction inline and still returns an awaitable Task" do
       messages = for i <- 1..20, do: Nous.Message.user("msg #{i}")
 
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       {task, log} = with_log(fn -> Transcript.compact_async(messages, 10) end)
 
@@ -70,7 +71,7 @@ defmodule Nous.TaskSaturationDegradationTest do
     end
 
     test "runs the embedding inline and still fuses vector results", %{entries: entries} do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       {result, log} =
         with_log(fn ->
@@ -108,7 +109,7 @@ defmodule Nous.TaskSaturationDegradationTest do
 
     test "refuses rather than running an LLM regex with no timeout", %{dir: dir, ctx: ctx} do
       without_ripgrep(fn ->
-        TaskSupervisorSaturation.saturate!()
+        saturate!()
 
         {result, log} =
           with_log(fn -> FileGrep.execute(ctx, %{"pattern" => "needle", "path" => dir}) end)
@@ -134,7 +135,7 @@ defmodule Nous.TaskSaturationDegradationTest do
 
   describe "Nous.Research.Coordinator.run/2" do
     test "answers {:error, :saturated} instead of starting an unbounded loop" do
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       # No network: the refusal lands before research_loop/1 runs, which is why
       # this needs no :search_tool.
@@ -151,7 +152,7 @@ defmodule Nous.TaskSaturationDegradationTest do
     test "records the refusal as a test-case error instead of raising" do
       test_case = TestCase.new(id: "sat-1", input: "hi", expected: "hi")
 
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       {result, log} = with_log(fn -> Runner.run_case(test_case, model: "openai:test-model") end)
 
@@ -180,7 +181,7 @@ defmodule Nous.TaskSaturationDegradationTest do
 
       ref = Process.monitor(pid)
 
-      TaskSupervisorSaturation.saturate!()
+      saturate!()
 
       {_context, log} =
         with_log(fn ->

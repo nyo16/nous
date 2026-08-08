@@ -53,7 +53,8 @@ defmodule Nous.Plugins.SkillsTest do
       agent = make_agent([TestSkill])
       ctx = Skills.init(agent, make_ctx())
 
-      assert ctx.deps[:skill_registry] != nil
+      # The `!= nil` on the registry itself was noise — Registry.get/2 on a nil
+      # registry cannot answer a skill.
       assert Nous.Skill.Registry.get(ctx.deps[:skill_registry], "plugin_test_skill") != nil
     end
 

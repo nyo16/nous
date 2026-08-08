@@ -283,6 +283,12 @@ if Code.ensure_loaded?(PromEx) do
               buckets: duration_buckets(duration_unit)
             ]
           ),
+          # `measurement: :attempt` requires `attempt` in the event's
+          # MEASUREMENTS map — `Telemetry.Metrics` cannot aggregate over metadata,
+          # and this distribution recorded nothing for as long as `attempt` lived
+          # in metadata alone. `Nous.ToolExecutor` now emits it in both (see the
+          # comment at its `:stop` event); verified locally against prom_ex 1.12
+          # with a Prometheus core reporter. Do not move it back.
           distribution(
             metric_prefix ++ [:tool, :execution, :attempts],
             event_name: [:nous, :tool, :execute, :stop],
@@ -323,17 +329,20 @@ if Code.ensure_loaded?(PromEx) do
       }
     end
 
+    # A `Telemetry.Metrics` reporter DROPS an event whose `tag_values` map is
+    # missing a tag the metric declares — it does not record it with a blank tag.
+    # `:has_tool_calls` is declared on the request-duration distribution above, so
+    # omitting the key conditionally deleted the whole measurement rather than
+    # leaving one label empty. Unreachable today (`Nous.Provider` always sets it),
+    # but a provider that did not would silently lose its duration histogram.
+    # Default the value instead; the token metrics reuse this function and simply
+    # do not declare the tag, and an undeclared key in `tag_values` is ignored.
     defp model_tag_values(metadata) do
-      base = %{
+      %{
         provider: to_string(metadata.provider),
-        model_name: metadata.model_name
+        model_name: metadata.model_name,
+        has_tool_calls: to_string(Map.get(metadata, :has_tool_calls, false))
       }
-
-      if Map.has_key?(metadata, :has_tool_calls) do
-        Map.put(base, :has_tool_calls, to_string(metadata.has_tool_calls))
-      else
-        base
-      end
     end
 
     defp model_exception_tag_values(metadata) do

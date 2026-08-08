@@ -186,26 +186,42 @@ defmodule Nous.Tools.PathGuard do
     end
   end
 
+  @doc false
+  # The canonical form of a *root* — used by `Nous.Plugins.SubAgent` to decide
+  # whether a requested sub-agent root is inside its parent's. A lexical prefix
+  # test admits `parent/link` where `link -> /etc`, and the child's own guard
+  # then canonicalises both sides and agrees with itself, so the child's jail
+  # ends up strictly WIDER than its parent's. Admission must be decided on the
+  # same canonical form the guard enforces.
+  @spec canonical_root(String.t()) :: {:ok, String.t()} | {:error, :symlink_loop}
+  def canonical_root(path) when is_binary(path), do: resolve_real(path)
+
   # Best-effort realpath: resolves symlinks for the portion of the path that
   # exists, component by component. Non-existent trailing components cannot be
   # symlinks, so they are appended verbatim (this lets FileWrite create new
   # files/dirs while still catching an escaping symlink anywhere above them).
+  #
+  # The bound counts symlink FOLLOWS, not components: counting every component
+  # capped usable workspace depth at ~40 path segments (a nested monorepo or
+  # `node_modules` tree crosses that routinely) and blamed a "symlink loop" that
+  # did not exist. Termination still holds — `rest` shrinks on every non-follow,
+  # and every follow increments toward the bound.
   @max_symlink_depth 40
 
   defp resolve_real(path) do
     resolve_components(Path.split(Path.expand(path)), "/", 0)
   end
 
-  defp resolve_components(_remaining, _resolved, depth) when depth > @max_symlink_depth do
+  defp resolve_components(_remaining, _resolved, follows) when follows > @max_symlink_depth do
     {:error, :symlink_loop}
   end
 
-  defp resolve_components([], resolved, _depth), do: {:ok, resolved}
+  defp resolve_components([], resolved, _follows), do: {:ok, resolved}
 
-  defp resolve_components(["/" | rest], resolved, depth),
-    do: resolve_components(rest, resolved, depth)
+  defp resolve_components(["/" | rest], resolved, follows),
+    do: resolve_components(rest, resolved, follows)
 
-  defp resolve_components([comp | rest], resolved, depth) do
+  defp resolve_components([comp | rest], resolved, follows) do
     candidate = Path.join(resolved, comp)
 
     case File.read_link(candidate) do
@@ -214,10 +230,10 @@ defmodule Nous.Tools.PathGuard do
         # (absolute targets ignore the base), then continue resolving the
         # remaining components from the resolved target.
         resolved_target = Path.expand(target, resolved)
-        resolve_components(Path.split(resolved_target) ++ rest, "/", depth + 1)
+        resolve_components(Path.split(resolved_target) ++ rest, "/", follows + 1)
 
       _not_a_symlink ->
-        resolve_components(rest, candidate, depth + 1)
+        resolve_components(rest, candidate, follows)
     end
   end
 end

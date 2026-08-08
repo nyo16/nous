@@ -79,6 +79,14 @@ defmodule Nous.AgentRunner do
     duration = System.monotonic_time() - start_time
 
     finish_run(agent, behaviour, ctx, loop_result, duration)
+  after
+    # The run warmed the provider-payload cache in THIS process, as a side
+    # effect the caller never asked for (`Nous.Messages.Cache`). Release it
+    # instead of retaining a whole converted history until the process happens
+    # to convert another one -- `AGENTS.md` documents that process as a
+    # long-lived LiveView. `after`, not a trailing call, so a raising tool,
+    # provider or callback does not leak it either.
+    Messages.Cache.clear()
   end
 
   @doc """
@@ -112,6 +120,8 @@ defmodule Nous.AgentRunner do
       {:error, _} = err ->
         err
     end
+  after
+    Messages.Cache.clear()
   end
 
   @doc """
@@ -181,6 +191,13 @@ defmodule Nous.AgentRunner do
             error
         end
     end
+  after
+    # Unlike the :session_start/:session_end pair above, this IS expressible for
+    # a lazy stream: every payload conversion on this path is eager (the request
+    # is issued before the stream is handed back, and the wrappers only map
+    # events -- there is no per-turn tool loop here), so nothing warms the cache
+    # after this point.
+    Messages.Cache.clear()
   end
 
   defp init_hook_registry(%Agent{hooks: []}, ctx), do: ctx
@@ -257,10 +274,6 @@ defmodule Nous.AgentRunner do
     ctx = init_hook_registry(agent, ctx)
 
     Hook.Runner.run(ctx.hook_registry, :session_start, %{agent_name: agent.name})
-
-    # Only bites when continuing from an existing context, which can carry an
-    # assistant tool call whose result never arrived.
-    ctx = Context.patch_dangling_tool_calls(ctx)
 
     {ctx, behaviour, start_time}
   end
@@ -420,21 +433,33 @@ defmodule Nous.AgentRunner do
     end
   end
 
+  # The one point where run/3 (via start_run/3) and run_stream/3 both build
+  # their context, which is why the dangling-tool-call patch lives here rather
+  # than in start_run/3: run_stream/3 accepts `:context` and `:message_history`
+  # through this function too, so it carried the identical hazard and skipped
+  # the identical fix -- switching transport turned a resumable session into a
+  # provider 400. run_with_context/3 is the third entry point and patches on
+  # its own behalf, since it never comes through here.
   defp build_context(agent, prompt, opts) do
-    # Check if continuing from existing context
-    case Keyword.get(opts, :context) do
-      %Context{} = existing_ctx ->
-        # Continue from existing context, add new user message
-        existing_ctx
-        |> Context.add_message(Message.user(prompt))
-        |> Context.set_needs_response(true)
-        |> maybe_update_callbacks(opts)
-        |> maybe_update_notify_pid(opts)
-        |> maybe_update_stream(opts)
+    ctx =
+      case Keyword.get(opts, :context) do
+        %Context{} = existing_ctx ->
+          # Continue from existing context, add new user message
+          existing_ctx
+          |> Context.add_message(Message.user(prompt))
+          |> Context.set_needs_response(true)
+          |> maybe_update_callbacks(opts)
+          |> maybe_update_notify_pid(opts)
+          |> maybe_update_stream(opts)
 
-      nil ->
-        build_fresh_context(agent, prompt, opts)
-    end
+        nil ->
+          build_fresh_context(agent, prompt, opts)
+      end
+
+    # Only bites when continuing from a caller-supplied context or a
+    # `:message_history`, either of which can carry an assistant tool call whose
+    # result never arrived. Providers reject that history with a 400.
+    Context.patch_dangling_tool_calls(ctx)
   end
 
   # A run that isn't continuing from a caller-supplied context.

@@ -28,7 +28,10 @@ defmodule Nous.MixProject do
       # History: 56.80% at the 2026-06 audit, 57 after the perf wave, 59 once
       # the provider/web_fetch/prompt_template suites landed, 70 once
       # `ignore_modules` took the untestable-by-design code out of the
-      # denominator (2026-08 audit, test F-3).
+      # denominator (2026-08 audit, test F-3), 77 once the audit-remediation
+      # suites landed. Keep this list ending at the floor `:threshold` below
+      # actually enforces — a history that stops short of it reads as a lower
+      # gate than the one that runs.
       #
       # :threshold MUST be nested under :summary — a bare
       # `test_coverage: [threshold: n]` is silently ignored and you keep the
@@ -146,11 +149,11 @@ defmodule Nous.MixProject do
       # text/1 and depend on their return shapes.
       {:floki, "~> 0.38.4", optional: true},
 
-      # Memory system store backends (all optional — add to your app's deps to unlock)
-      # {:muninn, "~> 0.4", optional: true},
-      # {:zvec, "~> 0.2", optional: true},
+      # Memory system store backends (all optional — add to your app's deps to
+      # unlock). `muninn`, `zvec` and `duckdbex` are deliberately absent from
+      # this list; `optional_backend_deps/0` below pulls them in for the
+      # compile-only CI canary.
       {:exqlite, "~> 0.27", optional: true},
-      # {:duckdbex, "~> 0.3", optional: true},
 
       # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
       # to unlock the LlamaCpp provider). optional: true keeps it out of
@@ -160,9 +163,9 @@ defmodule Nous.MixProject do
       # both the Elixir surface and the compiled artifact.
       {:llama_cpp_ex, "~> 0.8.42", optional: true},
 
-      # Memory system embedding providers (all optional — add to your app's deps to unlock)
-      # {:bumblebee, "~> 0.6", optional: true},
-      # {:exla, "~> 0.9", optional: true},
+      # Memory system embedding providers (all optional — add to your app's deps
+      # to unlock): `{:bumblebee, "~> 0.6"}` and `{:exla, "~> 0.9"}`. See
+      # `optional_backend_deps/0` below.
 
       # Process execution for command hooks and the Bash tool. A NIF-based
       # runner is used (over System.cmd/Port) for fine-grained process-tree
@@ -175,8 +178,9 @@ defmodule Nous.MixProject do
       # only the stable `:telemetry.execute/3` surface.
       {:telemetry, "~> 1.2"},
 
-      # Note: For Prometheus metrics, users can add {:prom_ex, "~> 1.11"} and {:plug, "~> 1.18"}
-      # to their deps. The Nous.PromEx.Plugin will automatically be available.
+      # Note: For Prometheus metrics, users can add {:prom_ex, "~> 1.11"} and
+      # {:plug, "~> 1.18"} to their deps. The Nous.PromEx.Plugin will
+      # automatically be available. See `optional_backend_deps/0` below.
 
       # Dev/Test
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
@@ -199,7 +203,52 @@ defmodule Nous.MixProject do
       #
       #     MIX_ENV=test mix run bench/http_backend.exs
       {:benchee, "~> 1.3", only: [:dev, :test]}
-    ]
+    ] ++ optional_backend_deps()
+  end
+
+  # The optional-backend arms — `Nous.Memory.Store.{DuckDB,Muninn,Zvec,Hybrid}`,
+  # `Nous.Decisions.Store.DuckDB`, `Nous.Memory.Embedding.Bumblebee`,
+  # `Nous.PromEx.Plugin`, and `Nous.Application`'s Bumblebee gate — sit behind
+  # `Code.ensure_loaded?/1`. The default build therefore never compiles them,
+  # and `ignore_modules` above keeps them out of the coverage denominator too,
+  # so they are observed by nothing. That population produced three real defects
+  # in one cycle: the SQLite store never functioned against any `exqlite` its own
+  # constraint allowed, and `Muninn.init/1` and `Zvec.init/1` held hard
+  # `CompileError`s that would have broken the build for the first person to
+  # enable them.
+  #
+  # `MIX_OPTIONAL_DEPS=1` opts them in for the compile-only canary job in
+  # .github/workflows/ci.yml. An env switch rather than an entry in `deps/0` so
+  # downstream resolution is untouched and `mix.lock` never references them
+  # (`mix deps.unlock --check-unused` in the `format` job would reject that).
+  #
+  # `:exla` is deliberately absent: nothing needs it to COMPILE — the Bumblebee
+  # arm reaches `EXLA.Backend` through `Code.ensure_loaded?/1` and uses it only
+  # as a value — and building it downloads a ~300 MB XLA archive.
+  #
+  # `:muninn` and `:zvec` are absent for a much worse reason, measured 2026-08
+  # when this job was built: `Nous.Memory.Store.{Muninn,Zvec,Hybrid}` call an API
+  # that NO published version of either package exports. Installing
+  # `{:muninn, "~> 0.4"}` — the requirement those modules' own docs give — yields
+  # a top-level `Muninn` module whose only export is `hello/0`; the real surface
+  # is `Muninn.Index`/`Muninn.IndexWriter`/`Muninn.Searcher`, and muninn 0.4.0 has
+  # no top-level module at all. `zvec` is the same shape (`Zvec.Collection`). This
+  # is not version drift, it is code that has never worked, so adding these two
+  # deps here would only pin the canary permanently red — and a canary that is
+  # always red is ignored, which is the failure mode this job exists to avoid.
+  # The three stores need their own plan (rewrite against the real API, or
+  # remove); until then they stay unobserved and this comment is the record.
+  defp optional_backend_deps do
+    if System.get_env("MIX_OPTIONAL_DEPS") == "1" do
+      [
+        {:duckdbex, "~> 0.3", optional: true},
+        {:bumblebee, "~> 0.6", optional: true},
+        {:prom_ex, "~> 1.11", optional: true},
+        {:plug, "~> 1.18", optional: true}
+      ]
+    else
+      []
+    end
   end
 
   defp docs do

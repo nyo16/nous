@@ -484,5 +484,29 @@ defmodule Nous.Tools.CodingToolsTest do
       assert output =~ "No matches"
       refute output =~ "World"
     end
+
+    # The two tests below pin the argv hardenings INDEPENDENTLY, one of which no
+    # behavioural test can reach. Measured against rg 15.1.0: deleting `--regexp`
+    # reddens the `--pre` canary above (the pattern precedes the terminator, so
+    # the `--` cannot shield it), but deleting the `--` reddens nothing — it only
+    # shields the trailing positional, and `PathGuard.validate/2` returns an
+    # absolute path that can never begin with `-`. Deleting one hardening must
+    # redden exactly one of these.
+    test "built argv terminates rg option parsing with -- before the path" do
+      argv = FileGrep.rg_argv("World", "/tmp/nous_rg_argv", nil, "content")
+
+      assert Enum.take(argv, -2) == ["--", "/tmp/nous_rg_argv"]
+    end
+
+    test "built argv passes the model-supplied pattern as the value of --regexp" do
+      pattern = "--pre=/tmp/leak.sh"
+      argv = FileGrep.rg_argv(pattern, "/tmp/nous_rg_argv", nil, "content")
+
+      # Present exactly once, and immediately after `--regexp`, so rg consumes
+      # it as a value: a bare occurrence anywhere would be parsed as a flag.
+      assert Enum.count(argv, &(&1 == pattern)) == 1
+
+      assert argv |> Enum.chunk_every(2, 1, :discard) |> Enum.member?(["--regexp", pattern])
+    end
   end
 end

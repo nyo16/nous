@@ -18,6 +18,13 @@ defmodule Nous.Tools.EnvTest do
   # `skip: false` runs the test; `skip: <message>` skips it. A runtime `if`
   # around the body would instead make the test vacuous when rg is absent — a
   # test that passes for any implementation, the exact shape P6-T5 sweeps for.
+  #
+  # CI installs ripgrep (`.github/workflows/ci.yml`, the `test` and `coverage`
+  # jobs) so the pair below actually executes there; before that it had never
+  # run in CI at all, leaving one of the three spawn sites unproven. When the
+  # skip does fire on a laptop, the placeholder further down names it: the
+  # default formatter prints a `skip:` tag's VALUE nowhere, not even under
+  # --trace, so two silently absent tests otherwise read as a green run.
   @no_rg if System.find_executable("rg"), do: false, else: "ripgrep is not installed"
 
   setup do
@@ -63,6 +70,23 @@ defmodule Nous.Tools.EnvTest do
       assignments = Enum.take_while(rest, &String.contains?(&1, "="))
       assert ["/bin/sh", "-c", "true"] == Enum.drop(rest, length(assignments))
       refute Enum.any?(assignments, &String.starts_with?(&1, @probe <> "="))
+    end
+
+    test "a utility whose name contains = never lands in env's utility position" do
+      argv = Env.scrub_argv(["/opt/tools/v=2/check", "--strict"])
+
+      assert [env_bin, "-i" | rest] = argv
+      assert Path.basename(env_bin) == "env"
+
+      assignments = Enum.take_while(rest, &String.contains?(&1, "="))
+      operands = Enum.drop(rest, length(assignments))
+
+      # `env` stops treating operands as assignments at the first one WITHOUT an
+      # `=`, and that operand is the utility. Measured against BSD env: handed
+      # the program path directly, `env` swallows it as an assignment and execs
+      # `--strict` instead — so the utility position must never hold an `=`.
+      refute String.contains?(hd(operands), "=")
+      assert Enum.take(operands, -2) == ["/opt/tools/v=2/check", "--strict"]
     end
   end
 
@@ -126,6 +150,17 @@ defmodule Nous.Tools.EnvTest do
       assert {"", 1} =
                System.cmd(rg, ["--regexp", "needle", "-n", "--", tmp_dir], stderr_to_stdout: true)
     end
+
+    # Mirrors the placeholder pattern the optional-dep store suites use: the
+    # reason lives in the test NAME, because that is the only part of a skipped
+    # test the default formatter prints. Two tests that vanish without a trace is
+    # how the child-environment proof for the rg spawn site went missing from CI.
+    if @no_rg do
+      @tag skip: @no_rg
+      test "FileGrep child-environment pair skipped: install ripgrep to run it" do
+        flunk("tagged skip; this body must never execute")
+      end
+    end
   end
 
   describe "child environment: command hooks" do
@@ -150,6 +185,30 @@ defmodule Nous.Tools.EnvTest do
       env = File.read!(dump)
       refute env =~ @probe_value
       assert env =~ "PATH="
+    end
+
+    test "a hook program whose path contains = runs the intended program", %{tmp_dir: tmp_dir} do
+      # Not hypothetical: `env` parses `/opt/tools/v=2/check` as an assignment and
+      # execs the next argument, and the resulting non-zero exit FAILS OPEN, so a
+      # security-gating hook silently degrades to "allow".
+      dir = Path.join(tmp_dir, "v=2")
+      File.mkdir_p!(dir)
+      program = Path.join(dir, "check")
+      marker = Path.join(tmp_dir, "hook_ran")
+
+      File.write!(program, ~s(#!/bin/sh\nprintf ran > "$1"\n))
+      File.chmod!(program, 0o755)
+
+      hook = %Hook{
+        event: :pre_tool_use,
+        type: :command,
+        handler: [program, marker],
+        priority: 100,
+        timeout: 5_000
+      }
+
+      assert :allow = Runner.run_hooks([hook], :pre_tool_use, %{tool_name: "probe"})
+      assert File.read!(marker) == "ran"
     end
   end
 end

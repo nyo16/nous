@@ -132,6 +132,43 @@ defmodule Nous.PubSub do
     end
   end
 
+  @doc """
+  Broadcast a message on a topic, excluding `from_pid` from delivery.
+
+  `broadcast/3` maps to `Phoenix.PubSub.broadcast/3`, which delivers to the
+  publisher too. A process that is subscribed to a topic it also publishes on
+  therefore receives its own message — and if it *forwards* what it receives,
+  as `Nous.AgentServer` does, the forward arrives again and the re-broadcast is
+  unbounded. Use this whenever the publisher may also be a subscriber, or when
+  a recipient already got the event through another channel.
+
+  A `nil` `from_pid` degrades to `broadcast/3`. No-op if PubSub is unavailable.
+  """
+  @spec broadcast_from(module() | nil, pid() | nil, String.t() | nil, term()) ::
+          :ok | {:error, term()}
+  def broadcast_from(pubsub, from_pid, topic, message)
+
+  def broadcast_from(pubsub, nil, topic, message), do: broadcast(pubsub, topic, message)
+  def broadcast_from(nil, _from_pid, _topic, _message), do: :ok
+  def broadcast_from(_pubsub, _from_pid, nil, _message), do: :ok
+
+  def broadcast_from(pubsub, from_pid, topic, message) when is_pid(from_pid) do
+    if phoenix_pubsub_loaded?() do
+      try do
+        apply(Phoenix.PubSub, :broadcast_from, [pubsub, from_pid, topic, message])
+      catch
+        :error, %ArgumentError{} ->
+          :ok
+
+        :error, reason ->
+          Logger.debug("PubSub broadcast_from failed: #{inspect(reason)}")
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
   # Topic builders
 
   @doc """

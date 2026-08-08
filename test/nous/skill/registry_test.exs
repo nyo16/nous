@@ -272,7 +272,11 @@ defmodule Nous.Skill.RegistryTest do
         {instructions, tools, _registry} = Registry.activate(registry, name, nil, nil)
 
         assert is_binary(instructions) and instructions != "", "#{name} yielded no instructions"
-        assert is_list(tools)
+        # Measured: every built-in is instruction-only. `is_list(tools)` held
+        # for any implementation and said nothing; this says what the built-in
+        # set actually is, and asks whoever adds a tool-bearing built-in to
+        # come here and decide that on purpose.
+        assert tools == [], "#{name} derived tools: #{inspect(tools)}"
       end
     end
   end
