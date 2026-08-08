@@ -29,14 +29,22 @@ defmodule Nous.Messages.Cache do
   #
   # Ownership rule: **whoever warms the cache releases it.** The agent runner and
   # `Nous.LLM` warm it as a side effect of dispatching a request the caller never
-  # asked to be memoized, so they clear it in an `after`. A host that calls the
-  # public `Nous.Messages.to_openai_format/1` (and siblings) directly warms its
-  # own process dictionary knowingly and owns it -- typically a LiveView, per
-  # `AGENTS.md`, which can call `clear/0` from `terminate/2` or between
-  # conversations. The formatters deliberately do NOT self-clear: an entry that is
-  # dropped on the way out of the very call that wrote it can never be reused, so
-  # a self-clearing formatter is a cache with a 0% hit rate -- it would delete the
-  # only thing the memo exists to serve.
+  # asked to be memoized, so they clear it in an `after`. The formatters
+  # deliberately do NOT self-clear: an entry that is dropped on the way out of the
+  # very call that wrote it can never be reused, so a self-clearing formatter is a
+  # cache with a 0% hit rate -- it would delete the only thing the memo exists to
+  # serve.
+  #
+  # The rule has one edge, stated here because `clear/0` cannot honour it:
+  # `clear/0` is **process-wide**, not per-entry, and `Nous.LLM` runs in the
+  # CALLER's process. So a host that warms its own memo with
+  # `Nous.Messages.to_openai_format/1` and then calls `Nous.LLM.generate_text/3`
+  # from the same process -- typically a LiveView, per `AGENTS.md` -- has its memo
+  # dropped too, and must re-warm. Scoping the release to the keys a run warmed
+  # would mean snapshot/restore around every `after`, which costs the hot path to
+  # protect a case whose only symptom is one extra conversion. A host that wants
+  # the memo to survive should convert in a process it owns, or re-warm after the
+  # call; it may also call `clear/0` itself from `terminate/2`.
 
   @spec map(term(), [term()], (term() -> term())) :: [term()]
   def map(key, items, fun) when is_list(items) and is_function(fun, 1) do

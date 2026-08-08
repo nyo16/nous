@@ -152,6 +152,13 @@ defmodule Nous.PubSub do
   def broadcast_from(nil, _from_pid, _topic, _message), do: :ok
   def broadcast_from(_pubsub, _from_pid, nil, _message), do: :ok
 
+  # Anything that is not a pid cannot be excluded from a delivery, and this is a
+  # public function: degrade to `broadcast/3` rather than raising FunctionClauseError
+  # on a caller that threaded through, say, a registered name.
+  def broadcast_from(pubsub, from_pid, topic, message) when not is_pid(from_pid) do
+    broadcast(pubsub, topic, message)
+  end
+
   def broadcast_from(pubsub, from_pid, topic, message) when is_pid(from_pid) do
     if phoenix_pubsub_loaded?() do
       try do

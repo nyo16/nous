@@ -738,14 +738,73 @@ defmodule Nous.AgentServerTest do
       Phoenix.PubSub.subscribe(pubsub, Nous.PubSub.agent_topic(session_id))
 
       # `:agent_start` is the one runner event the server translates rather than
-      # ignores, and the documented `{:agent_status, :started}` is its output. If
-      # this stopped arriving, "publishes nothing at all" would read as a pass
-      # above. Exactly once, too: the server excludes itself from its own
-      # publications, so nothing loops back for a second translation.
-      send(pid, {:agent_start, %{}})
+      # ignores, and the documented `{:agent_status, :started}` is its output.
+      # Delivered ON THE TOPIC, not by a direct `send`: that is what also pins the
+      # self-subscription in `init/1` — the thing that lets external publishers
+      # (a LiveView's `{:user_message, _}`, the approval flow) reach the server at
+      # all. With a direct send, deleting `Nous.PubSub.subscribe/2` from `init/1`
+      # kept this test green.
+      Phoenix.PubSub.broadcast(pubsub, Nous.PubSub.agent_topic(session_id), {:agent_start, %{}})
 
       assert_receive {:agent_status, :started}, 500
       refute_receive {:agent_status, :started}, 300
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "the event stream survives clear_history and a restored context", %{pubsub: pubsub} do
+      # The regression this exists for: with the server's forwarders gone,
+      # `Nous.Agent.Callbacks` is the ONLY publisher of runner events, and it
+      # short-circuits on a nil `pubsub_topic`. Both `clear_history` (which rebuilt
+      # the context via `Context.new/1` — no topic fallback) and a restored,
+      # deserialized context (both fields hard-set to nil) dropped the pair, muting
+      # every delta, tool call and tool result for the rest of the session — and
+      # permanently, since the next context derives from the muted one.
+      session_id = "test_pubsub_ctx_#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          pubsub: pubsub,
+          inactivity_timeout: :infinity
+        )
+
+      assert %Context{pubsub_topic: topic} = AgentServer.get_context(pid)
+      assert topic == Nous.PubSub.agent_topic(session_id)
+
+      AgentServer.clear_history(pid)
+
+      # The assertion is on the CONTEXT the runner will be handed, because that is
+      # what decides whether the bridge publishes at all.
+      cleared = AgentServer.get_context(pid)
+      assert cleared.messages == []
+      assert cleared.pubsub == pubsub
+      assert cleared.pubsub_topic == Nous.PubSub.agent_topic(session_id)
+
+      # Same invariant on the path that installs a deserialized context.
+      restored =
+        Context.new(system_prompt: "restored")
+        |> Context.add_message(Message.user("hi"))
+        |> Context.serialize()
+        |> Context.deserialize()
+        |> then(fn {:ok, ctx} -> ctx end)
+
+      assert restored.pubsub_topic == nil, "fixture must arrive muted, or this proves nothing"
+
+      GenServer.cast(pid, {:_apply_loaded_context, restored})
+      applied = AgentServer.get_context(pid)
+
+      assert applied.pubsub == pubsub
+      assert applied.pubsub_topic == Nous.PubSub.agent_topic(session_id)
+
+      # End-to-end, not just the field: drive the bridge with the context the
+      # server would hand the runner and assert a subscriber actually receives the
+      # event. This is the exact call `AgentRunner` makes per delta.
+      Phoenix.PubSub.subscribe(pubsub, Nous.PubSub.agent_topic(session_id))
+      assert :ok = Nous.Agent.Callbacks.execute(applied, :on_llm_new_delta, "still flowing")
+      assert_receive {:agent_delta, "still flowing"}, 500
 
       assert Process.alive?(pid)
       GenServer.stop(pid)

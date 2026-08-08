@@ -413,11 +413,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event by direct send, so the topic copy was a second delivery); the server's
   five duplicate forwarders are now no-ops; and everything the server itself
   publishes excludes the server. **What subscribers see:** the documented event
-  table is unchanged, each event now arrives exactly once, and events are
-  published from the runner process rather than being funnelled through the
-  server's mailbox. The self-subscription is kept — external publishers still
-  reach the server — and `{:agent_status, :started}` is still translated from
-  `:agent_start` by the server, now exactly once.
+  table is unchanged, the unbounded loop is gone, the five forwarded event kinds
+  arrive exactly once, and events are published from the runner process rather
+  than being funnelled through the server's mailbox. The self-subscription is kept
+  — external publishers still reach the server — and `{:agent_status, :started}` is
+  still translated from `:agent_start` by the server, now exactly once.
+  **One pre-existing duplication is NOT fixed and is not claimed to be:**
+  `{:agent_error, _}` still reaches subscribers twice on a failed run, because
+  `AgentRunner` publishes the raw error term through the Callbacks bridge while
+  `Nous.AgentServer` publishes the message string its own documented event table
+  specifies. Normalising that changes a payload for every runner caller, so it is
+  recorded rather than changed here. `{:agent_complete, _}` *was* double-published
+  the same way and is fixed: the server no longer re-publishes a term the runner
+  already put on the topic.
 
 - **`Nous.Memory.Store`'s `update/3` callback contract is documented.** An
   `updates` key that is not a `Nous.Memory.Entry` field raises `ArgumentError` in
@@ -611,15 +619,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guarantee that the assertions run through the real refusal path.
 
 - **CI compiles the optional-dependency arms, and installs ripgrep.** Eight
-  `Code.ensure_loaded?`-gated modules (the DuckDB/Muninn/Zvec/Hybrid stores, the
-  DuckDB decision store, the Bumblebee embedder, the PromEx plugin, and
-  `Nous.Application`'s Bumblebee gate) were compiled by nothing and excluded from
+  `Code.ensure_loaded?`-gated arms — seven modules (the DuckDB/Muninn/Zvec/Hybrid
+  stores, the DuckDB decision store, the Bumblebee embedder, the PromEx plugin)
+  and one function-level gate in `Nous.Application` — were compiled by nothing and
+  excluded from
   the coverage denominator, and that population produced three real defects in
   one cycle. A new non-gating `optional-deps` job opts them in via
-  `MIX_OPTIONAL_DEPS=1` (an env switch, so `mix.lock` and downstream resolution
+  `NOUS_OPTIONAL_DEPS=1` (an env switch, so `mix.lock` and downstream resolution
   are untouched), asserts every optional dep is actually loadable — otherwise the
   placeholder arm compiled and the job proves nothing — then runs
-  `mix compile --force --warnings-as-errors`: 256 files instead of 252. It covers
+  `mix compile --force --warnings-as-errors`. It covers
   five of the eight arms (`muninn`/`zvec` are excluded — see the next entry), and
   it demonstrably catches the defect class that motivated it: injecting a
   function-level `rescue` that references a body-bound variable into the DuckDB

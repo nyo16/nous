@@ -218,10 +218,13 @@ defmodule Nous.Messages do
 
   The memo lives in the calling process's dictionary, so it keeps the most
   recently converted history alive until that process converts another one or
-  exits. `Nous.AgentRunner` and `Nous.LLM` release it when a run ends. A host
-  that calls these converters itself — `AGENTS.md` documents that host as a
-  LiveView — retains it for the life of that process; convert per render at your
-  own cost, or let the runner own the conversion.
+  exits. `Nous.AgentRunner` and `Nous.LLM` release it when a run ends, and that
+  release is **process-wide** — `Nous.LLM` runs in your process, so a run started
+  from the same process that warmed its own memo drops that memo too, and the next
+  conversion re-runs. A host that calls these converters itself — `AGENTS.md`
+  documents that host as a LiveView — otherwise retains the memo for the life of
+  that process. Convert per render at your own cost, convert in a process you own,
+  or let the runner own the conversion.
 
   ## Examples
 

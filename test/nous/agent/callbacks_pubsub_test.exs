@@ -69,7 +69,12 @@ defmodule Nous.Agent.CallbacksPubSubTest do
 
       assert :ok = Callbacks.execute(ctx, :on_error, "boom")
 
+      # "the only delivery" is in the name, so assert the only-ness. This is also
+      # the one test that reaches `broadcast_from/4`'s `from_pid == nil` clause,
+      # which delegates to `broadcast/3`; delete that clause and this fails
+      # against the `when is_pid(from_pid)` head.
       assert_receive {:agent_error, "boom"}, 500
+      refute_receive {:agent_error, "boom"}, 100
     end
   end
 end

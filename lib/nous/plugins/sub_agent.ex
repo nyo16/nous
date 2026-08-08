@@ -418,10 +418,17 @@ defmodule Nous.Plugins.SubAgent do
     Map.put(sub_deps, :workspace_root, root)
   end
 
-  # An operator may ask for a narrower child root; a forwarded `:workspace_root`
-  # (via `:sub_agent_shared_deps`) is the parent's own and clamps to a no-op.
-  defp requested_root(sub_deps, parent_ctx) do
-    parent_ctx.deps[:sub_agent_workspace_root] || sub_deps[:workspace_root]
+  # An operator may ask for a narrower child root via `:sub_agent_workspace_root`.
+  # A forwarded `:workspace_root` (via `:sub_agent_shared_deps`) is deliberately
+  # NOT consulted: it can only ever hold the parent's own configured value, and
+  # `confine_to_parent/2` overwrites the key straight afterwards, so honouring it
+  # was a no-op for an absolute root and actively wrong for a relative one — the
+  # forwarded value is RAW while `parent_root` is already expanded, so
+  # `Path.expand("ws", "/srv/app/ws")` doubled the segment to `/srv/app/ws/ws`.
+  # That path does not exist, so it was admitted silently and every child file
+  # operation then failed against a junk root, compounding once per generation.
+  defp requested_root(_sub_deps, parent_ctx) do
+    parent_ctx.deps[:sub_agent_workspace_root]
   end
 
   defp clamp_root(nil, parent_root), do: parent_root
@@ -463,11 +470,23 @@ defmodule Nous.Plugins.SubAgent do
   # guard canonicalises BOTH sides to `/etc`, and every `/etc` path validates.
   # The child's jail would be strictly wider than its parent's — the one thing
   # this clamp exists to prevent. Decide admission on the canonical form the
-  # guard actually enforces, and fail closed if either side cannot be resolved.
+  # guard actually enforces, through the guard's OWN containment test so the two
+  # cannot drift, and fail closed on a symlink loop — the only resolution failure
+  # `canonical_root/1` can report (every other `readlink` error appends the
+  # component verbatim, which is what keeps a transient error from narrowing a
+  # working jail).
+  #
+  # Residual, NOT closed here: admission is decided once, at spawn. The child's
+  # guard re-resolves the root string on every call and knows nothing of its
+  # parent, so a writer inside the parent jail — the parent agent itself, or a
+  # sibling sub-agent — can afterwards swap a component of the child's root for a
+  # symlink pointing outside. Closing it needs the parent's canonical root carried
+  # into the child as an outer bound that `ensure_no_symlink_escape/2` also checks;
+  # that is a guard-contract change, tracked separately.
   defp within_canonical_root?(expanded, parent_root) do
     with {:ok, real_requested} <- PathGuard.canonical_root(expanded),
          {:ok, real_parent} <- PathGuard.canonical_root(parent_root) do
-      real_requested == real_parent or String.starts_with?(real_requested, real_parent <> "/")
+      PathGuard.within_root?(real_requested, real_parent)
     else
       _ -> false
     end

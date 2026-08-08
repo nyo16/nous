@@ -88,9 +88,18 @@ defmodule Nous.Tools.Env do
   # parsing, which has already stopped). The only expressible form is a utility
   # with no `=` in it, so such an argv is routed through `nice -n 0 --`: POSIX
   # requires it to `exec` its operands without parsing them, in-place (no extra
-  # process, so NetRunner's process-tree kill still covers the child).
+  # process, so NetRunner's process-tree kill still covers the child — verified by
+  # PID identity across both hops).
+  #
+  # A `-`-leading utility goes the same way, and NOT because `env` would misread
+  # it today: it survives only because the assignments precede it and `env` stops
+  # option parsing at the first operand. `scrubbed/0` returns `[]` when none of the
+  # allowlist is set, and then the utility IS the first thing `env` sees — where
+  # `-S` would split-string it (measured: `env -i -S "/bin/echo x"` executes,
+  # `env -i PATH=… -S "…"` exits 127). Depending on an empty environment never
+  # happening is not an invariant worth resting on.
   defp exec_argv([utility | _] = argv) do
-    if String.contains?(utility, "=") do
+    if String.contains?(utility, "=") or String.starts_with?(utility, "-") do
       [exec_trampoline(), "-n", "0", "--" | argv]
     else
       argv

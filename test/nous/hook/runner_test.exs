@@ -306,12 +306,33 @@ defmodule Nous.Hook.RunnerTest do
       # should) rather than being refused as configuration.
       hook = make_hook(:pre_tool_use, ["./FOO=bar"], type: :command)
 
-      {_result, log} =
+      {result, log} =
         ExUnit.CaptureLog.with_log(fn ->
           Runner.run_hooks([hook], :pre_tool_use, %{tool_name: "probe"})
         end)
 
       refute log =~ "parses as an environment assignment"
+      # It reached the spawn: a missing program is a non-zero exit, which fails
+      # open. Asserting this is what distinguishes "not refused as config" from
+      # "refused for some other reason we did not look at".
+      assert result == :allow
+    end
+
+    test "control: a bare PATH-resolved name WITHOUT = still runs" do
+      # The predicate is a conjunction, and without this test the `=` half can be
+      # deleted while the whole suite stays green — turning it into "refuse every
+      # program name with no slash", i.e. rejecting `["python3", "scripts/check.py"]`
+      # (the form the refusal message itself recommends) and, since an error fails
+      # OPEN by default, silently disabling every PATH-resolved gating hook.
+      hook = make_hook(:pre_tool_use, ["true"], type: :command)
+
+      {result, log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          Runner.run_hooks([hook], :pre_tool_use, %{tool_name: "probe"})
+        end)
+
+      refute log =~ "parses as an environment assignment"
+      assert result == :allow
     end
   end
 end

@@ -342,9 +342,8 @@ defmodule Nous.AgentServer do
           loaded_ctx
           |> Context.merge_deps(state.context.deps)
           |> Context.patch_dangling_tool_calls()
-          |> Map.merge(%{pubsub: state.pubsub, pubsub_topic: state.topic})
 
-        {:noreply, %{state | context: new_context}}
+        {:noreply, put_context(state, new_context)}
 
       _ ->
         {:noreply, state}
@@ -421,8 +420,10 @@ defmodule Nous.AgentServer do
 
   @impl true
   def handle_cast({:_apply_loaded_context, ctx}, state) do
-    # Internal cast posted by the async load task in :load_context.
-    {:noreply, %{state | context: ctx}}
+    # Internal cast posted by the async load task in :load_context. Goes through
+    # put_context/2: a deserialized context has pubsub/pubsub_topic hard-set to
+    # nil (`Context.deserialize/1`), which would mute the run's event stream.
+    {:noreply, put_context(state, ctx)}
   end
 
   @impl true
@@ -470,7 +471,7 @@ defmodule Nous.AgentServer do
         agent_name: state.context.agent_name
       )
 
-    state = %{state | context: new_context}
+    state = put_context(state, new_context)
 
     # Persist the cleared context off the mailbox so a slow backend can't
     # block. Fire-and-forget (see save_context_async/1 ordering note).
@@ -699,7 +700,7 @@ defmodule Nous.AgentServer do
   @impl true
   def handle_info({:agent_response_ready, generation, context, _result}, state) do
     if generation == state.task_generation do
-      state = %{state | context: context}
+      state = put_context(state, context)
       save_context_async(state)
       {:noreply, state}
     else
@@ -906,9 +907,11 @@ defmodule Nous.AgentServer do
 
     case result do
       {:ok, response} ->
-        # Broadcast response
+        # `{:agent_response, output}` only. `{:agent_complete, _}` is NOT published
+        # here: `AgentRunner.complete_run/4` already publishes it through the
+        # Callbacks bridge with this exact term (it is what `{:ok, response}`
+        # carries), so broadcasting it again delivered every completion twice.
         broadcast(state, {:agent_response, response.output})
-        broadcast(state, {:agent_complete, response})
 
         # Send context update to server, tagged with our generation so it
         # can be discarded if the user has already sent a newer message.
@@ -923,7 +926,12 @@ defmodule Nous.AgentServer do
         error_msg = if is_exception(error), do: Exception.message(error), else: inspect(error)
         Logger.error("Agent error in session #{state.session_id}: #{error_msg}")
 
-        # Broadcast error
+        # Unlike `:agent_complete`, this one is NOT a duplicate to be dropped: the
+        # runner's bridge publishes `{:agent_error, reason}` with the raw error
+        # TERM, while this server's documented event (see the @moduledoc table) is
+        # a message string. Subscribers therefore see both shapes on an error —
+        # a pre-existing wart, recorded rather than silently changed, because
+        # normalising it changes a documented payload for every runner caller.
         broadcast(state, {:agent_error, error_msg})
         send(server_pid, {:agent_task_completed, generation, :error})
     end
@@ -936,6 +944,20 @@ defmodule Nous.AgentServer do
   # loop had no bound.
   defp broadcast(state, message) do
     Nous.PubSub.broadcast_from(state.pubsub, state.server_pid, state.topic, message)
+  end
+
+  # The ONE place a context is installed into state, so no callsite can forget the
+  # pubsub pair. `Nous.Agent.Callbacks` is the sole publisher of runner events
+  # (deltas, tool calls, tool results, completion) and it short-circuits on a nil
+  # `pubsub_topic` — so a context arriving without the pair silently mutes the
+  # session's entire event stream, permanently, because the next context derives
+  # from the muted one. Two paths produce exactly that: `Context.deserialize/1`
+  # hard-sets both fields to nil, and `Context.new/1` back-fills `:pubsub` from
+  # application config but has no `:pubsub_topic` fallback (so `clear_history`
+  # cleared the topic along with the history). Before the forwarders were removed
+  # this was invisible: they published on `state.topic`, which is always right.
+  defp put_context(state, %Context{} = context) do
+    %{state | context: %{context | pubsub: state.pubsub, pubsub_topic: state.topic}}
   end
 
   defp bump_generation(state) do

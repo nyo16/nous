@@ -295,14 +295,22 @@ if Code.ensure_loaded?(Floki) do
     #
     # We do NOT walk to the next slot: a start failure that is not contention
     # will repeat on all 64 of them and then answer "too many concurrent web
-    # fetches", which would be false. Report the real reason instead, and log
-    # it because the model only ever sees the sentence, not the term.
+    # fetches", which would be false. Report the real reason instead.
+    #
+    # The FULL term goes to the log; the model gets a bounded rendering of it. A
+    # `failed_to_start_child` reason nests exceptions and stacktraces, whose
+    # `file:`/`line:` entries describe the build layout and the dependency tree,
+    # and an unbounded `inspect/1` of a supervisor term can also swamp the
+    # context window. The reason is not attacker-chosen, but it is
+    # attacker-triggerable through a model-supplied URL, so it is bounded rather
+    # than trusted.
     defp pool_start_failed(name, result) do
       Logger.warning(
         "WebFetch: pinned connection pool #{inspect(name)} failed to start: #{inspect(result)}"
       )
 
-      {:error, "Could not start a pinned connection pool: #{inspect(result)}"}
+      brief = inspect(result, limit: 5, printable_limit: 120, structs: false)
+      {:error, "Could not start a pinned connection pool: #{brief}"}
     end
 
     # Stream the body instead of letting Req buffer it whole: we get each chunk

@@ -217,10 +217,14 @@ defmodule Nous.MixProject do
   # `CompileError`s that would have broken the build for the first person to
   # enable them.
   #
-  # `MIX_OPTIONAL_DEPS=1` opts them in for the compile-only canary job in
+  # `NOUS_OPTIONAL_DEPS=1` opts them in for the compile-only canary job in
   # .github/workflows/ci.yml. An env switch rather than an entry in `deps/0` so
   # downstream resolution is untouched and `mix.lock` never references them
   # (`mix deps.unlock --check-unused` in the `format` job would reject that).
+  # NOT `MIX_`-prefixed: that namespace is Mix's own, and a switch read on every
+  # `mix` invocation — including `hex.build`/`hex.publish`, which derive the
+  # published requirement set from `deps/0` — should not look like one of Mix's.
+  # The `publish` job clears it explicitly for the same reason.
   #
   # `:exla` is deliberately absent: nothing needs it to COMPILE — the Bumblebee
   # arm reaches `EXLA.Backend` through `Code.ensure_loaded?/1` and uses it only
@@ -239,7 +243,7 @@ defmodule Nous.MixProject do
   # The three stores need their own plan (rewrite against the real API, or
   # remove); until then they stay unobserved and this comment is the record.
   defp optional_backend_deps do
-    if System.get_env("MIX_OPTIONAL_DEPS") == "1" do
+    if System.get_env("NOUS_OPTIONAL_DEPS") == "1" do
       [
         {:duckdbex, "~> 0.3", optional: true},
         {:bumblebee, "~> 0.6", optional: true},

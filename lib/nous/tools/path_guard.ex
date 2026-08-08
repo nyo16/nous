@@ -146,7 +146,7 @@ defmodule Nous.Tools.PathGuard do
     # previous validate/2 call, as file_glob/file_grep re-validate wildcard
     # results). Such a path won't lexically match an unresolved root, so accept
     # it if it is within either the raw OR the resolved root before rejecting.
-    if within?(expanded, root) or within?(expanded, resolved_root(root)) do
+    if within_root?(expanded, root) or within_root?(expanded, resolved_root(root)) do
       :ok
     else
       {:error,
@@ -161,9 +161,24 @@ defmodule Nous.Tools.PathGuard do
     end
   end
 
-  defp within?(path, root) do
-    path == root or String.starts_with?(path, root <> "/")
+  @doc false
+  # Containment for an already-expanded (or already-canonical) path against an
+  # already-expanded root. `SubAgent` needs the same test to decide whether a
+  # child's requested root is inside its parent's, and two copies of a jail
+  # boundary is how one of them ends up subtly different.
+  #
+  # The trailing slash is load-bearing: without it `"/srv/ws/t1evil"` counts as
+  # inside `"/srv/ws/t1"`. But a root of `"/"` would make the prefix `"//"`, which
+  # no `Path.expand`-normalised path starts with — so an operator spelling "no
+  # jail" as `workspace_root: "/"` got a jail that denied every path, for the
+  # parent and every sub-agent alike.
+  @spec within_root?(String.t(), String.t()) :: boolean()
+  def within_root?(path, root) do
+    path == root or String.starts_with?(path, root_prefix(root))
   end
+
+  defp root_prefix("/"), do: "/"
+  defp root_prefix(root), do: root <> "/"
 
   defp ensure_no_symlink_escape(expanded, root) do
     # Resolve symlinks across EVERY component (not just the leaf), then compare
@@ -174,7 +189,7 @@ defmodule Nous.Tools.PathGuard do
     # comparison robust to symlinked roots (e.g. macOS `/tmp -> /private/tmp`).
     with {:ok, real_root} <- resolve_real(root),
          {:ok, real_path} <- resolve_real(expanded) do
-      if real_path == real_root or String.starts_with?(real_path, real_root <> "/") do
+      if within_root?(real_path, real_root) do
         {:ok, real_path}
       else
         {:error,

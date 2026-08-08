@@ -54,7 +54,16 @@ defmodule Nous.TaskSupervisorSaturation do
   defmacro __using__(_opts) do
     quote do
       @before_compile Nous.TaskSupervisorSaturation
-      import Nous.TaskSupervisorSaturation, only: [saturate!: 0]
+
+      # A PRIVATE wrapper, not an import of a public `saturate!/0`. An ordinary
+      # public entry point can be called fully-qualified from an `async: true`
+      # module that never `use`s this one — dropping the VM-wide ceiling to 0
+      # while other async modules run — and that is exactly the call form every
+      # caller used before this harness grew a guard, so the next person copying
+      # an old line would reintroduce the hazard silently. Now a bypass has to be
+      # spelled `Nous.TaskSupervisorSaturation.__saturate__!()`, which reads like
+      # what it is.
+      defp saturate!, do: Nous.TaskSupervisorSaturation.__saturate__!()
     end
   end
 
@@ -92,8 +101,8 @@ defmodule Nous.TaskSupervisorSaturation do
   end
 
   @doc false
-  @spec saturate!() :: :ok
-  def saturate! do
+  @spec __saturate__!() :: :ok
+  def __saturate__! do
     previous = :sys.get_state(@supervisor).max_children
 
     :sys.replace_state(@supervisor, &%{&1 | max_children: 0})
