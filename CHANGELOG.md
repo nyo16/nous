@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed — BREAKING
+
+- **`Nous.Memory.Store.Muninn`, `Nous.Memory.Store.Zvec` and
+  `Nous.Memory.Store.Hybrid` are deleted.** They called an API that **no
+  published version of `muninn` or `zvec` has ever exported**, so they never
+  worked and could not be fixed by pinning a version. Installing
+  `{:muninn, "~> 0.4"}` — the requirement those modules' own docs gave — yields a
+  top-level `Muninn` whose only export is `hello/0`; the real surface is
+  `Muninn.Index` / `IndexWriter` / `Searcher`, and muninn 0.4.0 has no top-level
+  module at all. `zvec`'s surface is `Zvec.Collection`, and its collection API is
+  list-oriented where the calls assumed per-item. 28 undefined call sites across
+  the three modules, found by the new `optional-deps` compile canary on its first
+  run.
+
+  No working code can have depended on them: every entry point either failed to
+  resolve or returned an error, and both stores were absent from the compiler and
+  from the coverage denominator. `examples/memory/hybrid_full.exs` is removed with
+  them.
+
+  **If you want Tantivy BM25 or HNSW/IVF vector search**, it now belongs in your
+  application rather than in Nous — see the extension point below, which is where
+  a backend with a heavy native dependency should have lived all along.
+
+### Added
+
+- **`Nous.Memory.Store` is a documented extension point, and a backend you write
+  yourself is a first-class citizen.** This was already true and never written
+  down: nothing in the memory system knows a backend's name — the plugin, the
+  tools and `Nous.Memory.Search` all dispatch on the module handed to them in
+  `deps: %{memory_config: %{store: MyApp.MyStore}}` — and
+  `examples/memory/postgresql_full.exs` has been a working out-of-tree
+  implementation (Postgres `tsvector` + `pgvector`) the whole time. Now supported
+  deliberately:
+
+    * The behaviour's moduledoc is an implementer's guide: the state contract,
+      which callbacks are required, that `search_vector/3` is **optional and
+      feature-detected** (`function_exported?/3` — a text-only backend omits it
+      rather than defining it to return an error), and the warning that scores are
+      compared across backends so a **distance** where a similarity is expected
+      ranks results backwards while every callback still looks correct.
+    * **`Nous.Memory.Store.Results` is now public** (was `@moduledoc false`). It is
+      the shared retrieval tail — hydrate hit ids from an entry table, scope
+      filter, `min_score`, sort, truncate — i.e. the whole back half of
+      `search_text/3` for any index-plus-entry-table backend.
+    * **`Nous.Memory.Store.Conformance`** ships in `lib/` (moved from
+      `test/support/`, renamed from `Nous.MemoryStoreConformance`), so an
+      out-of-tree backend can hold itself to the same contract battery Nous runs
+      against its own: `use Nous.Memory.Store.Conformance, store: MyApp.MyStore`.
+      A new test drives a store defined entirely outside the `Nous` namespace
+      through the plugin and the memory tools, and pins the feature detection in
+      both directions.
+
+### Fixed
+
+- **The memory backend table claimed capabilities the code does not have.** Three
+  of the surviving rows overstated, in the table an operator picks a backend from
+  (`lib/nous/memory.ex`, `docs/guides/memory.md`, `README.md`):
+  `Store.SQLite`'s vector search was documented as **`sqlite-vec`** — that string
+  appeared exactly once in all of `lib/`, in the table itself; it is an in-Elixir
+  cosine scan over JSON-decoded blobs, and no extension is ever loaded.
+  `Store.DuckDB`'s was documented as **VSS**; it is `list_cosine_similarity` in
+  SQL, also a scan. `Store.DuckDB`'s text search was documented as the **FTS
+  extension**; `INSTALL fts` / `LOAD fts` are issued with the result discarded and
+  no query references it, so it is an `ILIKE` substring match. Net, now stated
+  plainly: **no shipped backend performs indexed (ANN) vector search** — which is
+  usually the right trade at the corpus sizes agent memory reaches, but is a scan.
+
 ### Security
 
 - **`Nous.Plugins.HumanInTheLoop` no longer auto-approves tools outside its

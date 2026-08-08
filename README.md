@@ -129,7 +129,7 @@ or out to a focused guide.
 - **[Sub-agent delegation](#sub-agent-delegation)** — `delegate_task` / `spawn_agents` for sequential or parallel sub-agents
 - **[Multi-agent teams](docs/guides/teams.md)** — supervised agent groups with roles, shared state, comms, and budget/rate limiting
 - **[Decision graph](docs/guides/decisions.md)** — track goals, decisions, and outcomes as a queryable graph
-- **[Memory](#agent-memory)** — persistent hybrid keyword + vector search; ETS, SQLite, DuckDB, Muninn, Zvec backends ([guide](docs/guides/memory.md))
+- **[Memory](#agent-memory)** — persistent hybrid keyword + vector search; ETS, SQLite, DuckDB backends, plus a public store behaviour for your own ([guide](docs/guides/memory.md))
 - **[Workflow](#workflow-engine)** — executable DAGs of agents, tools, and control flow with branching, cycles, parallelism, pause/resume ([guide](docs/guides/workflows.md))
 - **[Knowledge base](#knowledge-base)** — LLM-compiled wiki with summaries, backlinks, ingestion pipelines ([guide](docs/guides/knowledge_base.md))
 - **[Deep research](#deep-research)** — autonomous multi-step research with citations ([guide](docs/guides/research.md))
@@ -525,8 +525,9 @@ deps = %{memory_config: %{store: Nous.Memory.Store.ETS}}
 {:ok, r2} = Nous.run(agent, "What is my favorite color?", deps: deps, context: r1.context)
 ```
 
-**Store backends:** ETS (zero deps), SQLite (FTS5), DuckDB (FTS + vector),
-Muninn (Tantivy BM25), Zvec (HNSW), Hybrid (Muninn + Zvec).
+**Store backends:** ETS (zero deps), SQLite (FTS5 + cosine scan), DuckDB
+(ILIKE + cosine scan). `Nous.Memory.Store` is a public extension point — implement
+the behaviour in your own app to plug in any backend.
 **Embedding providers:** Bumblebee (local, offline), OpenAI, Local
 (Ollama/vLLM). **Features:** Memory scoping (agent/user/session/global),
 temporal decay, importance weighting, RRF scoring, configurable
@@ -694,7 +695,7 @@ hackney backpressure tuning.
 - [memory/local_bumblebee.exs](examples/memory/local_bumblebee.exs) - Local semantic search, no API keys
 - [memory/sqlite_full.exs](examples/memory/sqlite_full.exs) - SQLite + FTS5 production setup
 - [memory/duckdb_full.exs](examples/memory/duckdb_full.exs) - DuckDB analytics-friendly setup
-- [memory/hybrid_full.exs](examples/memory/hybrid_full.exs) - Muninn + Zvec maximum quality
+- [memory/postgresql_full.exs](examples/memory/postgresql_full.exs) - Out-of-tree store: PostgreSQL + pgvector
 - [memory/cross_agent.exs](examples/memory/cross_agent.exs) - Multi-agent shared memory with scoping
 
 ### Advanced Examples

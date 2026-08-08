@@ -1,15 +1,17 @@
 defmodule Nous.Memory.Store.Results do
-  @moduledoc false
+  @moduledoc """
+  Result post-processing shared by index-plus-entry-table memory stores.
 
-  # Result post-processing shared by the ETS-backed memory stores
-  # (`Nous.Memory.Store.ETS`, `.Zvec`, `.Muninn`, `.Hybrid`).
-  #
-  # Each store owns its own retrieval — a jaro scan, a Muninn index, a Zvec
-  # collection — but they all finish the same way: hydrate the hit ids from
-  # the ETS side table, drop out-of-scope entries, cut below `min_score`,
-  # sort, truncate. Four copies of that tail is how a scope filter that
-  # crashes on scored results survived in three of them (see
-  # `filter_by_scope/2`).
+  A backend owns its own *retrieval* — a jaro scan, an inverted index, a vector
+  collection — but they all finish the same way: hydrate the hit ids from an entry
+  table, drop out-of-scope entries, cut below `min_score`, sort, truncate. This is
+  that tail, and it is public because a `Nous.Memory.Store` implementation living
+  outside Nous needs exactly the same back half (see `Nous.Memory.Store`).
+
+  Keeping it as one definition is not cosmetic: it was four copies, and the copy
+  that handled scored results was unreachable in three of them, so any scoped
+  vector or full-text search raised `BadMapError` (see `filter_by_scope/2`).
+  """
 
   alias Nous.Memory.Entry
 

@@ -63,7 +63,7 @@ defmodule Nous.MixProject do
           # optional dep this cycle, so the store compiles and now carries a
           # real round-trip suite. It was excluded-by-accident for as long as it
           # was broken-by-accident.
-          ~r/^Nous\.Memory\.Store\.(DuckDB|Zvec|Muninn|Hybrid)$/,
+          ~r/^Nous\.Memory\.Store\.DuckDB$/,
           ~r/^Nous\.Memory\.Embedding\.(Local|Bumblebee)$/,
           ~r/^Nous\.Decisions\.Store\.DuckDB$/,
           ~r/^Nous\.Providers\.LlamaCpp$/,
@@ -206,16 +206,19 @@ defmodule Nous.MixProject do
     ] ++ optional_backend_deps()
   end
 
-  # The optional-backend arms — `Nous.Memory.Store.{DuckDB,Muninn,Zvec,Hybrid}`,
+  # The optional-backend arms — `Nous.Memory.Store.DuckDB`,
   # `Nous.Decisions.Store.DuckDB`, `Nous.Memory.Embedding.Bumblebee`,
   # `Nous.PromEx.Plugin`, and `Nous.Application`'s Bumblebee gate — sit behind
   # `Code.ensure_loaded?/1`. The default build therefore never compiles them,
   # and `ignore_modules` above keeps them out of the coverage denominator too,
-  # so they are observed by nothing. That population produced three real defects
+  # so they are observed by nothing. That population produced four real defects
   # in one cycle: the SQLite store never functioned against any `exqlite` its own
-  # constraint allowed, and `Muninn.init/1` and `Zvec.init/1` held hard
-  # `CompileError`s that would have broken the build for the first person to
-  # enable them.
+  # constraint allowed; `Muninn.init/1` and `Zvec.init/1` held hard
+  # `CompileError`s; and the Muninn/Zvec/Hybrid stores turned out to call an API
+  # no published version of either package has ever exported, which is why those
+  # three modules were removed rather than fixed (a backend that exotic belongs
+  # out of tree — see `Nous.Memory.Store`, which is now a documented extension
+  # point with a shipped conformance suite).
   #
   # `NOUS_OPTIONAL_DEPS=1` opts them in for the compile-only canary job in
   # .github/workflows/ci.yml. An env switch rather than an entry in `deps/0` so
@@ -229,19 +232,6 @@ defmodule Nous.MixProject do
   # `:exla` is deliberately absent: nothing needs it to COMPILE — the Bumblebee
   # arm reaches `EXLA.Backend` through `Code.ensure_loaded?/1` and uses it only
   # as a value — and building it downloads a ~300 MB XLA archive.
-  #
-  # `:muninn` and `:zvec` are absent for a much worse reason, measured 2026-08
-  # when this job was built: `Nous.Memory.Store.{Muninn,Zvec,Hybrid}` call an API
-  # that NO published version of either package exports. Installing
-  # `{:muninn, "~> 0.4"}` — the requirement those modules' own docs give — yields
-  # a top-level `Muninn` module whose only export is `hello/0`; the real surface
-  # is `Muninn.Index`/`Muninn.IndexWriter`/`Muninn.Searcher`, and muninn 0.4.0 has
-  # no top-level module at all. `zvec` is the same shape (`Zvec.Collection`). This
-  # is not version drift, it is code that has never worked, so adding these two
-  # deps here would only pin the canary permanently red — and a canary that is
-  # always red is ignored, which is the failure mode this job exists to avoid.
-  # The three stores need their own plan (rewrite against the real API, or
-  # remove); until then they stay unobserved and this comment is the record.
   defp optional_backend_deps do
     if System.get_env("NOUS_OPTIONAL_DEPS") == "1" do
       [
@@ -615,9 +605,8 @@ defmodule Nous.MixProject do
           Nous.Memory.Store.ETS,
           Nous.Memory.Store.SQLite,
           Nous.Memory.Store.DuckDB,
-          Nous.Memory.Store.Muninn,
-          Nous.Memory.Store.Zvec,
-          Nous.Memory.Store.Hybrid,
+          Nous.Memory.Store.Results,
+          Nous.Memory.Store.Conformance,
           Nous.Memory.Scoring,
           Nous.Memory.Search,
           Nous.Memory.Tools,
