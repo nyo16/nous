@@ -1,26 +1,42 @@
-defmodule Nous.MemoryStoreConformance do
+defmodule Nous.Memory.Store.Conformance do
   @moduledoc """
-  Shared behaviour-conformance tests for `Nous.Memory.Store` implementations.
+  Contract-conformance tests for a `Nous.Memory.Store` implementation.
 
-  Each backend gets the same battery of contract tests by `use`-ing this module
-  with its store module and init opts:
+  This is a **test-time kit**: it ships in `lib/` so that a backend implemented
+  outside Nous can hold itself to the same battery Nous runs against its own
+  stores. `use` it in a test file with your store module and its init opts:
 
-      defmodule Nous.Memory.Store.ETSConformanceTest do
-        use Nous.MemoryStoreConformance, store: Nous.Memory.Store.ETS
+      defmodule MyApp.Memory.Store.TantivyConformanceTest do
+        use Nous.Memory.Store.Conformance,
+          store: MyApp.Memory.Store.Tantivy,
+          init_opts: [index_path: "/tmp/test_index"]
       end
 
-  Native-dep backends (SQLite/DuckDB/Zvec/Muninn) adopt the same suite behind a
-  tag so they only run where the dep is installed:
+  That is the whole file — the macro generates the module's `use ExUnit.Case`, its
+  setup and every test. A backend that needs a native dependency can hide the
+  suite behind a tag so it only runs where the dep is installed:
 
       defmodule Nous.Memory.Store.SQLiteConformanceTest do
-        use Nous.MemoryStoreConformance,
+        use Nous.Memory.Store.Conformance,
           store: Nous.Memory.Store.SQLite,
           init_opts: [path: ":memory:"],
           tag: :sqlite
       end
 
-  Only the `Nous.Memory.Store` contract is exercised here — `search_vector/3` is
-  optional (ETS does not implement it) and is covered separately.
+  ## What it covers, and what it does not
+
+  Every REQUIRED callback of `Nous.Memory.Store`: the `store/2` → `fetch/2`
+  round-trip, `:not_found` on a missing id, `delete/2`, `update/3` (including the
+  `:not_found` case and that it bumps `updated_at`), `list/2` with and without
+  `:scope`, and `search_text/3`'s ranking, `:limit` and `:scope` handling.
+
+  It does NOT cover `search_vector/3`, which is optional and feature-detected
+  (`Nous.Memory.Store.ETS` does not implement it). It also cannot check score
+  *direction* — see the warning in `Nous.Memory.Store` about returning a
+  similarity rather than a distance, which no contract test can catch for you.
+
+  Passing this suite means your backend is substitutable, not that it is fast or
+  that its retrieval is any good.
   """
 
   defmacro __using__(opts) do

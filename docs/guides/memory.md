@@ -57,16 +57,20 @@ See `examples/memory/basic_ets.exs` for a complete runnable version.
 
 ## Store Backends
 
-Six backends are available. All implement the `Nous.Memory.Store` behaviour.
+Three backends ship with Nous. All implement the `Nous.Memory.Store` behaviour, which is
+public — see [Bringing Your Own Backend](#bringing-your-own-backend).
 
 | Backend | Text Search | Vector Search | External Deps |
 |---------|-------------|---------------|---------------|
-| `Store.ETS` | Jaro distance | No | None |
-| `Store.SQLite` | FTS5 (BM25) | Cosine similarity | `exqlite` |
-| `Store.DuckDB` | ILIKE / FTS extension | `list_cosine_similarity` | `duckdbex` |
-| `Store.Muninn` | Tantivy BM25 | No | `muninn` |
-| `Store.Zvec` | No | HNSW/IVF | `zvec` |
-| `Store.Hybrid` | Tantivy BM25 | HNSW/IVF | `muninn` + `zvec` |
+| `Store.ETS` | Jaro distance | None | None |
+| `Store.SQLite` | FTS5 (BM25) | Cosine similarity, scanned in Elixir | `exqlite` |
+| `Store.DuckDB` | `ILIKE` substring match | `list_cosine_similarity`, scanned in SQL | `duckdbex` |
+
+No shipped backend performs *indexed* (ANN) vector search — both vector-capable stores
+compare the query against every row that has an embedding. At the corpus sizes agent
+memory usually reaches (thousands to low tens of thousands of entries) a scan is a
+perfectly reasonable answer, but it is a scan: cost grows linearly with the number of
+embedded entries, not logarithmically.
 
 ### ETS (In-Memory)
 
@@ -97,7 +101,7 @@ Initialize with a file path:
 {:ok, store} = Nous.Memory.Store.SQLite.init(path: ":memory:")
 ```
 
-SQLite uses FTS5 with Porter stemming and unicode tokenization for text search. BM25 scoring is handled natively by SQLite. Vector search is implemented via in-Elixir cosine similarity over JSON-encoded embedding blobs.
+SQLite uses FTS5 with Porter stemming and unicode tokenization for text search. BM25 scoring is handled natively by SQLite. Vector search is a full scan: embeddings are stored as JSON-encoded blobs and `search_vector/3` computes cosine similarity in Elixir over every row with a non-null embedding. No vector extension (`sqlite-vec` or otherwise) is loaded.
 
 See `examples/memory/sqlite_full.exs`.
 
@@ -117,75 +121,158 @@ Initialize:
 {:ok, store} = Nous.Memory.Store.DuckDB.init(path: "/tmp/memories.duckdb")
 ```
 
-DuckDB stores embeddings in native `DOUBLE[]` array columns and uses `list_cosine_similarity` for vector search. Text search uses ILIKE as a fallback (the FTS extension is loaded if available but not required).
+DuckDB stores embeddings in native `DOUBLE[]` array columns and ranks `search_vector/3` with `list_cosine_similarity` in SQL — again a scan over every embedded row, not the VSS/HNSW extension. Text search is an `ILIKE '%query%'` substring match scored in Elixir by normalized occurrence count: no stemming, no BM25. `init/1` does attempt `INSTALL fts` / `LOAD fts`, but it discards the result and no query uses the extension, so treat FTS as absent.
 
 See `examples/memory/duckdb_full.exs`.
 
-### Muninn (Tantivy)
+## Bringing Your Own Backend
 
-Best for: production BM25 text search without vector needs.
+The three stores above are not privileged. Nothing in the memory system knows a backend's
+name — the plugin, the memory tools and `Nous.Memory.Search` all dispatch on the module
+they were handed. A store you write in your own application is therefore a first-class
+citizen, and it is the supported way to reach an exotic backend (a Tantivy index, an HNSW
+library, a vector database, your company's search cluster) without waiting on Nous to
+vendor a dependency for it.
 
-Add to `mix.exs`:
+Put `@behaviour Nous.Memory.Store` on a module and implement the seven required callbacks:
+`init/1`, `store/2`, `fetch/2`, `delete/2`, `update/3`, `search_text/3`, `list/2`.
 
 ```elixir
-{:muninn, "~> 0.4"}
+defmodule MyApp.Memory.Store.Tantivy do
+  @behaviour Nous.Memory.Store
+
+  alias Nous.Memory.Store.Results
+
+  @impl true
+  def init(opts) do
+    index = MyApp.Tantivy.open(Keyword.fetch!(opts, :index_path))
+    entries = :ets.new(:my_entries, [:set, :public])
+    {:ok, %{index: index, entries: entries}}
+  end
+
+  @impl true
+  def store(%{index: index, entries: entries} = state, entry) do
+    true = :ets.insert(entries, {entry.id, entry})
+    :ok = MyApp.Tantivy.add(index, entry.id, entry.content)
+    {:ok, state}
+  end
+
+  @impl true
+  def fetch(%{entries: entries}, id) do
+    case :ets.lookup(entries, id) do
+      [{^id, entry}] -> {:ok, entry}
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @impl true
+  def search_text(%{index: index, entries: entries}, query, opts) do
+    limit = Keyword.get(opts, :limit, 10)
+    hits = MyApp.Tantivy.search(index, query, limit)
+
+    {:ok,
+     Results.rank(
+       hits,
+       entries,
+       Keyword.get(opts, :scope, %{}),
+       Keyword.get(opts, :min_score, 0.0),
+       limit
+     )}
+  end
+
+  # delete/2, update/3 and list/2 elided — see Nous.Memory.Store.ETS for the shortest
+  # complete implementation of all seven.
+end
 ```
 
-Initialize:
+Then hand the module to the plugin. Nothing else changes:
 
 ```elixir
-{:ok, store} = Nous.Memory.Store.Muninn.init(index_path: "/tmp/muninn_index")
-```
+{:ok, state} = MyApp.Memory.Store.Tantivy.init(index_path: "/var/lib/myapp/index")
 
-Uses Tantivy (Rust-based search engine) via Muninn for high-quality BM25 text search. Entry data is stored in ETS alongside the Tantivy index. Does not support `search_vector/3`.
-
-### Hybrid (Muninn + Zvec)
-
-Best for: production with both BM25 text search and vector similarity search.
-
-Add to `mix.exs`:
-
-```elixir
-{:muninn, "~> 0.4"},
-{:zvec, "~> 0.2"}
-```
-
-Initialize:
-
-```elixir
-{:ok, store} = Nous.Memory.Store.Hybrid.init(
-  muninn_config: %{index_path: "/tmp/muninn_index"},
-  zvec_config: %{
-    collection_path: "/tmp/zvec_collection",
-    embedding_dimension: 1536  # must match your embedding provider
+agent = Nous.new("openai:gpt-4o",
+  plugins: [Nous.Plugins.Memory],
+  deps: %{
+    memory_config: %{
+      store: MyApp.Memory.Store.Tantivy,
+      store_state: state
+    }
   }
 )
 ```
 
-The Hybrid store coordinates two backends: Muninn handles `search_text/3` (Tantivy BM25) and Zvec handles `search_vector/3` (HNSW/IVF). A shared ETS table is the source of truth for entry data. When you call `Search.search/5`, the search orchestrator runs both backends in parallel and merges results via RRF.
+### The state contract
 
-See `examples/memory/hybrid_full.exs`.
+`init/1` returns an opaque `state` term. Nous never inspects it; it threads the value back
+into every other callback and keeps whatever the *last* callback returned. Callbacks that
+mutate therefore return `{:ok, new_state}` even when the underlying store is a mutable
+handle and the term never actually changes — both `Store.ETS` and the SQL stores hand back
+the same term.
 
-### Zvec (Vector-Only)
+A run-scoped state (ETS tables owned by the calling process, a connection opened in
+`init/1`) is a valid and intentional design. There is no supervised owner and no
+cross-run sharing unless your backend arranges it.
 
-Best for: pure semantic search when you always have embeddings and don't need keyword matching.
+### Vector search is optional, and feature-detected
 
-Add to `mix.exs`:
+`search_vector/3` is the only optional callback. Its absence is **feature-detected, not
+rescued**: `Nous.Memory.Search` calls `function_exported?(store, :search_vector, 3)` and
+degrades to text-only search when the function is not there.
+
+So a text-only backend simply does not define it. Do **not** define it and return an
+error — that turns "this backend has no vector search" from a quiet capability check into
+a runtime failure the search path will surface to the model.
+
+### Return a similarity, not a distance
+
+`Nous.Memory.Search` merges text and vector results and applies `:min_score` and the
+scoring weights to whatever numbers a backend returns, so **a similarity and a distance
+are not interchangeable**. Hand back a distance and your results rank backwards while
+every callback still looks correct and every test that only checks shapes still passes.
+Normalise to a similarity where larger is better (`Store.ETS` uses Jaro, 0..1; the SQL
+stores use cosine similarity) before returning.
+
+Both search callbacks return `{:ok, [{entry, score}]}` — highest score first, already
+filtered by `:scope` and `:min_score`, already truncated to `:limit`. All search and list
+callbacks accept a `:scope` option: a map of `Nous.Memory.Entry` fields to filter on.
+
+### The shared retrieval tail
+
+A backend owns its own retrieval, but index-plus-entry-table backends all finish the same
+way. `Nous.Memory.Store.Results` is public for exactly that reason:
+
+- `Results.rank(hits, table, scope, min_score, limit)` takes the `%{id: id, score: score}`
+  maps your index returns, hydrates each id from an ETS entry table, drops out-of-scope
+  entries, cuts anything at or below `min_score`, sorts descending and truncates to
+  `limit`. Ids with no surviving row are dropped — the index and the side table are
+  written separately, so an id can outlive its entry.
+- `Results.filter_by_scope/2` and `Results.all_entries/1` are available on their own if
+  you only need a piece of it.
+
+If your backend is an index plus an entry table, `rank/5` is the whole back half of
+`search_text/3`.
+
+When a backend does keep an index and an entry table separately, order the writes so that
+a failure leaves the entry absent from **both** rather than indexed but unreadable (or the
+reverse). A torn write should degrade to a miss, never to a wrong result.
+
+### Run the conformance suite
+
+`Nous.Memory.Store.Conformance` is the contract suite Nous runs against its own backends,
+and it ships in `lib/` so that out-of-tree stores can `use` it:
 
 ```elixir
-{:zvec, "~> 0.2"}
+defmodule MyApp.Memory.Store.TantivyConformanceTest do
+  use Nous.Memory.Store.Conformance,
+    store: MyApp.Memory.Store.Tantivy,
+    init_opts: [index_path: "/tmp/test_index"]
+end
 ```
 
-Initialize:
-
-```elixir
-{:ok, store} = Nous.Memory.Store.Zvec.init(
-  collection_path: "/tmp/zvec_collection",
-  embedding_dimension: 1536
-)
-```
-
-Vector-only backend. Does not implement `search_text/3`. All entries must include embeddings.
+That is the same battery the built-in stores are held to. `Nous.Memory.Store.ETS` is the
+reference implementation — dependency-free and short enough to read in one sitting — and
+`examples/memory/postgresql_full.exs` is a complete out-of-tree store (PostgreSQL with
+`tsvector` and `pgvector`) written against this behaviour.
 
 ## Search & Scoring
 
@@ -195,14 +282,13 @@ Every backend that implements `search_text/3` provides keyword-based retrieval. 
 
 - **ETS** -- `String.jaro_distance/2` (fuzzy character-level similarity). Suitable for small datasets.
 - **SQLite** -- FTS5 with BM25 scoring and Porter stemming. Handles word variations ("deploy" matches "deployment").
-- **DuckDB** -- ILIKE-based matching as fallback, FTS extension if available.
-- **Muninn/Hybrid** -- Tantivy BM25 (same algorithm as Elasticsearch/Lucene). Best for production.
+- **DuckDB** -- `ILIKE '%query%'` substring match, scored by normalized occurrence count. No stemming; the whole query must appear literally.
 
 Text search always works, even without an embedding provider configured.
 
 ### Vector Search
 
-Vector search requires two things: an embedding provider and a store that implements `search_vector/3` (SQLite, DuckDB, Zvec, or Hybrid).
+Vector search requires two things: an embedding provider, and a store that implements the optional `search_vector/3`. Of the shipped backends that means `Store.SQLite` or `Store.DuckDB` — both by scanning every embedded row, neither with an ANN index. `Store.ETS` does not implement it at all, so with an ETS store the search orchestrator degrades to text-only regardless of the embedding provider.
 
 Three embedding providers are included:
 
@@ -552,109 +638,9 @@ end
 
 ### Custom Store Backends
 
-Implement the `Nous.Memory.Store` behaviour:
-
-```elixir
-defmodule MyApp.Memory.Store.Redis do
-  @behaviour Nous.Memory.Store
-
-  alias Nous.Memory.Entry
-
-  # `state` is opaque to Nous -- return whatever your backend needs and it is
-  # threaded back into every other callback.
-  @impl true
-  def init(opts) do
-    case Redix.start_link(Keyword.get(opts, :url, "redis://localhost:6379")) do
-      {:ok, conn} -> {:ok, %{conn: conn, prefix: Keyword.get(opts, :prefix, "nous:memory")}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @impl true
-  def store(state, %Entry{} = entry) do
-    case Redix.command(state.conn, ["SET", key(state, entry.id), :erlang.term_to_binary(entry)]) do
-      {:ok, _} -> {:ok, state}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @impl true
-  def fetch(state, id) do
-    case Redix.command(state.conn, ["GET", key(state, id)]) do
-      {:ok, nil} -> {:error, :not_found}
-      {:ok, binary} -> {:ok, :erlang.binary_to_term(binary)}
-      {:error, _reason} -> {:error, :not_found}
-    end
-  end
-
-  @impl true
-  def delete(state, id) do
-    case Redix.command(state.conn, ["DEL", key(state, id)]) do
-      {:ok, _} -> {:ok, state}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  # Read-modify-write. Stamping :updated_at here is what makes the entry
-  # lifecycle fields (below) meaningful for your backend too.
-  @impl true
-  def update(state, id, updates) do
-    with {:ok, entry} <- fetch(state, id) do
-      store(state, struct(entry, Map.put(updates, :updated_at, DateTime.utc_now())))
-    end
-  end
-
-  # opts carry :scope, :limit and :min_score. Scoring is yours to define --
-  # this naive version mirrors Store.ETS and uses fuzzy string distance.
-  @impl true
-  def search_text(state, query, opts) do
-    {:ok, entries} = list(state, opts)
-    query_down = String.downcase(query)
-    min_score = Keyword.get(opts, :min_score, 0.0)
-
-    results =
-      entries
-      |> Enum.map(&{&1, String.jaro_distance(query_down, String.downcase(&1.content))})
-      |> Enum.filter(fn {_entry, score} -> score > min_score end)
-      |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
-      |> Enum.take(Keyword.get(opts, :limit, 10))
-
-    {:ok, results}
-  end
-
-  @impl true
-  def list(state, opts) do
-    {:ok, keys} = Redix.command(state.conn, ["KEYS", key(state, "*")])
-
-    entries =
-      Enum.flat_map(keys, fn k ->
-        case Redix.command(state.conn, ["GET", k]) do
-          {:ok, binary} when is_binary(binary) -> [:erlang.binary_to_term(binary)]
-          _ -> []
-        end
-      end)
-
-    {:ok, filter_by_scope(entries, Keyword.get(opts, :scope, %{}))}
-  end
-
-  # Optional -- implement for vector search support:
-  # @impl true
-  # def search_vector(state, embedding, opts), do: {:ok, [{entry, score}]}
-
-  defp key(state, id), do: "#{state.prefix}:#{id}"
-
-  defp filter_by_scope(entries, scope) when is_map(scope) and map_size(scope) > 0 do
-    Enum.filter(entries, fn entry ->
-      Enum.all?(scope, fn {field, value} -> Map.get(entry, field) == value end)
-    end)
-  end
-
-  # A non-map scope (:global) or an empty map means "no filtering".
-  defp filter_by_scope(entries, _scope), do: entries
-end
-```
-
-The `search_vector/3` callback is optional. The search orchestrator checks for it at runtime via `function_exported?/3` and falls back to text-only when it is not available.
+See [Bringing Your Own Backend](#bringing-your-own-backend) above: implement
+`@behaviour Nous.Memory.Store`, pass the module as `:store`, and hold yourself to the
+contract with `use Nous.Memory.Store.Conformance`.
 
 ### Embedding Dimension Mismatches
 
@@ -666,7 +652,7 @@ Your embedding provider dimension must match your store's vector configuration. 
 | Local / Ollama `nomic-embed-text` | 768 |
 | Bumblebee `gte-Qwen2-0.6B-instruct` | 1024 |
 
-When using `Store.Hybrid` or `Store.Zvec`, set `embedding_dimension` in the init options to match. If dimensions mismatch, vector search will return incorrect results or errors.
+No shipped store takes an `embedding_dimension` option — none of them declare a vector width up front, and embeddings are persisted at whatever length the provider produced. The dimensions still have to agree: if you point a new provider at a store populated by an old one, `Store.SQLite` scores every length-mismatched row `0.0`, so old entries silently vanish from vector results rather than erroring. Re-embed the corpus when you change providers, or give each provider its own store.
 
 ### Memory Entry Lifecycle
 
@@ -710,7 +696,7 @@ Working examples are in the `examples/memory/` directory:
 | `basic_ets.exs` | Minimal ETS setup, store and search |
 | `sqlite_full.exs` | SQLite with FTS5 BM25 search |
 | `duckdb_full.exs` | DuckDB with native array embeddings |
-| `hybrid_full.exs` | Muninn + Zvec hybrid search |
+| `postgresql_full.exs` | A complete out-of-tree `Nous.Memory.Store` (PostgreSQL + pgvector) |
 | `local_bumblebee.exs` | On-device embeddings with Bumblebee |
 | `cross_agent.exs` | Multi-agent shared memory with scoping |
 | `auto_update.exs` | Automatic memory updates after each run |
