@@ -75,14 +75,7 @@ defmodule Nous.Plugins.HumanInTheLoop do
       # bypassed approval if the operator wrote "send_email" (and vice versa).
       lookup = downcase_set(tool_names)
 
-      tagged_tools =
-        Enum.map(tools, fn tool ->
-          if matches?(lookup, tool.name) do
-            %{tool | requires_approval: true}
-          else
-            tool
-          end
-        end)
+      tagged_tools = Enum.map(tools, &tag_if_gated(&1, lookup))
 
       {ctx, tagged_tools}
     end
@@ -96,6 +89,10 @@ defmodule Nous.Plugins.HumanInTheLoop do
   # plugin made the agent LESS safe than leaving it out (no handler at all is
   # default-deny). Pass the handler straight through.
   defp build_handler(handler, _tool_names), do: handler
+
+  defp tag_if_gated(tool, lookup) do
+    if matches?(lookup, tool.name), do: %{tool | requires_approval: true}, else: tool
+  end
 
   defp downcase_set(names) when is_list(names) do
     names |> Enum.map(fn n -> n |> to_string() |> String.downcase() end) |> MapSet.new()

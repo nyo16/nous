@@ -1,11 +1,13 @@
 defmodule Nous.Tools.Search.Common do
-  @moduledoc """
-  Shared plumbing for search tools (Brave, Tavily, ...).
+  @moduledoc false
 
-  Owns the pieces every search tool repeats: API-key resolution, query
-  extraction, the success/error result envelope, and response-to-result
-  field mapping.
-  """
+  # Shared plumbing for search tools (Brave, Tavily, ...): API-key resolution,
+  # query extraction, the success/error result envelope, and
+  # response-to-result field mapping.
+  #
+  # Private on purpose: this is the base the bundled search tools share, not a
+  # contract for third-party tools. Nous.Tools.BraveSearch / TavilySearch are
+  # the published surface.
 
   require Logger
 

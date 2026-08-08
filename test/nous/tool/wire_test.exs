@@ -1,7 +1,8 @@
-defmodule Nous.ToolSchemaTest do
+defmodule Nous.Tool.WireTest do
   use ExUnit.Case, async: true
 
-  alias Nous.{Tool, ToolSchema}
+  alias Nous.Tool
+  alias Nous.Tool.Wire
 
   defp sample_tool do
     %Tool{
@@ -22,7 +23,7 @@ defmodule Nous.ToolSchemaTest do
 
   describe "to_gemini/1" do
     test "produces a flat function declaration with name/description/parameters" do
-      schema = ToolSchema.to_gemini(sample_tool())
+      schema = Wire.to_gemini(sample_tool())
 
       assert %{
                "name" => "search",
@@ -39,14 +40,14 @@ defmodule Nous.ToolSchemaTest do
         parameters: %{"type" => "object", "properties" => %{}}
       }
 
-      schema = ToolSchema.to_gemini(tool)
+      schema = Wire.to_gemini(tool)
       refute Map.has_key?(schema, "strict")
       refute Map.has_key?(schema, "type")
       refute Map.has_key?(schema, "function")
     end
 
     test "removes additionalProperties from parameters (Vertex doesn't accept it)" do
-      schema = ToolSchema.to_gemini(sample_tool())
+      schema = Wire.to_gemini(sample_tool())
       refute Map.has_key?(schema["parameters"], "additionalProperties")
     end
 
@@ -68,7 +69,7 @@ defmodule Nous.ToolSchemaTest do
         }
       }
 
-      schema = ToolSchema.to_gemini(tool)
+      schema = Wire.to_gemini(tool)
       refute Map.has_key?(schema["parameters"], "additionalProperties")
       refute Map.has_key?(schema["parameters"]["properties"]["nested"], "additionalProperties")
     end

@@ -4,14 +4,22 @@ defmodule Nous.AgentRunner.RequestDispatch do
   # (plain and streaming), team rate-limiter acquire/record/release, and
   # provider-specific settings/tool-schema rebuilding. Internal to the runner.
 
-  alias Nous.{Fallback, ModelDispatcher, Tool}
+  alias Nous.{Fallback, Message, Model, ModelDispatcher, Tool}
+  alias Nous.Agent
+  alias Nous.Agent.Context
   alias Nous.AgentRunner.{PromptAssembly, Streaming}
+  alias Nous.Teams.RateLimiter
 
   require Logger
+
+  # A completed (or failed) model request. The active model rides along so a
+  # fallback promotion stays visible to the caller.
+  @type request_result :: {:ok, Message.t(), Model.t()} | {:error, term()}
 
   # Request with fallback chain support.
   # When fallback models are configured, tries each model in order on eligible errors.
   # Returns {:ok, response, active_model} or {:error, reason}.
+  @spec request_with_fallback(Agent.t(), [Message.t()], map(), [Tool.t()]) :: request_result()
   def request_with_fallback(agent, messages, model_settings, all_tools) do
     model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
 
@@ -32,6 +40,8 @@ defmodule Nous.AgentRunner.RequestDispatch do
 
   # Stream with fallback chain support.
   # Only retries stream initialization, not mid-stream failures.
+  @spec stream_with_fallback(Agent.t(), [Message.t()], map(), [Tool.t()]) ::
+          {:ok, Enumerable.t()} | {:error, term()}
   def stream_with_fallback(agent, messages, model_settings, tools) do
     model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
 
@@ -52,6 +62,8 @@ defmodule Nous.AgentRunner.RequestDispatch do
   # Returns {:ok, response, active_model} or {:error, reason}.
   @openai_compat_providers ~w(openai custom vllm sglang lmstudio llamacpp)a
 
+  @spec stream_request_with_fallback(Agent.t(), [Message.t()], map(), [Tool.t()], Context.t()) ::
+          request_result()
   def stream_request_with_fallback(agent, messages, model_settings, all_tools, ctx) do
     model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
 
@@ -72,6 +84,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
     end
   end
 
+  @spec maybe_inject_include_usage(map(), Model.provider()) :: map()
   def maybe_inject_include_usage(settings, provider)
       when provider in @openai_compat_providers do
     current = Map.get(settings, :stream_options) || %{}
@@ -82,6 +95,8 @@ defmodule Nous.AgentRunner.RequestDispatch do
 
   # --- Rate limiting (team agents) ---------------------------------------------
 
+  @spec acquire_and_request(pid() | nil, Agent.t(), [Message.t()], (-> request_result())) ::
+          request_result()
   def acquire_and_request(nil, _agent, _messages, request_fun), do: request_fun.()
 
   def acquire_and_request(pid, agent, messages, request_fun) do
@@ -116,22 +131,32 @@ defmodule Nous.AgentRunner.RequestDispatch do
 
   # The resolved limiter pid can die before/while we call it (TOCTOU). Catch the
   # exit instead of leaking a {:noproc, _}/timeout into the agent loop.
+  @spec safe_acquire(pid(), String.t(), non_neg_integer()) ::
+          {:ok, RateLimiter.reservation_ref()}
+          | {:error, :budget_exceeded | :rate_limited | :rate_limiter_unavailable}
   def safe_acquire(pid, name, tokens) do
-    Nous.Teams.RateLimiter.acquire(pid, name, tokens)
+    RateLimiter.acquire(pid, name, tokens)
   catch
     :exit, _ -> {:error, :rate_limiter_unavailable}
   end
 
+  @spec record_or_release_rate_limit(
+          pid(),
+          String.t(),
+          RateLimiter.reservation_ref(),
+          request_result()
+        ) :: :ok
   def record_or_release_rate_limit(pid, name, ref, {:ok, response, _model}) do
     usage = (response.metadata && response.metadata.usage) || %{}
     tokens = Map.get(usage, :total_tokens) || Map.get(usage, "total_tokens") || 0
-    Nous.Teams.RateLimiter.record_usage(pid, name, %{tokens: tokens, cost: 0.0, reservation: ref})
+    RateLimiter.record_usage(pid, name, %{tokens: tokens, cost: 0.0, reservation: ref})
   end
 
   def record_or_release_rate_limit(pid, _name, ref, _other) do
-    Nous.Teams.RateLimiter.release(pid, ref)
+    RateLimiter.release(pid, ref)
   end
 
+  @spec resolve_rate_limiter(Context.t()) :: pid() | nil
   def resolve_rate_limiter(ctx) do
     resolve_alive_process(ctx.deps[:rate_limiter_pid])
   end
@@ -140,6 +165,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
   # before acquire, and a stale `true` is indistinguishable from a live pid. The
   # authoritative guard is safe_acquire/3, which catches the exit if the pid is
   # already dead. Here we just resolve a name to its currently-registered pid.
+  @spec resolve_alive_process(term()) :: pid() | nil
   def resolve_alive_process(pid) when is_pid(pid), do: pid
 
   def resolve_alive_process(name) when is_atom(name) and not is_nil(name) do
@@ -150,6 +176,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
 
   # Rough input-token estimate (≈4 chars/token) for the pre-call reservation;
   # reconciled to actual usage by record_usage after the response.
+  @spec estimate_request_tokens([Message.t()]) :: pos_integer()
   def estimate_request_tokens(messages) do
     chars =
       Enum.reduce(messages, 0, fn msg, acc ->
@@ -165,6 +192,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
 
   # Rebuild model settings when falling back to a different provider.
   # Tool schemas must be re-converted for the target provider's format.
+  @spec rebuild_settings_for_model(Model.t(), map(), [Tool.t()], Agent.t()) :: map()
   def rebuild_settings_for_model(model, model_settings, all_tools, agent) do
     if model.provider == agent.model.provider do
       model_settings
@@ -191,6 +219,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
   # `Nous.LLM` — which runs the same fallback-across-providers path but has no
   # %Agent{} and therefore no structured-output stage — can share it instead of
   # keeping the divergent private copy the arch review found.
+  @spec rebuild_tool_settings(Model.provider(), Model.provider(), map(), [Tool.t()]) :: map()
   def rebuild_tool_settings(provider, provider, model_settings, _all_tools), do: model_settings
 
   def rebuild_tool_settings(target_provider, _source_provider, model_settings, all_tools) do
@@ -210,12 +239,14 @@ defmodule Nous.AgentRunner.RequestDispatch do
   # Resolve the model dispatcher. The runner has no per-call override to thread
   # (agents carry no dispatcher field), so this is the process-override →
   # app-env → default chain. See `Nous.ModelDispatcher.resolve/1`.
+  @spec get_dispatcher() :: module()
   def get_dispatcher, do: ModelDispatcher.resolve()
 
   # Convert tools to provider-specific format
+  @spec convert_tools_for_provider(Model.provider(), [Tool.t()]) :: [map()]
   def convert_tools_for_provider(:anthropic, tools) do
     # Anthropic uses atom keys and different format
-    Enum.map(tools, &Nous.ToolSchema.to_anthropic/1)
+    Enum.map(tools, &Nous.Tool.Wire.to_anthropic/1)
   end
 
   # Gemini/Vertex take BARE function declarations, not OpenAI's
@@ -226,7 +257,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
   # Nous.LLM carried the correct clause; this side was the bug (arch-review:
   # "Nous.LLM re-implements the runner's tool loop and has DIVERGED").
   def convert_tools_for_provider(provider, tools) when provider in [:vertex_ai, :gemini] do
-    Enum.map(tools, &Nous.ToolSchema.to_gemini/1)
+    Enum.map(tools, &Nous.Tool.Wire.to_gemini/1)
   end
 
   def convert_tools_for_provider(_, tools) do

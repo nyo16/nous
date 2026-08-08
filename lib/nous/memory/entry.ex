@@ -43,6 +43,13 @@ defmodule Nous.Memory.Entry do
     last_accessed_at: nil
   ]
 
+  @doc """
+  Build an entry from `attrs`, defaulting timestamps to now and generating an id.
+
+  `:content` is required; `:access_count` is always 0 — a new entry has not been
+  read yet, so a caller-supplied count is ignored.
+  """
+  @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
     now = DateTime.utc_now()
     id = Map.get(attrs, :id) || generate_id()

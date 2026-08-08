@@ -26,6 +26,7 @@ defmodule Nous.Skill.Registry do
           groups: %{optional(atom()) => [String.t()]},
           tags: %{optional(atom()) => [String.t()]},
           scopes: %{optional(Skill.scope()) => [String.t()]},
+          match_terms: %{optional(String.t()) => [String.t()]},
           active: term()
         }
 
@@ -33,6 +34,7 @@ defmodule Nous.Skill.Registry do
             groups: %{},
             tags: %{},
             scopes: %{},
+            match_terms: %{},
             active: MapSet.new()
 
   @doc """
@@ -51,7 +53,8 @@ defmodule Nous.Skill.Registry do
       | skills: Map.put(registry.skills, skill.name, skill),
         groups: add_to_index(registry.groups, skill.group, skill.name),
         tags: Enum.reduce(skill.tags, registry.tags, &add_to_index(&2, &1, skill.name)),
-        scopes: add_to_index(registry.scopes, skill.scope, skill.name)
+        scopes: add_to_index(registry.scopes, skill.scope, skill.name),
+        match_terms: Map.put(registry.match_terms, skill.name, match_terms(skill))
     }
   end
 
@@ -257,11 +260,10 @@ defmodule Nous.Skill.Registry do
           fun.(input)
 
         _ ->
-          # Fallback: check if description keywords appear in input
-          skill.description != "" and
-            String.downcase(skill.description)
-            |> String.split(~r/\s+/)
-            |> Enum.any?(&String.contains?(input_lower, &1))
+          # Fallback: do any description keywords appear in the input?
+          registry.match_terms
+          |> Map.get(skill.name, [])
+          |> Enum.any?(&String.contains?(input_lower, &1))
       end
     end)
     |> Enum.sort_by(& &1.priority)
@@ -289,6 +291,29 @@ defmodule Nous.Skill.Registry do
   @spec active?(t(), String.t()) :: boolean()
   def active?(%Registry{} = registry, name) do
     MapSet.member?(registry.active, name)
+  end
+
+  @doc """
+  List every built-in skill shipped with Nous, sorted by name.
+
+  The set is derived from `:nous`'s own module list — every module under
+  `Nous.Skills.` implementing the `Nous.Skill` behaviour — so adding a built-in
+  skill module is enough to ship it and no entry can be lost to a typo.
+
+  Ordering is load-bearing: `{:group, atom()}` specs register in this order, and
+  `by_group/2` and `activate_group/4` iterate it.
+
+  ## Example
+
+      Registry.builtin_skills() |> Enum.map(& &1.name)
+      #=> ["architect", "code_review", ...]
+
+  """
+  @spec builtin_skills() :: [Skill.t()]
+  def builtin_skills do
+    builtin_modules()
+    |> Enum.map(&builtin_skill/1)
+    |> Enum.sort_by(& &1.name)
   end
 
   # Private helpers
@@ -340,6 +365,17 @@ defmodule Nous.Skill.Registry do
     end)
   end
 
+  # A skill's description keywords are constant, so they are downcased and split
+  # once here rather than on every user turn (`match/2` runs per turn from the
+  # skills plugin). Empty or missing descriptions yield no terms: splitting ""
+  # produces [""], and String.contains?/2 matches "" against anything.
+  defp match_terms(%Skill{description: description})
+       when is_binary(description) and description != "" do
+    description |> String.downcase() |> String.split(~r/\s+/)
+  end
+
+  defp match_terms(%Skill{}), do: []
+
   # Resolve skill names from an index to their structs, dropping stale names.
   defp resolve_names(registry, names) do
     names
@@ -371,43 +407,48 @@ defmodule Nous.Skill.Registry do
   # Discover built-in skill modules for a group
   defp discover_builtin_skills_for_group(group) do
     builtin_modules()
-    |> Enum.filter(fn module ->
-      Code.ensure_loaded(module)
-
-      function_exported?(module, :group, 0) and module.group() == group
-    end)
-    |> Enum.map(&Skill.from_module/1)
-    |> Enum.map(&%{&1 | scope: :builtin})
+    |> Enum.filter(&(builtin_group(&1) == group))
+    |> Enum.map(&builtin_skill/1)
+    |> Enum.sort_by(& &1.name)
   end
 
-  # List of all built-in skill modules
+  defp builtin_skill(module) do
+    %{Skill.from_module(module) | scope: :builtin}
+  end
+
+  defp builtin_group(module) do
+    if function_exported?(module, :group, 0), do: module.group(), else: nil
+  end
+
+  @builtin_prefix "Elixir.Nous.Skills."
+
+  # Derived from `:nous`'s own module list, never enumerated by hand: a written
+  # list drops a misspelled entry silently, and every name in it is a
+  # compile-time dependency of this module.
+  #
+  # Deliberately not memoized. The scan is one ETS read plus a prefix filter,
+  # run once per `{:group, _}` spec at agent init, while caching it would
+  # reintroduce exactly the failure being removed here — a built-in added in a
+  # running dev VM staying silently absent until restart.
   defp builtin_modules do
-    [
-      # Language-agnostic
-      Nous.Skills.CodeReview,
-      Nous.Skills.TestGen,
-      Nous.Skills.Debug,
-      Nous.Skills.Refactor,
-      Nous.Skills.ExplainCode,
-      Nous.Skills.CommitMessage,
-      Nous.Skills.DocGen,
-      Nous.Skills.SecurityScan,
-      Nous.Skills.Architect,
-      Nous.Skills.TaskBreakdown,
-      # Elixir-specific
-      Nous.Skills.PhoenixLiveView,
-      Nous.Skills.EctoPatterns,
-      Nous.Skills.OtpPatterns,
-      Nous.Skills.ElixirTesting,
-      Nous.Skills.ElixirIdioms,
-      # Python-specific
-      Nous.Skills.PythonFastAPI,
-      Nous.Skills.PythonTesting,
-      Nous.Skills.PythonTyping,
-      Nous.Skills.PythonDataScience,
-      Nous.Skills.PythonSecurity,
-      Nous.Skills.PythonUv
-    ]
-    |> Enum.filter(&Code.ensure_loaded?/1)
+    case :application.get_key(:nous, :modules) do
+      {:ok, modules} ->
+        modules
+        |> Enum.filter(&builtin_skill_module?/1)
+        |> Enum.sort()
+
+      :undefined ->
+        raise "the :nous application is not loaded; built-in skills cannot be discovered"
+    end
+  end
+
+  defp builtin_skill_module?(module) do
+    String.starts_with?(Atom.to_string(module), @builtin_prefix) and
+      Code.ensure_loaded?(module) and implements_skill?(module)
+  end
+
+  defp implements_skill?(module) do
+    attributes = module.module_info(:attributes)
+    Skill in List.flatten(Keyword.get_values(attributes, :behaviour))
   end
 end

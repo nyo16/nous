@@ -66,26 +66,27 @@ defmodule Nous.Eval.YamlLoader do
     if files == [] do
       {:error, {:no_yaml_files, dir}}
     else
-      results =
-        Enum.map(files, fn file ->
-          case load_suite(file) do
-            {:ok, suite} -> {:ok, suite}
-            {:error, reason} -> {:error, {file, reason}}
-          end
-        end)
-
-      errors = Enum.filter(results, &match?({:error, _}, &1))
-
-      if errors == [] do
-        suites = Enum.map(results, fn {:ok, suite} -> suite end)
-        {:ok, suites}
-      else
-        {:error, {:load_errors, errors}}
-      end
+      files |> Enum.map(&load_tagged_suite/1) |> collect_suites()
     end
   end
 
   # Private implementation
+
+  defp load_tagged_suite(file) do
+    case load_suite(file) do
+      {:ok, suite} -> {:ok, suite}
+      {:error, reason} -> {:error, {file, reason}}
+    end
+  end
+
+  # All-or-nothing: one unreadable file fails the whole directory load rather
+  # than silently running a partial suite set.
+  defp collect_suites(results) do
+    case Enum.filter(results, &match?({:error, _}, &1)) do
+      [] -> {:ok, Enum.map(results, fn {:ok, suite} -> suite end)}
+      errors -> {:error, {:load_errors, errors}}
+    end
+  end
 
   defp parse_yaml(content) do
     try do

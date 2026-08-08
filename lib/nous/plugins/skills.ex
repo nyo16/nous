@@ -31,6 +31,7 @@ defmodule Nous.Plugins.Skills do
 
   @behaviour Nous.Plugin
 
+  alias Nous.Message
   alias Nous.Skill.Registry
 
   require Logger
@@ -64,25 +65,11 @@ defmodule Nous.Plugins.Skills do
     registry = get_registry(ctx)
 
     if registry do
-      active = Registry.active_skills(registry)
-
-      if Enum.empty?(active) do
-        nil
-      else
-        active
-        |> Enum.map(fn skill ->
-          {instructions, _tools} = load_instructions(skill, agent, ctx)
-
-          if instructions && instructions != "" do
-            "## Skill: #{skill.name}\n\n#{instructions}"
-          end
-        end)
-        |> Enum.reject(&is_nil/1)
-        |> case do
-          [] -> nil
-          parts -> Enum.join(parts, "\n\n---\n\n")
-        end
-      end
+      registry
+      |> Registry.active_skills()
+      |> Enum.map(&skill_section(&1, agent, ctx))
+      |> Enum.reject(&is_nil/1)
+      |> join_sections()
     end
   end
 
@@ -104,39 +91,10 @@ defmodule Nous.Plugins.Skills do
   @impl true
   def before_request(agent, ctx, tools) do
     registry = get_registry(ctx)
+    user_input = registry && get_latest_user_input(ctx)
 
-    if registry do
-      # Get latest user message for matching
-      user_input = get_latest_user_input(ctx)
-
-      if user_input do
-        # Find matching skills that aren't already active
-        matched = Registry.match(registry, user_input)
-
-        registry =
-          Enum.reduce(matched, registry, fn skill, reg ->
-            unless Registry.active?(reg, skill.name) do
-              Logger.debug("Auto-activating skill: #{skill.name}")
-              {_instructions, _tools, reg} = Registry.activate(reg, skill.name, agent, ctx)
-              reg
-            else
-              reg
-            end
-          end)
-
-        # Collect tools from newly activated skills
-        new_tools =
-          matched
-          |> Enum.flat_map(fn skill ->
-            {_instructions, skill_tools} = load_instructions(skill, agent, ctx)
-            skill_tools
-          end)
-
-        ctx = %{ctx | deps: Map.put(ctx.deps, :skill_registry, registry)}
-        {ctx, tools ++ new_tools}
-      else
-        {ctx, tools}
-      end
+    if user_input do
+      activate_matches(registry, user_input, agent, ctx, tools)
     else
       {ctx, tools}
     end
@@ -146,6 +104,49 @@ defmodule Nous.Plugins.Skills do
 
   defp get_registry(ctx) do
     Map.get(ctx.deps, :skill_registry)
+  end
+
+  defp skill_section(skill, agent, ctx) do
+    {instructions, _tools} = load_instructions(skill, agent, ctx)
+
+    if instructions && instructions != "" do
+      "## Skill: #{skill.name}\n\n#{instructions}"
+    end
+  end
+
+  defp join_sections([]), do: nil
+  defp join_sections(parts), do: Enum.join(parts, "\n\n---\n\n")
+
+  # Activates every skill the turn's input matched, then hands back the tools
+  # those skills contribute. Tools come from `matched` rather than from the
+  # newly-activated subset so an already-active skill keeps exporting its
+  # tools on later turns.
+  defp activate_matches(registry, user_input, agent, ctx, tools) do
+    matched = Registry.match(registry, user_input)
+
+    registry =
+      Enum.reduce(matched, registry, fn skill, reg ->
+        activate_if_inactive(reg, skill, agent, ctx)
+      end)
+
+    new_tools =
+      Enum.flat_map(matched, fn skill ->
+        {_instructions, skill_tools} = load_instructions(skill, agent, ctx)
+        skill_tools
+      end)
+
+    ctx = %{ctx | deps: Map.put(ctx.deps, :skill_registry, registry)}
+    {ctx, tools ++ new_tools}
+  end
+
+  defp activate_if_inactive(reg, skill, agent, ctx) do
+    if Registry.active?(reg, skill.name) do
+      reg
+    else
+      Logger.debug("Auto-activating skill: #{skill.name}")
+      {_instructions, _tools, reg} = Registry.activate(reg, skill.name, agent, ctx)
+      reg
+    end
   end
 
   defp load_instructions(%Nous.Skill{source: :module, source_ref: module}, agent, ctx) do
@@ -168,22 +169,25 @@ defmodule Nous.Plugins.Skills do
   defp get_latest_user_input(ctx) do
     ctx.messages
     |> Enum.reverse()
-    |> Enum.find_value(fn msg ->
-      if msg.role == :user do
-        case msg.content do
-          text when is_binary(text) ->
-            text
-
-          parts when is_list(parts) ->
-            Enum.find_value(parts, fn
-              %{type: :text, text: text} -> text
-              _ -> nil
-            end)
-
-          _ ->
-            nil
-        end
-      end
-    end)
+    |> Enum.find_value(&user_text/1)
   end
+
+  # Nous.Message.extract_text/1 is the one definition of how text is pulled out
+  # of binary and multimodal content. A private clone here matched
+  # `%{type: :text, text: ...}`, but ContentPart carries its text under
+  # `:content` — so every list-content user message yielded nil and skill
+  # auto-activation was dead for multimodal input.
+  #
+  # The "" -> nil conversion is load-bearing, not redundant: extract_text/1
+  # returns "" for a message with no text content, "" is truthy in Elixir, and
+  # Enum.find_value/2 would therefore stop on the first text-free user message
+  # and match skills against an empty query.
+  defp user_text(%Message{role: :user} = msg) do
+    case Message.extract_text(msg) do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  defp user_text(_msg), do: nil
 end

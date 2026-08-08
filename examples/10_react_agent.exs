@@ -87,20 +87,20 @@ IO.puts("Tool calls: #{result.usage.tool_calls}")
 IO.puts("")
 
 # ============================================================================
-# Method 2: ReActAgent Module (v0.8.0)
+# Method 2: ReAct Module (v0.8.0)
 # ============================================================================
 
-IO.puts("--- Method 2: ReActAgent Module ---\n")
+IO.puts("--- Method 2: ReAct Module ---\n")
 
-# ReActAgent adds built-in tools: plan, note, todo, final_answer
-react_agent = Nous.ReActAgent.new("lmstudio:qwen3",
+# ReAct adds built-in tools: plan, note, todo, final_answer
+react_agent = Nous.Agent.ReAct.new("lmstudio:qwen3",
   tools: [
     &DemoTools.search/2,
     &DemoTools.calculate/2
   ]
 )
 
-IO.puts("ReActAgent includes additional reasoning tools:")
+IO.puts("ReAct includes additional reasoning tools:")
 IO.puts("  - plan: Outline approach before starting")
 IO.puts("  - note: Record observations")
 IO.puts("  - todo: Track remaining steps")

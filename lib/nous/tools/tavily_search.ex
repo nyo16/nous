@@ -29,6 +29,19 @@ defmodule Nous.Tools.TavilySearch do
 
   @api_url "https://api.tavily.com/search"
 
+  @typedoc """
+  One Tavily result. Values are copied verbatim out of the Tavily JSON payload
+  — the keys are what this tool guarantees, not the shape of what Tavily puts
+  in them. `:raw_content` is nil unless the API returned it.
+  """
+  @type result :: %{
+          url: term(),
+          title: term(),
+          content: term(),
+          score: term(),
+          raw_content: term()
+        }
+
   @doc """
   Search using Tavily API with AI-optimized results.
 
@@ -43,6 +56,15 @@ defmodule Nous.Tools.TavilySearch do
 
   A map with results list and optional direct answer.
   """
+  @spec search(Nous.RunContext.t(), map()) ::
+          %{
+            query: String.t(),
+            results: [result()],
+            result_count: non_neg_integer(),
+            answer: term(),
+            success: true
+          }
+          | %{query: String.t(), error: String.t(), success: false}
   def search(ctx, args) do
     query = Common.query(args)
     search_depth = Map.get(args, "search_depth", "basic")

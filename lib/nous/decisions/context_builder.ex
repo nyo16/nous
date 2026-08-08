@@ -43,40 +43,7 @@ defmodule Nous.Decisions.ContextBuilder do
     {:ok, goals} = store_mod.query(state, :active_goals, [])
     {:ok, decisions} = store_mod.query(state, :recent_decisions, limit: decision_limit)
 
-    parts = []
-
-    parts =
-      if goals != [] do
-        goal_lines =
-          Enum.map(goals, fn goal ->
-            children = format_children(store_mod, state, goal.id)
-            confidence = if goal.confidence, do: ", confidence: #{goal.confidence}", else: ""
-            line = "- [#{short_id(goal.id)}] #{goal.label} (status: #{goal.status}#{confidence})"
-
-            if children != "" do
-              line <> "\n" <> children
-            else
-              line
-            end
-          end)
-
-        parts ++ ["## Active Goals\n" <> Enum.join(goal_lines, "\n")]
-      else
-        parts
-      end
-
-    parts =
-      if decisions != [] do
-        decision_lines =
-          Enum.map(decisions, fn decision ->
-            rationale = if decision.rationale, do: " -- #{decision.rationale}", else: ""
-            "- [#{short_id(decision.id)}] #{decision.label}#{rationale}"
-          end)
-
-        parts ++ ["## Recent Decisions\n" <> Enum.join(decision_lines, "\n")]
-      else
-        parts
-      end
+    parts = goal_section(store_mod, state, goals) ++ decision_section(decisions)
 
     case parts do
       [] -> nil
@@ -84,28 +51,59 @@ defmodule Nous.Decisions.ContextBuilder do
     end
   end
 
+  defp goal_section(_store_mod, _state, []), do: []
+
+  defp goal_section(store_mod, state, goals) do
+    lines = Enum.map(goals, &format_goal(store_mod, state, &1))
+    ["## Active Goals\n" <> Enum.join(lines, "\n")]
+  end
+
+  defp format_goal(store_mod, state, goal) do
+    children = format_children(store_mod, state, goal.id)
+    confidence = if goal.confidence, do: ", confidence: #{goal.confidence}", else: ""
+    line = "- [#{short_id(goal.id)}] #{goal.label} (status: #{goal.status}#{confidence})"
+
+    if children != "", do: line <> "\n" <> children, else: line
+  end
+
+  defp decision_section([]), do: []
+
+  defp decision_section(decisions) do
+    lines = Enum.map(decisions, &format_decision/1)
+    ["## Recent Decisions\n" <> Enum.join(lines, "\n")]
+  end
+
+  defp format_decision(decision) do
+    rationale = if decision.rationale, do: " -- #{decision.rationale}", else: ""
+    "- [#{short_id(decision.id)}] #{decision.label}#{rationale}"
+  end
+
   defp format_children(store_mod, state, node_id) do
     {:ok, edges} = store_mod.get_edges(state, node_id, :outgoing)
 
     edges
-    |> Enum.flat_map(fn edge ->
-      case store_mod.get_node(state, edge.to_id) do
-        {:ok, %Node{} = child} ->
-          status_str =
-            case edge.edge_type do
-              :chosen -> "chosen"
-              :rejected -> "rejected"
-              _ -> to_string(child.status)
-            end
-
-          ["  #{tree_char()} [#{short_id(child.id)}] #{child.label} (#{status_str})"]
-
-        _ ->
-          []
-      end
-    end)
+    |> Enum.flat_map(&format_child(store_mod, state, &1))
     |> Enum.join("\n")
   end
+
+  # An edge whose target node has gone missing contributes no line at all,
+  # rather than a dangling placeholder in the prompt.
+  defp format_child(store_mod, state, edge) do
+    case store_mod.fetch_node(state, edge.to_id) do
+      {:ok, %Node{} = child} ->
+        status = child_status(edge, child)
+        ["  #{tree_char()} [#{short_id(child.id)}] #{child.label} (#{status})"]
+
+      _ ->
+        []
+    end
+  end
+
+  # A chosen/rejected edge labels the child by the decision it records; any
+  # other edge type falls back to the child's own status.
+  defp child_status(%{edge_type: :chosen}, _child), do: "chosen"
+  defp child_status(%{edge_type: :rejected}, _child), do: "rejected"
+  defp child_status(_edge, child), do: to_string(child.status)
 
   defp tree_char, do: "└─"
 

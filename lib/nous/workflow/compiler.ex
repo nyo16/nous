@@ -250,32 +250,16 @@ defmodule Nous.Workflow.Compiler do
   end
 
   defp validate_node_config(id, %{type: :parallel, config: config}, graph) do
-    errors = []
-
-    errors =
-      if Map.has_key?(config, :branches) and is_list(config.branches) do
-        # Verify all branch targets exist
-        Enum.reduce(config.branches, errors, fn branch_id, acc ->
-          branch_str = to_string(branch_id)
-
-          if Map.has_key?(graph.nodes, branch_str) do
-            acc
-          else
-            [
-              {:missing_config,
-               "node #{inspect(id)} (:parallel) branch #{inspect(branch_id)} does not exist"}
-              | acc
-            ]
-          end
-        end)
-      else
-        [
-          {:missing_config, "node #{inspect(id)} (:parallel) requires :branches list in config"}
-          | errors
-        ]
-      end
-
-    errors
+    if Map.has_key?(config, :branches) and is_list(config.branches) do
+      # Verify all branch targets exist
+      Enum.reduce(config.branches, [], fn branch_id, acc ->
+        prepend_missing_branch(acc, id, branch_id, graph)
+      end)
+    else
+      [
+        {:missing_config, "node #{inspect(id)} (:parallel) requires :branches list in config"}
+      ]
+    end
   end
 
   defp validate_node_config(id, %{type: :parallel_map, config: config}, _graph) do
@@ -309,6 +293,18 @@ defmodule Nous.Workflow.Compiler do
   defp validate_node_config(_id, %{type: type}, _graph)
        when type in [:branch, :human_checkpoint, :subworkflow] do
     []
+  end
+
+  defp prepend_missing_branch(errors, id, branch_id, graph) do
+    if Map.has_key?(graph.nodes, to_string(branch_id)) do
+      errors
+    else
+      [
+        {:missing_config,
+         "node #{inspect(id)} (:parallel) branch #{inspect(branch_id)} does not exist"}
+        | errors
+      ]
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -382,26 +378,28 @@ defmodule Nous.Workflow.Compiler do
 
     # Process all ready nodes: decrement successors' in-degrees
     {new_in_degrees, new_ready} =
-      Enum.reduce(level, {in_degrees, []}, fn node_id, {degrees, next_ready} ->
-        successors =
-          graph.out_edges
-          |> Map.get(node_id, [])
-          |> Enum.map(& &1.to_id)
-
-        Enum.reduce(successors, {degrees, next_ready}, fn succ_id, {deg, nr} ->
-          new_deg = Map.update!(deg, succ_id, &(&1 - 1))
-
-          if new_deg[succ_id] == 0 do
-            {new_deg, [succ_id | nr]}
-          else
-            {new_deg, nr}
-          end
-        end)
+      Enum.reduce(level, {in_degrees, []}, fn node_id, acc ->
+        graph.out_edges
+        |> Map.get(node_id, [])
+        |> Enum.map(& &1.to_id)
+        |> Enum.reduce(acc, &decrement_in_degree/2)
       end)
 
     new_topo = Enum.reverse(level) ++ topo_order
 
     kahns_loop(graph, new_in_degrees, new_ready, new_topo, [level | levels])
+  end
+
+  # Kahn's algorithm: a successor joins the next ready set exactly when its
+  # last remaining incoming edge is removed.
+  defp decrement_in_degree(succ_id, {degrees, ready}) do
+    degrees = Map.update!(degrees, succ_id, &(&1 - 1))
+
+    if degrees[succ_id] == 0 do
+      {degrees, [succ_id | ready]}
+    else
+      {degrees, ready}
+    end
   end
 
   # ---------------------------------------------------------------------------

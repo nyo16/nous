@@ -184,7 +184,7 @@ defmodule Smoke do
       )
 
     settings_with_tools =
-      Map.put(model.default_settings, :tools, [Nous.ToolSchema.to_gemini(pick_tool)])
+      Map.put(model.default_settings, :tools, [Nous.Tool.Wire.to_gemini(pick_tool)])
 
     {:ok, %Nous.Message{} = msg} =
       Nous.ModelDispatcher.request(

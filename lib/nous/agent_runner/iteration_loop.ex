@@ -10,12 +10,19 @@ defmodule Nous.AgentRunner.IterationLoop do
   # 199-line function reaching into 8 contexts). Pure move: the public API and
   # every telemetry event are unchanged.
 
-  alias Nous.{Errors, Hook, Message, Plugin}
+  alias Nous.{Errors, Hook, Message, Model, Plugin, Tool}
+  alias Nous.Agent
   alias Nous.Agent.{Behaviour, Callbacks, Context}
   alias Nous.AgentRunner.{PromptAssembly, RequestDispatch, ToolExecution}
 
   require Logger
 
+  # The loop's verdict: the folded context, or the first error that ended the
+  # run. Errors are exception structs from this module's own guards and
+  # whatever term a provider or behaviour surfaced, so the reason stays open.
+  @type loop_result :: {:ok, Context.t()} | {:error, term()}
+
+  @spec execute_loop(Agent.t(), module(), Context.t()) :: loop_result()
   def execute_loop(agent, behaviour, ctx) do
     # Check for cancellation
     case check_cancellation(ctx) do
@@ -27,6 +34,7 @@ defmodule Nous.AgentRunner.IterationLoop do
     end
   end
 
+  @spec check_cancellation(Context.t()) :: :ok | {:error, Errors.ExecutionCancelled.t()}
   def check_cancellation(ctx) do
     if ctx.cancellation_check do
       try do
@@ -43,6 +51,7 @@ defmodule Nous.AgentRunner.IterationLoop do
     end
   end
 
+  @spec do_iteration(Agent.t(), module(), Context.t()) :: loop_result()
   def do_iteration(_agent, _behaviour, %{needs_response: false} = ctx), do: {:ok, ctx}
 
   def do_iteration(agent, behaviour, ctx) do
@@ -98,11 +107,14 @@ defmodule Nous.AgentRunner.IterationLoop do
     end
   end
 
+  @spec do_iteration_body(Agent.t(), module(), Context.t()) :: loop_result()
   def do_iteration_body(agent, behaviour, ctx) do
     {ctx, all_tools, pre_request_result} = prepare_tools(agent, behaviour, ctx)
 
-    # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the LLM call
-    if ctx.needs_response and pre_request_result != :deny do
+    # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the
+    # LLM call. `Hook.denied?/1` and not `!= :deny`: a hook returning
+    # `{:deny, reason}` used to sail straight through this guard.
+    if ctx.needs_response and not Hook.denied?(pre_request_result) do
       {ctx, messages, model_settings} = prepare_request(agent, behaviour, ctx, all_tools)
 
       Logger.debug(
@@ -124,6 +136,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   # Assemble the tool set the model will see this iteration (behaviour tools +
   # plugin tools, minus anything the permission policy blocks) and run the
   # pre-request hooks. Returns `{ctx, all_tools, pre_request_verdict}`.
+  @spec prepare_tools(Agent.t(), module(), Context.t()) ::
+          {Context.t(), [Tool.t()], Hook.result()}
   def prepare_tools(agent, behaviour, ctx) do
     # Get tools from behaviour + plugins
     tools = behaviour.get_tools(agent)
@@ -158,6 +172,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   # Build the messages and model settings for this iteration's model call.
   # Returns `{ctx, messages, model_settings}` — ctx is threaded back out because
   # the tool-schema memo lives in it.
+  @spec prepare_request(Agent.t(), module(), Context.t(), [Tool.t()]) ::
+          {Context.t(), [Message.t()], map()}
   def prepare_request(agent, behaviour, ctx, all_tools) do
     # Build messages via behaviour
     messages = behaviour.build_messages(agent, ctx)
@@ -205,6 +221,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   # Enforce a team RateLimiter when one is wired into deps: reserve before the
   # call, reconcile actual usage after (or release on error). A denied acquire
   # surfaces as a normal {:error, reason} request result.
+  @spec dispatch(Agent.t(), Context.t(), [Message.t()], map(), [Tool.t()]) ::
+          RequestDispatch.request_result()
   def dispatch(agent, ctx, messages, model_settings, all_tools) do
     request_agent =
       case get_in(ctx.deps, [:active_model]) do
@@ -240,6 +258,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   # Fold a successful model response into the context (usage, callbacks,
   # plugin/hook after-response, behaviour processing, tool calls) and re-enter
   # the loop.
+  @spec handle_response(Agent.t(), module(), Context.t(), Message.t(), Model.t(), [Tool.t()]) ::
+          loop_result()
   def handle_response(agent, behaviour, ctx, response, active_model, all_tools) do
     # Track active_model in ctx for downstream telemetry / observability,
     # but do NOT mutate agent.model. Mutating made the start-of-run
@@ -310,6 +330,7 @@ defmodule Nous.AgentRunner.IterationLoop do
 
   # A failed model request: give the behaviour's handle_error a chance to retry
   # or continue before surfacing the error.
+  @spec handle_request_error(Agent.t(), module(), Context.t(), term()) :: loop_result()
   def handle_request_error(agent, behaviour, ctx, reason) do
     Logger.error("""
     Model request failed in iteration #{ctx.iteration + 1}
@@ -344,6 +365,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   # NOT applied to: run_stream/3 (single-shot — converts once per call, never
   # reused) or rebuild_settings_for_model/4 (rare fallback path, different
   # provider, no ctx in scope). Both intentionally re-convert.
+  @spec converted_tool_schemas(Context.t(), Model.provider(), [Tool.t()]) ::
+          {[map()], Context.t()}
   def converted_tool_schemas(ctx, provider, all_tools) do
     names = all_tools |> Enum.map(& &1.name) |> MapSet.new()
     key = {provider, names}

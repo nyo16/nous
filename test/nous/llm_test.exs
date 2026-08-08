@@ -7,19 +7,22 @@ defmodule Nous.LLMTest do
   defmodule CapturingDispatcher do
     @moduledoc false
 
+    # Process-dictionary state, not a BEAM-global `:named_table`. A table name
+    # is a node-wide namespace, `:ets.delete/1` from a non-owner raises, and
+    # teardown on owner death is not instantaneous — so the old
+    # delete-then-recreate dance had a narrow window against a just-exited test
+    # process, in a module that runs async. Nothing here needs to cross a
+    # process boundary: Nous.LLM calls the dispatcher inline in the caller, a
+    # fact the sibling SettingsCapturingDispatcher below already leans on with
+    # `send(self(), _)` + `assert_received`.
+    @key {__MODULE__, :models}
+
     def configure do
-      if :ets.whereis(:llm_test_captures) != :undefined do
-        :ets.delete(:llm_test_captures)
-      end
-
-      :ets.new(:llm_test_captures, [:named_table, :public, :set])
-      :ets.insert(:llm_test_captures, {:models, []})
+      Process.put(@key, [])
+      :ok
     end
 
-    def get_models do
-      [{:models, models}] = :ets.lookup(:llm_test_captures, :models)
-      Enum.reverse(models)
-    end
+    def get_models, do: @key |> Process.get([]) |> Enum.reverse()
 
     def request(model, _messages, _settings) do
       record(model)
@@ -37,10 +40,7 @@ defmodule Nous.LLMTest do
       {:ok, [{:text_delta, "ok"}, {:finish, "stop"}]}
     end
 
-    defp record(model) do
-      [{:models, models}] = :ets.lookup(:llm_test_captures, :models)
-      :ets.insert(:llm_test_captures, {:models, [model | models]})
-    end
+    defp record(model), do: Process.put(@key, [model | Process.get(@key, [])])
   end
 
   defmodule FailingStreamDispatcher do
@@ -77,8 +77,8 @@ defmodule Nous.LLMTest do
 
   setup do
     CapturingDispatcher.configure()
-    # Process-scoped, so no global env to save or restore. The named ETS table
-    # is unique to this module and dies with the test process.
+    # Both the dispatcher override and the capture buffer are process-scoped:
+    # no global env to restore and no node-wide ETS name to contend for.
     Nous.ModelDispatcher.put_dispatcher(CapturingDispatcher)
     :ok
   end
@@ -186,7 +186,7 @@ defmodule Nous.LLMTest do
       assert {:ok, "ok"} = Nous.LLM.generate_text("gemini:gemini-2.0-flash", "hi", tools: [tool])
 
       assert_received {:captured_settings, settings}
-      assert settings.tools == [Nous.ToolSchema.to_gemini(tool)]
+      assert settings.tools == [Nous.Tool.Wire.to_gemini(tool)]
     end
 
     test "vertex_ai gets the same bare function declarations" do
@@ -196,7 +196,7 @@ defmodule Nous.LLMTest do
                Nous.LLM.generate_text("vertex_ai:gemini-2.0-flash", "hi", tools: [tool])
 
       assert_received {:captured_settings, settings}
-      assert settings.tools == [Nous.ToolSchema.to_gemini(tool)]
+      assert settings.tools == [Nous.Tool.Wire.to_gemini(tool)]
     end
 
     test "openai gets the OpenAI function envelope" do
@@ -215,7 +215,7 @@ defmodule Nous.LLMTest do
                Nous.LLM.generate_text("anthropic:claude-haiku-4-5", "hi", tools: [tool])
 
       assert_received {:captured_settings, settings}
-      assert settings.tools == [Nous.ToolSchema.to_anthropic(tool)]
+      assert settings.tools == [Nous.Tool.Wire.to_anthropic(tool)]
     end
   end
 

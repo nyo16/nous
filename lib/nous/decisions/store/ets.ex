@@ -59,7 +59,7 @@ defmodule Nous.Decisions.Store.ETS do
   @impl true
   @spec update_node(map(), String.t(), map()) :: {:ok, map()} | {:error, :not_found}
   def update_node(%{nodes: nodes} = state, id, updates) do
-    case get_node(state, id) do
+    case fetch_node(state, id) do
       {:ok, node} ->
         now = DateTime.utc_now()
         updated = struct(node, Map.put(updates, :updated_at, now))
@@ -72,8 +72,8 @@ defmodule Nous.Decisions.Store.ETS do
   end
 
   @impl true
-  @spec get_node(map(), String.t()) :: {:ok, Node.t()} | {:error, :not_found}
-  def get_node(%{nodes: nodes}, id) do
+  @spec fetch_node(map(), String.t()) :: {:ok, Node.t()} | {:error, :not_found}
+  def fetch_node(%{nodes: nodes}, id) do
     case :ets.lookup(nodes, id) do
       [{^id, node}] -> {:ok, node}
       [] -> {:error, :not_found}
@@ -184,7 +184,7 @@ defmodule Nous.Decisions.Store.ETS do
   # `rest ++ new`: tail-appending copied the whole frontier per enqueue, which
   # made the traversal O(V^2) and threw away the adjacency index's O(V+E) win.
   defp bfs_path(state, from_id, to_id) do
-    case get_node(state, from_id) do
+    case fetch_node(state, from_id) do
       {:ok, start_node} ->
         adj = build_adjacency(state)
         queue = :queue.in([start_node], :queue.new())
@@ -214,21 +214,30 @@ defmodule Nous.Decisions.Store.ETS do
       edges = edges_for(adj, current_node.id, :outgoing)
 
       {new_queue, new_visited} =
-        Enum.reduce(edges, {rest, visited}, fn edge, {q, vis} ->
-          if MapSet.member?(vis, edge.to_id) do
-            {q, vis}
-          else
-            case get_node(state, edge.to_id) do
-              {:ok, next_node} ->
-                {:queue.in([next_node | current_path], q), MapSet.put(vis, edge.to_id)}
-
-              {:error, :not_found} ->
-                {q, vis}
-            end
-          end
-        end)
+        Enum.reduce(edges, {rest, visited}, &enqueue_path(state, current_path, &1, &2))
 
       do_bfs_path(state, adj, new_queue, to_id, new_visited)
+    end
+  end
+
+  # An edge to an already-visited node is skipped so the frontier stays finite.
+  defp enqueue_path(state, current_path, edge, {queue, visited} = frontier) do
+    if MapSet.member?(visited, edge.to_id) do
+      frontier
+    else
+      extend_path(state, current_path, edge, {queue, visited})
+    end
+  end
+
+  # An edge pointing at a node that no longer exists extends nothing — the
+  # dangling edge is ignored rather than aborting the traversal.
+  defp extend_path(state, current_path, edge, {queue, visited}) do
+    case fetch_node(state, edge.to_id) do
+      {:ok, next_node} ->
+        {:queue.in([next_node | current_path], queue), MapSet.put(visited, edge.to_id)}
+
+      {:error, :not_found} ->
+        {queue, visited}
     end
   end
 
@@ -246,32 +255,40 @@ defmodule Nous.Decisions.Store.ETS do
         Enum.reverse(acc)
 
       {{:value, current_id}, rest} ->
-        edges = edges_for(adj, current_id, direction)
-
         neighbor_ids =
-          Enum.map(edges, fn edge ->
-            case direction do
-              :outgoing -> edge.to_id
-              :incoming -> edge.from_id
-            end
-          end)
+          adj
+          |> edges_for(current_id, direction)
+          |> Enum.map(&neighbor_id(&1, direction))
 
         {new_queue, new_visited, new_acc} =
-          Enum.reduce(neighbor_ids, {rest, visited, acc}, fn nid, {q, vis, a} ->
-            if MapSet.member?(vis, nid) do
-              {q, vis, a}
-            else
-              case get_node(state, nid) do
-                {:ok, node} ->
-                  {:queue.in(nid, q), MapSet.put(vis, nid), [node | a]}
-
-                {:error, :not_found} ->
-                  {q, vis, a}
-              end
-            end
-          end)
+          Enum.reduce(neighbor_ids, {rest, visited, acc}, &enqueue_neighbor(state, &1, &2))
 
         do_bfs_reachable(state, adj, new_queue, direction, new_visited, new_acc)
+    end
+  end
+
+  defp neighbor_id(edge, direction) do
+    case direction do
+      :outgoing -> edge.to_id
+      :incoming -> edge.from_id
+    end
+  end
+
+  # An already-visited id is skipped so the frontier stays finite.
+  defp enqueue_neighbor(state, nid, {_queue, visited, _acc} = frontier) do
+    if MapSet.member?(visited, nid) do
+      frontier
+    else
+      visit_neighbor(state, nid, frontier)
+    end
+  end
+
+  # An id whose node has been deleted is dropped from both the frontier and
+  # the result rather than aborting the traversal.
+  defp visit_neighbor(state, nid, {queue, visited, acc}) do
+    case fetch_node(state, nid) do
+      {:ok, node} -> {:queue.in(nid, queue), MapSet.put(visited, nid), [node | acc]}
+      {:error, :not_found} -> {queue, visited, acc}
     end
   end
 

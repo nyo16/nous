@@ -83,6 +83,23 @@ defmodule Nous.Tools.UrlGuardTest do
       assert reason =~ "private/loopback/link-local"
     end
 
+    test "rejects IPv6 unique-local fc00::/7" do
+      # ULA is the default address space for container and K8s overlay
+      # networks, so this is the range an in-cluster SSRF actually targets.
+      # Both halves of the /7 are covered: fc00::/8 and fd00::/8.
+      for host <- ["fc00::1", "fd00::1", "fdff:ffff::1"] do
+        assert {:error, reason} = UrlGuard.validate("http://[#{host}]/")
+        assert reason =~ "private/loopback/link-local"
+      end
+    end
+
+    test "still accepts a public IPv6 literal" do
+      # Negative control for the two IPv6 masks above: a mask wide enough to
+      # swallow global unicast would pass every fc00::/7 case and break every
+      # real fetch, which no other test in this file would notice.
+      assert {:ok, _uri} = UrlGuard.validate("http://[2606:4700:4700::1111]/")
+    end
+
     test "rejects NAT64-embedded metadata (64:ff9b::169.254.169.254)" do
       assert {:error, reason} = UrlGuard.validate("http://[64:ff9b::a9fe:a9fe]/")
       assert reason =~ "private/loopback/link-local"

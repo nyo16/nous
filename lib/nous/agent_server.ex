@@ -217,7 +217,8 @@ defmodule Nous.AgentServer do
   Manually save the current context to the persistence backend.
 
   Returns `:ok` on success, `{:error, :no_persistence}` if no backend is configured,
-  or `{:error, reason}` on failure.
+  `{:error, :saturated}` if `Nous.TaskSupervisor` is at its `:max_children` ceiling
+  (nothing was saved), or `{:error, reason}` on failure.
   """
   @spec save_context(pid()) :: :ok | {:error, term()}
   def save_context(pid) do
@@ -231,7 +232,8 @@ defmodule Nous.AgentServer do
   calls that may have been interrupted mid-execution.
 
   Returns `:ok` on success, `{:error, :no_persistence}` if no backend is configured,
-  or `{:error, reason}` on failure.
+  `{:error, :saturated}` if `Nous.TaskSupervisor` is at its `:max_children` ceiling
+  (nothing was loaded), or `{:error, reason}` on failure.
   """
   @spec load_context(pid(), String.t()) :: :ok | {:error, term()}
   def load_context(pid, session_id) do
@@ -261,7 +263,7 @@ defmodule Nous.AgentServer do
     agent =
       case agent_type do
         :react ->
-          Nous.ReActAgent.new(
+          Nous.Agent.ReAct.new(
             agent_config.model,
             instructions: Map.get(agent_config, :instructions, ""),
             tools: Map.get(agent_config, :tools, []),
@@ -393,12 +395,24 @@ defmodule Nous.AgentServer do
     cancelled_ref = state.cancelled_ref
     generation = state.task_generation
 
-    task =
-      Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-        run_agent_and_respond(server_pid, state, message, cancelled_ref, generation)
-      end)
+    run = fn -> run_agent_and_respond(server_pid, state, message, cancelled_ref, generation) end
 
-    {:noreply, %{state | current_task: task}}
+    case Nous.Tasks.async_nolink(run) do
+      {:ok, task} ->
+        {:noreply, %{state | current_task: task}}
+
+      # A cast has no caller to answer, and letting the refusal raise out of
+      # handle_cast would kill this server and take the live session's context
+      # with it. Subscribers were just told {:agent_status, :thinking} above, so
+      # close that out with the module's documented terminal error event (see
+      # the event table in @moduledoc) and stay up. The turn is dropped; the
+      # conversation is not.
+      {:error, :saturated} ->
+        Nous.Tasks.warn_saturated("an agent run for session #{state.session_id}")
+        msg = "Agent at capacity; this message was not processed. Retry shortly."
+        broadcast(state, {:agent_error, msg})
+        {:noreply, state}
+    end
   end
 
   @impl true
@@ -540,7 +554,7 @@ defmodule Nous.AgentServer do
           context: state.context
         }
 
-        Task.Supervisor.start_child(Nous.TaskSupervisor, fn ->
+        reply_when_saved = fn ->
           try do
             GenServer.reply(from, do_save_context(snapshot))
           rescue
@@ -552,9 +566,20 @@ defmodule Nous.AgentServer do
           catch
             kind, reason -> GenServer.reply(from, {:error, {kind, reason}})
           end
-        end)
+        end
 
-        {:noreply, state}
+        case Nous.Tasks.start_child(reply_when_saved) do
+          {:ok, _pid} ->
+            {:noreply, state}
+
+          {:error, :saturated} ->
+            # The task that owed `from` a reply is the one that was refused, so
+            # the "always answer" guard above never runs and answering falls to
+            # us. Reply here or the caller blocks for its whole call timeout.
+            # Nothing was written; the caller can retry.
+            Nous.Tasks.warn_saturated("a context save for session #{state.session_id}")
+            {:reply, {:error, :saturated}, state}
+        end
     end
   end
 
@@ -572,7 +597,7 @@ defmodule Nous.AgentServer do
         merge_deps = state.context.deps
         server = self()
 
-        Task.Supervisor.start_child(Nous.TaskSupervisor, fn ->
+        reply_when_loaded = fn ->
           try do
             result =
               with {:ok, data} <- backend.load(session_id),
@@ -604,9 +629,19 @@ defmodule Nous.AgentServer do
           catch
             kind, reason -> GenServer.reply(from, {:error, {kind, reason}})
           end
-        end)
+        end
 
-        {:noreply, state}
+        case Nous.Tasks.start_child(reply_when_loaded) do
+          {:ok, _pid} ->
+            {:noreply, state}
+
+          {:error, :saturated} ->
+            # Same as :save_context above — the refused task was the one that
+            # owed `from` a reply. Nothing was loaded, so the server's context
+            # is untouched and the caller can retry.
+            Nous.Tasks.warn_saturated("a context load for session #{session_id}")
+            {:reply, {:error, :saturated}, state}
+        end
     end
   end
 
@@ -790,8 +825,24 @@ defmodule Nous.AgentServer do
     # state (which holds a live %Task{}/atomics we don't want copied into the
     # spawned process).
     snapshot = %{persistence: backend, session_id: session_id, context: context}
-    Task.Supervisor.start_child(Nous.TaskSupervisor, fn -> do_save_context(snapshot) end)
-    :ok
+
+    case Nous.Tasks.start_child(fn -> do_save_context(snapshot) end) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, :saturated} ->
+        # Level 3, log and drop: do_save_context/1 serializes the whole message
+        # history and then does the backend's arbitrary IO (S3, Postgres), so
+        # running it inline here would block the agent loop — the one thing
+        # this function exists to avoid. What is lost is THIS checkpoint: the
+        # in-memory context is untouched and the next successful save (the next
+        # turn, or an explicit save_context/1) supersedes it, since the context
+        # is append-only within a run. The exception is the clear_history path,
+        # where the drop leaves the CLEARED history still persisted — a restart
+        # before the next save would restore it. Loud on purpose.
+        Nous.Tasks.warn_saturated("a context save for session #{session_id}")
+        :ok
+    end
   end
 
   defp save_context_async(_state), do: :ok

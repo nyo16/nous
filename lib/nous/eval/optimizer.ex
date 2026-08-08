@@ -60,6 +60,9 @@ defmodule Nous.Eval.Optimizer do
   alias Nous.Eval.{Suite, Runner}
   alias Nous.Eval.Optimizer.{Parameter, SearchSpace}
 
+  # One hour. Every strategy previously carried its own copy of this literal.
+  @default_timeout 3_600_000
+
   @type optimization_result :: %{
           best_config: map(),
           best_score: float(),
@@ -87,6 +90,21 @@ defmodule Nous.Eval.Optimizer do
           | :latency_p99
           | :total_tokens
           | :cost
+
+  @typedoc """
+  Per-run bookkeeping shared by every strategy's trial loop.
+
+  `index` is the 0-based position of the trial about to run; `total` is the
+  budget it is reported against.
+  """
+  @type trial_loop :: %{
+          verbose: boolean(),
+          index: non_neg_integer(),
+          total: non_neg_integer(),
+          start_time: integer(),
+          timeout: non_neg_integer(),
+          early_stop: number() | nil
+        }
 
   @doc """
   Run optimization to find best configuration.
@@ -205,6 +223,108 @@ defmodule Nous.Eval.Optimizer do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  @doc """
+  Build the bookkeeping every strategy's trial loop needs.
+
+  `start_time` is supplied by the caller rather than read here, so a
+  strategy's `:timeout` budget still covers configuration generation —
+  enumerating an exhaustive grid is not free.
+
+  ## Options
+
+    * `:verbose` - print per-trial progress (default: `true`)
+    * `:timeout` - total wall-clock budget in ms (default: `3_600_000`)
+    * `:early_stop` - stop once a trial scores at or above this threshold
+
+  """
+  @spec trial_loop(keyword(), non_neg_integer(), integer()) :: trial_loop()
+  def trial_loop(opts, total, start_time) do
+    %{
+      verbose: Keyword.get(opts, :verbose, true),
+      index: 0,
+      total: total,
+      start_time: start_time,
+      timeout: Keyword.get(opts, :timeout, @default_timeout),
+      early_stop: Keyword.get(opts, :early_stop)
+    }
+  end
+
+  @doc """
+  Has the loop spent its wall-clock budget?
+  """
+  @spec timed_out?(trial_loop()) :: boolean()
+  def timed_out?(loop) do
+    System.monotonic_time(:millisecond) - loop.start_time > loop.timeout
+  end
+
+  @doc """
+  Evaluate `configs` in order, stopping on timeout or early-stop.
+
+  Returns `{trials, count}` with the trials in the order they ran.
+
+  A configuration whose evaluation errors still produces a trial — scored
+  `0.0`, with the reason under `:metrics` — because a configuration that
+  fails to run is evidence about the search space, not a missing data point.
+  """
+  @spec run_trials(Suite.t(), [map()], metric(), keyword(), trial_loop()) ::
+          {[trial()], non_neg_integer()}
+  def run_trials(%Suite{} = suite, configs, metric, opts, loop) do
+    {reversed, count} =
+      Enum.reduce_while(configs, {[], 0}, &step_trial(&1, &2, suite, metric, opts, loop))
+
+    {Enum.reverse(reversed), count}
+  end
+
+  @doc """
+  Run the trial at `loop.index`, reporting whether the search should go on.
+
+  Returns `{:halt, trial}` when the trial met the loop's `:early_stop`
+  threshold, `{:cont, trial}` otherwise. Exposed separately from
+  `run_trials/5` for strategies that cannot pre-compute their configurations:
+  `Nous.Eval.Optimizer.Strategies.Bayesian` derives each candidate from the
+  trials before it, so it drives the loop itself.
+  """
+  @spec attempt_trial(Suite.t(), map(), metric(), keyword(), trial_loop()) ::
+          {:cont, trial()} | {:halt, trial()}
+  def attempt_trial(%Suite{} = suite, config, metric, opts, loop) do
+    if loop.verbose do
+      IO.write("\rTrial #{loop.index + 1}/#{loop.total}")
+    end
+
+    case run_trial(suite, config, metric, opts) do
+      {:ok, trial} -> continue_or_stop(trial, loop)
+      {:error, reason} -> failed_trial(config, reason, loop)
+    end
+  end
+
+  defp step_trial(config, {acc, idx}, suite, metric, opts, loop) do
+    if timed_out?(loop) do
+      {:halt, {acc, idx}}
+    else
+      case attempt_trial(suite, config, metric, opts, %{loop | index: idx}) do
+        {:cont, trial} -> {:cont, {[trial | acc], idx + 1}}
+        {:halt, trial} -> {:halt, {[trial | acc], idx + 1}}
+      end
+    end
+  end
+
+  defp continue_or_stop(trial, loop) do
+    if loop.early_stop && trial.score >= loop.early_stop do
+      if loop.verbose, do: IO.puts("\nEarly stop: score #{trial.score} >= #{loop.early_stop}")
+      {:halt, trial}
+    else
+      {:cont, trial}
+    end
+  end
+
+  defp failed_trial(config, reason, loop) do
+    if loop.verbose do
+      IO.puts("\nTrial #{loop.index + 1} failed: #{inspect(reason)}")
+    end
+
+    {:cont, %{config: config, score: 0.0, metrics: %{error: reason}, duration_ms: 0}}
   end
 
   @doc """

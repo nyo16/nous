@@ -72,41 +72,37 @@ defmodule Nous.Plugins.Summarization do
 
   defp summarize_older_messages(agent, ctx, config) do
     keep_recent = Map.get(config, :keep_recent, @default_keep_recent)
-    messages = ctx.messages
 
     # Separate system messages from conversation
-    {system_msgs, conversation} = Enum.split_with(messages, &(&1.role == :system))
+    {system_msgs, conversation} = Enum.split_with(ctx.messages, &(&1.role == :system))
 
-    # If we don't have enough messages to summarize, skip
-    if length(conversation) <= keep_recent do
-      ctx
-    else
-      # Find safe split point - never split tool_call/tool_result pairs
-      split_index = find_safe_split(conversation, keep_recent)
+    # Find safe split point - never split tool_call/tool_result pairs.
+    # find_safe_split/2 yields 0 whenever the conversation already fits inside
+    # the keep-recent window, so an empty `old_messages` covers both the
+    # "nothing to summarize" and "nothing old enough" cases.
+    {old_messages, recent_messages} =
+      Enum.split(conversation, find_safe_split(conversation, keep_recent))
 
-      {old_messages, recent_messages} = Enum.split(conversation, split_index)
+    case old_messages do
+      [] -> ctx
+      _ -> replace_with_summary(agent, ctx, config, system_msgs, old_messages, recent_messages)
+    end
+  end
 
-      if Enum.empty?(old_messages) do
+  defp replace_with_summary(agent, ctx, config, system_msgs, old_messages, recent_messages) do
+    case generate_summary(agent, old_messages, config) do
+      {:ok, summary} ->
+        summary_count = Map.get(config, :summary_count, 0) + 1
+        summary_msg = Nous.Message.system("[Conversation Summary]\n#{summary}")
+
+        updated_config = Map.put(config, :summary_count, summary_count)
+
+        %{ctx | messages: system_msgs ++ [summary_msg | recent_messages]}
+        |> put_in_deps(:summarization_config, updated_config)
+
+      {:error, reason} ->
+        Logger.warning("Summarization failed, keeping all messages: #{inspect(reason)}")
         ctx
-      else
-        case generate_summary(agent, old_messages, config) do
-          {:ok, summary} ->
-            summary_count = Map.get(config, :summary_count, 0) + 1
-            summary_msg = Nous.Message.system("[Conversation Summary]\n#{summary}")
-
-            updated_config = Map.put(config, :summary_count, summary_count)
-
-            %{
-              ctx
-              | messages: system_msgs ++ [summary_msg | recent_messages]
-            }
-            |> put_in_deps(:summarization_config, updated_config)
-
-          {:error, reason} ->
-            Logger.warning("Summarization failed, keeping all messages: #{inspect(reason)}")
-            ctx
-        end
-      end
     end
   end
 

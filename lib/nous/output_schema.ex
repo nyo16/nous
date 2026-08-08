@@ -176,22 +176,12 @@ defmodule Nous.OutputSchema do
 
     case JSON.decode(text) do
       {:ok, parsed} ->
-        # Try each schema in order, return first success
-        result =
-          Enum.reduce_while(schemas, nil, fn schema, _acc ->
-            case cast_and_validate(parsed, schema) do
-              {:ok, _} = success -> {:halt, success}
-              {:error, _} -> {:cont, nil}
-            end
-          end)
-
-        case result do
+        case first_matching_schema(parsed, schemas) do
           {:ok, _} = success ->
             success
 
           nil ->
-            schema_names =
-              schemas |> Enum.map(&schema_name/1) |> Enum.join(", ")
+            schema_names = schemas |> Enum.map(&schema_name/1) |> Enum.join(", ")
 
             {:error,
              Errors.ValidationError.exception(
@@ -227,6 +217,17 @@ defmodule Nous.OutputSchema do
            output_type: output_type
          )}
     end
+  end
+
+  # First schema in `schemas` that `parsed` casts and validates against, in
+  # declaration order; nil when none match.
+  defp first_matching_schema(parsed, schemas) do
+    Enum.reduce_while(schemas, nil, fn schema, _acc ->
+      case cast_and_validate(parsed, schema) do
+        {:ok, _} = success -> {:halt, success}
+        {:error, _} -> {:cont, nil}
+      end
+    end)
   end
 
   # -------------------------------------------------------------------

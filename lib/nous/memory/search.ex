@@ -59,9 +59,7 @@ defmodule Nous.Memory.Search do
     # — safe for SQL backends whose connection isn't concurrency-safe.
     embed_task =
       if embedding_provider && supports_vector?(store_mod) do
-        Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-          Embedding.embed(embedding_provider, query, embedding_opts)
-        end)
+        start_embedding(fn -> Embedding.embed(embedding_provider, query, embedding_opts) end)
       end
 
     # Step 1: Text search (in this process, concurrent with the embed task)
@@ -83,6 +81,30 @@ defmodule Nous.Memory.Search do
         # Don't leak the embed task if the text search failed.
         if embed_task, do: Task.shutdown(embed_task, :brutal_kill)
         error
+    end
+  end
+
+  # The task buys latency, not correctness — it overlaps the embedding RTT with
+  # the text scan. So when the supervisor refuses, run the embed INLINE and hand
+  # back an already-completed Task: the search still returns hybrid results and
+  # search/5's return type is untouched, it just pays the RTT serially. Silently
+  # degrading to text-only would change what the caller gets back; being slower
+  # does not.
+  #
+  # One difference on this path: await_embedding/1 converts a *crashed* embed
+  # task to nil, and inline there is no process to absorb a raise. A provider
+  # that raises instead of returning {:error, _} (which its behaviour requires)
+  # will surface here rather than degrade — deliberate, since swallowing it
+  # would need a bare rescue and a buggy provider should not look like an empty
+  # vector arm.
+  defp start_embedding(embed) do
+    case Nous.Tasks.async_nolink(embed) do
+      {:ok, task} ->
+        task
+
+      {:error, :saturated} ->
+        Nous.Tasks.warn_saturated("a memory embedding (ran inline instead)")
+        Task.completed(embed.())
     end
   end
 
@@ -119,56 +141,17 @@ defmodule Nous.Memory.Search do
     decay_lambda = Keyword.fetch!(opts, :decay_lambda)
     now = Keyword.fetch!(opts, :now)
 
-    # Step 2: Vector search (only if the embedding succeeded and the store
-    # supports it). Runs sequentially here — single-process store access.
-    vector_results =
-      if query_embedding && supports_vector?(store_mod) do
-        case store_mod.search_vector(store_state, query_embedding, store_opts) do
-          {:ok, results} ->
-            results
-
-          {:error, reason} ->
-            Logger.warning("Vector search failed: #{inspect(reason)}")
-            []
-        end
-      else
-        []
-      end
-
-    # Step 3: Merge results
-    merged =
-      if Enum.empty?(vector_results) do
-        text_results
-      else
-        # RRF scores are tiny (peak ~2/61 ≈ 0.033). Feeding them straight into
-        # composite_score/min_score made relevance negligible and broke min_score
-        # thresholds tuned for the text-only (jaro 0-1) scale. Rescale to 0-1.
-        text_results
-        |> Scoring.rrf_merge(vector_results)
-        |> normalize_relevance()
-      end
-
-    # Step 4: Apply temporal decay to relevance, then composite scoring
-    # Note: temporal_decay penalizes old entries on the relevance score.
-    # composite_score has its own recency weight, so we set recency weight to 0
-    # when temporal decay is active to avoid double-penalizing old entries.
-    effective_weights =
-      if decay_lambda > 0 && scoring_weights[:recency] == nil do
-        Keyword.put(scoring_weights, :recency, 0.0)
-      else
-        scoring_weights
-      end
+    merged = merge_with_vector(text_results, query_embedding, store_mod, store_state, store_opts)
+    weights = effective_weights(scoring_weights, decay_lambda)
 
     scored =
-      merged
-      |> Enum.map(fn {entry, relevance} ->
+      Enum.map(merged, fn {entry, relevance} ->
         decayed = Scoring.temporal_decay(relevance, entry, decay_lambda: decay_lambda, now: now)
-        composite = Scoring.composite_score(decayed, entry, weights: effective_weights, now: now)
-        {entry, composite}
+        {entry, Scoring.composite_score(decayed, entry, weights: weights, now: now)}
       end)
 
-    # Step 6: Sort, filter, and take top N. min_score + type filters are folded
-    # into a single predicate (one pass instead of two).
+    # min_score + type filters are folded into a single predicate (one pass
+    # instead of two).
     results =
       scored
       |> Enum.filter(fn {entry, score} ->
@@ -178,6 +161,52 @@ defmodule Nous.Memory.Search do
       |> Enum.take(limit)
 
     {:ok, results}
+  end
+
+  # Fuse the text hits with the vector hits via Reciprocal Rank Fusion, then
+  # rescale. RRF scores are tiny (peak ~2/61 ≈ 0.033); feeding them straight
+  # into composite_score/min_score made relevance negligible and broke
+  # min_score thresholds tuned for the text-only (jaro 0-1) scale.
+  defp merge_with_vector(text_results, query_embedding, store_mod, store_state, store_opts) do
+    case vector_search(query_embedding, store_mod, store_state, store_opts) do
+      [] ->
+        text_results
+
+      vector_results ->
+        text_results
+        |> Scoring.rrf_merge(vector_results)
+        |> normalize_relevance()
+    end
+  end
+
+  # Only if the embedding succeeded and the store supports it. Runs
+  # sequentially here — single-process store access.
+  defp vector_search(query_embedding, store_mod, store_state, store_opts) do
+    if query_embedding && supports_vector?(store_mod) do
+      unwrap_vector_results(store_mod.search_vector(store_state, query_embedding, store_opts))
+    else
+      []
+    end
+  end
+
+  # A vector-search failure degrades the query to text-only rather than
+  # failing it.
+  defp unwrap_vector_results({:ok, results}), do: results
+
+  defp unwrap_vector_results({:error, reason}) do
+    Logger.warning("Vector search failed: #{inspect(reason)}")
+    []
+  end
+
+  # temporal_decay penalizes old entries on the relevance score and
+  # composite_score has its own recency weight, so recency is zeroed while decay
+  # is active to avoid double-penalizing. An explicit caller weight wins.
+  defp effective_weights(scoring_weights, decay_lambda) do
+    if decay_lambda > 0 && scoring_weights[:recency] == nil do
+      Keyword.put(scoring_weights, :recency, 0.0)
+    else
+      scoring_weights
+    end
   end
 
   # Rescale relevance scores so the top result maps to 1.0 (preserving relative

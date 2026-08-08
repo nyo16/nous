@@ -158,16 +158,18 @@ defmodule Nous.ModelDispatcherTest do
     end
 
     test "concurrent owners each see their own override" do
+      # No sleeps: put_dispatcher/1 writes the caller's own process
+      # dictionary, so the assertion holds under full serialisation and the
+      # sleeps bought an interleaving nothing here verifies. The real
+      # isolation proof is the test above.
       [a, b] =
         Task.await_many([
           Task.async(fn ->
             ModelDispatcher.put_dispatcher(AppEnvDispatcher)
-            Process.sleep(20)
             ModelDispatcher.resolve()
           end),
           Task.async(fn ->
             ModelDispatcher.put_dispatcher(ProcessDispatcher)
-            Process.sleep(20)
             ModelDispatcher.resolve()
           end)
         ])

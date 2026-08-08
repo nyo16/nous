@@ -63,8 +63,22 @@ defmodule Nous.Research.Coordinator do
     # Run with timeout under the application TaskSupervisor so the work
     # doesn't bring down its caller (and vice-versa) on crash, and so app
     # shutdown can send graceful exits to in-flight research.
-    task = Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn -> research_loop(state) end)
+    case Nous.Tasks.async_nolink(fn -> research_loop(state) end) do
+      {:ok, task} ->
+        await_research(task, timeout)
 
+      # The task here is load-bearing, not merely async: it caps a
+      # multi-minute LLM loop at `:timeout` and keeps a crash off the caller.
+      # Running research_loop/1 inline would drop both — an unbounded network
+      # loop in the caller is worse than a refusal — and run/2 already
+      # advertises {:error, term()}, so answer with the error.
+      {:error, :saturated} ->
+        Nous.Tasks.warn_saturated("a research run")
+        {:error, :saturated}
+    end
+  end
+
+  defp await_research(task, timeout) do
     case Task.yield(task, timeout) || Task.shutdown(task) do
       {:ok, result} -> result
       {:exit, reason} -> {:error, {:task_exit, reason}}
@@ -132,28 +146,32 @@ defmodule Nous.Research.Coordinator do
          %{phase: :synthesizing, iteration: state.iteration, findings: length(all_findings)}}
       )
 
-      # Phase 3: Synthesize
-      with {:ok, synthesis, state} <- synthesize_phase(state) do
-        state = %{state | synthesis: synthesis, iteration: state.iteration + 1}
+      synthesize_and_evaluate(state)
+    end
+  end
 
-        notify(
-          state,
-          {:research_progress,
-           %{
-             phase: :evaluating,
-             iteration: state.iteration,
-             gaps: length(synthesis[:gaps] || [])
-           }}
-        )
+  # Phase 3 + 4: synthesize everything gathered so far, then decide whether the
+  # remaining gaps justify another research iteration or the report is due.
+  defp synthesize_and_evaluate(state) do
+    with {:ok, synthesis, state} <- synthesize_phase(state) do
+      state = %{state | synthesis: synthesis, iteration: state.iteration + 1}
 
-        # Phase 4: Evaluate - should we continue?
-        case evaluate_termination(state) do
-          :continue ->
-            research_loop(state)
+      notify(
+        state,
+        {:research_progress,
+         %{
+           phase: :evaluating,
+           iteration: state.iteration,
+           gaps: length(synthesis[:gaps] || [])
+         }}
+      )
 
-          :stop ->
-            generate_report(state)
-        end
+      case evaluate_termination(state) do
+        :continue ->
+          research_loop(state)
+
+        :stop ->
+          generate_report(state)
       end
     end
   end
@@ -176,10 +194,13 @@ defmodule Nous.Research.Coordinator do
     end
   end
 
+  # At the task ceiling this searches the steps one at a time instead of losing
+  # the batch — the module's own :sequential strategy above already runs exactly
+  # this work serially, so the findings and their order are unchanged. The
+  # per-step `timeout` needs a task to kill, so it is not enforced on that path.
   defp search_parallel(steps, model, search_tool, deps, state) do
     results =
-      Task.Supervisor.async_stream_nolink(
-        Nous.TaskSupervisor,
+      Nous.Tasks.stream(
         steps,
         fn step ->
           notify(state, {:research_finding, %{query: step.query, phase: :searching}})

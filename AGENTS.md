@@ -203,6 +203,11 @@ these, it will be rejected.
    `Nous.Plugins.SubAgent`, declare which deps it sees with
    `:sub_agent_shared_deps, [:key1, :key2]`. The default `[]` is correct
    for security.
+   The **workspace root is the exception**: it is a confinement boundary, not
+   a capability, so a sub-agent inherits its parent's `:workspace_root`
+   unconditionally and can only be narrowed further, never widened, via
+   `:sub_agent_workspace_root`. Any new deps key a guard trusts must also be
+   added to `Nous.Agent.Context.protected_deps_keys/0` in the same change.
 
 ## Common workflows
 
@@ -309,6 +314,15 @@ Currently hidden, do not call:
 - `Nous.Workflow.Engine.Executor`, `Nous.Workflow.Engine.ParallelExecutor`,
   `Nous.Workflow.Engine.StateMerger` — internal node dispatch; use
   `Nous.Workflow` to build and `Nous.Workflow.Engine.execute/1,2` to run
+- `Nous.Util` — GenServer/decoding plumbing with no coherent public story
+- `Nous.Errors.Base` — scaffolding behind the `Nous.Errors.*` exceptions,
+  which are themselves public
+- `Nous.Tools.Search.Common` — shared base for the bundled search tools; call
+  `Nous.Tools.BraveSearch` / `Nous.Tools.TavilySearch`
+
+`test/nous/doc_contract_test.exs` enforces the rule above mechanically in both
+directions, so this list and `mix.exs`'s `groups_for_modules` cannot drift from
+the code again.
 
 Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
 `Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and

@@ -232,90 +232,66 @@ defmodule Mix.Tasks.Nous.Optimize do
   end
 
   defp build_opts(opts) do
-    strategy =
-      case opts[:strategy] do
-        "grid_search" ->
-          :grid_search
-
-        "grid" ->
-          :grid_search
-
-        "random" ->
-          :random
-
-        "bayesian" ->
-          :bayesian
-
-        nil ->
-          :bayesian
-
-        other ->
-          Mix.shell().error("Unknown strategy: #{other}")
-          exit({:shutdown, 1})
-      end
-
-    metric =
-      case opts[:metric] do
-        "score" ->
-          :score
-
-        "pass_rate" ->
-          :pass_rate
-
-        "latency_p50" ->
-          :latency_p50
-
-        "latency_p95" ->
-          :latency_p95
-
-        "latency_p99" ->
-          :latency_p99
-
-        "total_tokens" ->
-          :total_tokens
-
-        "cost" ->
-          :cost
-
-        nil ->
-          :score
-
-        other ->
-          Mix.shell().error("Unknown metric: #{other}")
-          exit({:shutdown, 1})
-      end
+    strategy = parse_strategy(opts[:strategy])
 
     opt_opts = [
       strategy: strategy,
-      metric: metric,
+      metric: parse_metric(opts[:metric]),
       maximize: !opts[:minimize],
       verbose: opts[:verbose] && !opts[:quiet]
     ]
 
-    opt_opts =
-      case strategy do
-        :grid_search ->
-          opt_opts
-          |> maybe_add(:max_trials, opts[:trials] || opts[:max_trials])
-          |> maybe_add(:timeout, opts[:timeout])
-          |> maybe_add(:early_stop, opts[:early_stop])
+    strategy_opts(opt_opts, strategy, opts)
+  end
 
-        :random ->
-          opt_opts
-          |> maybe_add(:n_trials, opts[:trials] || 20)
-          |> maybe_add(:timeout, opts[:timeout])
-          |> maybe_add(:early_stop, opts[:early_stop])
+  defp parse_strategy(nil), do: :bayesian
+  defp parse_strategy("grid_search"), do: :grid_search
+  defp parse_strategy("grid"), do: :grid_search
+  defp parse_strategy("random"), do: :random
+  defp parse_strategy("bayesian"), do: :bayesian
 
-        :bayesian ->
-          opt_opts
-          |> maybe_add(:n_trials, opts[:trials] || 20)
-          |> maybe_add(:n_initial, opts[:n_initial])
-          |> maybe_add(:gamma, opts[:gamma])
-          |> maybe_add(:timeout, opts[:timeout])
-          |> maybe_add(:early_stop, opts[:early_stop])
-      end
+  defp parse_strategy(other) do
+    Mix.shell().error("Unknown strategy: #{other}")
+    exit({:shutdown, 1})
+  end
 
+  defp parse_metric(nil), do: :score
+  defp parse_metric("score"), do: :score
+  defp parse_metric("pass_rate"), do: :pass_rate
+  defp parse_metric("latency_p50"), do: :latency_p50
+  defp parse_metric("latency_p95"), do: :latency_p95
+  defp parse_metric("latency_p99"), do: :latency_p99
+  defp parse_metric("total_tokens"), do: :total_tokens
+  defp parse_metric("cost"), do: :cost
+
+  defp parse_metric(other) do
+    Mix.shell().error("Unknown metric: #{other}")
+    exit({:shutdown, 1})
+  end
+
+  # Each strategy reads a different slice of the CLI flags; `maybe_add/3` drops
+  # the ones the user did not pass so strategy defaults still apply.
+  defp strategy_opts(opt_opts, :grid_search, opts) do
     opt_opts
+    |> maybe_add(:max_trials, opts[:trials] || opts[:max_trials])
+    |> maybe_add(:timeout, opts[:timeout])
+    |> maybe_add(:early_stop, opts[:early_stop])
+  end
+
+  defp strategy_opts(opt_opts, :random, opts) do
+    opt_opts
+    |> maybe_add(:n_trials, opts[:trials] || 20)
+    |> maybe_add(:timeout, opts[:timeout])
+    |> maybe_add(:early_stop, opts[:early_stop])
+  end
+
+  defp strategy_opts(opt_opts, :bayesian, opts) do
+    opt_opts
+    |> maybe_add(:n_trials, opts[:trials] || 20)
+    |> maybe_add(:n_initial, opts[:n_initial])
+    |> maybe_add(:gamma, opts[:gamma])
+    |> maybe_add(:timeout, opts[:timeout])
+    |> maybe_add(:early_stop, opts[:early_stop])
   end
 
   defp maybe_add(opts, _key, nil), do: opts

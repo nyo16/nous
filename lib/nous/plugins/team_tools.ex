@@ -243,6 +243,8 @@ defmodule Nous.Plugins.TeamTools do
   # ===========================================================================
 
   @doc false
+  @spec peer_message(Nous.Agent.Context.t(), map()) ::
+          %{status: String.t(), from: String.t() | nil, to: String.t()}
   def peer_message(ctx, %{"to" => to, "content" => content}) do
     team_id = ctx.deps[:team_id]
     from = ctx.deps[:agent_name]
@@ -254,6 +256,8 @@ defmodule Nous.Plugins.TeamTools do
   end
 
   @doc false
+  @spec broadcast_message(Nous.Agent.Context.t(), map()) ::
+          %{status: String.t(), from: String.t() | nil}
   def broadcast_message(ctx, %{"content" => content}) do
     team_id = ctx.deps[:team_id]
     from = ctx.deps[:agent_name]
@@ -265,6 +269,8 @@ defmodule Nous.Plugins.TeamTools do
   end
 
   @doc false
+  @spec share_discovery(Nous.Agent.Context.t(), map()) ::
+          %{status: String.t(), topic: String.t(), from: String.t() | nil}
   def share_discovery(ctx, %{"topic" => topic, "content" => content}) do
     team_id = ctx.deps[:team_id]
     from = ctx.deps[:agent_name]
@@ -284,6 +290,12 @@ defmodule Nous.Plugins.TeamTools do
   end
 
   @doc false
+  @spec list_team(Nous.Agent.Context.t(), map()) ::
+          %{team_id: String.t() | nil, agents: [], note: String.t()}
+          | %{
+              team_id: String.t() | nil,
+              agents: [%{name: String.t(), status: :running | :stopped}]
+            }
   def list_team(ctx, _args) do
     coordinator = ctx.deps[:team_coordinator_pid]
 
@@ -305,6 +317,10 @@ defmodule Nous.Plugins.TeamTools do
   end
 
   @doc false
+  @spec claim_region(Nous.Agent.Context.t(), map()) ::
+          %{status: String.t(), file: String.t(), start_line: integer(), end_line: integer()}
+          | %{status: String.t(), file: String.t(), message: String.t()}
+          | %{status: String.t(), message: String.t()}
   def claim_region(ctx, %{"file" => file, "start_line" => start_line, "end_line" => end_line}) do
     agent_name = ctx.deps[:agent_name]
     shared_state = ctx.deps[:shared_state_pid]

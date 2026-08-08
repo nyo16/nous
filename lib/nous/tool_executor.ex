@@ -211,10 +211,14 @@ defmodule Nous.ToolExecutor do
         Logger.debug("Tool '#{tool.name}' completed in #{duration_ms}ms")
       end
 
-      # Emit success event
+      # `attempt` is in BOTH the measurements and the metadata. Telemetry.Metrics
+      # can only aggregate over measurements, so `Nous.PromEx.Plugin`'s
+      # attempts distribution silently recorded nothing while it lived in
+      # metadata alone; metadata keeps its copy so existing handlers that
+      # pattern-match on it are unaffected.
       :telemetry.execute(
         [:nous, :tool, :execute, :stop],
-        %{duration: duration},
+        %{duration: duration, attempt: attempt + 1},
         %{
           tool_name: tool.name,
           attempt: attempt + 1,
@@ -282,6 +286,39 @@ defmodule Nous.ToolExecutor do
     end
   end
 
+  # Arranges for the calling process to be killed if `caller` dies first.
+  #
+  # A tool process is deliberately not linked to whoever asked for it: a
+  # crashing tool must not take the agent run down with it. The cost of that
+  # isolation is that the tool process also outlives its caller — verified
+  # against OTP, and true of `spawn_monitor`, `Task.Supervisor.async_nolink`
+  # and `async_stream_nolink` alike, since `Task.Supervised` drops its monitor
+  # on the owner before invoking the function. So cancelling a run, or the
+  # parallel batch's `on_timeout: :kill_task` firing, left the tool itself
+  # running: an orphaned process holding a socket, a port, or a file handle
+  # that nothing would ever reap.
+  #
+  # The watchdog spawned here is linked to nothing and monitors both ends, so
+  # it adds no new failure propagation in either direction: caller dies first
+  # and it kills the tool process (`:kill`, so a tool that traps exits cannot
+  # refuse); tool process dies first — normally, by crash, or by the timeout
+  # branch below — and it simply exits.
+  @doc false
+  @spec reap_on_caller_exit(pid()) :: pid()
+  def reap_on_caller_exit(caller) when is_pid(caller) do
+    reapee = self()
+
+    spawn(fn ->
+      caller_ref = Process.monitor(caller)
+      reapee_ref = Process.monitor(reapee)
+
+      receive do
+        {:DOWN, ^caller_ref, :process, _pid, _reason} -> Process.exit(reapee, :kill)
+        {:DOWN, ^reapee_ref, :process, _pid, _reason} -> :ok
+      end
+    end)
+  end
+
   # Execute with optional timeout
   defp execute_with_timeout(tool, arguments, ctx) do
     if tool.timeout && tool.timeout > 0 do
@@ -292,6 +329,10 @@ defmodule Nous.ToolExecutor do
 
       {pid, monitor_ref} =
         spawn_monitor(fn ->
+          # Not linked to the caller, so nothing else would stop this tool
+          # from running on after the run that asked for it was cancelled.
+          reap_on_caller_exit(caller)
+
           try do
             result = apply_tool_function(tool, arguments, ctx)
             send(caller, {ref, {:ok, result}})

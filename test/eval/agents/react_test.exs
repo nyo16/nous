@@ -1,8 +1,8 @@
-defmodule Nous.Eval.Agents.ReActAgentTest do
+defmodule Nous.Eval.Agents.ReActTest do
   @moduledoc """
   Tests for ReAct (Reasoning and Acting) agent functionality.
 
-  Run with: mix test test/eval/agents/react_agent_test.exs --include llm
+  Run with: mix test test/eval/agents/react_test.exs --include llm
   """
 
   use ExUnit.Case, async: false
@@ -27,9 +27,9 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
     test "7.1 creates a plan before acting", context do
       skip_if_unavailable(context)
 
-      agent = Nous.ReActAgent.new(context[:model])
+      agent = Nous.Agent.ReAct.new(context[:model])
 
-      {:ok, result} = Nous.ReActAgent.run(agent, "What is 5 plus 3?")
+      {:ok, result} = Nous.Agent.ReAct.run(agent, "What is 5 plus 3?")
 
       IO.puts("\n[ReAct 7.1] Output: #{inspect(result.output)}")
 
@@ -41,10 +41,10 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
     test "7.2 can use planning tool", context do
       skip_if_unavailable(context)
 
-      agent = Nous.ReActAgent.new(context[:model])
+      agent = Nous.Agent.ReAct.new(context[:model])
 
       {:ok, result} =
-        Nous.ReActAgent.run(
+        Nous.Agent.ReAct.run(
           agent,
           "Plan how to calculate the area of a rectangle that is 5 by 10"
         )
@@ -61,12 +61,12 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
       skip_if_unavailable(context)
 
       agent =
-        Nous.ReActAgent.new(context[:model],
+        Nous.Agent.ReAct.new(context[:model],
           instructions: "Break down tasks into todos before solving them."
         )
 
       {:ok, result} =
-        Nous.ReActAgent.run(
+        Nous.Agent.ReAct.run(
           agent,
           "Make a todo list for learning Elixir, then answer with the list"
         )
@@ -79,10 +79,10 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
     test "7.4 can complete todos", context do
       skip_if_unavailable(context)
 
-      agent = Nous.ReActAgent.new(context[:model])
+      agent = Nous.Agent.ReAct.new(context[:model])
 
       {:ok, result} =
-        Nous.ReActAgent.run(agent, """
+        Nous.Agent.ReAct.run(agent, """
         Add two todos: 'Say hello' and 'Say goodbye'.
         Complete the first todo by saying hello.
         Then give your final answer.
@@ -99,12 +99,12 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
       skip_if_unavailable(context)
 
       agent =
-        Nous.ReActAgent.new(context[:model],
+        Nous.Agent.ReAct.new(context[:model],
           instructions: "Use the note tool to document your observations."
         )
 
       {:ok, result} =
-        Nous.ReActAgent.run(agent, """
+        Nous.Agent.ReAct.run(agent, """
         Calculate 7 * 8 and note down the result.
         Then provide your final answer.
         """)
@@ -119,9 +119,9 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
     test "7.6 uses final_answer to complete", context do
       skip_if_unavailable(context)
 
-      agent = Nous.ReActAgent.new(context[:model])
+      agent = Nous.Agent.ReAct.new(context[:model])
 
-      {:ok, result} = Nous.ReActAgent.run(agent, "What is 2 + 2? Use final_answer to respond.")
+      {:ok, result} = Nous.Agent.ReAct.run(agent, "What is 2 + 2? Use final_answer to respond.")
 
       IO.puts("\n[ReAct 7.6] Output: #{inspect(result.output)}")
 
@@ -154,12 +154,12 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
         )
 
       agent =
-        Nous.ReActAgent.new(context[:model],
+        Nous.Agent.ReAct.new(context[:model],
           tools: [weather_tool]
         )
 
       {:ok, result} =
-        Nous.ReActAgent.run(agent, """
+        Nous.Agent.ReAct.run(agent, """
         First, plan how to find the weather in Tokyo.
         Then use the weather tool to get the weather.
         Finally, provide your final answer.
@@ -204,13 +204,13 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
         )
 
       agent =
-        Nous.ReActAgent.new(context[:model],
+        Nous.Agent.ReAct.new(context[:model],
           tools: [calc_tool],
           instructions: "Use the calculate tool for math operations."
         )
 
       result =
-        Nous.ReActAgent.run(agent, """
+        Nous.Agent.ReAct.run(agent, """
         Plan how to calculate (5 + 3) * 2.
         Add a todo for each step.
         Calculate step by step using the calculate tool.
@@ -249,13 +249,13 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
         )
 
       agent =
-        Nous.ReActAgent.new(context[:model],
+        Nous.Agent.ReAct.new(context[:model],
           tools: [static_tool],
           max_iterations: 5
         )
 
       {:ok, result} =
-        Nous.ReActAgent.run(agent, """
+        Nous.Agent.ReAct.run(agent, """
         Call static_tool once.
         Then provide your final answer about what it returned.
         """)
@@ -271,9 +271,9 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
     test "7.10 streaming with ReAct agent", context do
       skip_if_unavailable(context)
 
-      agent = Nous.ReActAgent.new(context[:model])
+      agent = Nous.Agent.ReAct.new(context[:model])
 
-      {:ok, stream} = Nous.ReActAgent.run_stream(agent, "What is 3 * 4? Provide final_answer.")
+      {:ok, stream} = Nous.Agent.ReAct.run_stream(agent, "What is 3 * 4? Provide final_answer.")
 
       chunks = collect_stream(stream)
 
@@ -327,13 +327,13 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
         )
 
       agent =
-        Nous.ReActAgent.new(context[:model],
+        Nous.Agent.ReAct.new(context[:model],
           tools: [search_tool],
           instructions: "You are a research assistant. Use search to find information."
         )
 
       result =
-        Nous.ReActAgent.run(agent, """
+        Nous.Agent.ReAct.run(agent, """
         Research: What is Elixir and what web framework is commonly used with it?
 
         Steps:

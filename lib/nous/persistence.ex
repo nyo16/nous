@@ -20,7 +20,9 @@ defmodule Nous.Persistence do
         def load(session_id) do
           case Redix.command(:redix, ["GET", "nous:#{session_id}"]) do
             {:ok, nil} -> {:error, :not_found}
-            {:ok, json} -> {:ok, json |> JSON.decode!() |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)}
+            # Guarded key decode. `String.to_existing_atom/1` would raise on a
+            # key written by an older release, crashing every load from then on.
+            {:ok, json} -> {:ok, json |> JSON.decode!() |> Nous.Persistence.decode_keys()}
           end
         end
 
@@ -51,4 +53,38 @@ defmodule Nous.Persistence do
 
   @doc "List all persisted session IDs."
   @callback list() :: {:ok, [String.t()]} | {:error, term()}
+
+  @doc """
+  Convert a persisted map's string keys to the atom keys `c:load/1` returns.
+
+  Backends that serialize to a string-keyed format — JSON, MessagePack, Redis
+  hashes — need this on the way back in. `c:save/1` receives an atom-keyed map
+  and `c:load/1` must hand one back, so the round trip has to re-key.
+
+  Only top-level keys are converted; values are returned untouched.
+
+  ## Why not `String.to_existing_atom/1`
+
+  Two failure modes, both of which this avoids:
+
+    * A key whose atom is not loaded raises `ArgumentError`. One stale key
+      written by an older release would crash every subsequent load of that
+      session. Such keys are left as binaries instead, which downstream casts
+      ignore.
+
+    * Persisted blobs are attacker-reachable, so `String.to_atom/1` is never
+      an option either: atoms are not garbage collected, and minting them from
+      stored data is a node-wide denial of service.
+
+  ## Examples
+
+      iex> Nous.Persistence.decode_keys(%{"session_id" => "abc"})
+      %{session_id: "abc"}
+
+      iex> Nous.Persistence.decode_keys(%{"no_such_persisted_key_xyz" => 1})
+      %{"no_such_persisted_key_xyz" => 1}
+
+  """
+  @spec decode_keys(map()) :: map()
+  def decode_keys(data) when is_map(data), do: Nous.Util.atomize_keys(data)
 end

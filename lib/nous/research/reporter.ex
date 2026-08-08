@@ -46,18 +46,10 @@ defmodule Nous.Research.Reporter do
     claims_text =
       (synthesis[:claims] || [])
       |> Enum.with_index(1)
-      |> Enum.map(fn {claim, i} ->
-        sources_refs =
-          claim.sources
-          |> Enum.map(fn url ->
-            idx = Enum.find_index(findings, fn f -> f.source_url == url end)
-            if idx, do: "[#{idx + 1}]", else: ""
-          end)
-          |> Enum.join("")
-
+      |> Enum.map_join("\n", fn {claim, i} ->
+        sources_refs = Enum.map_join(claim.sources, "", &source_ref(&1, findings))
         "#{i}. #{claim.text} #{sources_refs} (confidence: #{claim.confidence})"
       end)
-      |> Enum.join("\n")
 
     gaps_text =
       (synthesis[:gaps] || [])
@@ -131,6 +123,16 @@ defmodule Nous.Research.Reporter do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # Citation marker for one claim source: the 1-based position of the first
+  # finding carrying that URL, or nothing when the claim cites a URL no
+  # finding backs.
+  defp source_ref(url, findings) do
+    case Enum.find_index(findings, fn f -> f.source_url == url end) do
+      nil -> ""
+      idx -> "[#{idx + 1}]"
     end
   end
 

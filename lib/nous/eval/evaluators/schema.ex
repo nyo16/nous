@@ -252,17 +252,7 @@ defmodule Nous.Eval.Evaluators.Schema do
     if expected_values == %{} do
       {true, nil, %{}}
     else
-      mismatches =
-        Enum.reduce(expected_values, [], fn {field, expected}, acc ->
-          field = safe_field_atom(field)
-          actual = Map.get(struct, field)
-
-          if actual == expected do
-            acc
-          else
-            [{field, expected, actual} | acc]
-          end
-        end)
+      mismatches = Enum.reduce(expected_values, [], &collect_field_mismatch(&1, &2, struct))
 
       if mismatches == [] do
         {true, nil, %{}}
@@ -270,6 +260,13 @@ defmodule Nous.Eval.Evaluators.Schema do
         {false, "Field value mismatches", %{field_mismatches: mismatches}}
       end
     end
+  end
+
+  defp collect_field_mismatch({field, expected}, acc, struct) do
+    field = safe_field_atom(field)
+    actual = Map.get(struct, field)
+
+    if actual == expected, do: acc, else: [{field, expected, actual} | acc]
   end
 
   # Field names in `required_fields` / `field_values` come from arbitrary YAML.

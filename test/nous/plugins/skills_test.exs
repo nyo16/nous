@@ -3,6 +3,7 @@ defmodule Nous.Plugins.SkillsTest do
 
   alias Nous.{Agent, Skill}
   alias Nous.Agent.Context
+  alias Nous.Message.ContentPart
   alias Nous.Plugins.Skills
 
   defmodule TestSkill do
@@ -150,6 +151,77 @@ defmodule Nous.Plugins.SkillsTest do
       {result_ctx, tools} = Skills.before_request(agent, ctx, [])
       assert result_ctx == ctx
       assert tools == []
+    end
+
+    test "auto-activates matching skills from multimodal user content" do
+      agent = make_agent([TestSkill])
+      ctx = Skills.init(agent, make_ctx())
+
+      message = %Nous.Message{
+        role: :user,
+        content: [
+          ContentPart.image_url("https://example.com/screenshot.png"),
+          ContentPart.text("write a test for this function")
+        ]
+      }
+
+      {ctx, _tools} = Skills.before_request(agent, %{ctx | messages: [message]}, [])
+
+      assert Nous.Skill.Registry.active?(ctx.deps[:skill_registry], "plugin_test_skill")
+    end
+
+    test "matches text split across multiple content parts" do
+      agent = make_agent([TestSkill])
+      ctx = Skills.init(agent, make_ctx())
+
+      # "test" only exists once the parts are joined, so this fails if the
+      # plugin ever goes back to reading a single part.
+      message = %Nous.Message{
+        role: :user,
+        content: [ContentPart.text("write a te"), ContentPart.text("st for this")]
+      }
+
+      {ctx, _tools} = Skills.before_request(agent, %{ctx | messages: [message]}, [])
+
+      assert Nous.Skill.Registry.active?(ctx.deps[:skill_registry], "plugin_test_skill")
+    end
+
+    test "matches only text parts, never the payload of a non-text part" do
+      agent = make_agent([TestSkill])
+      ctx = Skills.init(agent, make_ctx())
+
+      # The URL contains the skill's trigger word: an implementation that
+      # stringifies whole content instead of extracting text parts would
+      # activate on a filename.
+      message = %Nous.Message{
+        role: :user,
+        content: [ContentPart.image_url("https://example.com/test-screenshot.png")]
+      }
+
+      {result_ctx, tools} = Skills.before_request(agent, %{ctx | messages: [message]}, [])
+
+      refute Nous.Skill.Registry.active?(result_ctx.deps[:skill_registry], "plugin_test_skill")
+      assert tools == []
+    end
+
+    test "skips a text-free message and matches the previous user message" do
+      agent = make_agent([TestSkill])
+      ctx = Skills.init(agent, make_ctx())
+
+      # Nous.Message.extract_text/1 yields "" for the image-only message, and
+      # "" is truthy — without the conversion back to nil the search stops
+      # there and the earlier, matching message is never seen.
+      messages = [
+        %Nous.Message{role: :user, content: "write a test for this function"},
+        %Nous.Message{
+          role: :user,
+          content: [ContentPart.image_url("https://example.com/screenshot.png")]
+        }
+      ]
+
+      {ctx, _tools} = Skills.before_request(agent, %{ctx | messages: messages}, [])
+
+      assert Nous.Skill.Registry.active?(ctx.deps[:skill_registry], "plugin_test_skill")
     end
   end
 end

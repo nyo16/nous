@@ -81,32 +81,12 @@ defmodule Nous.Eval.Config do
     app_config = Application.get_env(:nous, Nous.Eval, [])
 
     %Config{
-      default_model:
-        opts[:default_model] ||
-          env_string("NOUS_EVAL_DEFAULT_MODEL") ||
-          app_config[:default_model],
-      default_timeout:
-        opts[:default_timeout] ||
-          env_integer("NOUS_EVAL_DEFAULT_TIMEOUT") ||
-          app_config[:default_timeout] ||
-          60_000,
-      default_instructions:
-        opts[:default_instructions] ||
-          app_config[:default_instructions],
-      parallelism:
-        opts[:parallelism] ||
-          env_integer("NOUS_EVAL_PARALLELISM") ||
-          app_config[:parallelism] ||
-          1,
-      store_results:
-        opts[:store_results] ||
-          app_config[:store_results] ||
-          true,
-      results_path:
-        opts[:results_path] ||
-          env_string("NOUS_EVAL_RESULTS_PATH") ||
-          app_config[:results_path] ||
-          "priv/eval_results",
+      default_model: default_model(opts, app_config),
+      default_timeout: default_timeout(opts, app_config),
+      default_instructions: opts[:default_instructions] || app_config[:default_instructions],
+      parallelism: parallelism(opts, app_config),
+      store_results: store_results(opts, app_config),
+      results_path: results_path(opts, app_config),
       cost_config: merge_cost_config(app_config[:cost_config])
     }
   end
@@ -161,6 +141,41 @@ defmodule Nous.Eval.Config do
   end
 
   # Private helpers
+
+  # Precedence for every setting: explicit opts, then env var, then app config,
+  # then the built-in default. One function per setting so `get/1` reads as a
+  # list of settings rather than a wall of `||`.
+  defp default_model(opts, app_config) do
+    opts[:default_model] || env_string("NOUS_EVAL_DEFAULT_MODEL") || app_config[:default_model]
+  end
+
+  defp default_timeout(opts, app_config) do
+    opts[:default_timeout] ||
+      env_integer("NOUS_EVAL_DEFAULT_TIMEOUT") ||
+      app_config[:default_timeout] ||
+      60_000
+  end
+
+  defp parallelism(opts, app_config) do
+    opts[:parallelism] || env_integer("NOUS_EVAL_PARALLELISM") || app_config[:parallelism] || 1
+  end
+
+  # `||` cannot express this: `false || app || true` discards an explicit
+  # `store_results: false` at either layer and always yields true. Precedence is
+  # opts, then app config, then the default.
+  defp store_results(opts, app_config) do
+    case Keyword.fetch(opts, :store_results) do
+      {:ok, value} -> value
+      :error -> Keyword.get(app_config, :store_results, true)
+    end
+  end
+
+  defp results_path(opts, app_config) do
+    opts[:results_path] ||
+      env_string("NOUS_EVAL_RESULTS_PATH") ||
+      app_config[:results_path] ||
+      "priv/eval_results"
+  end
 
   defp env_string(key), do: System.get_env(key)
 

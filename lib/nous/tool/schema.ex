@@ -6,6 +6,10 @@ defmodule Nous.Tool.Schema do
   and JSON Schema in a single, readable block. Automatically implements
   `Nous.Tool.Behaviour` callbacks.
 
+  This is the inbound half of the tool schema story. For the outbound half —
+  serialising a `%Nous.Tool{}` into the JSON a specific provider's API accepts —
+  see `Nous.Tool.Wire`.
+
   ## Architecture
 
   When you `use Nous.Tool.Schema`, the module:

@@ -19,10 +19,51 @@ defmodule Nous.HTTP.StreamBackend.Req do
   parks in a `receive`; the consumer signals `{ref, :resume}` once the
   counter falls below the 1 MB low-water mark. Because the producer is
   Req's `:into` callback, parking it stops draining the socket, so
-  backpressure propagates all the way to the wire. Resident memory per
-  stream is bounded by the byte watermark rather than by chunk *count*,
-  and the steady-state cost is one local `:atomics` read per chunk — no
-  polling and no cross-process `Process.info/2`.
+  backpressure propagates all the way to the wire, and the steady-state
+  cost is one local `:atomics` read per chunk — no polling and no
+  cross-process `Process.info/2`.
+
+  ### What the watermark actually bounds
+
+  Resident memory per stream is bounded by *bytes* rather than by chunk
+  *count*, but 8 MB is not the whole ceiling:
+
+    * the window is read *before* the chunk is accounted for, so a producer
+      that finds room then adds a full chunk on top of it. The in-flight
+      bound is 8 MB plus one chunk, not 8 MB.
+    * the consumer's SSE accumulator is separate memory, capped at
+      `Nous.HTTP.Buffer.max_buffer_size/0` (10 MB) and checked after the
+      concat. It stacks on the in-flight window rather than sharing it.
+
+  So a single stream can hold ~18 MB before either guard fires. Across
+  streams the bound is `Nous.TaskSupervisor`'s `:max_children`
+  (`config :nous, :task_supervisor_max_children`, default 1_000): a stream
+  occupies exactly one task there, so that count times the per-stream
+  figure is the aggregate ceiling. Until that limit existed, N concurrent
+  streams were bounded by nothing.
+
+  Because a stream holds its task for its whole duration, that number is
+  also the ceiling on *concurrent streams*, and it is reachable. When it is
+  reached the stream returned by `stream/4` is still a well-formed stream:
+  it yields a single `{:stream_error, %{reason: :saturated}}` event and
+  halts, the same shape a connect failure or a read timeout produces, so
+  callers already handling transport errors need no new branch. It never
+  raises — the task is spawned lazily inside the `Stream.resource/3`
+  start_fun, so a raise would surface in the consumer at whatever `Enum`
+  call first touched the stream, arbitrarily far from the `stream/4` that
+  built it.
+
+  ### Buffer and scan state
+
+  The consumer carries `buffer` and `scan_state` as a **pair**. The parser
+  hands back the unconsumed tail together with a byte offset into it, so a
+  chunk scans only what it just added rather than rescanning the whole
+  accumulation. Store both or neither: a stale offset beside a rewritten
+  buffer silently skips events.
+
+  Plain `<>` append is load-bearing here. Matching the accumulator with bit
+  syntax, or retaining a `binary_part/3` slice of it, defeats ERTS's
+  in-place append and makes every subsequent append copy the whole buffer.
 
   If the consumer is truly unresponsive (the counter stays above the
   high-water mark for longer than `:backpressure_max_wait_ms`, default
@@ -52,6 +93,8 @@ defmodule Nous.HTTP.StreamBackend.Req do
   require Logger
 
   alias Nous.HTTP.Buffer
+  alias Nous.HTTP.StreamBackend.Chunking
+  alias Nous.Tasks
 
   # 3 minutes — LLM streams (especially with reasoning) can sit silent
   # between chunks long enough to trip a tighter timeout. Per-call
@@ -62,9 +105,10 @@ defmodule Nous.HTTP.StreamBackend.Req do
   # in flight between producer and consumer. The previous guard bounded
   # the consumer's mailbox at 1_000 *messages* and never inspected chunk
   # size, so resident memory was 1_000 x whatever Finch/Mint handed back
-  # from the socket — roughly 64 MB per stream, multiplied by every
-  # concurrent stream since Nous.TaskSupervisor has no :max_children
-  # (perf-audit, HIGH).
+  # from the socket — roughly 64 MB per stream, multiplied by an unbounded
+  # number of concurrent streams (perf-audit, HIGH). This window is the
+  # per-stream half of the fix; the aggregate half is Nous.TaskSupervisor's
+  # :max_children, since each stream holds exactly one task there.
   @backpressure_high_water_bytes 8 * 1024 * 1024
   @backpressure_low_water_bytes 1 * 1024 * 1024
   @backpressure_max_wait_ms 30_000
@@ -112,19 +156,33 @@ defmodule Nous.HTTP.StreamBackend.Req do
     # than wrapping to 2^64 and wedging the producer forever.
     inflight = :atomics.new(2, signed: true)
 
-    task = start_request_task(url, body, headers, timeout, finch_name, parent, ref, inflight)
-
-    %{
+    state = %{
       ref: ref,
-      task: task,
-      task_ref: task.ref,
+      task: nil,
+      task_ref: nil,
       inflight: inflight,
       buffer: "",
       scan_state: nil,
       done: false,
+      error: nil,
       timeout: timeout,
       stream_parser: stream_parser
     }
+
+    case start_request_task(url, body, headers, timeout, finch_name, parent, ref, inflight) do
+      {:ok, task} ->
+        %{state | task: task, task_ref: task.ref}
+
+      # Supervisor at its ceiling. Degrade exactly like Hackney's connect
+      # failure: carry the error in the state and let next_chunk/1 hand the
+      # consumer one {:stream_error, _} event, staying `done: false` so that
+      # clause fires once before the halt. Letting the refusal raise here
+      # would raise out of a lazy PUBLIC stream, in the consumer, at
+      # whichever `Enum` call first touched it.
+      {:error, :saturated} ->
+        Tasks.warn_saturated("an outbound LLM stream")
+        %{state | error: {:stream_error, %{reason: :saturated}}}
+    end
   end
 
   defp start_request_task(url, body, headers, timeout, finch_name, parent, ref, inflight) do
@@ -132,7 +190,7 @@ defmodule Nous.HTTP.StreamBackend.Req do
     # is supervised — graceful shutdown gets a chance to send :EXIT, and
     # neither the producer task nor the consuming caller takes the other
     # down on crash. The consumer monitors the task pid for completion.
-    Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
+    Tasks.async_nolink(fn ->
       result =
         Req.post(url,
           json: body,
@@ -141,64 +199,74 @@ defmodule Nous.HTTP.StreamBackend.Req do
           # redirect: false — provider APIs don't 3xx; Req's unvalidated follow
           # would be an SSRF bounce. See Nous.HTTP.Backend.Req.
           redirect: false,
-          finch: finch_name,
-          into: fn {:data, chunk}, {req, resp} ->
-            cond do
-              resp.status not in 200..299 ->
-                # Non-2xx: accumulate body locally so the post-call status check
-                # has the error body to report. Cap it at max_buffer_size so a
-                # malicious/broken endpoint can't OOM us with an unbounded error
-                # body (the success path already enforces this cap).
-                new_body = (resp.body || "") <> chunk
-
-                if byte_size(new_body) > Buffer.max_buffer_size() do
-                  {:halt, {req, %{resp | body: new_body}}}
-                else
-                  {:cont, {req, %{resp | body: new_body}}}
-                end
-
-              true ->
-                case await_consumer_capacity(inflight, ref) do
-                  :ok ->
-                    # Account *before* the send so the consumer can never
-                    # subtract bytes that were not yet added.
-                    :atomics.add(inflight, @inflight_bytes, byte_size(chunk))
-                    send(parent, {ref, {:chunk, chunk}})
-                    {:cont, {req, resp}}
-
-                  {:error, :backpressure_timeout, bytes} ->
-                    overflow = %{reason: :backpressure_overflow, inflight_bytes: bytes}
-                    send(parent, {ref, {:error, overflow}})
-
-                    {:halt, {req, resp}}
-                end
-            end
-          end
+          finch: [name: finch_name],
+          into: &forward_chunk(&1, &2, parent, ref, inflight)
         )
 
-      case result do
-        {:ok, %Req.Response{status: status}} when status in 200..299 ->
-          send(parent, {ref, :done})
-
-        {:ok, %Req.Response{status: status, body: response_body, headers: resp_headers}} ->
-          Logger.error("Req stream got error status #{status}")
-
-          send(
-            parent,
-            {ref,
-             {:error,
-              %{
-                status: status,
-                body: response_body,
-                headers: normalize_headers(resp_headers)
-              }}}
-          )
-
-        {:error, reason} ->
-          Logger.error("Req stream error: #{inspect(reason)}")
-          send(parent, {ref, {:error, reason}})
-      end
+      report_result(result, parent, ref)
     end)
+  end
+
+  # Non-2xx: accumulate the body locally so the post-call status check has the
+  # error body to report. Cap it at max_buffer_size so a malicious/broken
+  # endpoint can't OOM us with an unbounded error body (the success path already
+  # enforces this cap).
+  defp forward_chunk({:data, chunk}, {req, %{status: status} = resp}, _parent, _ref, _inflight)
+       when status not in 200..299 do
+    new_body = (resp.body || "") <> chunk
+    resp = %{resp | body: new_body}
+
+    if byte_size(new_body) > Buffer.max_buffer_size() do
+      {:halt, {req, resp}}
+    else
+      {:cont, {req, resp}}
+    end
+  end
+
+  defp forward_chunk({:data, chunk}, {req, resp}, parent, ref, inflight) do
+    case await_consumer_capacity(inflight, ref) do
+      :ok ->
+        # Account *before* the send so the consumer can never
+        # subtract bytes that were not yet added.
+        :atomics.add(inflight, @inflight_bytes, byte_size(chunk))
+        send(parent, {ref, {:chunk, chunk}})
+        {:cont, {req, resp}}
+
+      {:error, :backpressure_timeout, bytes} ->
+        overflow = %{reason: :backpressure_overflow, inflight_bytes: bytes}
+        send(parent, {ref, {:error, overflow}})
+
+        {:halt, {req, resp}}
+    end
+  end
+
+  defp report_result({:ok, %Req.Response{status: status}}, parent, ref)
+       when status in 200..299 do
+    send(parent, {ref, :done})
+  end
+
+  defp report_result(
+         {:ok, %Req.Response{status: status, body: response_body, headers: resp_headers}},
+         parent,
+         ref
+       ) do
+    Logger.error("Req stream got error status #{status}")
+
+    send(
+      parent,
+      {ref,
+       {:error,
+        %{
+          status: status,
+          body: response_body,
+          headers: normalize_headers(resp_headers)
+        }}}
+    )
+  end
+
+  defp report_result({:error, reason}, parent, ref) do
+    Logger.error("Req stream error: #{inspect(reason)}")
+    send(parent, {ref, {:error, reason}})
   end
 
   # Producer half of the byte-bounded backpressure handshake.
@@ -273,24 +341,15 @@ defmodule Nous.HTTP.StreamBackend.Req do
   # Get the next batch of events.
   defp next_chunk(%{done: true} = state), do: {:halt, state}
 
+  # Refused spawn: emit the carried error, then halt on the next pass.
+  defp next_chunk(%{task: nil, error: {:stream_error, _} = err} = state) do
+    {[err], %{state | done: true}}
+  end
+
   defp next_chunk(state) do
     receive do
       {ref, :done} when ref == state.ref ->
-        {events, _, _} =
-          Buffer.flush_stream_buffer(state.buffer, state.stream_parser, state.scan_state)
-
-        final_events =
-          Enum.reject(events, fn
-            nil -> true
-            {:parse_error, _} -> true
-            _ -> false
-          end)
-
-        if Enum.empty?(final_events) do
-          {:halt, %{state | done: true}}
-        else
-          {final_events, %{state | done: true, buffer: "", scan_state: nil}}
-        end
+        Chunking.flush(state)
 
       {ref, {:error, reason}} when ref == state.ref ->
         {[{:stream_error, reason}], %{state | done: true}}
@@ -306,32 +365,10 @@ defmodule Nous.HTTP.StreamBackend.Req do
 
       {ref, {:chunk, chunk}} when ref == state.ref ->
         release_capacity(state, byte_size(chunk))
-        new_buffer = state.buffer <> chunk
 
-        if byte_size(new_buffer) > Buffer.max_buffer_size() do
-          Logger.error("SSE buffer overflow, terminating stream")
-          {[{:stream_error, %{reason: :buffer_overflow}}], %{state | done: true}}
-        else
-          {events, remaining_buffer, scan_state} =
-            Buffer.parse_stream_buffer(new_buffer, state.stream_parser, state.scan_state)
-
-          {valid_events, errors} =
-            Enum.split_with(events, fn
-              {:parse_error, _} -> false
-              _ -> true
-            end)
-
-          for {:parse_error, err} <- errors do
-            Logger.debug("SSE parse error (ignored): #{inspect(err)}")
-          end
-
-          state = %{state | buffer: remaining_buffer, scan_state: scan_state}
-
-          if Enum.empty?(valid_events) do
-            next_chunk(state)
-          else
-            {valid_events, state}
-          end
+        case Chunking.absorb(state, chunk) do
+          {:emit, events, state} -> {events, state}
+          {:cont, state} -> next_chunk(state)
         end
     after
       state.timeout ->

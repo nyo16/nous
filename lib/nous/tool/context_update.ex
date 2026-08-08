@@ -39,6 +39,13 @@ defmodule Nous.Tool.ContextUpdate do
   - `append/3` - Append an item to a list key
   - `delete/2` - Remove a key
 
+  ## Protected keys
+
+  Operations targeting a security-bearing deps key are dropped with a warning
+  rather than applied — a tool's output is LLM-driven and must not be able to
+  rewrite the sandbox it runs inside. See
+  `Nous.Agent.Context.protected_deps_keys/0` for the list and the reasoning.
+
   ## Integration
 
   The AgentRunner applies these updates to the context deps after tool execution:
@@ -55,6 +62,8 @@ defmodule Nous.Tool.ContextUpdate do
   """
 
   alias __MODULE__
+
+  require Logger
 
   @type operation ::
           {:set, atom(), any()}
@@ -93,7 +102,7 @@ defmodule Nous.Tool.ContextUpdate do
   """
   @spec set(t(), atom(), any()) :: t()
   def set(%ContextUpdate{} = update, key, value) when is_atom(key) do
-    %{update | operations: update.operations ++ [{:set, key, value}]}
+    add_operation(update, {:set, key, value})
   end
 
   @doc """
@@ -109,7 +118,7 @@ defmodule Nous.Tool.ContextUpdate do
   """
   @spec merge(t(), atom(), map()) :: t()
   def merge(%ContextUpdate{} = update, key, map) when is_atom(key) and is_map(map) do
-    %{update | operations: update.operations ++ [{:merge, key, map}]}
+    add_operation(update, {:merge, key, map})
   end
 
   @doc """
@@ -125,7 +134,7 @@ defmodule Nous.Tool.ContextUpdate do
   """
   @spec append(t(), atom(), any()) :: t()
   def append(%ContextUpdate{} = update, key, item) when is_atom(key) do
-    %{update | operations: update.operations ++ [{:append, key, item}]}
+    add_operation(update, {:append, key, item})
   end
 
   @doc """
@@ -139,7 +148,7 @@ defmodule Nous.Tool.ContextUpdate do
   """
   @spec delete(t(), atom()) :: t()
   def delete(%ContextUpdate{} = update, key) when is_atom(key) do
-    %{update | operations: update.operations ++ [{:delete, key}]}
+    add_operation(update, {:delete, key})
   end
 
   @doc """
@@ -158,6 +167,7 @@ defmodule Nous.Tool.ContextUpdate do
   """
   @spec apply(t(), Nous.Agent.Context.t()) :: Nous.Agent.Context.t()
   def apply(%ContextUpdate{operations: ops}, %Nous.Agent.Context{} = ctx) do
+    ops = reject_protected(ops)
     new_deps = reduce_operations(ops, ctx.deps || %{})
 
     keys =
@@ -185,7 +195,7 @@ defmodule Nous.Tool.ContextUpdate do
   """
   @spec apply_to_run_context(t(), Nous.RunContext.t()) :: Nous.RunContext.t()
   def apply_to_run_context(%ContextUpdate{operations: ops}, %Nous.RunContext{} = ctx) do
-    new_deps = reduce_operations(ops, ctx.deps || %{})
+    new_deps = ops |> reject_protected() |> reduce_operations(ctx.deps || %{})
     %{ctx | deps: new_deps}
   end
 
@@ -203,6 +213,44 @@ defmodule Nous.Tool.ContextUpdate do
   def operations(%ContextUpdate{operations: ops}), do: ops
 
   # Private
+
+  # Record an operation unless it targets a protected deps key.
+  #
+  # Filtering at CONSTRUCTION is what covers the agent runner: its
+  # context_update_to_map/1 only reduces the operations recorded here, so a
+  # rejected key never reaches the deps merge. apply/2 and
+  # apply_to_run_context/2 filter again because `%ContextUpdate{operations: …}`
+  # can be built by hand, bypassing these constructors entirely.
+  defp add_operation(%ContextUpdate{} = update, op) do
+    key = op_key(op)
+
+    if key in Nous.Agent.Context.protected_deps_keys() do
+      warn_rejected([key])
+      update
+    else
+      %{update | operations: update.operations ++ [op]}
+    end
+  end
+
+  defp reject_protected(ops) do
+    protected = Nous.Agent.Context.protected_deps_keys()
+
+    case Enum.split_with(ops, &(op_key(&1) in protected)) do
+      {[], _kept} ->
+        ops
+
+      {rejected, kept} ->
+        rejected |> Enum.map(&op_key/1) |> Enum.uniq() |> warn_rejected()
+        kept
+    end
+  end
+
+  defp warn_rejected(keys) do
+    Logger.warning(
+      "ContextUpdate dropped operation(s) on protected deps key(s) #{inspect(keys)}: " <>
+        "these carry security meaning. See Nous.Agent.Context.protected_deps_keys/0."
+    )
+  end
 
   # Reduce operations into a deps map in a single pass. `:append` previously did
   # `existing ++ [item]` (O(n^2) over many appends to the same key); we prepend

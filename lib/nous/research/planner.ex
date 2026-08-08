@@ -102,17 +102,20 @@ defmodule Nous.Research.Planner do
         [%{query: output, strategy: strategy, depends_on: []}]
 
       steps ->
-        if strategy == :sequential do
-          # Add sequential dependencies
-          steps
-          |> Enum.with_index()
-          |> Enum.map(fn {step, i} ->
-            deps = if i > 0, do: [i - 1], else: []
-            %{step | depends_on: deps}
-          end)
-        else
-          steps
-        end
+        add_sequential_deps(steps, strategy)
     end
   end
+
+  # A :sequential plan runs step N only after step N-1, so each step declares
+  # its predecessor. Every other strategy leaves the steps independent.
+  defp add_sequential_deps(steps, :sequential) do
+    steps
+    |> Enum.with_index()
+    |> Enum.map(fn {step, i} -> %{step | depends_on: sequential_dep(i)} end)
+  end
+
+  defp add_sequential_deps(steps, _strategy), do: steps
+
+  defp sequential_dep(0), do: []
+  defp sequential_dep(i), do: [i - 1]
 end

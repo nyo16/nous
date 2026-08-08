@@ -778,4 +778,93 @@ defmodule Nous.ToolExecutorTest do
       end)
     end
   end
+
+  describe "tool process lifetime vs. its caller" do
+    test "killing the caller kills the process the tool is running in" do
+      test_pid = self()
+
+      hanging_tool = fn _ctx, _args ->
+        send(test_pid, {:tool_running, self()})
+        Process.sleep(:infinity)
+      end
+
+      tool = Tool.from_function(hanging_tool, name: "hanger", timeout: 60_000, retries: 0)
+      ctx = RunContext.new(%{})
+
+      caller = spawn(fn -> ToolExecutor.execute(tool, %{}, ctx) end)
+
+      assert_receive {:tool_running, tool_pid}, 1_000
+      tool_ref = Process.monitor(tool_pid)
+
+      # What a cancelled run looks like from down here. The tool process is
+      # unlinked on purpose (a crashing tool must not take the run down), so
+      # before the watchdog nothing reaped it and it slept forever.
+      Process.exit(caller, :kill)
+
+      assert_receive {:DOWN, ^tool_ref, :process, ^tool_pid, :killed}, 1_000
+    end
+
+    test "a crashing tool still leaves its caller alive" do
+      # The other half of the same guarantee: reaping must not have been bought
+      # by linking the tool process back to the caller.
+      tool =
+        Tool.from_function(&TestTools.failing_tool/2,
+          name: "boom",
+          timeout: 60_000,
+          retries: 0
+        )
+
+      caller =
+        spawn(fn ->
+          receive do
+            {:run, from} ->
+              result = ToolExecutor.execute(tool, %{}, RunContext.new(%{}))
+              send(from, {:result, result, self()})
+              Process.sleep(:infinity)
+          end
+        end)
+
+      capture_log(fn ->
+        send(caller, {:run, self()})
+        assert_receive {:result, {:error, %Errors.ToolError{}}, ^caller}, 1_000
+      end)
+
+      assert Process.alive?(caller)
+      Process.exit(caller, :kill)
+    end
+
+    test "the watchdog goes away with the tool instead of outliving it" do
+      tool = Tool.from_function(&TestTools.simple_tool/1, name: "quick", timeout: 60_000)
+      ctx = RunContext.new(%{})
+      test_pid = self()
+
+      caller =
+        spawn(fn ->
+          {:ok, _} = ToolExecutor.execute(tool, %{"value" => 1}, ctx)
+          send(test_pid, :done)
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive :done, 1_000
+
+      # A watchdog that only watched the caller would park forever holding this
+      # monitor — one leaked process per tool call for the life of a run.
+      wait_until(fn -> Process.info(caller, :monitored_by) == {:monitored_by, []} end)
+
+      Process.exit(caller, :kill)
+    end
+  end
+
+  defp wait_until(fun), do: wait_until(fun, 50)
+
+  defp wait_until(_fun, 0), do: flunk("condition never held")
+
+  defp wait_until(fun, attempts) do
+    if fun.() do
+      :ok
+    else
+      Process.sleep(20)
+      wait_until(fun, attempts - 1)
+    end
+  end
 end

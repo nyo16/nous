@@ -1,14 +1,43 @@
-# Persistence backend that sleeps before delegating to the ETS backend, used to
+# Persistence backend that stalls before delegating to the ETS backend, used to
 # prove the agent server doesn't block its mailbox on a slow save.
 defmodule Nous.AgentServerTest.SlowPersistence do
   @behaviour Nous.Persistence
 
   @sleep_ms 300
+  @key {__MODULE__, :test_pid}
+
+  # The save runs in a task the GenServer spawns, so `$callers` never reaches
+  # the test process and `send(self(), _)` would go nowhere. Registering the
+  # owner is the seam agent_cancellation_test.exs already uses for its
+  # dispatcher stubs; this file is async: false, so the key cannot collide.
+  #
+  # With an owner registered the save signals and then parks until released,
+  # which takes the wall clock out of the "is the mailbox still responsive
+  # mid-save?" assertion entirely. Without one it just sleeps, which is what
+  # the fire-and-forget response-ready test wants.
+  def register(pid), do: :persistent_term.put(@key, pid)
+  def erase, do: :persistent_term.erase(@key)
 
   @impl true
   def save(session_id, data) do
-    Process.sleep(@sleep_ms)
+    case :persistent_term.get(@key, nil) do
+      nil -> Process.sleep(@sleep_ms)
+      pid -> await_release(pid)
+    end
+
     Nous.Persistence.ETS.save(session_id, data)
+  end
+
+  defp await_release(pid) do
+    send(pid, {:save_started, self()})
+
+    receive do
+      :proceed -> :ok
+    after
+      # Long enough that a GenServer.call waiting behind this save always times
+      # out first, so a regression fails as a blocked caller and not as a hang.
+      30_000 -> :ok
+    end
   end
 
   @impl true
@@ -343,6 +372,9 @@ defmodule Nous.AgentServerTest do
     test "serializes and writes off the GenServer, but stays synchronous (P-2)" do
       session_id = "test_save_offload_#{System.unique_integer([:positive])}"
 
+      SlowPersistence.register(self())
+      on_exit(&SlowPersistence.erase/0)
+
       {:ok, pid} =
         AgentServer.start_link(
           session_id: session_id,
@@ -352,19 +384,23 @@ defmodule Nous.AgentServerTest do
           inactivity_timeout: :infinity
         )
 
-      # SlowPersistence.save/2 sleeps 300ms.
       saver = Task.async(fn -> AgentServer.save_context(pid) end)
 
-      # Let the handler hand the work to its task before probing the mailbox.
-      Process.sleep(50)
+      # Deterministic hand-off proof. The old Process.sleep(50) was a guess that
+      # the handler had already reached its Task; on a loaded runner it had not,
+      # and the wall-clock bound below it then failed on correct code.
+      assert_receive {:save_started, save_pid}, 2_000
+      refute save_pid == pid, "the backend write ran on the server process"
 
-      {elapsed_us, _ctx} = :timer.tc(fn -> AgentServer.get_context(pid) end)
-
-      assert elapsed_us < 150_000,
-             "get_context blocked for #{div(elapsed_us, 1000)}ms (>150ms) — :save_context still runs on the server process"
+      # The save is parked and cannot finish until we release it, so this is a
+      # structural assertion with no timing component: a server that ran the
+      # write on its own process could not answer here at all.
+      assert %Context{} = AgentServer.get_context(pid)
+      refute Task.yield(saver, 0), "save_context replied before the backend write landed"
 
       # The caller's contract is unchanged: :ok comes back only once the
       # backend write has actually landed.
+      send(save_pid, :proceed)
       assert :ok = Task.await(saver, 5_000)
       assert {:ok, %{version: 1}} = SlowPersistence.load(session_id)
 
@@ -537,6 +573,117 @@ defmodule Nous.AgentServerTest do
       # the server, this would exit. Returning a context proves it processed them
       # all and is alive — deterministic, no sleep.
       assert AgentServer.get_context(pid)
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+  end
+
+  # Nous.TaskSupervisor carries a finite :max_children (see Nous.Application),
+  # so every spawn this module makes can be REFUSED. All three of them used to
+  # assume success: two owe a blocked GenServer.call its reply, and the third is
+  # the context checkpoint. `Nous.TaskSupervisorSaturation` is async: false-only,
+  # and this module is async: false.
+  describe "task supervisor saturation" do
+    test "save_context/1 answers the caller instead of leaving it blocked" do
+      session_id = "test_sat_save_#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          pubsub: nil,
+          persistence: PersistenceETS,
+          inactivity_timeout: :infinity
+        )
+
+      Nous.TaskSupervisorSaturation.saturate!()
+
+      {elapsed_us, result} = :timer.tc(fn -> AgentServer.save_context(pid) end)
+
+      assert result == {:error, :saturated}
+
+      # The answer came from the handler, not from GenServer.call/3 giving up.
+      # The refused task was the one that owed `from` a reply, so before the fix
+      # this blocked for the full 5_000 ms call timeout and then exited.
+      assert elapsed_us < 1_000_000
+
+      # Refused means refused: the error is not covering a partial write.
+      assert {:error, :not_found} = PersistenceETS.load(session_id)
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "load_context/2 answers the caller instead of leaving it blocked" do
+      session_id = "test_sat_load_#{System.unique_integer([:positive])}"
+
+      saved =
+        Context.new(system_prompt: "Loaded prompt")
+        |> Context.add_message(Message.user("Loaded message"))
+
+      PersistenceETS.save(session_id, Context.serialize(saved))
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: "test_sat_load_server_#{System.unique_integer([:positive])}",
+          agent_config: @agent_config,
+          pubsub: nil,
+          persistence: PersistenceETS,
+          inactivity_timeout: :infinity
+        )
+
+      Nous.TaskSupervisorSaturation.saturate!()
+
+      {elapsed_us, result} = :timer.tc(fn -> AgentServer.load_context(pid, session_id) end)
+
+      assert result == {:error, :saturated}
+      assert elapsed_us < 1_000_000
+
+      # Nothing was loaded, so the server's own context is untouched.
+      current = AgentServer.get_context(pid)
+      assert current.system_prompt == "Be helpful"
+      assert current.messages == []
+
+      assert Process.alive?(pid)
+      GenServer.stop(pid)
+    end
+
+    test "the fire-and-forget save logs the dropped checkpoint instead of claiming :ok" do
+      session_id = "test_sat_autosave_#{System.unique_integer([:positive])}"
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          pubsub: nil,
+          persistence: PersistenceETS,
+          inactivity_timeout: :infinity
+        )
+
+      ctx =
+        Context.new(system_prompt: "Be helpful")
+        |> Context.add_message(Message.user("Hello"))
+        |> Context.add_message(Message.assistant("Hi!"))
+
+      Nous.TaskSupervisorSaturation.saturate!()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(pid, {:agent_response_ready, 0, ctx, nil})
+          # A call serializes behind the info message, so the handler (and its
+          # warning) have both run by the time this returns.
+          assert %Context{} = AgentServer.get_context(pid)
+        end)
+
+      # Nobody is waiting on this save, so the loss is only ever visible in the
+      # log — which is the whole reason it has to be there.
+      assert log =~ "at its :max_children ceiling"
+      assert log =~ session_id
+
+      # What the drop costs: this checkpoint never lands. The in-memory context
+      # is unaffected and the next successful save supersedes it.
+      assert {:error, :not_found} = PersistenceETS.load(session_id)
+
       assert Process.alive?(pid)
       GenServer.stop(pid)
     end

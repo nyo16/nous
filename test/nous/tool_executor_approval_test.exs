@@ -165,13 +165,93 @@ defmodule Nous.ToolExecutorApprovalTest do
     end
   end
 
-  describe "Agent.Context.to_run_context/1" do
-    test "marks the runner's context gated and carries the handler through" do
+  describe "Agent.Context.to_run_context/1,2" do
+    # `approval_gated?` must be ASSERTED by the caller that ran the approval
+    # pipeline, never inferred. Stamping it unconditionally made this public
+    # constructor a bypass primitive for any caller — sub-agent, workflow node,
+    # deserialized checkpoint. Deriving it from handler presence only narrowed
+    # that to callers who install a handler, whose handler ToolExecutor then
+    # never consulted, so even a `:reject` handler waved the call through.
+    test "defaults to ungated even when a handler is installed" do
       handler = fn _call -> :approve end
       run_ctx = Context.to_run_context(Context.new(approval_handler: handler))
 
-      assert run_ctx.approval_gated? == true
+      assert run_ctx.approval_gated? == false
       assert run_ctx.approval_handler == handler
+    end
+
+    test "defaults to ungated with no handler" do
+      run_ctx = Context.to_run_context(Context.new())
+
+      assert run_ctx.approval_gated? == false
+      assert run_ctx.approval_handler == nil
+    end
+
+    test "a non-runner caller's handler reaches the gate and its :reject holds" do
+      test_pid = self()
+      tool = probe_tool(requires_approval: true)
+
+      run_ctx =
+        Context.to_run_context(
+          Context.new(
+            approval_handler: fn call ->
+              send(test_pid, {:asked, call.name})
+              :reject
+            end
+          )
+        )
+
+      capture_log(fn ->
+        assert {:error, _} = ToolExecutor.execute(tool, %{}, run_ctx)
+      end)
+
+      assert_receive {:asked, "probe"}
+      refute_tool_ran()
+    end
+
+    test "a non-runner caller's handler can approve" do
+      tool = probe_tool(requires_approval: true)
+
+      run_ctx =
+        Context.to_run_context(Context.new(approval_handler: fn _call -> :approve end))
+
+      assert {:ok, "executed"} = ToolExecutor.execute(tool, %{}, run_ctx)
+      assert_receive {:tool_ran, _}
+    end
+
+    test "an approval-gated tool is still rejected through a handler-less context" do
+      tool = probe_tool(requires_approval: true)
+      run_ctx = Context.to_run_context(Context.new(deps: %{db: :postgres}))
+
+      capture_log(fn ->
+        assert {:error, _} = ToolExecutor.execute(tool, %{}, run_ctx)
+      end)
+
+      refute_tool_ran()
+      # The deps still have to make it across; this is a gate, not a filter.
+      assert run_ctx.deps == %{db: :postgres}
+    end
+
+    test "the runner's explicit approval_gated?: true skips the second prompt" do
+      # The runner has already run check_tool_approval/3 for this call, so
+      # ToolExecutor must not ask the operator again. Only it may assert this.
+      test_pid = self()
+      tool = probe_tool(requires_approval: true)
+
+      run_ctx =
+        Context.to_run_context(
+          Context.new(
+            approval_handler: fn _call ->
+              send(test_pid, :handler_consulted)
+              :reject
+            end
+          ),
+          approval_gated?: true
+        )
+
+      assert run_ctx.approval_gated? == true
+      assert {:ok, "executed"} = ToolExecutor.execute(tool, %{}, run_ctx)
+      refute_receive :handler_consulted, 50
     end
 
     test "a bare RunContext defaults to ungated with no handler" do

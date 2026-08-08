@@ -1,7 +1,10 @@
 defmodule Nous.Util do
-  @moduledoc """
-  Small shared helpers used across Nous internals.
-  """
+  @moduledoc false
+
+  # Small shared helpers used across Nous internals. Private on purpose: the
+  # three functions here are GenServer/decoding plumbing with no coherent
+  # public story, so publishing them would put them under semver for no
+  # caller's benefit.
 
   @doc """
   Convert a binary to an already-existing atom, returning `fallback` when no

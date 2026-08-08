@@ -1,8 +1,12 @@
 defmodule Nous.AgentRunnerParallelToolsTest do
-  # async: false — swaps the global :model_dispatcher app env.
-  use ExUnit.Case, async: false
+  # async: true — the dispatcher override is process-scoped (put_dispatcher/1
+  # propagates through `$callers`, so the fan-out tasks resolve it too) and
+  # every :persistent_term key below is namespaced by this file's own private
+  # stub modules. The two tests that genuinely need global application env are
+  # isolated in the sync module at the bottom of this file.
+  use ExUnit.Case, async: true
 
-  alias Nous.{Agent, AgentRunner, Hook, Tool, Usage}
+  alias Nous.{Agent, AgentRunner, Hook, Usage}
 
   @moduletag :capture_log
 
@@ -96,18 +100,24 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       Process.sleep(5_000)
       "hang finished"
     end
+
+    # Reports the process it is actually running in, then never returns. The
+    # fan-out tasks are unlinked from the runner, so before the reaper a
+    # cancelled run left one of these alive per in-flight call.
+    def report_and_hang(_ctx, _args) do
+      send(:persistent_term.get({__MODULE__, :observer}), {:tool_running, self()})
+      Process.sleep(:infinity)
+    end
   end
 
   setup do
-    Application.put_env(:nous, :model_dispatcher, Dispatcher)
+    Nous.ModelDispatcher.put_dispatcher(Dispatcher)
 
     # Fresh per test: index 1 is the live in-flight count, index 2 the running
     # maximum the slow tools observed.
     :persistent_term.put({ParallelTools, :inflight}, :atomics.new(2, signed: true))
 
     on_exit(fn ->
-      Application.delete_env(:nous, :model_dispatcher)
-
       for key <- [:calls, :tool_calls] do
         try do
           :persistent_term.erase({Dispatcher, key})
@@ -117,6 +127,7 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       end
 
       :persistent_term.erase({ParallelTools, :inflight})
+      :persistent_term.erase({ParallelTools, :observer})
     end)
 
     :ok
@@ -182,6 +193,39 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       # here is just a scheduler stall waiting to redden a correct runner.
       assert elapsed >= ParallelTools.slow_ms(),
              "expected the #{ParallelTools.slow_ms()}ms tools to actually run, got #{elapsed}ms"
+    end
+
+    test "cancelling the run reaps the fan-out tasks and the tools under them" do
+      :persistent_term.put({ParallelTools, :observer}, self())
+
+      stage_tool_calls([
+        call("call_1", "report_and_hang"),
+        call("call_2", "report_and_hang")
+      ])
+
+      agent =
+        Agent.new("openai:test-model",
+          tools: [&ParallelTools.report_and_hang/2],
+          parallel_tool_calls: true
+        )
+
+      # Task.start/1, not spawn/1: it is unlinked exactly like spawn (so the
+      # kill below still models a cancelled run) but it propagates `$callers`,
+      # which is how the process-scoped dispatcher override reaches the run.
+      {:ok, run} = Task.start(fn -> AgentRunner.run(agent, "go") end)
+
+      assert_receive {:tool_running, first}, 2_000
+      assert_receive {:tool_running, second}, 2_000
+
+      monitors = for pid <- [first, second], do: {pid, Process.monitor(pid)}
+
+      Process.exit(run, :kill)
+
+      # Two unlinked hops separate the run from the tool: the async_stream task
+      # and, inside it, ToolExecutor's tool process. Both used to survive.
+      for {pid, ref} <- monitors do
+        assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 2_000
+      end
     end
 
     test "merge_deps applies in call order, not completion order" do
@@ -254,38 +298,6 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       assert failed.content =~ "Tool execution failed"
       assert ok.content =~ "echo:alive"
     end
-
-    test "a hung tool with timeout: nil is killed at the ceiling and does not block siblings" do
-      # Both tools declare timeout: nil, so the batch ceiling is the module
-      # default — overridden here so the test does not wait five minutes.
-      Application.put_env(:nous, :parallel_tool_call_timeout_ms, 200)
-      on_exit(fn -> Application.delete_env(:nous, :parallel_tool_call_timeout_ms) end)
-
-      tools = [
-        Tool.from_function(&ParallelTools.hang/2, timeout: nil, retries: 0),
-        Tool.from_function(&ParallelTools.echo/2, timeout: nil, retries: 0)
-      ]
-
-      stage_tool_calls([call("call_1", "hang"), call("call_2", "echo", %{"msg" => "alive"})])
-
-      agent = Agent.new("openai:test-model", tools: tools, parallel_tool_calls: true)
-
-      started = System.monotonic_time(:millisecond)
-      {:ok, result} = AgentRunner.run(agent, "go")
-      elapsed = System.monotonic_time(:millisecond) - started
-
-      # The run returns on the ceiling, not on the tool's 5s sleep.
-      assert elapsed < 3_000
-
-      assert [timed_out, ok] = tool_messages(result)
-      assert timed_out.tool_call_id == "call_1"
-      assert timed_out.content =~ "Tool execution timed out: hang"
-      assert timed_out.content =~ "200ms"
-
-      # The sibling call in the same batch keeps its real result.
-      assert ok.tool_call_id == "call_2"
-      assert ok.content =~ "echo:alive"
-    end
   end
 
   describe "parallel_tool_calls: false (default)" do
@@ -322,5 +334,132 @@ defmodule Nous.AgentRunnerParallelToolsTest do
       assert observed_max_concurrency() == 1
       assert elapsed >= 2 * ParallelTools.slow_ms()
     end
+  end
+end
+
+# async: false — these two configure the parallel-tool batch through GLOBAL
+# application env (`:parallel_tool_call_max_concurrency` and
+# `:parallel_tool_call_timeout_ms`, both read inside
+# Nous.AgentRunner.ToolExecution). Everything else above is process-scoped, so
+# quarantining them here is what lets the main module — three 150ms tools and a
+# 5s hang stub, the slowest sync file in the suite — run async.
+defmodule Nous.AgentRunnerParallelToolsGlobalConfigTest do
+  use ExUnit.Case, async: false
+
+  alias Nous.{Agent, AgentRunner, Tool}
+  alias Nous.AgentRunnerParallelToolsTest.{Dispatcher, ParallelTools}
+  alias Nous.TaskSupervisorSaturation
+
+  @moduletag :capture_log
+
+  setup do
+    Nous.ModelDispatcher.put_dispatcher(Dispatcher)
+    :persistent_term.put({ParallelTools, :inflight}, :atomics.new(2, signed: true))
+
+    on_exit(fn ->
+      Application.delete_env(:nous, :parallel_tool_call_max_concurrency)
+      Application.delete_env(:nous, :parallel_tool_call_timeout_ms)
+      :persistent_term.erase({Dispatcher, :calls})
+      :persistent_term.erase({Dispatcher, :tool_calls})
+      :persistent_term.erase({ParallelTools, :inflight})
+    end)
+
+    :ok
+  end
+
+  defp stage_tool_calls(calls) do
+    :persistent_term.put({Dispatcher, :calls}, 0)
+    :persistent_term.put({Dispatcher, :tool_calls}, calls)
+  end
+
+  defp call(id, name, args \\ %{}) do
+    %{"id" => id, "name" => name, "arguments" => args}
+  end
+
+  defp tool_messages(result), do: Enum.filter(result.all_messages, &(&1.role == :tool))
+
+  defp observed_max_concurrency do
+    :atomics.get(:persistent_term.get({ParallelTools, :inflight}), 2)
+  end
+
+  test "max_concurrency throttles the fan-out and is configurable" do
+    # async_stream's default is System.schedulers_online() — a CPU count
+    # applied to IO-bound work. Asserting max_concurrency/0's return value
+    # would pass with the option never reaching async_stream, so drive the
+    # same path the parallel tests do and watch the observed width change.
+    Application.put_env(:nous, :parallel_tool_call_max_concurrency, 1)
+
+    stage_tool_calls([call("call_1", "slow_alpha"), call("call_2", "slow_beta")])
+
+    agent =
+      Agent.new("openai:test-model",
+        tools: [&ParallelTools.slow_alpha/2, &ParallelTools.slow_beta/2],
+        parallel_tool_calls: true
+      )
+
+    {:ok, result} = AgentRunner.run(agent, "go")
+
+    assert [%{content: "alpha done"}, %{content: "beta done"}] = tool_messages(result)
+    assert observed_max_concurrency() == 1
+  end
+
+  # Nous.TaskSupervisor's :max_children is near-unreachable in production
+  # (1_000, see Nous.Application), which is exactly why the refusal path needs
+  # a test. Task.Supervisor answers saturation by *raising*, and letting that
+  # escape would make "the node is busy" an unhandled exception out of the
+  # agent run — a worse failure than the unbounded supervisor the ceiling
+  # replaced.
+  test "a saturated task supervisor degrades to tool errors instead of raising" do
+    TaskSupervisorSaturation.saturate!()
+
+    stage_tool_calls([
+      call("call_1", "echo", %{"msg" => "a"}),
+      call("call_2", "echo", %{"msg" => "b"})
+    ])
+
+    agent =
+      Agent.new("openai:test-model",
+        tools: [&ParallelTools.echo/2],
+        parallel_tool_calls: true
+      )
+
+    assert {:ok, result} = AgentRunner.run(agent, "go")
+
+    assert [first, second] = tool_messages(result)
+    assert first.tool_call_id == "call_1"
+    assert first.content =~ "concurrent-task ceiling"
+    assert second.tool_call_id == "call_2"
+    assert second.content =~ "concurrent-task ceiling"
+  end
+
+  test "a hung tool with timeout: nil is killed at the ceiling and does not block siblings" do
+    # Both tools declare timeout: nil, so the batch ceiling is the module
+    # default — overridden here so the test does not wait five minutes.
+    Application.put_env(:nous, :parallel_tool_call_timeout_ms, 200)
+
+    tools = [
+      Tool.from_function(&ParallelTools.hang/2, timeout: nil, retries: 0),
+      Tool.from_function(&ParallelTools.echo/2, timeout: nil, retries: 0)
+    ]
+
+    stage_tool_calls([call("call_1", "hang"), call("call_2", "echo", %{"msg" => "alive"})])
+
+    agent = Agent.new("openai:test-model", tools: tools, parallel_tool_calls: true)
+
+    started = System.monotonic_time(:millisecond)
+    {:ok, result} = AgentRunner.run(agent, "go")
+    elapsed = System.monotonic_time(:millisecond) - started
+
+    # The run returns on the ceiling, not on the tool's 5s sleep.
+    assert elapsed < 3_000
+
+    assert [timed_out, ok] = tool_messages(result)
+    assert timed_out.tool_call_id == "call_1"
+    assert timed_out.content =~ "Tool execution timed out: hang"
+    assert timed_out.content =~ "200ms"
+
+    # The sibling call in the same batch keeps its real result.
+    assert ok.tool_call_id == "call_2"
+    assert ok.content =~ "echo:alive"
   end
 end

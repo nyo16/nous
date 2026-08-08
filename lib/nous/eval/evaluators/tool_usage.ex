@@ -136,24 +136,23 @@ defmodule Nous.Eval.Evaluators.ToolUsage do
   defp extract_from_agent_result(_), do: []
 
   defp extract_from_messages(messages) when is_list(messages) do
-    messages
-    |> Enum.flat_map(fn msg ->
-      case msg do
-        %{role: :assistant, tool_calls: calls} when is_list(calls) ->
-          Enum.map(calls, fn call ->
-            %{
-              name: Nous.ToolCall.field(call, :name),
-              args: Nous.ToolCall.field(call, :args, Nous.ToolCall.field(call, :arguments))
-            }
-          end)
-
-        _ ->
-          []
-      end
-    end)
+    Enum.flat_map(messages, &message_tool_calls/1)
   end
 
   defp extract_from_messages(_), do: []
+
+  defp message_tool_calls(%{role: :assistant, tool_calls: calls}) when is_list(calls) do
+    Enum.map(calls, &tool_call_summary/1)
+  end
+
+  defp message_tool_calls(_msg), do: []
+
+  defp tool_call_summary(call) do
+    %{
+      name: Nous.ToolCall.field(call, :name),
+      args: Nous.ToolCall.field(call, :args, Nous.ToolCall.field(call, :arguments))
+    }
+  end
 
   defp extract_from_context(context) when is_map(context) do
     case Map.get(context, :messages) do
@@ -235,29 +234,27 @@ defmodule Nous.Eval.Evaluators.ToolUsage do
     if not check_args or expected_args == %{} do
       {true, nil, %{}}
     else
-      mismatches =
-        Enum.reduce(expected_args, [], fn {tool_name, expected_tool_args}, acc ->
-          # Find calls to this tool
-          calls = Enum.filter(tool_calls, fn tc -> tc.name == tool_name end)
-
-          if calls == [] do
-            [{tool_name, :not_called} | acc]
-          else
-            # Check if any call matches expected args
-            matches =
-              Enum.any?(calls, fn call ->
-                args_match?(call.args, expected_tool_args)
-              end)
-
-            if matches, do: acc, else: [{tool_name, :args_mismatch} | acc]
-          end
-        end)
+      mismatches = Enum.reduce(expected_args, [], &collect_arg_mismatch(&1, &2, tool_calls))
 
       if mismatches == [] do
         {true, nil, %{}}
       else
         {false, "Tool argument mismatches: #{inspect(mismatches)}", %{arg_mismatches: mismatches}}
       end
+    end
+  end
+
+  defp collect_arg_mismatch({tool_name, expected_tool_args}, acc, tool_calls) do
+    case Enum.filter(tool_calls, &(&1.name == tool_name)) do
+      [] ->
+        [{tool_name, :not_called} | acc]
+
+      calls ->
+        # A tool may be called more than once; one call matching the expectation
+        # is enough.
+        if Enum.any?(calls, &args_match?(&1.args, expected_tool_args)),
+          do: acc,
+          else: [{tool_name, :args_mismatch} | acc]
     end
   end
 

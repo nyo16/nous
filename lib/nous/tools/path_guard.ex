@@ -16,15 +16,29 @@ defmodule Nous.Tools.PathGuard do
         deps: %{workspace_root: "/srv/agent_workspace/\#{user_id}"}
       )
 
-  When `workspace_root` is unset, the guard defaults to the current
-  working directory (`File.cwd!/0`). For multi-tenant deployments you
-  almost certainly want to set it explicitly per session.
+  When `workspace_root` is absent from the deps, the guard defaults to the
+  current working directory (`File.cwd!/0`). For multi-tenant deployments you
+  almost certainly want to set it explicitly per session. A *present* but
+  unusable value (anything other than a non-empty string) is refused rather
+  than defaulted — a misconfigured jail denies every path instead of silently
+  widening to the cwd.
+
+  Sub-agents never widen the jail: `Nous.Plugins.SubAgent` clamps a child's
+  root to its parent's via `effective_root/1`, independently of
+  `:sub_agent_shared_deps`.
 
   ## What's blocked
 
   - Paths that, after `Path.expand/1`, escape the configured root
   - Symlinks whose target escapes the root
   - Any path containing a NUL byte (defense-in-depth)
+
+  ## What's not
+
+  Only the tools that call `validate/2` are confined — the five file tools.
+  `Nous.Tools.Bash` runs a command line the guard never sees, so an agent
+  holding both `FileRead` and `Bash` has a jail on one and none on the other.
+  Grant `Bash` accordingly.
 
   ## Returned path & TOCTOU
 
@@ -60,7 +74,7 @@ defmodule Nous.Tools.PathGuard do
 
   def validate(path, ctx) do
     with :ok <- reject_nul(path),
-         {:ok, root} <- workspace_root(ctx),
+         {:ok, root} <- effective_root(ctx),
          {:ok, expanded} <- expand_against(path, root),
          :ok <- ensure_within(expanded, root),
          {:ok, real_path} <- ensure_no_symlink_escape(expanded, root) do
@@ -78,24 +92,42 @@ defmodule Nous.Tools.PathGuard do
     end
   end
 
-  defp workspace_root(ctx) do
-    deps =
-      case ctx do
-        %{deps: deps} -> deps
-        %{} = deps -> deps
-        _ -> %{}
-      end
+  @doc """
+  Return the workspace root that confines `ctx`, or an error when the
+  configured root is unusable.
 
-    root =
-      case Map.get(deps || %{}, :workspace_root) do
-        nil -> File.cwd!()
-        root when is_binary(root) -> root
-      end
+  This is the resolution `validate/2` performs internally: an absent
+  `:workspace_root` yields the current working directory, a non-empty string is
+  expanded to an absolute path, and anything else is refused. Callers that need
+  to *derive* a confinement boundary rather than check a path — `SubAgent`
+  clamps a sub-agent's root to its parent's — must come through here so there
+  is exactly one definition of the jail.
+  """
+  @spec effective_root(Nous.RunContext.t() | map() | nil) ::
+          {:ok, String.t()} | {:error, String.t()}
+  def effective_root(ctx) do
+    # Map.fetch, not Map.get: an ABSENT key is the documented "default to cwd"
+    # case, while a key explicitly set to nil is a misconfiguration. Collapsing
+    # the two would make every unusable root fall back to the cwd — the exact
+    # silent widening this guard exists to prevent.
+    case Map.fetch(deps_of(ctx), :workspace_root) do
+      :error ->
+        {:ok, Path.expand(File.cwd!())}
 
-    {:ok, Path.expand(root)}
+      {:ok, root} when is_binary(root) and root != "" ->
+        {:ok, Path.expand(root)}
+
+      {:ok, other} ->
+        {:error, "workspace root #{inspect(other)} is not a non-empty string; refusing to access"}
+    end
   rescue
     File.Error -> {:error, "workspace root is unavailable"}
   end
+
+  defp deps_of(%{deps: deps}) when is_map(deps), do: deps
+  defp deps_of(%{deps: _}), do: %{}
+  defp deps_of(%{} = deps), do: deps
+  defp deps_of(_), do: %{}
 
   defp expand_against(path, root) do
     expanded =

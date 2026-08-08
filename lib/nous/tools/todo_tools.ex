@@ -56,6 +56,22 @@ defmodule Nous.Tools.TodoTools do
       # 📝 Pending (2): Analyze dependencies, Write report
   """
 
+  @typedoc """
+  A todo as stored under `:todos` in the agent's context deps. `:status` and
+  `:priority` are passed through from the model unchanged, so they are only
+  *conventionally* the documented values. `:completed_at` appears once
+  `complete_todo/2` has run.
+  """
+  @type todo :: %{
+          required(:id) => pos_integer(),
+          required(:text) => String.t(),
+          required(:status) => term(),
+          required(:priority) => term(),
+          required(:created_at) => String.t(),
+          required(:updated_at) => String.t(),
+          optional(:completed_at) => String.t()
+        }
+
   @doc """
   Add a new todo item.
 
@@ -72,6 +88,15 @@ defmodule Nous.Tools.TodoTools do
   - todos: Updated full todo list
   - __update_context__: Context updates for AgentRunner
   """
+  @spec add_todo(Nous.RunContext.t(), map()) ::
+          %{success: false, error: String.t()}
+          | %{
+              success: true,
+              todo: todo(),
+              todos: [todo(), ...],
+              message: String.t(),
+              __update_context__: %{todos: [todo(), ...]}
+            }
   def add_todo(ctx, args) do
     # Support multiple parameter names (AI might use different names)
     text = Map.get(args, "text") || Map.get(args, "title") || Map.get(args, "description")
@@ -124,6 +149,15 @@ defmodule Nous.Tools.TodoTools do
   - todos: Updated full todo list
   - __update_context__: Context updates for AgentRunner
   """
+  @spec update_todo(Nous.RunContext.t(), map()) ::
+          %{success: false, error: String.t(), available_ids: [pos_integer()]}
+          | %{
+              success: true,
+              todo: todo(),
+              todos: [todo(), ...],
+              message: String.t(),
+              __update_context__: %{todos: [todo(), ...]}
+            }
   def update_todo(ctx, args) do
     id = Map.get(args, "id")
     new_text = Map.get(args, "text")
@@ -174,6 +208,15 @@ defmodule Nous.Tools.TodoTools do
   - todos: Updated full todo list
   - __update_context__: Context updates for AgentRunner
   """
+  @spec complete_todo(Nous.RunContext.t(), map()) ::
+          %{success: false, error: String.t(), available_ids: [pos_integer()]}
+          | %{
+              success: true,
+              todo: todo(),
+              todos: [todo(), ...],
+              message: String.t(),
+              __update_context__: %{todos: [todo(), ...]}
+            }
   def complete_todo(ctx, args) do
     id = Map.get(args, "id")
 
@@ -219,6 +262,14 @@ defmodule Nous.Tools.TodoTools do
   - todos: Updated full todo list
   - __update_context__: Context updates for AgentRunner
   """
+  @spec delete_todo(Nous.RunContext.t(), map()) ::
+          %{success: false, error: String.t()}
+          | %{
+              success: true,
+              todos: [todo()],
+              message: String.t(),
+              __update_context__: %{todos: [todo()]}
+            }
   def delete_todo(ctx, args) do
     id = Map.get(args, "id")
 
@@ -258,6 +309,16 @@ defmodule Nous.Tools.TodoTools do
   - total: Total number of todos
   - by_status: Count by status
   """
+  @spec list_todos(Nous.RunContext.t(), map()) :: %{
+          success: true,
+          todos: [todo()],
+          total: non_neg_integer(),
+          by_status: %{
+            pending: non_neg_integer(),
+            in_progress: non_neg_integer(),
+            completed: non_neg_integer()
+          }
+        }
   def list_todos(ctx, args) do
     status_filter = Map.get(args, "status")
     priority_filter = Map.get(args, "priority")

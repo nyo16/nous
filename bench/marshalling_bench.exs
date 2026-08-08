@@ -70,7 +70,7 @@ tools =
 
 # convert_tools_for_provider/2 is private in agent_runner; these two Enum.map
 # calls ARE its body (anthropic / openai-compatible branches).
-tool_anthropic = fn -> Enum.map(tools, &Nous.ToolSchema.to_anthropic/1) end
+tool_anthropic = fn -> Enum.map(tools, &Nous.Tool.Wire.to_anthropic/1) end
 tool_openai = fn -> Enum.map(tools, &Tool.to_openai_schema/1) end
 
 marshal_anthropic = fn ctx ->

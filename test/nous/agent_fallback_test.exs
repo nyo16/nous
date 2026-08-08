@@ -10,30 +10,28 @@ defmodule Nous.AgentFallbackTest do
   defmodule FallbackMockDispatcher do
     @moduledoc false
 
-    # Uses the process dictionary to track calls and configure failures.
-    # Each test sets up failures via `configure/1` before running.
+    # Failure configuration and the call log live in the calling test's own
+    # process dictionary, not in a BEAM-global `:named_table`. A table name is
+    # node-wide while this module runs `async: true`, `:ets.delete/1` from a
+    # non-owner raises, and teardown on owner death is not instantaneous — so
+    # the old delete-then-recreate dance raced a just-exited test process.
+    # Nothing on the dispatch path spawns a task (Nous.Fallback, AgentRunner,
+    # RequestDispatch and Nous.LLM all call the dispatcher inline), so
+    # request/3 and request_stream/3 always run in the process that called
+    # configure/1.
+    @key {__MODULE__, :config}
 
     def configure(opts) do
-      # Store config in a named ETS table for cross-process access
-      if :ets.whereis(:fallback_mock_config) != :undefined do
-        :ets.delete(:fallback_mock_config)
-      end
+      Process.put(@key, %{
+        fail_providers: Keyword.get(opts, :fail_providers, []),
+        fail_models: Keyword.get(opts, :fail_models, []),
+        calls: []
+      })
 
-      :ets.new(:fallback_mock_config, [:named_table, :public, :set])
-
-      :ets.insert(
-        :fallback_mock_config,
-        {:fail_providers, Keyword.get(opts, :fail_providers, [])}
-      )
-
-      :ets.insert(:fallback_mock_config, {:fail_models, Keyword.get(opts, :fail_models, [])})
-      :ets.insert(:fallback_mock_config, {:calls, []})
+      :ok
     end
 
-    def get_calls do
-      [{:calls, calls}] = :ets.lookup(:fallback_mock_config, :calls)
-      Enum.reverse(calls)
-    end
+    def get_calls, do: Enum.reverse(state().calls)
 
     def request(model, _messages, _settings) do
       record_call(model)
@@ -98,16 +96,13 @@ defmodule Nous.AgentFallbackTest do
     def count_tokens(_messages), do: 50
 
     defp record_call(model) do
-      [{:calls, calls}] = :ets.lookup(:fallback_mock_config, :calls)
-      :ets.insert(:fallback_mock_config, {:calls, [{model.provider, model.model} | calls]})
+      state = state()
+      Process.put(@key, %{state | calls: [{model.provider, model.model} | state.calls]})
     end
 
-    defp get_config(key) do
-      case :ets.lookup(:fallback_mock_config, key) do
-        [{^key, value}] -> value
-        [] -> []
-      end
-    end
+    defp get_config(key), do: Map.fetch!(state(), key)
+
+    defp state, do: Process.get(@key, %{fail_providers: [], fail_models: [], calls: []})
 
     defp build_success_response(model) do
       legacy_response = %{
@@ -128,8 +123,8 @@ defmodule Nous.AgentFallbackTest do
   end
 
   setup do
-    # Process-scoped, so no global env to restore. The named ETS table is
-    # unique to this module and dies with the test process that created it.
+    # Both the dispatcher override and the mock's own state are process-scoped:
+    # no global env to restore and no node-wide ETS name to contend for.
     Nous.ModelDispatcher.put_dispatcher(FallbackMockDispatcher)
     :ok
   end

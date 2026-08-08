@@ -9,11 +9,15 @@ defmodule Nous.Memory.Scoring do
 
   alias Nous.Memory.Entry
 
+  @typedoc "An entry paired with its current relevance score."
+  @type scored :: {Entry.t(), float()}
+
   @doc """
   Reciprocal Rank Fusion merge of two ranked result lists.
 
   RRF formula: score(d) = sum(1 / (k + rank(d))) across all lists where d appears.
   """
+  @spec rrf_merge([scored()], [scored()], keyword()) :: [scored()]
   def rrf_merge(list_a, list_b, opts \\ []) do
     k = Keyword.get(opts, :k, 60)
 
@@ -50,6 +54,7 @@ defmodule Nous.Memory.Scoring do
   decay = exp(-lambda * hours_since_access)
   Returns original score if entry is evergreen.
   """
+  @spec temporal_decay(float(), Entry.t(), keyword()) :: float()
   def temporal_decay(score, %Entry{evergreen: true}, _opts), do: score
 
   def temporal_decay(score, %Entry{} = entry, opts) do
@@ -67,6 +72,7 @@ defmodule Nous.Memory.Scoring do
 
   Default weights: relevance: 0.5, importance: 0.3, recency: 0.2
   """
+  @spec composite_score(float(), Entry.t(), keyword()) :: float()
   def composite_score(relevance, %Entry{} = entry, opts \\ []) do
     weights = Keyword.get(opts, :weights, relevance: 0.5, importance: 0.3, recency: 0.2)
     now = Keyword.get(opts, :now, DateTime.utc_now())

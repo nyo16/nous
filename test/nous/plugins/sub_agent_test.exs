@@ -1,6 +1,8 @@
 defmodule Nous.Plugins.SubAgentTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog, only: [with_log: 1]
+
   alias Nous.{Agent, Message, Usage}
   alias Nous.Agent.Context
   alias Nous.Plugins.SubAgent
@@ -62,6 +64,47 @@ defmodule Nous.Plugins.SubAgentTest do
 
     def request_stream(_model, _messages, _settings), do: {:ok, []}
     def count_tokens(_messages), do: 50
+  end
+
+  # Calls file_read once for the path named in the task prompt, then answers
+  # with the tool's own output — so a sub-agent's view of the workspace jail
+  # comes back through delegate_task/spawn_agents rather than being inspected
+  # from outside.
+  defmodule FileReadingDispatcher do
+    @moduledoc false
+
+    def request(_model, messages, _settings) do
+      case Enum.find(messages, &(&1.role == :tool)) do
+        nil ->
+          {:ok,
+           response([
+             {:tool_call,
+              %{id: "c1", name: "file_read", arguments: %{"file_path" => asked_path(messages)}}}
+           ])}
+
+        tool_message ->
+          {:ok, response([{:text, to_string(tool_message.content)}])}
+      end
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 10
+
+    defp asked_path(messages) do
+      Enum.find_value(messages, fn
+        %Message{role: :user, content: "read " <> path} -> path
+        _ -> nil
+      end)
+    end
+
+    defp response(parts) do
+      Message.from_legacy(%{
+        parts: parts,
+        usage: %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2, requests: 1},
+        model_name: "test-model",
+        timestamp: DateTime.utc_now()
+      })
+    end
   end
 
   setup do
@@ -705,6 +748,147 @@ defmodule Nous.Plugins.SubAgentTest do
 
       assert is_binary(prompt)
       assert prompt =~ "Sub-Agents"
+    end
+  end
+
+  # ===========================================================================
+  # Workspace confinement
+  # ===========================================================================
+
+  # Every assertion below reads the sub-agent's REAL file_read output, taken
+  # from the running child through delegate_task/spawn_agents. Asserting the
+  # deps map instead would certify nothing: the jail is only worth what the
+  # callsite enforces.
+  defp delegate_read(deps, path, templates) do
+    ctx = Context.new(deps: Map.put(deps, :sub_agent_templates, templates))
+
+    SubAgent.delegate_task(ctx, %{"task" => "read #{path}", "template" => "reader"})
+  end
+
+  describe "workspace confinement" do
+    setup do
+      Nous.ModelDispatcher.put_dispatcher(FileReadingDispatcher)
+
+      base = Path.join(System.tmp_dir!(), "sub_agent_ws_#{System.unique_integer([:positive])}")
+      parent_root = Path.join(base, "parent")
+      inner = Path.join(parent_root, "inner")
+      File.mkdir_p!(inner)
+      File.write!(Path.join(base, "outside.txt"), "OUTSIDE")
+      File.write!(Path.join(parent_root, "parent.txt"), "PARENT")
+      File.write!(Path.join(inner, "inner.txt"), "INNER")
+      on_exit(fn -> File.rm_rf!(base) end)
+
+      templates = %{
+        "reader" =>
+          Agent.new("openai:test-model",
+            instructions: "Read the file you are asked for.",
+            tools: [Nous.Tools.FileRead]
+          )
+      }
+
+      %{base: base, parent_root: parent_root, inner: inner, templates: templates}
+    end
+
+    test "a sub-agent cannot read outside its parent's root, nor fall back to the cwd",
+         %{parent_root: parent_root, templates: templates} do
+      # The cwd is where an uninherited jail lands, so a cwd file is the probe
+      # that separates "confined to the parent" from "confined to nothing".
+      cwd_file = Path.join(File.cwd!(), "mix.exs")
+
+      result = delegate_read(%{workspace_root: parent_root}, cwd_file, templates)
+
+      assert result.success
+      assert result.result =~ "escapes the workspace root"
+      assert result.result =~ parent_root
+      refute result.result =~ "defmodule Nous.MixProject"
+    end
+
+    test "control: the same read succeeds when the parent has no root of its own",
+         %{templates: templates} do
+      # Exactly the state a child used to inherit. If this ever stops reading
+      # mix.exs the probe above has gone blind and proves nothing.
+      cwd_file = Path.join(File.cwd!(), "mix.exs")
+
+      result = delegate_read(%{}, cwd_file, templates)
+
+      assert result.result =~ "defmodule Nous.MixProject"
+    end
+
+    test "a sub-agent still reads inside the inherited root", %{
+      parent_root: parent_root,
+      templates: templates
+    } do
+      result =
+        delegate_read(
+          %{workspace_root: parent_root},
+          Path.join(parent_root, "parent.txt"),
+          templates
+        )
+
+      assert result.result =~ "PARENT"
+    end
+
+    test "an explicitly narrower :sub_agent_workspace_root is kept, not overwritten", %{
+      parent_root: parent_root,
+      inner: inner,
+      templates: templates
+    } do
+      deps = %{workspace_root: parent_root, sub_agent_workspace_root: inner}
+
+      # Clamped, not overwritten: the child keeps the narrower root, so a file
+      # its parent may read is out of reach.
+      refused = delegate_read(deps, Path.join(parent_root, "parent.txt"), templates)
+      assert refused.result =~ "escapes the workspace root"
+      assert refused.result =~ inner
+
+      allowed = delegate_read(deps, Path.join(inner, "inner.txt"), templates)
+      assert allowed.result =~ "INNER"
+    end
+
+    test "a :sub_agent_workspace_root wider than the parent's is clamped to the parent's", %{
+      base: base,
+      parent_root: parent_root,
+      templates: templates
+    } do
+      deps = %{workspace_root: parent_root, sub_agent_workspace_root: base}
+
+      {result, log} =
+        with_log(fn -> delegate_read(deps, Path.join(base, "outside.txt"), templates) end)
+
+      assert result.result =~ "escapes the workspace root"
+      assert result.result =~ parent_root
+      refute result.result =~ "OUTSIDE"
+      assert log =~ "clamping to the parent's root"
+    end
+
+    test "an unusable parent root denies the child rather than dropping it into the cwd", %{
+      templates: templates
+    } do
+      cwd_file = Path.join(File.cwd!(), "mix.exs")
+
+      result = delegate_read(%{workspace_root: nil}, cwd_file, templates)
+
+      assert result.result =~ "is not a non-empty string"
+      refute result.result =~ "defmodule Nous.MixProject"
+    end
+
+    test "the parallel path confines children the same way", %{
+      parent_root: parent_root,
+      templates: templates
+    } do
+      cwd_file = Path.join(File.cwd!(), "mix.exs")
+
+      ctx =
+        Context.new(deps: %{sub_agent_templates: templates, workspace_root: parent_root})
+
+      result =
+        SubAgent.spawn_agents(ctx, %{
+          "tasks" => [%{"task" => "read #{cwd_file}", "template" => "reader"}]
+        })
+
+      assert [%{output: output}] = result.results
+      assert output =~ "escapes the workspace root"
+      refute output =~ "defmodule Nous.MixProject"
     end
   end
 end

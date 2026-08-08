@@ -52,28 +52,24 @@ defmodule Nous.HTTP.BackendTest do
         assert {:error, %{status: 503}} = @backend.post(url, %{"x" => 1}, [], [])
       end
 
-      test "accepts :timeout opt without crashing", %{bypass: bypass, url: url} do
-        # Pure passthrough — Bypass-with-sleep timeout testing is racy
-        # (the plug crashes when the client closes mid-sleep, taking the
-        # Bypass instance with it). The actual timeout enforcement is the
-        # underlying lib's responsibility; here we just verify the opt is
-        # accepted and a normal request still succeeds.
-        Bypass.expect_once(bypass, "POST", "/v1/test", fn conn ->
-          Plug.Conn.resp(conn, 200, "{}")
-        end)
+      test ":timeout is enforced, not just accepted" do
+        # A socket that listens and never accepts: the kernel completes the TCP
+        # handshake from the backlog, the request goes out, and nothing ever
+        # answers. The receive timeout is then the only thing that can end the
+        # call — a backend that drops the opt waits out its 180s default and
+        # fails on ExUnit's budget instead of passing quietly. The previous
+        # version of this test asserted `{:ok, _}` against a normal response,
+        # which held whether or not the option was wired to anything.
+        {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+        {:ok, port} = :inet.port(listen)
+        on_exit(fn -> :gen_tcp.close(listen) end)
 
-        assert {:ok, _} = @backend.post(url, %{}, [], timeout: 5_000)
-      end
+        started = System.monotonic_time(:millisecond)
 
-      test "accepts :connect_timeout opt without crashing", %{bypass: bypass, url: url} do
-        # Connect-timeout passthrough: a real network test for connect-only
-        # timeouts is flaky on loopback (always connects fast). We assert
-        # the opt is accepted and a normal request still succeeds.
-        Bypass.expect_once(bypass, "POST", "/v1/test", fn conn ->
-          Plug.Conn.resp(conn, 200, "{}")
-        end)
+        assert {:error, _} =
+                 @backend.post("http://127.0.0.1:#{port}/v1/test", %{}, [], timeout: 200)
 
-        assert {:ok, _} = @backend.post(url, %{}, [], connect_timeout: 5_000)
+        assert System.monotonic_time(:millisecond) - started < 5_000
       end
 
       test "returns transport error on connection refused", %{bypass: bypass, url: url} do
@@ -142,6 +138,31 @@ defmodule Nous.HTTP.BackendTest do
 
         assert {:ok, _} = @backend.post(url, %{}, headers, [])
       end
+    end
+  end
+
+  # Only the Hackney backend implements a call-level connect timeout. The Req
+  # backend deliberately does not — see `lib/nous/http/backend/req.ex:26-29`:
+  # Req rejects `:connect_options` alongside a named `:finch` pool, so connect
+  # timeouts are pool-level there. A shared "the opt does not crash" test would
+  # report as coverage for a contract Req does not have, so there is no Req
+  # counterpart to this one.
+  describe "Hackney backend :connect_timeout" do
+    test "is enforced against an unroutable address" do
+      # TEST-NET-1 (RFC 5737) is reserved and never a real host, so the connect
+      # attempt hangs until the option's deadline. Hackney's default is 30s, so
+      # dropping the opt blows the bound below. (A network that answers with an
+      # immediate ICMP unreachable makes this pass trivially rather than
+      # falsely — it can never go green on a backend that ignores the opt while
+      # the address blackholes.)
+      started = System.monotonic_time(:millisecond)
+
+      assert {:error, _} =
+               Nous.HTTP.Backend.Hackney.post("http://192.0.2.1:81/v1/test", %{}, [],
+                 connect_timeout: 200
+               )
+
+      assert System.monotonic_time(:millisecond) - started < 5_000
     end
   end
 end

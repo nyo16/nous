@@ -1,13 +1,21 @@
-defmodule Nous.ReActAgent do
+defmodule Nous.Agent.ReAct do
   @moduledoc """
-  ReAct (Reasoning and Acting) Agent wrapper with built-in planning and todo management.
+  Convenience constructor and runner for a ReAct-configured `Nous.Agent`.
+
+  This is the *preset*, not the behaviour: `new/2` returns a plain
+  `%Nous.Agent{}` with `behaviour_module: Nous.Agents.ReActAgent` already set,
+  and `run/3` / `run_stream/3` seed the ReAct context before delegating to
+  `Nous.run/3`. The reasoning loop itself — system prompt, tool injection,
+  loop detection — lives in `Nous.Agents.ReActAgent`, which is where you look
+  to change behaviour and what you pass by hand if you build the agent with
+  `Nous.Agent.new/2` directly.
 
   ReAct is a prompting paradigm where AI agents interleave:
   - **Reasoning**: Thinking about what to do next
   - **Acting**: Using tools to gather information or perform actions
   - **Observing**: Processing results to inform the next step
 
-  This module wraps `Nous.Agent` with enhanced capabilities:
+  The resulting agent has:
   - Structured planning with facts survey
   - Built-in todo list management
   - Note-taking for observations
@@ -26,13 +34,13 @@ defmodule Nous.ReActAgent do
   ## Example
 
       # Create ReAct agent with custom tools
-      agent = ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+      agent = ReAct.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "You are a research assistant",
         tools: [&MyTools.search/2, &MyTools.calculate/2]
       )
 
       # Run with initial context
-      {:ok, result} = ReActAgent.run(agent,
+      {:ok, result} = ReAct.run(agent,
         "Find the oldest F1 driver and when they won their first championship",
         deps: %{database: MyDB}
       )
@@ -54,7 +62,7 @@ defmodule Nous.ReActAgent do
       agent = Agent.new("model", tools: [tool1, tool2])
 
       # ReAct Agent (enhanced)
-      agent = ReActAgent.new("model", tools: [tool1, tool2])
+      agent = ReAct.new("model", tools: [tool1, tool2])
       # Automatically includes: plan, note, add_todo, complete_todo,
       #                         list_todos, final_answer
 
@@ -95,16 +103,16 @@ defmodule Nous.ReActAgent do
   ## Examples
 
       # Basic ReAct agent
-      agent = ReActAgent.new("openai:gpt-4")
+      agent = ReAct.new("openai:gpt-4")
 
       # With custom tools
-      agent = ReActAgent.new("anthropic:claude-3-5-sonnet",
+      agent = ReAct.new("anthropic:claude-3-5-sonnet",
         tools: [&MyTools.search/2, &MyTools.calculate/2],
         instructions: "You are a research assistant"
       )
 
       # With custom model settings
-      agent = ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+      agent = ReAct.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         model_settings: %{temperature: 0.3, max_tokens: 2000}
       )
 
@@ -142,18 +150,18 @@ defmodule Nous.ReActAgent do
 
   ## Examples
 
-      {:ok, result} = ReActAgent.run(agent,
+      {:ok, result} = ReAct.run(agent,
         "What is the capital of France and what's its population?"
       )
 
       # With dependencies
-      {:ok, result} = ReActAgent.run(agent,
+      {:ok, result} = ReAct.run(agent,
         "Search for recent AI developments",
         deps: %{api_key: "..."}
       )
 
       # Continue conversation
-      {:ok, result2} = ReActAgent.run(agent,
+      {:ok, result2} = ReAct.run(agent,
         "Tell me more about that",
         message_history: result1.new_messages
       )
@@ -213,7 +221,7 @@ defmodule Nous.ReActAgent do
 
   ## Example
 
-      {:ok, stream} = ReActAgent.run_stream(agent, "Solve this problem...")
+      {:ok, stream} = ReAct.run_stream(agent, "Solve this problem...")
 
       stream
       |> Stream.each(fn

@@ -4,7 +4,8 @@ defmodule Nous.AgentCancellationExtendedTest do
   # the process-scoped dispatcher override cannot reach it.
   use ExUnit.Case, async: false
 
-  alias Nous.{Agent, AgentServer, Errors, Message, ReActAgent, Usage}
+  alias Nous.{Agent, AgentServer, Errors, Message, Usage}
+  alias Nous.Agent.ReAct
 
   @moduletag :capture_log
 
@@ -219,8 +220,8 @@ defmodule Nous.AgentCancellationExtendedTest do
     end
   end
 
-  describe "ReActAgent cancellation" do
-    test "ReActAgent.run stops before the first model call when already cancelled" do
+  describe "ReAct cancellation" do
+    test "ReAct.run stops before the first model call when already cancelled" do
       use_dispatcher(NeverCalledDispatcher)
 
       cancel_ref = :atomics.new(1, [])
@@ -230,10 +231,10 @@ defmodule Nous.AgentCancellationExtendedTest do
         if :atomics.get(cancel_ref, 1) == 1, do: throw({:cancelled, "ReAct test"})
       end
 
-      agent = ReActAgent.new("openai:test-model", instructions: "Test agent")
+      agent = ReAct.new("openai:test-model", instructions: "Test agent")
 
       assert {:error, %Errors.ExecutionCancelled{reason: "ReAct test"}} =
-               ReActAgent.run(agent, "Test task", cancellation_check: check_fn, max_iterations: 5)
+               ReAct.run(agent, "Test task", cancellation_check: check_fn, max_iterations: 5)
 
       refute_received {:unexpected_model_request, _}
     end

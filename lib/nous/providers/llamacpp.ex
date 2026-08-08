@@ -6,7 +6,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
     Runs GGUF models directly in-process via `llama_cpp_ex` NIF bindings.
     No HTTP server needed.
 
-    Requires optional dep: `{:llama_cpp_ex, "~> 0.6.5"}`
+    Requires optional dep: `{:llama_cpp_ex, "~> 0.8"}`
 
     ## Usage
 
@@ -97,63 +97,35 @@ if Code.ensure_loaded?(LlamaCppEx) do
       provider_messages =
         messages
         |> Nous.Messages.to_provider_format(:llamacpp)
-        |> Enum.map(&to_atom_keys/1)
+        |> to_atom_key_messages()
 
       opts = build_llamacpp_opts(merged_settings)
 
-      result =
-        case LlamaCppEx.chat_completion(llamacpp_model, provider_messages, opts) do
-          {:ok, completion} ->
-            response_map = completion_to_map(completion)
-            parsed = Nous.Messages.from_provider_response(response_map, :llamacpp)
-            {:ok, parsed}
+      result = run_chat_completion(llamacpp_model, provider_messages, opts)
 
-          {:error, error} ->
-            wrapped =
-              Nous.Errors.ProviderError.exception(
-                provider: :llamacpp,
-                message: "Request failed: #{inspect(error)}",
-                details: error
-              )
-
-            {:error, wrapped}
-        end
-
-      duration = System.monotonic_time() - start_time
-
-      case result do
-        {:ok, parsed_response} ->
-          usage =
-            case parsed_response.metadata do
-              %{usage: %Nous.Usage{} = u} -> u
-              %{usage: u} when is_map(u) -> u
-              _ -> %{}
-            end
-
-          :telemetry.execute(
-            [:nous, :provider, :request, :stop],
-            %{
-              duration: duration,
-              input_tokens: Map.get(usage, :input_tokens) || 0,
-              output_tokens: Map.get(usage, :output_tokens) || 0,
-              total_tokens: Map.get(usage, :total_tokens) || 0
-            },
-            %{
-              provider: :llamacpp,
-              model_name: model.model,
-              has_tool_calls: length(parsed_response.tool_calls) > 0
-            }
-          )
-
-        {:error, error} ->
-          :telemetry.execute(
-            [:nous, :provider, :request, :exception],
-            %{duration: duration},
-            %{provider: :llamacpp, model_name: model.model, kind: :error, reason: error}
-          )
-      end
+      Nous.Provider.emit_request_telemetry(
+        result,
+        :llamacpp,
+        model,
+        System.monotonic_time() - start_time
+      )
 
       result
+    end
+
+    defp run_chat_completion(llamacpp_model, provider_messages, opts) do
+      case LlamaCppEx.chat_completion(llamacpp_model, provider_messages, opts) do
+        {:ok, completion} ->
+          {:ok, Nous.Messages.from_provider_response(completion_to_map(completion), :llamacpp)}
+
+        {:error, error} ->
+          {:error,
+           Nous.Errors.ProviderError.exception(
+             provider: :llamacpp,
+             message: "Request failed: #{inspect(error)}",
+             details: error
+           )}
+      end
     end
 
     @impl Nous.Provider
@@ -178,7 +150,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
       provider_messages =
         messages
         |> Nous.Messages.to_provider_format(:llamacpp)
-        |> Enum.map(&to_atom_keys/1)
+        |> to_atom_key_messages()
 
       opts = build_llamacpp_opts(merged_settings)
 
@@ -209,6 +181,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
     # otherwise dangle ("Unknown function"). It's a public `@doc false` stub so
     # the compiler doesn't flag it as an unused private function.
     @doc false
+    @spec build_request_params(Nous.Model.t(), list(), map()) :: map()
     def build_request_params(_model, _messages, _settings), do: %{}
 
     defp default_stream_normalizer, do: Nous.StreamNormalizer.LlamaCpp
@@ -246,6 +219,14 @@ if Code.ensure_loaded?(LlamaCppEx) do
       end)
     end
 
+    # The llamacpp path converts twice: to the OpenAI shape, then to atom keys.
+    # Memoize the second pass as well — the maps `to_provider_format/2` returns
+    # are themselves cached, so the prefix shared with the previous iteration is
+    # pointer-identical and never re-keyed.
+    defp to_atom_key_messages(provider_messages) do
+      Nous.Messages.Cache.map({__MODULE__, :atom_keys}, provider_messages, &to_atom_keys/1)
+    end
+
     # Build LlamaCppEx options from Nous settings
     defp build_llamacpp_opts(settings) do
       opts = []
@@ -270,42 +251,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
 
     # Convert a %ChatCompletion{} struct to a string-keyed map compatible with from_openai_response/1
     defp completion_to_map(completion) do
-      choices =
-        Enum.map(completion.choices, fn choice ->
-          msg = choice.message || %{}
-
-          message = %{
-            "role" => to_string(Map.get(msg, :role, "assistant")),
-            "content" => Map.get(msg, :content)
-          }
-
-          tool_calls = Map.get(msg, :tool_calls)
-
-          message =
-            if tool_calls && tool_calls != [] do
-              converted =
-                Enum.map(tool_calls, fn tc ->
-                  %{
-                    "id" => tc.id,
-                    "type" => "function",
-                    "function" => %{
-                      "name" => tc.function.name,
-                      "arguments" => tc.function.arguments
-                    }
-                  }
-                end)
-
-              Map.put(message, "tool_calls", converted)
-            else
-              message
-            end
-
-          %{
-            "index" => Map.get(choice, :index, 0),
-            "message" => message,
-            "finish_reason" => Map.get(choice, :finish_reason)
-          }
-        end)
+      choices = Enum.map(completion.choices, &choice_to_map/1)
 
       usage_data = Map.get(completion, :usage)
 
@@ -326,18 +272,47 @@ if Code.ensure_loaded?(LlamaCppEx) do
 
       if usage, do: Map.put(map, "usage", usage), else: map
     end
+
+    defp choice_to_map(choice) do
+      msg = choice.message || %{}
+
+      message = %{
+        "role" => to_string(Map.get(msg, :role, "assistant")),
+        "content" => Map.get(msg, :content)
+      }
+
+      %{
+        "index" => Map.get(choice, :index, 0),
+        "message" => put_tool_calls(message, Map.get(msg, :tool_calls)),
+        "finish_reason" => Map.get(choice, :finish_reason)
+      }
+    end
+
+    defp put_tool_calls(message, tool_calls) when tool_calls in [nil, []], do: message
+
+    defp put_tool_calls(message, tool_calls) do
+      Map.put(message, "tool_calls", Enum.map(tool_calls, &tool_call_to_map/1))
+    end
+
+    defp tool_call_to_map(tc) do
+      %{
+        "id" => tc.id,
+        "type" => "function",
+        "function" => %{"name" => tc.function.name, "arguments" => tc.function.arguments}
+      }
+    end
   end
 else
   defmodule Nous.Providers.LlamaCpp do
     @moduledoc """
     LlamaCpp NIF-based provider for local LLM inference.
 
-    **Not available** - add `{:llama_cpp_ex, "~> 0.6.5"}` to your mix.exs deps.
+    **Not available** - add `{:llama_cpp_ex, "~> 0.8"}` to your mix.exs deps.
     """
 
     @behaviour Nous.Provider
 
-    @not_available "LlamaCppEx is not available. Add {:llama_cpp_ex, \"~> 0.6.5\"} to your mix.exs deps."
+    @not_available "LlamaCppEx is not available. Add {:llama_cpp_ex, \"~> 0.8\"} to your mix.exs deps."
 
     @impl true
     def provider_id, do: :llamacpp

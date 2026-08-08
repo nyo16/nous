@@ -89,26 +89,32 @@ defmodule Nous.Eval.Reporter.Console do
       IO.puts("  " <> colorize("Failures", :red))
       IO.puts("  --------")
 
-      Enum.each(failures, fn r ->
-        IO.puts("")
-        IO.puts("  " <> colorize("#{r.test_case_name}", :red))
-
-        if Result.has_error?(r) do
-          IO.puts("    Error: #{inspect(r.error)}")
-        else
-          IO.puts("    Score: #{Float.round(r.score, 2)}")
-
-          if r.evaluation_details[:reason] do
-            IO.puts("    Reason: #{r.evaluation_details[:reason]}")
-          end
-
-          IO.puts("    Expected: #{format_expected(r.expected_output)}")
-          IO.puts("    Actual:   #{format_actual(r.actual_output)}")
-        end
-      end)
+      Enum.each(failures, &print_failure/1)
 
       IO.puts("")
     end
+  end
+
+  defp print_failure(result) do
+    IO.puts("")
+    IO.puts("  " <> colorize("#{result.test_case_name}", :red))
+
+    if Result.has_error?(result) do
+      IO.puts("    Error: #{inspect(result.error)}")
+    else
+      print_failure_score(result)
+    end
+  end
+
+  defp print_failure_score(result) do
+    IO.puts("    Score: #{Float.round(result.score, 2)}")
+
+    if result.evaluation_details[:reason] do
+      IO.puts("    Reason: #{result.evaluation_details[:reason]}")
+    end
+
+    IO.puts("    Expected: #{format_expected(result.expected_output)}")
+    IO.puts("    Actual:   #{format_actual(result.actual_output)}")
   end
 
   defp print_metrics(%{metrics_summary: nil}), do: :ok

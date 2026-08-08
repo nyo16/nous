@@ -47,6 +47,7 @@ defmodule Nous.KnowledgeBase.HealthReport do
   @doc """
   Creates a new HealthReport from attributes.
   """
+  @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
     %HealthReport{
       id: Map.get(attrs, :id) || generate_id(),

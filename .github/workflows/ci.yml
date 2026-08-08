@@ -39,6 +39,12 @@ jobs:
             ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
 
       - run: mix deps.get
+      # Prune deps/ and _build/ entries no longer in mix.lock. These jobs
+      # restore a cache, and `mix deps.get` only ADDS — so a dep dropped from
+      # mix.exs lingers in the cache forever, gets recompiled, and can still be
+      # loaded. `mix deps.unlock --check-unused` (format job) gates the lock;
+      # this prunes the directories the lock no longer mentions.
+      - run: mix deps.clean --unused
       - run: mix deps.compile
 
       - name: Compile with warnings as errors
@@ -64,6 +70,7 @@ jobs:
             ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
 
       - run: mix deps.get
+      - run: mix deps.clean --unused
       - run: mix format --check-formatted
       # Fail if mix.lock carries entries no longer referenced by mix.exs —
       # stale locks silently pin (and block updates of) transitive deps.
@@ -91,6 +98,7 @@ jobs:
             ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
 
       - run: mix deps.get
+      - run: mix deps.clean --unused
       - run: mix credo --strict
 
   test:
@@ -122,9 +130,16 @@ jobs:
             ${{ runner.os }}-mix-${{ matrix.elixir }}-${{ matrix.otp }}-
 
       - run: mix deps.get
+      - run: mix deps.clean --unused
       - run: mix deps.compile
       - run: mix compile
-      - run: mix test
+      # `mix compile --warnings-as-errors` (the `compile` job) never sees
+      # `test/**/*_test.exs`: elixirc_paths(:test) stops at "lib" + "test/support"
+      # and ExUnit loads the test files at run time. Without the flag here, a
+      # test asserting a contract the code does not have warns forever and
+      # fails nothing. `--warnings-as-errors` on `mix test` (Elixir >= 1.12)
+      # covers exactly those files.
+      - run: mix test --warnings-as-errors
 
   coverage:
     name: Coverage
@@ -148,6 +163,7 @@ jobs:
             ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
 
       - run: mix deps.get
+      - run: mix deps.clean --unused
       - run: mix deps.compile
       - run: mix compile
 
@@ -156,10 +172,10 @@ jobs:
       # here and on a laptop.
       #
       # The floor is a RATCHET, not a target: it is set to coverage we already
-      # have (57%, measured), so the gate passes on day one and only ever
-      # catches regressions. A gate that fails the day you add it gets
-      # disabled the day after. Raise the number in mix.exs as coverage
-      # improves; never lower it to turn a red build green.
+      # have, so the gate passes on day one and only ever catches regressions. A
+      # gate that fails the day you add it gets disabled the day after. The
+      # number and the reasoning for `ignore_modules` live in mix.exs — raise it
+      # as coverage improves; never lower it to turn a red build green.
       - name: Tests with coverage threshold
         run: mix test --cover
 
@@ -193,6 +209,7 @@ jobs:
             ${{ runner.os }}-plt-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
 
       - run: mix deps.get
+      - run: mix deps.clean --unused
       - run: mix deps.compile
       - run: mix compile
       - run: mix dialyzer

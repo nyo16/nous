@@ -78,7 +78,7 @@ defmodule Nous.Hook.Runner do
         run_blocking(rest, event, payload)
 
       :deny ->
-        Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}")
+        Logger.info("Hook #{hook_label(hook)} denied #{event}")
 
         :telemetry.execute(
           [:nous, :hook, :denied],
@@ -89,7 +89,7 @@ defmodule Nous.Hook.Runner do
         :deny
 
       {:deny, reason} = denied ->
-        Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}: #{reason}")
+        Logger.info("Hook #{hook_label(hook)} denied #{event}: #{reason}")
 
         :telemetry.execute(
           [:nous, :hook, :denied],
@@ -105,9 +105,7 @@ defmodule Nous.Hook.Runner do
         run_blocking(rest, event, updated_payload)
 
       {:error, reason} ->
-        Logger.warning(
-          "Hook #{inspect(hook.name || hook.type)} errored on #{event}: #{inspect(reason)}"
-        )
+        Logger.warning("Hook #{hook_label(hook)} errored on #{event}: #{inspect(reason)}")
 
         # By default errors fail OPEN (continue to the next hook). When the
         # hook opts in with `fail_closed: true` we treat the error as :deny
@@ -156,16 +154,10 @@ defmodule Nous.Hook.Runner do
           acc
 
         {:modify, changes} ->
-          # Merge modifications (last writer wins for conflicts)
-          case acc do
-            {:modify, existing} -> {:modify, Map.merge(existing, changes)}
-            _ -> {:modify, changes}
-          end
+          merge_modification(acc, changes)
 
         {:error, reason} ->
-          Logger.warning(
-            "Hook #{inspect(hook.name || hook.type)} errored on #{event}: #{inspect(reason)}"
-          )
+          Logger.warning("Hook #{hook_label(hook)} errored on #{event}: #{inspect(reason)}")
 
           acc
 
@@ -174,6 +166,17 @@ defmodule Nous.Hook.Runner do
       end
     end)
   end
+
+  # Hooks are optionally named; fall back to the type so every log line still
+  # identifies which hook spoke.
+  defp hook_label(%Hook{} = hook), do: inspect(hook.name || hook.type)
+
+  # Modifications from separate non-blocking hooks accumulate; last writer
+  # wins for conflicting keys.
+  defp merge_modification({:modify, existing}, changes),
+    do: {:modify, Map.merge(existing, changes)}
+
+  defp merge_modification(_acc, changes), do: {:modify, changes}
 
   # Execute a single hook based on its type
   defp execute_hook(%Hook{type: :function, handler: fun}, event, payload)
@@ -217,7 +220,8 @@ defmodule Nous.Hook.Runner do
   end
 
   # Execute a command hook via NetRunner. The argv list is passed
-  # directly - no shell, no expansion.
+  # directly - no shell, no expansion - re-exec'd through `env -i` so the hook
+  # process does not inherit the BEAM's API keys (see `Nous.Tools.Env`).
   defp execute_command_hook(argv, event, payload, timeout, fail_closed) do
     json_input =
       JSON.encode!(%{
@@ -226,7 +230,7 @@ defmodule Nous.Hook.Runner do
       })
 
     contained("Command hook", fn ->
-      case NetRunner.run(argv, input: json_input, timeout: timeout) do
+      case NetRunner.run(Nous.Tools.Env.scrub_argv(argv), input: json_input, timeout: timeout) do
         {output, 0} ->
           parse_command_output(output)
 
@@ -240,16 +244,20 @@ defmodule Nous.Hook.Runner do
         {output, exit_code} ->
           Logger.warning("Command hook exited with code #{exit_code}: #{String.trim(output)}")
 
-          # Non-0/2 exit codes default to fail OPEN for backward compat;
-          # set fail_closed: true on the hook to treat them as :deny so a
-          # crashing security-gating hook can't be silently bypassed.
-          if fail_closed do
-            {:deny, "command hook exited with code #{exit_code} (fail_closed)"}
-          else
-            :allow
-          end
+          command_hook_exit_result(exit_code, fail_closed)
       end
     end)
+  end
+
+  # Non-0/2 exit codes default to fail OPEN for backward compat; set
+  # fail_closed: true on the hook to treat them as :deny so a crashing
+  # security-gating hook can't be silently bypassed.
+  defp command_hook_exit_result(exit_code, fail_closed) do
+    if fail_closed do
+      {:deny, "command hook exited with code #{exit_code} (fail_closed)"}
+    else
+      :allow
+    end
   end
 
   # Run a hook body with full containment: hooks execute arbitrary user code,

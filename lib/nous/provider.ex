@@ -261,46 +261,12 @@ defmodule Nous.Provider do
               {:error, wrapped_error}
           end
 
-        # Emit telemetry
-        duration = System.monotonic_time() - start_time
-
-        case result do
-          {:ok, parsed_response} ->
-            # Extract usage - handle both Usage struct and map
-            usage =
-              case parsed_response.metadata do
-                %{usage: %Nous.Usage{} = u} -> u
-                %{usage: u} when is_map(u) -> u
-                _ -> %{}
-              end
-
-            :telemetry.execute(
-              [:nous, :provider, :request, :stop],
-              %{
-                duration: duration,
-                input_tokens: Map.get(usage, :input_tokens) || 0,
-                output_tokens: Map.get(usage, :output_tokens) || 0,
-                total_tokens: Map.get(usage, :total_tokens) || 0
-              },
-              %{
-                provider: @provider_id,
-                model_name: model.model,
-                has_tool_calls: length(parsed_response.tool_calls) > 0
-              }
-            )
-
-          {:error, error} ->
-            :telemetry.execute(
-              [:nous, :provider, :request, :exception],
-              %{duration: duration},
-              %{
-                provider: @provider_id,
-                model_name: model.model,
-                kind: :error,
-                reason: error
-              }
-            )
-        end
+        Nous.Provider.emit_request_telemetry(
+          result,
+          @provider_id,
+          model,
+          System.monotonic_time() - start_time
+        )
 
         result
       end
@@ -534,6 +500,7 @@ defmodule Nous.Provider do
   # functions and mark them overridable.
   # ──────────────────────────────────────────────────────────────────────────
   @doc false
+  @spec chat_ast(keyword()) :: {Macro.t() | nil, keyword(arity())}
   def chat_ast(opts) do
     case Keyword.get(opts, :chat) do
       nil ->
@@ -588,6 +555,88 @@ defmodule Nous.Provider do
     end
   end
 
+  @doc false
+  # Runtime half of the default `request/3` telemetry. Kept out of the `use`
+  # macro so the injected function stays small and so providers that override
+  # `request/3` (LlamaCpp) emit byte-identical events instead of a copy that
+  # can drift.
+  @spec emit_request_telemetry(
+          {:ok, Nous.Message.t()} | {:error, term()},
+          atom(),
+          Model.t(),
+          integer()
+        ) :: :ok
+  def emit_request_telemetry({:ok, message}, provider_id, model, duration) do
+    usage = response_usage(message.metadata)
+
+    :telemetry.execute(
+      [:nous, :provider, :request, :stop],
+      %{
+        duration: duration,
+        input_tokens: Map.get(usage, :input_tokens) || 0,
+        output_tokens: Map.get(usage, :output_tokens) || 0,
+        total_tokens: Map.get(usage, :total_tokens) || 0
+      },
+      %{
+        provider: provider_id,
+        model_name: model.model,
+        has_tool_calls: length(message.tool_calls) > 0
+      }
+    )
+  end
+
+  def emit_request_telemetry({:error, error}, provider_id, model, duration) do
+    :telemetry.execute(
+      [:nous, :provider, :request, :exception],
+      %{duration: duration},
+      %{provider: provider_id, model_name: model.model, kind: :error, reason: error}
+    )
+  end
+
+  # Usage arrives either as a %Nous.Usage{} struct or as a bare map, depending on
+  # how far the provider response got through parsing.
+  defp response_usage(%{usage: %Nous.Usage{} = usage}), do: usage
+  defp response_usage(%{usage: usage}) when is_map(usage), do: usage
+  defp response_usage(_metadata), do: %{}
+
+  @doc false
+  # Runtime half of the `:required` base-URL strategy. Kept out of the injected
+  # AST for the same reason as `emit_request_telemetry/4`: the generated
+  # `chat_resolve_base_url/1` stays a two-liner in every provider that uses it.
+  @spec check_required_base_url(String.t() | nil, keyword(), atom(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, {:invalid_config, String.t()}}
+  def check_required_base_url(base, opts, id, base_env, display) do
+    if is_nil(base) or base == "" do
+      {:error, {:invalid_config, missing_base_url_message(id, base_env, display)}}
+    else
+      allow_private =
+        Keyword.get(opts, :allow_private_hosts) ||
+          get_in(Application.get_env(:nous, id, []), [:allow_private_hosts]) ||
+          false
+
+      case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: allow_private) do
+        {:ok, _uri} ->
+          {:ok, base}
+
+        {:error, reason} ->
+          {:error,
+           {:invalid_config,
+            display <>
+              " base_url failed SSRF validation: #{reason}. " <>
+              "Set `allow_private_hosts: true` for local dev if intentional."}}
+      end
+    end
+  end
+
+  defp missing_base_url_message(id, base_env, display) do
+    display <>
+      " requires a base_url. Set one of: " <>
+      "Nous.new(\"#{id}:model\", base_url: \"http://...\"), " <>
+      base_env <>
+      " env var, or " <>
+      "config :nous, #{inspect(id)}, base_url: \"http://...\""
+  end
+
   # `:plain` — trust the resolved base URL as-is (used by hosted OpenAI-compatible
   # endpoints like Mistral that take an https URL). Never fails.
   defp resolve_base_url_ast(:plain, _id, _base_env, _display) do
@@ -632,33 +681,13 @@ defmodule Nous.Provider do
             System.get_env(unquote(base_env)) ||
             get_in(Application.get_env(:nous, unquote(id), []), [:base_url])
 
-        if is_nil(base) or base == "" do
-          {:error,
-           {:invalid_config,
-            unquote(display) <>
-              " requires a base_url. Set one of: " <>
-              "Nous.new(\"#{unquote(id)}:model\", base_url: \"http://...\"), " <>
-              unquote(base_env) <>
-              " env var, or " <>
-              "config :nous, #{inspect(unquote(id))}, base_url: \"http://...\""}}
-        else
-          allow_private =
-            Keyword.get(opts, :allow_private_hosts) ||
-              get_in(Application.get_env(:nous, unquote(id), []), [:allow_private_hosts]) ||
-              false
-
-          case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: allow_private) do
-            {:ok, _uri} ->
-              {:ok, base}
-
-            {:error, reason} ->
-              {:error,
-               {:invalid_config,
-                unquote(display) <>
-                  " base_url failed SSRF validation: #{reason}. " <>
-                  "Set `allow_private_hosts: true` for local dev if intentional."}}
-          end
-        end
+        Nous.Provider.check_required_base_url(
+          base,
+          opts,
+          unquote(id),
+          unquote(base_env),
+          unquote(display)
+        )
       end
     end
   end

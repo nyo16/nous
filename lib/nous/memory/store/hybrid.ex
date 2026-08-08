@@ -18,6 +18,7 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
 
     alias __MODULE__
     alias Nous.Memory.Entry
+    alias Nous.Memory.Store.Results
 
     @default_dimension 1536
 
@@ -145,20 +146,7 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
       min_score = Keyword.get(opts, :min_score, 0.0)
 
       with {:ok, results} <- Muninn.search(index, query, limit: candidate_limit(limit, scope)) do
-        scored_entries =
-          results
-          |> Enum.flat_map(fn %{id: id, score: score} ->
-            case :ets.lookup(table, id) do
-              [{^id, entry}] -> [{entry, score}]
-              [] -> []
-            end
-          end)
-          |> filter_by_scope(scope)
-          |> Enum.filter(fn {_entry, score} -> score > min_score end)
-          |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
-          |> Enum.take(limit)
-
-        {:ok, scored_entries}
+        {:ok, Results.rank(results, table, scope, min_score, limit)}
       end
     end
 
@@ -170,33 +158,14 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
 
       with {:ok, results} <-
              Zvec.search(collection, embedding, limit: candidate_limit(limit, scope)) do
-        scored_entries =
-          results
-          |> Enum.flat_map(fn %{id: id, score: score} ->
-            case :ets.lookup(table, id) do
-              [{^id, entry}] -> [{entry, score}]
-              [] -> []
-            end
-          end)
-          |> filter_by_scope(scope)
-          |> Enum.filter(fn {_entry, score} -> score > min_score end)
-          |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
-          |> Enum.take(limit)
-
-        {:ok, scored_entries}
+        {:ok, Results.rank(results, table, scope, min_score, limit)}
       end
     end
 
     @impl true
     def list(%{entries: table}, opts) do
       scope = Keyword.get(opts, :scope, %{})
-
-      entries =
-        table
-        |> all_entries()
-        |> filter_by_scope(scope)
-
-      {:ok, entries}
+      {:ok, table |> Results.all_entries() |> Results.filter_by_scope(scope)}
     end
 
     defp open_or_create_index(path, schema) do
@@ -213,34 +182,12 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
       end
     end
 
-    defp all_entries(table) do
-      :ets.tab2list(table) |> Enum.map(fn {_id, entry} -> entry end)
-    end
-
     # The index can't filter by scope (it only indexes id/content), so scope is
     # applied AFTER fetching. Over-fetch a generous candidate pool when scoped so
     # in-scope results aren't crowded out by higher-ranked out-of-scope hits in
     # a shared multi-tenant store.
     defp candidate_limit(limit, scope) when map_size(scope) == 0, do: limit * 2
     defp candidate_limit(limit, _scope), do: min(max(limit * 20, 200), 1000)
-
-    defp filter_by_scope(entries, scope) when map_size(scope) == 0, do: entries
-
-    defp filter_by_scope(entries, scope) when is_list(entries) do
-      Enum.filter(entries, fn entry ->
-        Enum.all?(scope, fn {key, value} ->
-          Map.get(entry, key) == value
-        end)
-      end)
-    end
-
-    defp filter_by_scope(scored_entries, scope) do
-      Enum.filter(scored_entries, fn {entry, _score} ->
-        Enum.all?(scope, fn {key, value} ->
-          Map.get(entry, key) == value
-        end)
-      end)
-    end
   end
 else
   defmodule Nous.Memory.Store.Hybrid do

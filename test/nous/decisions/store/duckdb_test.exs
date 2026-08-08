@@ -21,12 +21,12 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
-    describe "add_node/2 and get_node/2" do
+    describe "add_node/2 and fetch_node/2" do
       test "roundtrip stores and fetches a node", %{state: state} do
         node = Node.new(%{type: :goal, label: "Ship v1.0", confidence: 0.8})
         {:ok, _state} = DuckDB.add_node(state, node)
 
-        assert {:ok, fetched} = DuckDB.get_node(state, node.id)
+        assert {:ok, fetched} = DuckDB.fetch_node(state, node.id)
         assert fetched.id == node.id
         assert fetched.label == "Ship v1.0"
         assert fetched.type == :goal
@@ -34,8 +34,8 @@ if Code.ensure_loaded?(Duckdbex) do
         assert fetched.confidence == 0.8
       end
 
-      test "get_node returns error for non-existent node", %{state: state} do
-        assert {:error, :not_found} = DuckDB.get_node(state, "nonexistent")
+      test "fetch_node returns error for non-existent node", %{state: state} do
+        assert {:error, :not_found} = DuckDB.fetch_node(state, "nonexistent")
       end
     end
 
@@ -46,7 +46,7 @@ if Code.ensure_loaded?(Duckdbex) do
 
         {:ok, _state} = DuckDB.update_node(state, node.id, %{confidence: 0.9, label: "Updated"})
 
-        {:ok, updated} = DuckDB.get_node(state, node.id)
+        {:ok, updated} = DuckDB.fetch_node(state, node.id)
         assert updated.confidence == 0.9
         assert updated.label == "Updated"
       end
@@ -68,7 +68,7 @@ if Code.ensure_loaded?(Duckdbex) do
 
         {:ok, state} = DuckDB.delete_node(state, n1.id)
 
-        assert {:error, :not_found} = DuckDB.get_node(state, n1.id)
+        assert {:error, :not_found} = DuckDB.fetch_node(state, n1.id)
         {:ok, edges} = DuckDB.get_edges(state, n2.id, :incoming)
         assert edges == []
       end
@@ -249,6 +249,133 @@ if Code.ensure_loaded?(Duckdbex) do
         {:ok, goals} = DuckDB.query(state, :active_goals, [])
         assert goals == []
       end
+    end
+
+    describe "update_node/3 column allowlist" do
+      test "an injected identifier never reaches SQL", %{state: state} do
+        node = Node.new(%{type: :goal, label: "Ship v1.0"})
+        {:ok, state} = DuckDB.add_node(state, node)
+
+        assert_raise ArgumentError, ~r/unknown decision column/, fn ->
+          DuckDB.update_node(state, node.id, %{"id; DROP TABLE decision_nodes --" => "x"})
+        end
+
+        # The DROP never executed and the row is intact.
+        assert {:ok, fetched} = DuckDB.fetch_node(state, node.id)
+        assert fetched.label == "Ship v1.0"
+      end
+
+      test "a plausible-but-wrong field name is rejected", %{state: state} do
+        node = Node.new(%{type: :goal, label: "Ship v1.0"})
+        {:ok, state} = DuckDB.add_node(state, node)
+
+        # `node_type` is the physical column, not the Node field — close enough
+        # to slip past review, still not in the allowlist.
+        assert_raise ArgumentError, ~r/unknown decision column :node_type/, fn ->
+          DuckDB.update_node(state, node.id, %{node_type: :decision})
+        end
+      end
+
+      test "every field the schema defines is still updatable", %{state: state} do
+        node = Node.new(%{type: :goal, label: "Original", confidence: 0.1, rationale: "why"})
+        {:ok, state} = DuckDB.add_node(state, node)
+
+        for {field, value} <- [
+              id: node.id,
+              type: :option,
+              label: "Updated",
+              status: :rejected,
+              confidence: 0.9,
+              rationale: "because",
+              metadata: %{"label" => "extra"},
+              created_at: DateTime.utc_now(),
+              updated_at: DateTime.utc_now()
+            ] do
+          assert {:ok, _state} = DuckDB.update_node(state, node.id, %{field => value})
+        end
+
+        {:ok, updated} = DuckDB.fetch_node(state, node.id)
+        assert updated.type == :option
+        assert updated.label == "Updated"
+        assert updated.status == :rejected
+        assert updated.confidence == 0.9
+        assert updated.rationale == "because"
+        assert updated.metadata == %{label: "extra"}
+      end
+    end
+
+    describe "decoding a corrupt persisted row" do
+      test "an unknown node_type/status yields nil rather than raising", %{state: state} do
+        now = DateTime.to_iso8601(DateTime.utc_now())
+
+        insert = """
+        INSERT INTO decision_nodes
+          (id, node_type, label, status, metadata_json, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        """
+
+        {:ok, _} =
+          Duckdbex.query(state.conn, insert, [
+            "corrupt-node",
+            "no_such_node_type_xyz",
+            "Corrupt",
+            "no_such_status_xyz",
+            "{}",
+            now,
+            now
+          ])
+
+        assert {:ok, fetched} = DuckDB.fetch_node(state, "corrupt-node")
+        assert fetched.type == nil
+        assert fetched.status == nil
+        assert fetched.label == "Corrupt"
+      end
+
+      test "an unknown edge_type yields nil rather than raising", %{state: state} do
+        from = Node.new(%{type: :goal, label: "From"})
+        to = Node.new(%{type: :action, label: "To"})
+        {:ok, state} = DuckDB.add_node(state, from)
+        {:ok, state} = DuckDB.add_node(state, to)
+
+        now = DateTime.to_iso8601(DateTime.utc_now())
+
+        insert = """
+        INSERT INTO decision_edges (id, from_id, to_id, edge_type, metadata_json, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """
+
+        {:ok, _} =
+          Duckdbex.query(state.conn, insert, [
+            "corrupt-edge",
+            from.id,
+            to.id,
+            "no_such_edge_type_xyz",
+            "{}",
+            now
+          ])
+
+        assert {:ok, [edge]} = DuckDB.get_edges(state, from.id, :outgoing)
+        assert edge.edge_type == nil
+        assert edge.to_id == to.id
+      end
+    end
+  end
+else
+  # Without this branch the file compiles to nothing, and a file that compiles
+  # to nothing is indistinguishable from a passing one in `mix test` output.
+  # The placeholder turns that silence into a counted, named skip. The reason
+  # lives in the test NAME because the default formatter prints the `skip:`
+  # tag's value nowhere — not even under --trace.
+  #
+  # The SQL-identifier allowlist this suite used to be the only home for now
+  # lives in `test/nous/decisions/store/duckdb_columns_test.exs`, which is
+  # deliberately ungated and does run.
+  defmodule Nous.Decisions.Store.DuckDBTest do
+    use ExUnit.Case, async: true
+
+    @tag skip: "Duckdbex not available"
+    test "decisions DuckDB store suite skipped: uncomment {:duckdbex, \"~> 0.3\"} in mix.exs to run it" do
+      flunk("tagged skip; this body must never execute")
     end
   end
 end

@@ -14,7 +14,7 @@ defmodule Nous.DecisionsTest do
     test "adds a node to the store", %{state: state} do
       node = Node.new(%{type: :goal, label: "Ship v1.0"})
       assert {:ok, state} = Decisions.add_node(ETS, state, node)
-      assert {:ok, fetched} = Decisions.get_node(ETS, state, node.id)
+      assert {:ok, fetched} = Decisions.fetch_node(ETS, state, node.id)
       assert fetched.label == "Ship v1.0"
     end
   end
@@ -37,7 +37,7 @@ defmodule Nous.DecisionsTest do
       {:ok, state} = Decisions.add_node(ETS, state, node)
 
       assert {:ok, state} = Decisions.update_node(ETS, state, node.id, %{confidence: 0.9})
-      {:ok, updated} = Decisions.get_node(ETS, state, node.id)
+      {:ok, updated} = Decisions.fetch_node(ETS, state, node.id)
       assert updated.confidence == 0.9
     end
 
@@ -57,7 +57,7 @@ defmodule Nous.DecisionsTest do
       assert {:ok, state} =
                Decisions.supersede(ETS, state, old.id, new.id, "Better approach found")
 
-      {:ok, old_updated} = Decisions.get_node(ETS, state, old.id)
+      {:ok, old_updated} = Decisions.fetch_node(ETS, state, old.id)
       assert old_updated.status == :superseded
       assert old_updated.rationale == "Better approach found"
 

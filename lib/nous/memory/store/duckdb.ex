@@ -14,6 +14,7 @@ if Code.ensure_loaded?(Duckdbex) do
     @behaviour Nous.Memory.Store
 
     alias Nous.Memory.Entry
+    alias Nous.Memory.Store.Columns
 
     @create_memories """
     CREATE TABLE IF NOT EXISTS memories (
@@ -109,8 +110,24 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    # The set-clause builder below is a deliberate clone of
+    # `Nous.Decisions.Store.DuckDB.update_node/3` (credo mass-51, arch F-8).
+    # Three reasons it stays a clone rather than becoming a shared builder:
+    # `Nous.Memory.Store.Columns` and `Nous.Decisions.Store.DuckDB.Columns`
+    # address different tables and are disjoint on purpose — `:type` resolves
+    # to "type" here and to "node_type" there, and one map spanning both would
+    # let either domain write the other's columns, which is the injection hole
+    # P5-T3 closed; `encode_field/2` is per-domain (`Entry` here, `Node`
+    # there); and `duckdbex` is not in `mix.exs`, so a shared base module
+    # would be code neither the compiler nor the suite in this repo can reach.
+    # Keeping the two in step is a manual job — change both.
     @impl true
     def update(%{conn: conn} = state, id, updates) when is_map(updates) do
+      # Reject unknown identifiers before any driver call: fail fast on bad
+      # input rather than after a round trip, and keep the control reachable
+      # without a live connection.
+      :ok = Columns.validate!(updates)
+
       case fetch(state, id) do
         {:ok, entry} ->
           now = DateTime.utc_now()
@@ -121,7 +138,7 @@ if Code.ensure_loaded?(Duckdbex) do
             updates
             |> Enum.with_index(1)
             |> Enum.map(fn {{key, _val}, idx} ->
-              col = field_to_column(key)
+              col = Columns.fetch!(key)
               value = encode_field(key, Map.get(updated, key))
               {"#{col} = $#{idx}", value}
             end)
@@ -247,6 +264,16 @@ if Code.ensure_loaded?(Duckdbex) do
 
     # -- Private helpers --
 
+    # Deliberate near-clone of `Nous.Memory.Store.SQLite.row_to_entry/2`
+    # (credo mass-49, arch F-8). The shape matches; the substance does not.
+    # DuckDB hands back a native boolean and a native `DOUBLE[]`, so this
+    # decoder is `to_bool/1` and a pass-through; SQLite hands back an integer
+    # and a JSON string, so its decoder is `int_to_bool/1` and
+    # `decode_embedding/1`. A shared decoder would have to branch on its own
+    # backend at the two fields that actually differ, and `duckdbex` is still
+    # absent from `mix.exs`, so the DuckDB half of any merge could not be
+    # exercised. The one genuinely identical part is the `@memory_types` pair
+    # below, five lines, kept local for the same reason.
     defp row_to_entry(columns, row) do
       map =
         columns
@@ -256,7 +283,7 @@ if Code.ensure_loaded?(Duckdbex) do
       %Entry{
         id: map["id"],
         content: map["content"],
-        type: String.to_existing_atom(map["type"]),
+        type: decode_memory_type(map["type"]),
         importance: map["importance"] || 0.5,
         evergreen: to_bool(map["evergreen"]),
         embedding: map["embedding"],
@@ -272,6 +299,20 @@ if Code.ensure_loaded?(Duckdbex) do
       }
     end
 
+    # A persisted row sits outside the BEAM's type system: a corrupt or
+    # hand-edited database file can hold any string, and `to_existing_atom/1`
+    # on it raises `ArgumentError` out of every read path. Decode the closed
+    # enum through an allowlist instead — an unrecognised value becomes `nil`,
+    # which matches no category, rather than crashing the caller or
+    # masquerading as a valid one.
+    @memory_types %{
+      "semantic" => :semantic,
+      "episodic" => :episodic,
+      "procedural" => :procedural
+    }
+
+    defp decode_memory_type(value), do: Map.get(@memory_types, value)
+
     defp build_scope_clause(scope, start_idx) when map_size(scope) == 0,
       do: {"", [], start_idx}
 
@@ -279,45 +320,11 @@ if Code.ensure_loaded?(Duckdbex) do
       {clauses, params, next_idx} =
         scope
         |> Enum.reduce({[], [], start_idx}, fn {key, value}, {cls, pms, idx} ->
-          col = field_to_column(key)
+          col = Columns.fetch!(key)
           {cls ++ ["#{col} = $#{idx}"], pms ++ [value], idx + 1}
         end)
 
       {Enum.join(clauses, " AND "), params, next_idx}
-    end
-
-    # Allowlist of Entry field → physical column. Column names are interpolated
-    # into `SET col = $n` / `WHERE col = $n`, so they must never be a raw
-    # `to_string/1` of caller input (SQL-identifier injection primitive). Keys
-    # are internal Entry field atoms; an unknown field is a bug/attack → fail.
-    @column_map %{
-      id: "id",
-      content: "content",
-      type: "type",
-      importance: "importance",
-      evergreen: "evergreen",
-      embedding: "embedding",
-      agent_id: "agent_id",
-      session_id: "session_id",
-      user_id: "user_id",
-      namespace: "namespace",
-      metadata: "metadata_json",
-      access_count: "access_count",
-      created_at: "created_at",
-      updated_at: "updated_at",
-      last_accessed_at: "last_accessed_at"
-    }
-
-    defp field_to_column(field) do
-      case Map.fetch(@column_map, field) do
-        {:ok, col} ->
-          col
-
-        :error ->
-          raise ArgumentError,
-                "unknown memory column #{inspect(field)} — not in the allowlist " <>
-                  "(#{@column_map |> Map.keys() |> Enum.sort() |> Enum.map_join(", ", &inspect/1)})"
-      end
     end
 
     defp encode_field(:embedding, val), do: val

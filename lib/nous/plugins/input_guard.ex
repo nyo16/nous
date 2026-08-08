@@ -131,23 +131,10 @@ defmodule Nous.Plugins.InputGuard do
     |> Enum.reverse()
     |> Enum.find_value(fn {msg, idx} ->
       if msg.role == :user && idx > last_checked do
-        {extract_text(msg), idx}
+        {Message.extract_text(msg), idx}
       end
     end)
   end
-
-  defp extract_text(%Message{content: content}) when is_binary(content), do: content
-
-  defp extract_text(%Message{content: parts}) when is_list(parts) do
-    parts
-    |> Enum.filter(fn
-      %{type: :text} -> true
-      _ -> false
-    end)
-    |> Enum.map_join(" ", & &1.content)
-  end
-
-  defp extract_text(_), do: ""
 
   defp skip_empty?(config), do: Map.get(config, :skip_empty, true)
 
@@ -197,9 +184,16 @@ defmodule Nous.Plugins.InputGuard do
   end
 
   defp run_strategies(strategies, input, ctx, false = _short_circuit, timeout) do
+    # Degrades CLOSED, never skipped: at the task ceiling every strategy still
+    # runs, one at a time. Screening fewer inputs because the node is busy would
+    # be a prompt-injection bypass, so dropping detectors is not on the table.
+    # The price is that `timeout` cannot be enforced without a task to kill, so
+    # a pathological detector runs to completion instead of being killed and
+    # counted as a drop — the same bargain the short_circuit clause above
+    # already ships, and it fails closed: a detector that never answers stalls
+    # the guard rather than waving the input through.
     {results, dropped} =
-      Task.Supervisor.async_stream_nolink(
-        Nous.TaskSupervisor,
+      Nous.Tasks.stream(
         strategies,
         fn {mod, opts} -> safe_check(mod, input, opts, ctx) end,
         timeout: timeout,

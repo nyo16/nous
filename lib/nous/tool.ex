@@ -77,7 +77,10 @@ defmodule Nous.Tool do
     * `:retries` - Number of retries on failure (default: 1)
     * `:timeout` - Timeout in milliseconds (default: 30000)
     * `:validate_args` - Whether to validate arguments against schema (default: true)
-    * `:requires_approval` - Whether tool needs human approval before execution (default: false)
+    * `:requires_approval` - Whether tool needs human approval before execution.
+      Defaults to the flag declared by the module that owns the captured
+      function, so `&Nous.Tools.Bash.execute/2` stays gated; `false` when no
+      owning tool module can be found.
     * `:category` - Tool category: `:read`, `:write`, `:execute`, `:communicate`, `:search`, or `nil`
     * `:tags` - Arbitrary tags for filtering (default: `[]`)
 
@@ -121,7 +124,8 @@ defmodule Nous.Tool do
       retries: Keyword.get(opts, :retries, 1),
       timeout: Keyword.get(opts, :timeout, 30_000),
       validate_args: Keyword.get(opts, :validate_args, true),
-      requires_approval: Keyword.get(opts, :requires_approval, false),
+      requires_approval:
+        Keyword.get(opts, :requires_approval, owning_module_requires_approval?(fun)),
       module: nil,
       category: Keyword.get(opts, :category),
       tags: Keyword.get(opts, :tags, [])
@@ -263,26 +267,55 @@ defmodule Nous.Tool do
     end
   end
 
-  @spec extract_function_docs(fun()) :: String.t() | nil
+  # `requires_approval` recovered from the module that owns `fun`, so a capture
+  # inherits it exactly like from_module/2 does (see the comment there).
+  # Hardcoding `false` here meant `tools: [&Nous.Tools.Bash.execute/2]` — the
+  # capture form the guides use — produced an UNGATED shell on every entry
+  # point, silently discarding the `requires_approval: true` Bash declares.
+  #
+  # Function.info/1 reports `:module` for anonymous functions too (the module
+  # the literal was written in), and we consult it either way: a module whose
+  # tool metadata is gated gates every function captured out of it, helpers
+  # included. Over-gating prompts an operator; under-gating hands an LLM an
+  # unattended shell. Any truthy declaration gates, so a malformed metadata
+  # value fails closed.
+  @spec owning_module_requires_approval?(fun()) :: boolean()
+  defp owning_module_requires_approval?(fun) do
+    alias Nous.Tool.Behaviour
+
+    {:module, module} = Function.info(fun, :module)
+
+    Behaviour.implements?(module) and
+      Map.get(Behaviour.get_metadata(module), :requires_approval, false) not in [false, nil]
+  end
+
+  # A captured function's `@doc`, as `{description, param_schema}`, or nil.
+  #
+  # This used to match `Function.info/1` against `[module: _, name: _, arity: _]`
+  # — an exact THREE-element keyword list. The BIF returns five keys (`module`,
+  # `name`, `arity`, `env`, `type`), so the clause never matched: the whole
+  # extraction path was dead and every from_function/2 tool silently fell back
+  # to an empty description, despite the moduledoc promising automatic doc
+  # extraction. Read the keys by name instead of pattern-matching the list.
+  #
+  # Only `:external` captures are looked up. An anonymous function's `:name` is
+  # a mangled internal atom that never appears in a docs chunk, so fetching its
+  # module's beam is disk I/O with a guaranteed nil result.
+  @spec extract_function_docs(fun()) :: {String.t(), map()} | nil
   defp extract_function_docs(fun) do
     info = Function.info(fun)
 
-    case info do
-      [module: module, name: name, arity: arity] when not is_nil(module) ->
-        case Code.fetch_docs(module) do
-          {:docs_v1, _, _, _, _, _, docs} ->
-            find_function_doc(docs, name, arity)
-
-          _ ->
-            nil
-        end
-
-      _ ->
-        nil
+    with :external <- info[:type],
+         {:docs_v1, _, _, _, _, _, docs} <- Code.fetch_docs(info[:module]) do
+      find_function_doc(docs, info[:name], info[:arity])
+    else
+      # :local capture, or a module with no docs chunk (stripped beam, or a
+      # module compiled in memory — every ExUnit test module).
+      _ -> nil
     end
   end
 
-  @spec find_function_doc(list(), atom(), non_neg_integer()) :: String.t() | nil
+  @spec find_function_doc(list(), atom(), non_neg_integer()) :: {String.t(), map()} | nil
   defp find_function_doc(docs, function_name, arity) do
     Enum.find_value(docs, fn
       {{:function, ^function_name, ^arity}, _, _, doc, _} when is_map(doc) ->

@@ -79,6 +79,10 @@ defmodule Nous.Providers.HTTP do
   3. `Application.get_env(:nous, :http_backend, ...)`
   4. Default: `Nous.HTTP.Backend.Req`
 
+  A hackney backend selected through *any* of those routes degrades to the
+  next-lowest-precedence choice, with a warning, when `:hackney` is not
+  loaded — it is an optional dep.
+
   Returns `{:ok, body}` or `{:error, reason}`.
 
   ## Options
@@ -94,7 +98,7 @@ defmodule Nous.Providers.HTTP do
   def post(url, body, headers, opts \\ [])
 
   def post(url, body, headers, opts) when is_binary(url) and is_map(body) and is_list(headers) do
-    backend = Keyword.get(opts, :backend) || configured_backend()
+    backend = available_backend(Keyword.get(opts, :backend) || configured_backend())
     backend.post(url, body, headers, opts)
   end
 
@@ -114,11 +118,15 @@ defmodule Nous.Providers.HTTP do
   # uphold the project-wide rule (review C-2): never `String.to_atom/1` on
   # untrusted input. If the atom doesn't exist or doesn't implement the
   # behaviour, fall back to app config / default rather than crash.
+  #
+  # Availability is NOT decided here: `available_backend/1` is the single
+  # choke point every route passes through, including the ones that never
+  # touch this function.
   defp configured_backend do
     case System.get_env("NOUS_HTTP_BACKEND") do
       nil -> app_or_default()
       "req" -> Nous.HTTP.Backend.Req
-      "hackney" -> hackney_backend_or_fallback(Nous.HTTP.Backend.Hackney, &app_or_default/0)
+      "hackney" -> Nous.HTTP.Backend.Hackney
       other -> resolve_custom_backend(other, :post, 4, &app_or_default/0)
     end
   end
@@ -165,6 +173,10 @@ defmodule Nous.Providers.HTTP do
   3. `Application.get_env(:nous, :http_stream_backend, ...)`
   4. Default: `Nous.HTTP.StreamBackend.Req`
 
+  A hackney backend selected through *any* of those routes degrades to the
+  next-lowest-precedence choice, with a warning, when `:hackney` is not
+  loaded — it is an optional dep.
+
   Returns `{:ok, stream}` where stream is an `Enumerable.t()` of parsed
   events. Events are maps with string keys (parsed JSON),
   `{:stream_done, reason}` tuples on completion, or
@@ -187,7 +199,7 @@ defmodule Nous.Providers.HTTP do
 
   def stream(url, body, headers, opts)
       when is_binary(url) and is_map(body) and is_list(headers) do
-    backend = Keyword.get(opts, :stream_backend) || configured_stream_backend()
+    backend = available_backend(Keyword.get(opts, :stream_backend) || configured_stream_backend())
     backend.stream(url, body, ensure_streaming_headers(headers), opts)
   end
 
@@ -202,37 +214,51 @@ defmodule Nous.Providers.HTTP do
 
   defp configured_stream_backend do
     case System.get_env("NOUS_HTTP_STREAM_BACKEND") do
-      nil ->
-        stream_app_or_default()
-
-      "req" ->
-        Nous.HTTP.StreamBackend.Req
-
-      "hackney" ->
-        hackney_backend_or_fallback(Nous.HTTP.StreamBackend.Hackney, &stream_app_or_default/0)
-
-      other ->
-        resolve_custom_backend(other, :stream, 4, &stream_app_or_default/0)
+      nil -> stream_app_or_default()
+      "req" -> Nous.HTTP.StreamBackend.Req
+      "hackney" -> Nous.HTTP.StreamBackend.Hackney
+      other -> resolve_custom_backend(other, :stream, 4, &stream_app_or_default/0)
     end
   end
 
-  # The hackney backends are opt-in: hackney is an optional dep. If a user
-  # selects it (env var / config) without adding `{:hackney, "~> 4.0"}`, fall
-  # back to the default backend with a loud warning instead of raising
-  # UndefinedFunctionError on the first request.
-  defp hackney_backend_or_fallback(hackney_backend, fallback) do
-    if Code.ensure_loaded?(:hackney) do
-      hackney_backend
-    else
-      require Logger
-
+  # The hackney backends are opt-in: hackney is an *optional* dep, so a
+  # selection that names one has to be checked before it is dispatched to.
+  # Every route funnels through here — the per-call `:backend` /
+  # `:stream_backend` opt, the env vars, and `config :nous, :http_backend` /
+  # `:http_stream_backend`. Guarding only the env var (as this did) left the
+  # other two reaching `:hackney.request/5` and raising UndefinedFunctionError
+  # on the first request of any app that never declared `{:hackney, "~> 4.0"}`.
+  defp available_backend(backend) do
+    if hackney_backend?(backend) and not Code.ensure_loaded?(:hackney) do
       Logger.warning(
-        "NOUS_HTTP_BACKEND/stream backend set to hackney, but :hackney is not " <>
-          "available. Add {:hackney, \"~> 4.0\"} to your deps to use it. " <>
+        "#{inspect(backend)} was selected, but :hackney is not available. " <>
+          "Add {:hackney, \"~> 4.0\"} to your deps to use it. " <>
           "Falling back to the default backend."
       )
 
-      fallback.()
+      fallback_backend(backend)
+    else
+      backend
+    end
+  end
+
+  defp hackney_backend?(backend),
+    do: backend in [Nous.HTTP.Backend.Hackney, Nous.HTTP.StreamBackend.Hackney]
+
+  # Degrade to the next-lowest-precedence choice — unless that is the very
+  # backend we just rejected, in which case there is nowhere left to fall but
+  # the shipped default.
+  defp fallback_backend(Nous.HTTP.Backend.Hackney) do
+    case app_or_default() do
+      Nous.HTTP.Backend.Hackney -> Nous.HTTP.Backend.Req
+      other -> other
+    end
+  end
+
+  defp fallback_backend(Nous.HTTP.StreamBackend.Hackney) do
+    case stream_app_or_default() do
+      Nous.HTTP.StreamBackend.Hackney -> Nous.HTTP.StreamBackend.Req
+      other -> other
     end
   end
 
@@ -387,6 +413,7 @@ defmodule Nous.Providers.HTTP do
   # Public for stream-backend reuse. Ensures the request carries
   # `content-type: application/json` and `accept: text/event-stream`
   # if the caller didn't supply them.
+  @spec ensure_streaming_headers(list()) :: list()
   def ensure_streaming_headers(headers) do
     headers
     |> maybe_add_header("content-type", "application/json")

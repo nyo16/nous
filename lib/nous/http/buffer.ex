@@ -23,6 +23,11 @@ defmodule Nous.HTTP.Buffer do
   O(n²) when a single object spans hundreds of chunks. Support is probed
   with `function_exported?/3`; parsers that only export `parse_buffer/1`
   keep working unchanged and simply always get `nil` back.
+
+  The built-in SSE parser is resumable too: its `scan_state` is the number
+  of trailing bytes already searched for an event separator. The next
+  chunk resumes `byte_size(separator) - 1` bytes earlier so a separator
+  straddling the chunk boundary is still found.
   """
 
   require Logger
@@ -32,6 +37,12 @@ defmodule Nous.HTTP.Buffer do
   flight" — parse from the start of the buffer.
   """
   @type scan_state :: term() | nil
+
+  # The only real SSE event separators. `\r\n\r\n` contains no `\n\n`
+  # substring, so the two patterns can never match ambiguously at the same
+  # offset.
+  @sse_delimiters ["\r\n\r\n", "\n\n"]
+  @sse_max_delimiter_size @sse_delimiters |> Enum.map(&byte_size/1) |> Enum.max()
 
   # 10MB max buffer
   @max_buffer_size 10 * 1024 * 1024
@@ -52,7 +63,19 @@ defmodule Nous.HTTP.Buffer do
   @spec parse_sse_buffer(String.t() | nil | any()) ::
           {list(), String.t()} | {:error, :buffer_overflow}
   def parse_sse_buffer(buffer) when is_binary(buffer) do
-    # Buffer overflow is now a HARD error, not a silent truncation. The
+    case sse_scan(buffer, nil) do
+      {:error, :buffer_overflow} = error -> error
+      {events, remaining, _scan_state} -> {events, remaining}
+    end
+  end
+
+  def parse_sse_buffer(nil), do: {[], ""}
+  def parse_sse_buffer(_), do: {[], ""}
+
+  # Size-checked entry to the resumable scan, shared by parse_sse_buffer/1
+  # and the default-parser clause of parse_stream_buffer/3.
+  defp sse_scan(buffer, scan_state) do
+    # Buffer overflow is a HARD error, not a silent truncation. The
     # previous behavior sliced from the front, which cut mid-event/mid-JSON
     # and produced one parse_error followed by valid events - silent data
     # loss. Halting here lets the consumer surface the failure cleanly.
@@ -60,41 +83,63 @@ defmodule Nous.HTTP.Buffer do
       Logger.error("SSE buffer exceeded max size (#{@max_buffer_size} bytes), aborting stream")
       {:error, :buffer_overflow}
     else
-      do_parse_sse_buffer(buffer)
+      do_parse_sse_buffer(buffer, sse_resume_offset(scan_state, byte_size(buffer)))
     end
   end
 
-  def parse_sse_buffer(nil), do: {[], ""}
-  def parse_sse_buffer(_), do: {[], ""}
+  # `from` is the offset the delimiter search starts at: every byte before
+  # it was already searched on an earlier chunk. Without it a single event
+  # spanning n chunks costs O(n²) — measured at 20.1 s of pure CPU for one
+  # 8 MB event, 100% of it rescan (perf-audit F-2, HIGH).
+  defp do_parse_sse_buffer(buffer, from) do
+    scan_sse_events(buffer, 0, from, [])
+  end
 
-  defp do_parse_sse_buffer(buffer) when is_binary(buffer) do
-    # Split on the SSE event separator (blank line). Use `:binary.split` with a
-    # precompiled pattern instead of a regex: on a large buffer that holds an
-    # incomplete event (big tool-call args / thinking block spanning many
-    # chunks) this is re-run per chunk, and the Boyer-Moore binary matcher is
-    # dramatically cheaper than the regex engine. The two patterns cover the
-    # only real SSE separators — `\r\n\r\n` contains no `\n\n` substring, so
-    # there is no ambiguous overlap. (A stateful tail-only rescan would also
-    # cut the cumulative O(n²), but that needs call-site scan-offset tracking.)
-    parts = :binary.split(buffer, ["\r\n\r\n", "\n\n"], [:global])
+  defp scan_sse_events(buffer, event_start, from, acc) do
+    size = byte_size(buffer)
 
-    case parts do
-      [incomplete] ->
-        # No complete events yet
-        {[], incomplete}
+    # Boyer-Moore over the unscanned tail only. `:binary.match/3` reads the
+    # accumulator without building a sub-binary of it, so — unlike a
+    # `binary_part/3` tail — it leaves the ERTS append optimisation intact
+    # for the caller's next `buffer <> chunk` (see JSONArrayParser).
+    case :binary.match(buffer, @sse_delimiters, scope: {from, size - from}) do
+      :nomatch ->
+        remaining = sse_remaining(buffer, event_start, size)
+        # The tail is delimiter-free up to `size`; that is exactly what the
+        # next chunk may skip, expressed relative to the buffer we return.
+        {Enum.reverse(acc), remaining, byte_size(remaining)}
 
-      parts ->
-        # All but the last part are complete events
-        {complete, [incomplete]} = Enum.split(parts, -1)
-
-        events =
-          complete
-          |> Enum.map(&parse_sse_event/1)
-          |> Enum.reject(&is_nil/1)
-
-        {events, incomplete}
+      {pos, len} ->
+        event = binary_part(buffer, event_start, pos - event_start)
+        next = pos + len
+        scan_sse_events(buffer, next, next, prepend_sse_event(event, acc))
     end
   end
+
+  # Nothing consumed: hand back the accumulator itself. A `binary_part/3`
+  # covering the whole buffer would be an aliasing sub-binary, which costs
+  # a full copy on the next append.
+  defp sse_remaining(buffer, 0, _size), do: buffer
+
+  defp sse_remaining(buffer, event_start, size),
+    do: binary_part(buffer, event_start, size - event_start)
+
+  defp prepend_sse_event(event, acc) do
+    case parse_sse_event(event) do
+      nil -> acc
+      parsed -> [parsed | acc]
+    end
+  end
+
+  # Resume `delimiter size - 1` bytes before where the last scan stopped:
+  # a separator can straddle the chunk boundary (`…\r\n\r` + `\n`), and
+  # only its first bytes were ever seen. Anything that is not an offset
+  # into this buffer is a stale token — rescan from 0, correct if slower.
+  defp sse_resume_offset(scanned, size)
+       when is_integer(scanned) and scanned > 0 and scanned <= size,
+       do: max(0, scanned - (@sse_max_delimiter_size - 1))
+
+  defp sse_resume_offset(_scan_state, _size), do: 0
 
   @doc """
   Parse a single SSE event into a JSON map, `{:stream_done, reason}`,
@@ -134,8 +179,11 @@ defmodule Nous.HTTP.Buffer do
   Resumable form of `parse_stream_buffer/2`.
 
   Returns `{events, remaining_buffer, scan_state}`. Pass the returned
-  `scan_state` back on the next chunk. Parsers that do not export
-  `parse_buffer/2` always yield `nil`.
+  `scan_state` back on the next chunk together with the `remaining_buffer`
+  it came with, plus whatever arrived since. The default SSE path returns
+  the number of trailing bytes it has already searched for a separator;
+  custom parsers own their own token, and one that exports only
+  `parse_buffer/1` always yields `nil`.
 
   Translates the `{:error, :buffer_overflow}` tuple from
   `parse_sse_buffer/1` into the `{events, buffer}` shape so backends can
@@ -143,11 +191,16 @@ defmodule Nous.HTTP.Buffer do
   """
   @spec parse_stream_buffer(String.t(), module() | nil, scan_state()) ::
           {list(), String.t(), scan_state()}
-  def parse_stream_buffer(buffer, nil, _scan_state) do
-    case parse_sse_buffer(buffer) do
+  def parse_stream_buffer(buffer, nil, scan_state) when is_binary(buffer) do
+    case sse_scan(buffer, scan_state) do
       {:error, :buffer_overflow} -> {[{:stream_error, %{reason: :buffer_overflow}}], "", nil}
-      {events, remaining} -> {events, remaining, nil}
+      {_events, _remaining, _scan_state} = result -> result
     end
+  end
+
+  def parse_stream_buffer(buffer, nil, _scan_state) do
+    {events, remaining} = parse_sse_buffer(buffer)
+    {events, remaining, nil}
   end
 
   def parse_stream_buffer(buffer, parser_mod, scan_state) do
@@ -183,11 +236,13 @@ defmodule Nous.HTTP.Buffer do
   """
   @spec flush_stream_buffer(String.t(), module() | nil, scan_state()) ::
           {list(), String.t(), scan_state()}
-  def flush_stream_buffer(buffer, nil, _scan_state) do
+  def flush_stream_buffer(buffer, nil, scan_state) do
     if byte_size(buffer) > @max_buffer_size do
       {[{:stream_error, %{reason: :buffer_overflow}}], "", nil}
     else
-      {events, remaining} = do_parse_sse_buffer(buffer <> "\n\n")
+      {events, remaining, _scan_state} =
+        do_parse_sse_buffer(buffer <> "\n\n", sse_resume_offset(scan_state, byte_size(buffer)))
+
       {events, remaining, nil}
     end
   end

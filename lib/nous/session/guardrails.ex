@@ -21,6 +21,9 @@ defmodule Nous.Session.Guardrails do
         end
       end
 
+  This module is deliberately not called from `lib/` — see
+  `Nous.Session.Config`'s moduledoc for why the host owns session policy.
+
   """
 
   alias Nous.Session.Config

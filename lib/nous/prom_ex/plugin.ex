@@ -1,77 +1,88 @@
+# `Nous.PromEx.Plugin` is defined twice: the real plugin when PromEx is loaded,
+# and a raising placeholder when it is not. Nous deliberately does not depend on
+# :prom_ex — it is a heavy dependency for an optional integration — so the arm
+# that compiles in this repo, and therefore the one that publishes to hexdocs,
+# is the placeholder. Both arms share this @moduledoc so the published docs
+# describe the real contract and cannot drift from the implementation.
+moduledoc = """
+PromEx plugin for Nous AI agent metrics.
+
+This plugin captures Prometheus metrics for agent execution, model requests,
+and tool execution based on Nous's telemetry events.
+
+## Activation
+
+Nous does not depend on PromEx. Until the host application adds
+
+    {:prom_ex, "~> 1.11"},
+    {:plug, "~> 1.18"}  # Required by PromEx
+
+to its own `mix.exs`, a placeholder module of this name is compiled in place of
+the plugin and **every function on it raises**. Adding those dependencies and
+recompiling swaps in the implementation described below; nothing else changes.
+
+## Usage
+
+Add this plugin to your PromEx module:
+
+    defmodule MyApp.PromEx do
+      use PromEx, otp_app: :my_app
+
+      @impl true
+      def plugins do
+        [
+          # ... other plugins
+          {Nous.PromEx.Plugin, []}
+        ]
+      end
+    end
+
+## Configuration Options
+
+  * `:otp_app` - The OTP application name (optional, defaults to PromEx module setting)
+  * `:metric_prefix` - Custom metric prefix (optional, defaults to `[:otp_app, :nous]`)
+  * `:duration_unit` - Time unit for duration metrics: `:second`, `:millisecond`,
+    `:microsecond`, or `:nanosecond` (default: `:millisecond`)
+
+## Exposed Metric Groups
+
+  * `:nous_agent_event_metrics` - Agent execution metrics
+  * `:nous_model_event_metrics` - Model request metrics
+  * `:nous_tool_event_metrics` - Tool execution metrics
+
+## Metrics
+
+### Agent Metrics
+
+  * `nous_agent_run_duration` - Distribution of agent run durations
+  * `nous_agent_run_tokens_total` - Distribution of total tokens used
+  * `nous_agent_run_input_tokens` - Distribution of input tokens
+  * `nous_agent_run_output_tokens` - Distribution of output tokens
+  * `nous_agent_run_tool_calls` - Distribution of tool calls per run
+  * `nous_agent_run_iterations` - Distribution of iterations per run
+  * `nous_agent_run_exceptions_total` - Counter of agent exceptions
+
+### Model Metrics
+
+  * `nous_model_request_duration` - Distribution of model request durations
+  * `nous_model_request_tokens_total` - Distribution of total tokens per request
+  * `nous_model_request_input_tokens` - Distribution of input tokens per request
+  * `nous_model_request_output_tokens` - Distribution of output tokens per request
+  * `nous_model_request_exceptions_total` - Counter of model request exceptions
+  * `nous_model_stream_connect_duration` - Distribution of stream connection times
+  * `nous_model_stream_exceptions_total` - Counter of stream exceptions
+
+### Tool Metrics
+
+  * `nous_tool_execution_duration` - Distribution of tool execution durations
+  * `nous_tool_execution_attempts` - Distribution of attempts per execution
+  * `nous_tool_execution_exceptions_total` - Counter of tool exceptions
+
+"""
+
 if Code.ensure_loaded?(PromEx) do
   defmodule Nous.PromEx.Plugin do
-    @moduledoc """
-    PromEx plugin for Nous AI agent metrics.
-
-    This plugin captures Prometheus metrics for agent execution, model requests,
-    and tool execution based on Nous's telemetry events.
-
-    ## Prerequisites
-
-    This plugin requires PromEx to be available in your project. Add these
-    dependencies to your `mix.exs`:
-
-        {:prom_ex, "~> 1.11"},
-        {:plug, "~> 1.18"}  # Required by PromEx
-
-    ## Usage
-
-    Add this plugin to your PromEx module:
-
-        defmodule MyApp.PromEx do
-          use PromEx, otp_app: :my_app
-
-          @impl true
-          def plugins do
-            [
-              # ... other plugins
-              {Nous.PromEx.Plugin, []}
-            ]
-          end
-        end
-
-    ## Configuration Options
-
-      * `:otp_app` - The OTP application name (optional, defaults to PromEx module setting)
-      * `:metric_prefix` - Custom metric prefix (optional, defaults to `[:otp_app, :nous]`)
-      * `:duration_unit` - Time unit for duration metrics: `:second`, `:millisecond`,
-        `:microsecond`, or `:nanosecond` (default: `:millisecond`)
-
-    ## Exposed Metric Groups
-
-      * `:nous_agent_event_metrics` - Agent execution metrics
-      * `:nous_model_event_metrics` - Model request metrics
-      * `:nous_tool_event_metrics` - Tool execution metrics
-
-    ## Metrics
-
-    ### Agent Metrics
-
-      * `nous_agent_run_duration` - Distribution of agent run durations
-      * `nous_agent_run_tokens_total` - Distribution of total tokens used
-      * `nous_agent_run_input_tokens` - Distribution of input tokens
-      * `nous_agent_run_output_tokens` - Distribution of output tokens
-      * `nous_agent_run_tool_calls` - Distribution of tool calls per run
-      * `nous_agent_run_iterations` - Distribution of iterations per run
-      * `nous_agent_run_exceptions_total` - Counter of agent exceptions
-
-    ### Model Metrics
-
-      * `nous_model_request_duration` - Distribution of model request durations
-      * `nous_model_request_tokens_total` - Distribution of total tokens per request
-      * `nous_model_request_input_tokens` - Distribution of input tokens per request
-      * `nous_model_request_output_tokens` - Distribution of output tokens per request
-      * `nous_model_request_exceptions_total` - Counter of model request exceptions
-      * `nous_model_stream_connect_duration` - Distribution of stream connection times
-      * `nous_model_stream_exceptions_total` - Counter of stream exceptions
-
-    ### Tool Metrics
-
-      * `nous_tool_execution_duration` - Distribution of tool execution durations
-      * `nous_tool_execution_attempts` - Distribution of attempts per execution
-      * `nous_tool_execution_exceptions_total` - Counter of tool exceptions
-
-    """
+    @moduledoc moduledoc
 
     use PromEx.Plugin
 
@@ -378,14 +389,19 @@ if Code.ensure_loaded?(PromEx) do
   end
 else
   defmodule Nous.PromEx.Plugin do
-    @moduledoc """
-    PromEx plugin for Nous AI agent metrics.
+    @moduledoc moduledoc
 
-    To use this plugin, add `{:prom_ex, "~> 1.11"}` and `{:plug, "~> 1.18"}` to your dependencies.
+    @doc """
+    Raises: PromEx is not available.
+
+    This is the placeholder arm described under "Activation" above. Add
+    `{:prom_ex, "~> 1.11"}` and `{:plug, "~> 1.18"}` to your dependencies to
+    compile the real plugin in its place.
     """
-
+    @spec event_metrics(keyword()) :: no_return()
     def event_metrics(_opts) do
-      raise "PromEx is not available. Add {:prom_ex, \"~> 1.11\"} and {:plug, \"~> 1.18\"} to your dependencies."
+      raise "PromEx is not available. Add {:prom_ex, \"~> 1.11\"} and " <>
+              "{:plug, \"~> 1.18\"} to your dependencies."
     end
   end
 end

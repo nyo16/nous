@@ -211,7 +211,7 @@ defmodule Nous.Message do
   def tool(tool_call_id, result, opts \\ []) do
     content =
       cond do
-        is_binary(result) -> result
+        is_binary(result) -> sanitize_for_json(result)
         true -> encode_tool_result(result)
       end
 
@@ -224,14 +224,19 @@ defmodule Nous.Message do
 
   # Encode an arbitrary tool return value as a JSON string for the LLM.
   # Walks the tree and converts BEAM-only values (DateTime, MapSet, PID,
-  # function refs, custom structs without a JSON encoder) into strings so
-  # the agent doesn't crash when a tool returns DateTime.utc_now() in its
-  # result map - the OTP-27 :json module raises Protocol.UndefinedError
-  # on those, and the rescue keeps the agent loop alive.
+  # function refs, custom structs without a JSON encoder) into strings and
+  # repairs invalid UTF-8, so the agent doesn't crash when a tool returns
+  # DateTime.utc_now() or a chunk of raw bytes in its result map - the OTP-27
+  # :json module raises Protocol.UndefinedError on the former and ErlangError
+  # ({:invalid_byte, _}) on the latter.
+  #
+  # sanitize_for_json/1 is the actual defence; this rescue is the backstop for
+  # whatever the walk misses. Both raise sets are listed because a rescue that
+  # drops one is a crash in the agent loop, not a degraded message.
   defp encode_tool_result(value) do
     JSON.encode!(sanitize_for_json(value))
   rescue
-    e in [Protocol.UndefinedError, ArgumentError] ->
+    e in [Protocol.UndefinedError, ArgumentError, ErlangError] ->
       require Logger
 
       Logger.warning(
@@ -271,10 +276,29 @@ defmodule Nous.Message do
   defp sanitize_for_json(ref) when is_reference(ref), do: inspect(ref)
   defp sanitize_for_json(fun) when is_function(fun), do: inspect(fun)
   defp sanitize_for_json(port) when is_port(port), do: inspect(port)
+
+  # An invalid-UTF-8 binary is not JSON-representable - `JSON.encode!/1` raises
+  # ErlangError ({:invalid_byte, _}) on it - and a tool returning raw bytes
+  # (file_read on a binary, bash stdout from a command that emits one) is
+  # ordinary. Repair rather than inspect: the consumer is an LLM, and rendering
+  # 4 KB of otherwise-readable output as a list of byte integers costs far more
+  # than the handful of bytes that were already meaningless. Valid binaries -
+  # every normal tool result - take the scan and come back untouched.
+  defp sanitize_for_json(bin) when is_binary(bin) do
+    if String.valid?(bin), do: bin, else: String.replace_invalid(bin)
+  end
+
+  # A bitstring that isn't byte-aligned reaches `:json.encode_binary/2` and
+  # raises FunctionClauseError, which is deliberately NOT in the rescue list
+  # above - catching it there would mask genuine clause bugs in this walk. It
+  # has no textual reading, so it goes the way of pids and refs. Must follow
+  # the is_binary/1 clause: every binary is also a bitstring.
+  defp sanitize_for_json(bits) when is_bitstring(bits), do: inspect(bits)
+
   defp sanitize_for_json(value), do: value
 
   defp sanitize_key(k) when is_atom(k), do: k
-  defp sanitize_key(k) when is_binary(k), do: k
+  defp sanitize_key(k) when is_binary(k), do: sanitize_for_json(k)
   defp sanitize_key(k), do: inspect(k)
 
   # Utility functions

@@ -92,7 +92,13 @@ defmodule Nous.Workflow.Scratch do
   defp ensure_table(%Scratch{table: nil} = scratch) do
     # Constant atom: without :named_table the name is cosmetic, and a
     # per-run :"nous_scratch_#{id}" atom would leak (atoms are never GC'd).
-    table = :ets.new(:nous_scratch, [:set, :public])
+    #
+    # Both concurrency flags, unlike the single-writer stores elsewhere: scratch
+    # exists so parallel workflow nodes can hand each other large binaries, so
+    # it takes concurrent writes as well as reads.
+    table =
+      :ets.new(:nous_scratch, [:set, :public, read_concurrency: true, write_concurrency: true])
+
     %{scratch | table: table}
   end
 

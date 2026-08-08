@@ -215,6 +215,16 @@ defmodule Nous.Providers.HTTP.JSONArrayParserTest do
     end)
   end
 
+  defp chunk_bytes(binary, size) do
+    binary
+    |> Stream.unfold(fn
+      <<>> -> nil
+      b when byte_size(b) <= size -> {b, <<>>}
+      b -> {binary_part(b, 0, size), binary_part(b, size, byte_size(b) - size)}
+    end)
+    |> Enum.to_list()
+  end
+
   defp assert_split_equivalence(input) do
     one_shot = JSONArrayParser.parse_buffer(input)
 
@@ -286,18 +296,39 @@ defmodule Nous.Providers.HTTP.JSONArrayParserTest do
       text = String.duplicate("x", 60 * 1024)
       input = ~s|[{"candidates":[{"content":{"parts":[{"text":"| <> text <> ~s|"}]}}]}]|
 
-      chunks =
-        input
-        |> Stream.unfold(fn
-          <<>> -> nil
-          <<h::binary-size(1400), t::binary>> -> {h, t}
-          b -> {b, <<>>}
-        end)
-        |> Enum.to_list()
+      chunks = chunk_bytes(input, 1400)
 
       assert length(chunks) > 40
       assert drive_resumable(chunks) == JSONArrayParser.parse_buffer(input)
       assert {[%{"candidates" => [_]}], ""} = drive_resumable(chunks)
+    end
+
+    test "closes an object whose final brace arrives alone in its own chunk" do
+      chunks = [~s|[{"a":1|, "}", ~s|,{"b":2}]|]
+
+      assert drive_resumable(chunks) == {[%{"a" => 1}, %{"b" => 2}], ""}
+    end
+
+    @tag timeout: 120_000
+    test "accumulating one object across thousands of chunks stays linear" do
+      # The other half of the resumable scan, and the half a rewrite into
+      # idiomatic binary matching silently undoes: any bit-syntax match on
+      # the accumulator makes ERTS copy the whole buffer on the backend's
+      # next `<>`. Measured on this exact input: 2640 ms before the fix,
+      # 61 ms after. The bound is an order of magnitude above the linear
+      # cost and well under the quadratic one.
+      text = String.duplicate("x", 8 * 1024 * 1024)
+      input = ~s|[{"text":"| <> text <> ~s|"}]|
+      chunks = chunk_bytes(input, 1400)
+
+      {elapsed_us, {events, remaining}} = :timer.tc(fn -> drive_resumable(chunks) end)
+
+      assert [%{"text" => got}] = events
+      assert byte_size(got) == byte_size(text)
+      assert remaining == ""
+
+      assert elapsed_us < 750_000,
+             "parse took #{div(elapsed_us, 1000)}ms — the accumulator is being copied per chunk"
     end
   end
 end

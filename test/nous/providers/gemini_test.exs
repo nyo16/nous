@@ -10,7 +10,7 @@ defmodule Nous.Providers.GeminiTest do
   alias Nous.Model
   alias Nous.Providers.Gemini
   alias Nous.Tool
-  alias Nous.ToolSchema
+  alias Nous.Tool.Wire
 
   @api_key "test-gemini-key"
 
@@ -20,12 +20,12 @@ defmodule Nous.Providers.GeminiTest do
   end
 
   # A Gemini-shaped `functionDeclarations` entry, produced the same way the
-  # runner produces it. Building it through `ToolSchema.to_gemini/1` rather
+  # runner produces it. Building it through `Wire.to_gemini/1` rather
   # than hand-writing the map is deliberate: if the conversion ever regresses
   # back to the OpenAI `%{"type" => "function", "function" => ...}` envelope,
   # the refutations below fail instead of passing against a hard-coded fixture.
   defp weather_declaration do
-    ToolSchema.to_gemini(%Tool{
+    Wire.to_gemini(%Tool{
       name: "get_weather",
       description: "Look up the current weather for a city",
       parameters: %{

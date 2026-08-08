@@ -46,6 +46,16 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudge do
   Respond ONLY with the verdict and reason. No other text.
   """
 
+  # The verdict is model-authored text. Decode it through an allowlist rather
+  # than `to_existing_atom/1`, which would raise `ArgumentError` inside the
+  # input guard the moment the regex above and the `Result` severities drift
+  # apart. An unrecognised verdict degrades to the configured `:on_error`.
+  @verdicts %{
+    "safe" => :safe,
+    "suspicious" => :suspicious,
+    "blocked" => :blocked
+  }
+
   @impl true
   def check(input, config, _ctx) do
     model = Keyword.fetch!(config, :model)
@@ -111,7 +121,7 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudge do
 
     case Regex.run(~r/^\s*VERDICT:\s*(safe|suspicious|blocked)/i, verdict_line) do
       [_, severity_str] ->
-        severity = String.downcase(severity_str) |> String.to_existing_atom()
+        severity = Map.get(@verdicts, String.downcase(severity_str), on_error)
         reason = extract_reason(response)
 
         {:ok,

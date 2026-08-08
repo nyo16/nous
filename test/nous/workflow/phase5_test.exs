@@ -259,6 +259,17 @@ defmodule Nous.Workflow.Phase5Test do
       assert :ets.info(scratch.table) == :undefined
     end
 
+    test "the scratch table is created with both concurrency flags" do
+      # Parallel workflow nodes both read and write scratch, so unlike the
+      # single-writer stores elsewhere it needs write_concurrency too.
+      scratch = Scratch.put(Scratch.new(), :k, "v")
+
+      assert :ets.info(scratch.table, :read_concurrency) == true
+      assert :ets.info(scratch.table, :write_concurrency) == true
+
+      Scratch.cleanup(scratch)
+    end
+
     test "cleanup on uninitialized scratch is a no-op" do
       scratch = Scratch.new()
       assert Scratch.cleanup(scratch) == :ok

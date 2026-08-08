@@ -4,45 +4,67 @@ defmodule Nous.AgentRunner.Streaming do
   # wrapping, result accumulation, and eager consumption of a normalized
   # stream into a %Nous.Message{}. Internal to the runner.
 
-  alias Nous.{Errors, Message}
-  alias Nous.Agent.Callbacks
+  alias Nous.{Errors, Message, Model}
+  alias Nous.Agent.{Callbacks, Context}
 
   require Logger
 
+  # Accumulator threaded through wrap_stream_with_result/1's Stream.transform.
+  # text/thinking hold chunks in reverse arrival order (prepended, O(1)).
+  @type result_acc :: %{
+          text: [String.t()],
+          thinking: [String.t()],
+          completed: boolean(),
+          sentinel: reference()
+        }
+
+  # Accumulator threaded through consume_stream_into_message/3's reduce.
+  # `error` and `cancelled` are nil until the corresponding event arrives, and
+  # both carry a provider- or caller-supplied reason, so neither is narrowable.
+  @type message_acc :: %{
+          text: iodata(),
+          reasoning: iodata(),
+          tool_acc: Nous.StreamNormalizer.ToolCallAccumulator.t(),
+          usage: map() | nil,
+          finish_reason: String.t(),
+          error: term(),
+          cancelled: term()
+        }
+
+  @spec wrap_stream_with_callbacks(Enumerable.t(), Context.t()) :: Enumerable.t()
   def wrap_stream_with_callbacks(stream, ctx) do
     Stream.map(stream, fn event ->
-      case event do
-        {:text_delta, text} ->
-          Callbacks.execute(ctx, :on_llm_new_delta, text)
-
-        {:thinking_delta, text} ->
-          Callbacks.execute(ctx, :on_llm_new_delta, "[thinking] #{text}")
-
-        {:tool_call_delta, calls} when is_list(calls) ->
-          Enum.each(calls, fn call ->
-            Callbacks.execute(ctx, :on_tool_call, call)
-          end)
-
-        # M-5: Anthropic streaming emits tool_use fragments tagged with
-        # `_phase :start | :partial | :stop` and an `_index`. We don't
-        # reassemble them here per-event because the on_tool_call callback
-        # sees fragments by design (it's a streaming hook); the
-        # post-stream complete-response path is what builds the final
-        # tool_calls list, and Anthropic's convert_complete_response
-        # handles that correctly.
-        {:tool_call_delta, %{"_phase" => _} = _partial} ->
-          :ok
-
-        {:tool_call_delta, call} ->
-          Callbacks.execute(ctx, :on_tool_call, call)
-
-        _ ->
-          :ok
-      end
-
+      emit_stream_callbacks(event, ctx)
       event
     end)
   end
+
+  defp emit_stream_callbacks({:text_delta, text}, ctx) do
+    Callbacks.execute(ctx, :on_llm_new_delta, text)
+  end
+
+  defp emit_stream_callbacks({:thinking_delta, text}, ctx) do
+    Callbacks.execute(ctx, :on_llm_new_delta, "[thinking] #{text}")
+  end
+
+  defp emit_stream_callbacks({:tool_call_delta, calls}, ctx) when is_list(calls) do
+    Enum.each(calls, fn call -> Callbacks.execute(ctx, :on_tool_call, call) end)
+  end
+
+  # M-5: Anthropic streaming emits tool_use fragments tagged with
+  # `_phase :start | :partial | :stop` and an `_index`. We don't
+  # reassemble them here per-event because the on_tool_call callback
+  # sees fragments by design (it's a streaming hook); the
+  # post-stream complete-response path is what builds the final
+  # tool_calls list, and Anthropic's convert_complete_response
+  # handles that correctly.
+  defp emit_stream_callbacks({:tool_call_delta, %{"_phase" => _phase}}, _ctx), do: :ok
+
+  defp emit_stream_callbacks({:tool_call_delta, call}, ctx) do
+    Callbacks.execute(ctx, :on_tool_call, call)
+  end
+
+  defp emit_stream_callbacks(_event, _ctx), do: :ok
 
   # Wraps a stream to accumulate text/thinking content and emit a
   # {:complete, result} event after {:finish, reason}.
@@ -51,6 +73,7 @@ defmodule Nous.AgentRunner.Streaming do
   #
   # Uses iodata accumulation (list of chunks) for O(n) performance,
   # converting to binary only once at the end.
+  @spec wrap_stream_with_result(Enumerable.t()) :: Enumerable.t()
   def wrap_stream_with_result(stream) do
     # Use a unique ref as sentinel — cannot collide with provider events
     sentinel = make_ref()
@@ -105,6 +128,11 @@ defmodule Nous.AgentRunner.Streaming do
     )
   end
 
+  @spec build_stream_result(result_acc(), String.t()) :: %{
+          :output => String.t(),
+          :finish_reason => String.t(),
+          optional(:thinking) => String.t()
+        }
   def build_stream_result(acc, reason) do
     # acc.text/acc.thinking are chunks in reverse arrival order (prepended);
     # reverse to restore order before flattening to a binary.
@@ -124,6 +152,8 @@ defmodule Nous.AgentRunner.Streaming do
   # per-chunk delta callbacks along the way. Halts cleanly with
   # ExecutionCancelled if `ctx.cancellation_check` raises {:cancelled, reason}
   # between chunks.
+  @spec consume_stream_into_message(Enumerable.t(), Context.t(), Model.provider()) ::
+          {:ok, Message.t()} | {:error, term()}
   def consume_stream_into_message(stream, ctx, provider) do
     initial = %{
       text: [],
@@ -158,6 +188,9 @@ defmodule Nous.AgentRunner.Streaming do
     end
   end
 
+  # Takes any normalized stream event: the trailing clause absorbs the
+  # `{:unknown, chunk}` and provider-specific events this accumulator ignores.
+  @spec handle_stream_event(term(), message_acc(), Context.t()) :: message_acc()
   def handle_stream_event({:text_delta, text}, acc, ctx) do
     Callbacks.execute(ctx, :on_llm_new_delta, text)
     %{acc | text: [acc.text, text]}
@@ -186,6 +219,7 @@ defmodule Nous.AgentRunner.Streaming do
 
   def handle_stream_event(_other, acc, _ctx), do: acc
 
+  @spec build_streamed_message(message_acc(), Model.provider()) :: Message.t()
   def build_streamed_message(acc, _provider) do
     text = IO.iodata_to_binary(acc.text)
     reasoning = IO.iodata_to_binary(acc.reasoning)
@@ -218,6 +252,7 @@ defmodule Nous.AgentRunner.Streaming do
   # Inline cancellation probe used between streamed chunks. Mirrors
   # check_cancellation/1 but returns a value instead of an {:error, _}
   # tuple so the reduce can decide between :halt and :cont.
+  @spec check_cancellation_inline(map()) :: :ok | {:cancelled, term()}
   def check_cancellation_inline(%{cancellation_check: nil}), do: :ok
 
   def check_cancellation_inline(%{cancellation_check: check}) when is_function(check, 0) do

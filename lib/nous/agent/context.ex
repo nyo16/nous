@@ -274,7 +274,10 @@ defmodule Nous.Agent.Context do
   @doc """
   Merge new dependencies into the context.
 
-  Used by tools to update context state via `__update_context__` or `ContextUpdate`.
+  This is the **trusted** merge: every key in `new_deps` wins. Operator-supplied
+  deps go through here, including `Nous.AgentServer` re-applying its configured
+  deps over a restored session. For deps a *tool* asked to change, use
+  `merge_tool_deps/2`.
 
   ## Examples
 
@@ -290,6 +293,75 @@ defmodule Nous.Agent.Context do
   def merge_deps(%Context{} = ctx, new_deps) when is_map(new_deps) do
     merged = Map.merge(ctx.deps || %{}, new_deps)
     %{ctx | deps: merged}
+  end
+
+  # Deps keys a tool-supplied context update may not rewrite. Kept adjacent to
+  # the reasoning in protected_deps_keys/0's @doc.
+  @protected_deps_keys [
+    :approval_handler,
+    :hook_registry,
+    :workspace_root,
+    :sub_agent_shared_deps,
+    :sub_agent_templates,
+    :sub_agent_workspace_root,
+    :file_read_max_bytes,
+    :web_fetch_max_bytes
+  ]
+
+  @doc """
+  Deps keys that a tool-supplied context update may not touch.
+
+  These carry security meaning. `:workspace_root` is the sandbox
+  `Nous.Tools.PathGuard` confines every file tool to — dropping it widens the
+  sandbox to the whole cwd. `:sub_agent_shared_deps` decides which parent deps
+  (API keys, connections) cross into a sub-agent, `:sub_agent_templates` which
+  agent configurations — hence which tool sets — a tool may spawn, and
+  `:sub_agent_workspace_root` requests a narrower root for a child agent.
+  `:file_read_max_bytes` and `:web_fetch_max_bytes` are resource ceilings a tool
+  must not be able to RAISE: both are read from `deps` ahead of application
+  config, and `Nous.Tools.WebFetch`'s promise that a model-supplied `max_bytes`
+  "may only lower the ceiling" is worthless if the ceiling itself is writable.
+  `:approval_handler` and `:hook_registry` are listed for completeness: they
+  live on the struct rather than in `deps`, so no deps update reaches them
+  today, and the list is where a future move into `deps` gets caught.
+
+  Adding a deps key that `Nous.Tools.PathGuard`, `Nous.Plugins.SubAgent`, or any
+  other guard trusts means adding it here in the same change. The denylist does
+  not cover a new key by default, and an unlisted one is silently rewritable by
+  any tool.
+
+  A denylist, not an allowlist: `deps` is an open namespace owned by the
+  application (todos, counters, `:kb_config`, `:memory_config`, …) and skill
+  activation writes `:skill_registry` through `Nous.Tool.ContextUpdate` by
+  design, so an allowlist could only ever be incomplete.
+  """
+  @spec protected_deps_keys() :: [atom()]
+  def protected_deps_keys, do: @protected_deps_keys
+
+  @doc """
+  Merge tool-supplied dependencies into the context, dropping protected keys.
+
+  Deliberately a separate function from `merge_deps/2` — do not consolidate
+  them. `merge_deps/2` must stay unfiltered because `Nous.AgentServer` uses it
+  to re-apply the *operator's* deps over a deserialized context; filtering there
+  would let a poisoned persisted `:workspace_root` outrank the operator's
+  configuration, which is worse than the bug this guards. Here the direction is
+  reversed — an LLM-driven tool result merging into an operator-configured
+  context — so the incoming keys are the untrusted ones.
+
+  See `protected_deps_keys/0`.
+
+  ## Examples
+
+      iex> ctx = Context.new(deps: %{workspace_root: "/srv/safe"})
+      iex> ctx = Context.merge_tool_deps(ctx, %{workspace_root: "/", notes: []})
+      iex> ctx.deps.workspace_root
+      "/srv/safe"
+
+  """
+  @spec merge_tool_deps(t(), map()) :: t()
+  def merge_tool_deps(%Context{} = ctx, new_deps) when is_map(new_deps) do
+    merge_deps(ctx, drop_protected_deps(new_deps, ctx.agent_name))
   end
 
   @doc """
@@ -383,6 +455,13 @@ defmodule Nous.Agent.Context do
 
   This allows tools to continue using the existing RunContext interface.
 
+  ## Options
+
+    * `:approval_gated?` - Assert that an approval pipeline has ALREADY run for
+      this call, so `Nous.ToolExecutor` does not prompt the operator a second
+      time. Defaults to `false`, which leaves any `:approval_handler` on the
+      context in charge of the gate. Only `Nous.AgentRunner` passes `true`.
+
   ## Examples
 
       iex> ctx = Context.new(deps: %{db: :postgres})
@@ -390,17 +469,28 @@ defmodule Nous.Agent.Context do
       iex> run_ctx.deps.db
       :postgres
 
+      iex> Context.to_run_context(Context.new()).approval_gated?
+      false
+
   """
-  @spec to_run_context(t()) :: Nous.RunContext.t()
-  def to_run_context(%Context{} = ctx) do
-    # `approval_gated?: true`: the runner has already run the full approval +
-    # permission-policy pipeline (AgentRunner.ToolExecution.check_tool_approval/3)
-    # for this call, so ToolExecutor must not prompt the operator a second time.
-    # The handler is still carried through so tools can see it.
+  @spec to_run_context(t(), keyword()) :: Nous.RunContext.t()
+  def to_run_context(%Context{} = ctx, opts \\ []) do
+    # `approval_gated?` means "an approval pipeline has ALREADY run for this
+    # call", so Nous.ToolExecutor must not prompt the operator a second time.
+    # Only the caller that ran one can know that, so it is ASSERTED here, never
+    # inferred. Two earlier shapes were both fail-open: stamping `true`
+    # unconditionally made this public constructor a bypass primitive any caller
+    # (sub-agent, workflow node, deserialized checkpoint) could use to mint a
+    # pre-approved context, and deriving it from handler presence merely narrowed
+    # that to callers who install a handler — whose handler ToolExecutor then
+    # never consults, so even a `:reject` handler waved the call through. The
+    # `false` default hands the gate back to that handler.
+    # AgentRunner.ToolExecution passes `true` after check_tool_approval/3, which
+    # is the one caller that has earned it.
     Nous.RunContext.new(ctx.deps,
       usage: ctx.usage,
       approval_handler: ctx.approval_handler,
-      approval_gated?: true
+      approval_gated?: Keyword.get(opts, :approval_gated?, false)
     )
   end
 
@@ -564,6 +654,22 @@ defmodule Nous.Agent.Context do
 
   # Private functions
 
+  defp drop_protected_deps(new_deps, agent_name) do
+    case Enum.filter(@protected_deps_keys, &Map.has_key?(new_deps, &1)) do
+      [] ->
+        new_deps
+
+      rejected ->
+        Logger.warning(
+          "Tool context update tried to rewrite protected deps key(s) " <>
+            "#{inspect(rejected)} on agent #{inspect(agent_name)}; dropped. See " <>
+            "Nous.Agent.Context.protected_deps_keys/0."
+        )
+
+        Map.drop(new_deps, rejected)
+    end
+  end
+
   defp do_deserialize(data) do
     messages =
       (data[:messages] || [])
@@ -571,17 +677,7 @@ defmodule Nous.Agent.Context do
 
     usage = deserialize_usage(data[:usage] || %{})
 
-    started_at =
-      case data[:started_at] do
-        nil ->
-          nil
-
-        iso when is_binary(iso) ->
-          case DateTime.from_iso8601(iso) do
-            {:ok, dt, _offset} -> dt
-            _ -> nil
-          end
-      end
+    started_at = deserialize_started_at(data[:started_at])
 
     ctx = %Context{
       messages: messages,
@@ -608,6 +704,19 @@ defmodule Nous.Agent.Context do
     # can raise from anywhere in the decode path, so the catch-all is a
     # deliberate boundary honoring the {:ok, _} | {:error, _} contract.
     e -> {:error, Exception.message(e)}
+  end
+
+  # No catch-all clause on purpose: a persisted `started_at` that is neither
+  # nil nor a string is a malformed blob, and the raise is caught by
+  # do_deserialize/1's boundary rescue as `{:error, message}` — the same
+  # outcome the inline `case` produced.
+  defp deserialize_started_at(nil), do: nil
+
+  defp deserialize_started_at(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _offset} -> dt
+      _ -> nil
+    end
   end
 
   defp serialize_message(%Message{} = msg) do

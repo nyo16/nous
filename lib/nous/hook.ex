@@ -116,6 +116,18 @@ defmodule Nous.Hook do
   def blocking_event?(event), do: event in @blocking_events
 
   @doc """
+  Returns whether a hook result is a denial.
+
+  Denials come in two shapes — bare `:deny` and `{:deny, reason}` — and callers
+  that test only for the bare atom fail OPEN on every hook that bothers to
+  explain itself. Gate on this instead of comparing against `:deny`.
+  """
+  @spec denied?(result()) :: boolean()
+  def denied?(:deny), do: true
+  def denied?({:deny, _reason}), do: true
+  def denied?(_result), do: false
+
+  @doc """
   Check if a hook's matcher matches the given payload.
 
   For `:pre_tool_use` and `:post_tool_use` events, matches against the tool name.

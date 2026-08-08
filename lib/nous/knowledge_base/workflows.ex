@@ -34,6 +34,7 @@ defmodule Nous.KnowledgeBase.Workflows do
     * `:embedding` - Embedding provider module
     * `:embedding_opts` - Embedding options
   """
+  @spec build_ingest_pipeline(keyword()) :: Workflow.Graph.t()
   def build_ingest_pipeline(opts \\ []) do
     Workflow.new("kb_ingest", name: "Knowledge Base Ingest Pipeline")
     |> Workflow.add_node(:ingest_docs, :transform, %{
@@ -91,6 +92,7 @@ defmodule Nous.KnowledgeBase.Workflows do
         kb_config: %{store: ..., store_state: ..., kb_id: ...}
       }
   """
+  @spec build_incremental_pipeline(keyword()) :: Workflow.Graph.t()
   def build_incremental_pipeline(opts \\ []) do
     Workflow.new("kb_incremental", name: "KB Incremental Update")
     |> Workflow.add_node(:detect_changes, :transform, %{
@@ -120,6 +122,7 @@ defmodule Nous.KnowledgeBase.Workflows do
 
       %{kb_config: %{store: ..., store_state: ..., kb_id: ...}}
   """
+  @spec build_health_check_pipeline(keyword()) :: Workflow.Graph.t()
   def build_health_check_pipeline(opts \\ []) do
     Workflow.new("kb_health_check", name: "KB Health Check")
     |> Workflow.add_node(:gather_stats, :transform, %{
@@ -152,6 +155,7 @@ defmodule Nous.KnowledgeBase.Workflows do
         kb_config: %{store: ..., store_state: ..., kb_id: ...}
       }
   """
+  @spec build_output_pipeline(keyword()) :: Workflow.Graph.t()
   def build_output_pipeline(opts \\ []) do
     Workflow.new("kb_output", name: "KB Output Generation")
     |> Workflow.add_node(:select_entries, :transform, %{
@@ -308,10 +312,10 @@ defmodule Nous.KnowledgeBase.Workflows do
         issues:
           Enum.map(issues, fn issue ->
             %{
-              type: String.to_existing_atom(issue["type"] || "gap"),
+              type: decode_issue_type(issue["type"]),
               entry_id: issue["entry_id"],
               description: issue["description"] || "",
-              severity: String.to_existing_atom(issue["severity"] || "low"),
+              severity: decode_issue_severity(issue["severity"]),
               suggested_action: issue["suggested_action"] || ""
             }
           end)
@@ -319,6 +323,29 @@ defmodule Nous.KnowledgeBase.Workflows do
 
     %{state | data: Map.put(state.data, :health_report, report)}
   end
+
+  # The audit issues are LLM-authored JSON: `type` and `severity` are whatever
+  # the model emitted. Decode them through an allowlist so an unrecognised
+  # label falls back to the documented default instead of raising
+  # `ArgumentError` out of `to_existing_atom/1` and killing the workflow.
+  @issue_types %{
+    "stale" => :stale,
+    "inconsistent" => :inconsistent,
+    "orphan" => :orphan,
+    "gap" => :gap,
+    "low_confidence" => :low_confidence,
+    "duplicate" => :duplicate
+  }
+
+  @issue_severities %{
+    "low" => :low,
+    "medium" => :medium,
+    "high" => :high
+  }
+
+  defp decode_issue_type(value), do: Map.get(@issue_types, value, :gap)
+
+  defp decode_issue_severity(value), do: Map.get(@issue_severities, value, :low)
 
   defp select_relevant_entries(state) do
     config = state.data.kb_config
@@ -339,71 +366,78 @@ defmodule Nous.KnowledgeBase.Workflows do
     embedding_opts = opts[:embedding_opts] || []
 
     fn state ->
-      if embedding do
-        entries = parse_entries_from_output(state.data.compile_entries)
+      entries = parse_entries_from_output(state.data.compile_entries)
+      embedded = maybe_embed_entries(entries, embedding, embedding_opts)
+      %{state | data: Map.put(state.data, :compiled_entries, embedded)}
+    end
+  end
 
-        embedded =
-          Enum.map(entries, fn entry ->
-            case Nous.Memory.Embedding.embed(embedding, entry.content, embedding_opts) do
-              {:ok, emb} -> %{entry | embedding: emb}
-              {:error, _} -> entry
-            end
-          end)
+  # Embedding is optional: with no provider configured the compiled entries
+  # are stored unembedded rather than failing the ingest.
+  defp maybe_embed_entries(entries, embedding, _opts) when embedding in [nil, false],
+    do: entries
 
-        %{state | data: Map.put(state.data, :compiled_entries, embedded)}
-      else
-        entries = parse_entries_from_output(state.data.compile_entries)
-        %{state | data: Map.put(state.data, :compiled_entries, entries)}
-      end
+  defp maybe_embed_entries(entries, embedding, opts) do
+    Enum.map(entries, &embed_entry(&1, embedding, opts))
+  end
+
+  # One provider failure degrades that single entry to unembedded; the rest of
+  # the batch still gets its vectors.
+  defp embed_entry(entry, embedding, opts) do
+    case Nous.Memory.Embedding.embed(embedding, entry.content, opts) do
+      {:ok, emb} -> %{entry | embedding: emb}
+      {:error, _} -> entry
     end
   end
 
   defp persist_to_store(state) do
     config = state.data.kb_config
     store_mod = config[:store]
-    store_state = config[:store_state]
     kb_id = config[:kb_id]
 
-    # Persist compiled entries
     entries = state.data[:compiled_entries] || []
-
-    store_state =
-      Enum.reduce(entries, store_state, fn entry, acc ->
-        entry = if entry.kb_id, do: entry, else: %{entry | kb_id: kb_id}
-
-        case store_mod.store_entry(acc, entry) do
-          {:ok, new_state} -> new_state
-          {:error, _} -> acc
-        end
-      end)
-
-    # Persist links
-    links_output = state.data[:generate_links]
-    links = parse_links_from_output(links_output, entries, kb_id)
-
-    store_state =
-      Enum.reduce(links, store_state, fn link, acc ->
-        case store_mod.store_link(acc, link) do
-          {:ok, new_state} -> new_state
-          {:error, _} -> acc
-        end
-      end)
-
-    # Persist documents
+    links = parse_links_from_output(state.data[:generate_links], entries, kb_id)
     docs = state.data[:documents_parsed] || []
 
     store_state =
-      Enum.reduce(docs, store_state, fn doc, acc ->
-        compiled_doc = %{doc | status: :compiled}
-
-        case store_mod.store_document(acc, compiled_doc) do
-          {:ok, new_state} -> new_state
-          {:error, _} -> acc
-        end
-      end)
+      config[:store_state]
+      |> persist_entries(store_mod, entries, kb_id)
+      |> persist_links(store_mod, links)
+      |> persist_documents(store_mod, docs)
 
     updated_config = Map.put(config, :store_state, store_state)
     %{state | data: Map.put(state.data, :kb_config, updated_config)}
+  end
+
+  # Each pass threads the store state forward and keeps the previous state on
+  # rejection: one record the store refuses must not lose the rest of the batch.
+  defp persist_entries(store_state, store_mod, entries, kb_id) do
+    Enum.reduce(entries, store_state, fn entry, acc ->
+      entry = if entry.kb_id, do: entry, else: %{entry | kb_id: kb_id}
+
+      case store_mod.store_entry(acc, entry) do
+        {:ok, new_state} -> new_state
+        {:error, _} -> acc
+      end
+    end)
+  end
+
+  defp persist_links(store_state, store_mod, links) do
+    Enum.reduce(links, store_state, fn link, acc ->
+      case store_mod.store_link(acc, link) do
+        {:ok, new_state} -> new_state
+        {:error, _} -> acc
+      end
+    end)
+  end
+
+  defp persist_documents(store_state, store_mod, docs) do
+    Enum.reduce(docs, store_state, fn doc, acc ->
+      case store_mod.store_document(acc, %{doc | status: :compiled}) do
+        {:ok, new_state} -> new_state
+        {:error, _} -> acc
+      end
+    end)
   end
 
   # ---------------------------------------------------------------------------

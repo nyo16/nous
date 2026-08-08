@@ -22,20 +22,20 @@ defmodule Nous.Decisions.Store.ETSTest do
     end
   end
 
-  describe "add_node/2 and get_node/2" do
+  describe "add_node/2 and fetch_node/2" do
     test "roundtrip stores and fetches a node", %{state: state} do
       node = Node.new(%{type: :goal, label: "Ship v1.0"})
       {:ok, _state} = ETS.add_node(state, node)
 
-      assert {:ok, fetched} = ETS.get_node(state, node.id)
+      assert {:ok, fetched} = ETS.fetch_node(state, node.id)
       assert fetched.id == node.id
       assert fetched.label == "Ship v1.0"
       assert fetched.type == :goal
       assert fetched.status == :active
     end
 
-    test "get_node returns error for non-existent node", %{state: state} do
-      assert {:error, :not_found} = ETS.get_node(state, "nonexistent")
+    test "fetch_node returns error for non-existent node", %{state: state} do
+      assert {:error, :not_found} = ETS.fetch_node(state, "nonexistent")
     end
   end
 
@@ -46,7 +46,7 @@ defmodule Nous.Decisions.Store.ETSTest do
 
       {:ok, _state} = ETS.update_node(state, node.id, %{confidence: 0.9, label: "Updated"})
 
-      {:ok, updated} = ETS.get_node(state, node.id)
+      {:ok, updated} = ETS.fetch_node(state, node.id)
       assert updated.confidence == 0.9
       assert updated.label == "Updated"
       assert DateTime.compare(updated.updated_at, node.updated_at) in [:gt, :eq]
@@ -69,7 +69,7 @@ defmodule Nous.Decisions.Store.ETSTest do
 
       {:ok, state} = ETS.delete_node(state, n1.id)
 
-      assert {:error, :not_found} = ETS.get_node(state, n1.id)
+      assert {:error, :not_found} = ETS.fetch_node(state, n1.id)
       # Edge should also be removed
       {:ok, edges} = ETS.get_edges(state, n2.id, :incoming)
       assert edges == []

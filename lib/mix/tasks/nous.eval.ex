@@ -108,36 +108,42 @@ defmodule Mix.Tasks.Nous.Eval do
   end
 
   defp load_suites(opts) do
-    cond do
-      opts[:suite] ->
-        # Load specific suite
-        case Nous.Eval.Suite.from_yaml(opts[:suite]) do
-          {:ok, suite} ->
-            [suite]
+    if opts[:suite] do
+      load_suite_file(opts[:suite])
+    else
+      load_suite_dir(opts[:dir] || "test/eval/suites")
+    end
+  end
 
-          {:error, reason} ->
-            Mix.shell().error("Failed to load suite: #{inspect(reason)}")
-            []
-        end
+  defp load_suite_file(path) do
+    case Nous.Eval.Suite.from_yaml(path) do
+      {:ok, suite} ->
+        [suite]
 
-      true ->
-        # Load from directory
-        dir = opts[:dir] || "test/eval/suites"
+      {:error, reason} ->
+        Mix.shell().error("Failed to load suite: #{inspect(reason)}")
+        []
+    end
+  end
 
-        if File.dir?(dir) do
-          case Nous.Eval.Suite.from_directory(dir) do
-            {:ok, suites} ->
-              suites
+  defp load_suite_dir(dir) do
+    if File.dir?(dir) do
+      read_suite_dir(dir)
+    else
+      Mix.shell().info("Creating evaluation directory: #{dir}")
+      File.mkdir_p!(dir)
+      []
+    end
+  end
 
-            {:error, reason} ->
-              Mix.shell().error("Failed to load suites: #{inspect(reason)}")
-              []
-          end
-        else
-          Mix.shell().info("Creating evaluation directory: #{dir}")
-          File.mkdir_p!(dir)
-          []
-        end
+  defp read_suite_dir(dir) do
+    case Nous.Eval.Suite.from_directory(dir) do
+      {:ok, suites} ->
+        suites
+
+      {:error, reason} ->
+        Mix.shell().error("Failed to load suites: #{inspect(reason)}")
+        []
     end
   end
 
@@ -233,49 +239,43 @@ defmodule Mix.Tasks.Nous.Eval do
 
   defp output_results(results, opts) do
     format = opts[:format] || "console"
-    output_path = opts[:output]
-    verbose = opts[:verbose] || false
 
     case format do
-      "console" ->
-        Enum.each(results, fn {_name, result} ->
-          if verbose do
-            Nous.Eval.Reporter.print_detailed(result)
-          else
-            Nous.Eval.Reporter.print(result)
-          end
-        end)
-
-      "json" ->
-        json_output =
-          results
-          |> Enum.map(fn {name, result} -> {name, Nous.Eval.Reporter.Json.to_map(result)} end)
-          |> Enum.into(%{})
-          |> Map.put(:generated_at, DateTime.to_iso8601(DateTime.utc_now()))
-          |> Nous.JSON.pretty_encode!()
-
-        if output_path do
-          File.write!(output_path, json_output)
-          Mix.shell().info("Results written to: #{output_path}")
-        else
-          IO.puts(json_output)
-        end
-
-      "markdown" ->
-        md_output =
-          Enum.map_join(results, "\n\n---\n\n", fn {_name, result} ->
-            Nous.Eval.Reporter.to_markdown(result)
-          end)
-
-        if output_path do
-          File.write!(output_path, md_output)
-          Mix.shell().info("Results written to: #{output_path}")
-        else
-          IO.puts(md_output)
-        end
-
-      _ ->
-        Mix.shell().error("Unknown format: #{format}")
+      "console" -> print_console(results, opts[:verbose] || false)
+      "json" -> write_output(json_report(results), opts[:output])
+      "markdown" -> write_output(markdown_report(results), opts[:output])
+      _ -> Mix.shell().error("Unknown format: #{format}")
     end
+  end
+
+  defp print_console(results, verbose) do
+    Enum.each(results, fn {_name, result} ->
+      if verbose do
+        Nous.Eval.Reporter.print_detailed(result)
+      else
+        Nous.Eval.Reporter.print(result)
+      end
+    end)
+  end
+
+  defp json_report(results) do
+    results
+    |> Enum.map(fn {name, result} -> {name, Nous.Eval.Reporter.Json.to_map(result)} end)
+    |> Enum.into(%{})
+    |> Map.put(:generated_at, DateTime.to_iso8601(DateTime.utc_now()))
+    |> Nous.JSON.pretty_encode!()
+  end
+
+  defp markdown_report(results) do
+    Enum.map_join(results, "\n\n---\n\n", fn {_name, result} ->
+      Nous.Eval.Reporter.to_markdown(result)
+    end)
+  end
+
+  defp write_output(content, nil), do: IO.puts(content)
+
+  defp write_output(content, path) do
+    File.write!(path, content)
+    Mix.shell().info("Results written to: #{path}")
   end
 end

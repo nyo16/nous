@@ -45,14 +45,10 @@ defmodule Nous.Eval.Optimizer.Strategies.Random do
   @impl true
   def run(%Suite{} = suite, %SearchSpace{} = space, metric, _maximize, opts) do
     n_trials = Keyword.get(opts, :n_trials, 100)
-    timeout = Keyword.get(opts, :timeout, 3_600_000)
-    verbose = Keyword.get(opts, :verbose, true)
-    early_stop = Keyword.get(opts, :early_stop)
     latin_hypercube = Keyword.get(opts, :latin_hypercube, false)
 
     start_time = System.monotonic_time(:millisecond)
 
-    # Generate configurations
     configs =
       if latin_hypercube do
         SearchSpace.latin_hypercube_sample(space, n_trials)
@@ -60,53 +56,17 @@ defmodule Nous.Eval.Optimizer.Strategies.Random do
         SearchSpace.sample_n(space, n_trials)
       end
 
-    if verbose do
+    loop = Optimizer.trial_loop(opts, n_trials, start_time)
+
+    if loop.verbose do
       sampling = if latin_hypercube, do: "Latin Hypercube", else: "Random"
       IO.puts("#{sampling} Search: #{n_trials} trials")
     end
 
-    # Run trials
-    {trials, _} =
-      Enum.reduce_while(configs, {[], 0}, fn config, {acc, idx} ->
-        # Check timeout
-        elapsed = System.monotonic_time(:millisecond) - start_time
+    {trials, _count} = Optimizer.run_trials(suite, configs, metric, opts, loop)
 
-        if elapsed > timeout do
-          {:halt, {acc, idx}}
-        else
-          if verbose do
-            IO.write("\rTrial #{idx + 1}/#{n_trials}")
-          end
+    if loop.verbose, do: IO.puts("")
 
-          case Optimizer.run_trial(suite, config, metric, opts) do
-            {:ok, trial} ->
-              # Check early stop
-              if early_stop && trial.score >= early_stop do
-                if verbose, do: IO.puts("\nEarly stop: score #{trial.score} >= #{early_stop}")
-                {:halt, {[trial | acc], idx + 1}}
-              else
-                {:cont, {[trial | acc], idx + 1}}
-              end
-
-            {:error, reason} ->
-              if verbose do
-                IO.puts("\nTrial #{idx + 1} failed: #{inspect(reason)}")
-              end
-
-              failed_trial = %{
-                config: config,
-                score: 0.0,
-                metrics: %{error: reason},
-                duration_ms: 0
-              }
-
-              {:cont, {[failed_trial | acc], idx + 1}}
-          end
-        end
-      end)
-
-    if verbose, do: IO.puts("")
-
-    {:ok, Enum.reverse(trials)}
+    {:ok, trials}
   end
 end

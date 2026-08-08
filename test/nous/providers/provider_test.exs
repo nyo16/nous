@@ -5,9 +5,17 @@ defmodule Nous.ProviderTest do
   # Test Module Using the Provider Behaviour
   # ============================================================================
 
+  # The `:id` has to be one of the atoms `Nous.Messages` dispatches on. The
+  # macro bakes it into `@provider_id`, which the generated
+  # `build_request_params/3` and `request/3` inline as a *literal* into
+  # `to_provider_format/2` and `from_provider_response/2` — so a synthetic id
+  # (`:test_provider`) draws four incompatible-type warnings attributed to the
+  # `use` line, and there is no call site here to widen the way
+  # `messages_generic_helpers_test.exs` does. `:ollama` is pure plumbing below:
+  # nothing depends on it beyond `provider_id/0` returning what was configured.
   defmodule TestProvider do
     use Nous.Provider,
-      id: :test_provider,
+      id: :ollama,
       default_base_url: "https://api.test.example.com/v1",
       default_env_key: "TEST_PROVIDER_API_KEY"
 
@@ -81,9 +89,11 @@ defmodule Nous.ProviderTest do
     end
   end
 
+  # `:together` for the same reason as `:ollama` above — an in-domain atom the
+  # rest of this module never leans on; only `count_tokens/1` matters here.
   defmodule CustomTokenProvider do
     use Nous.Provider,
-      id: :custom_token,
+      id: :together,
       default_base_url: "https://custom.example.com",
       default_env_key: "CUSTOM_API_KEY"
 
@@ -109,8 +119,8 @@ defmodule Nous.ProviderTest do
 
   describe "provider_id/0" do
     test "returns the configured provider ID" do
-      assert TestProvider.provider_id() == :test_provider
-      assert CustomTokenProvider.provider_id() == :custom_token
+      assert TestProvider.provider_id() == :ollama
+      assert CustomTokenProvider.provider_id() == :together
     end
   end
 
@@ -258,7 +268,7 @@ defmodule Nous.ProviderTest do
     alias Nous.Message
     alias Nous.Model
 
-    # Bypass Model.new/3 — its provider() typespec rejects :test_provider and
+    # Bypass Model.new/3 — its provider() typespec rejects :openai_compatible and
     # default_base_url/1 has no clause for it. Build the struct directly.
     defp test_model(default_settings \\ %{}) do
       %Model{

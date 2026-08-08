@@ -2,6 +2,9 @@ defmodule Nous.Agents.ReActAgent do
   @moduledoc """
   ReAct (Reasoning and Acting) Agent behaviour implementation.
 
+  This is the reasoning loop itself. For the convenience constructor that wires
+  it into a `Nous.Agent` for you, see `Nous.Agent.ReAct`.
+
   ReAct is a prompting paradigm where AI agents interleave:
   - **Reasoning**: Thinking about what to do next
   - **Acting**: Using tools to gather information or perform actions

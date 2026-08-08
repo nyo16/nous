@@ -55,26 +55,25 @@
           ## Refactoring Opportunities
           {Credo.Check.Refactor.Apply, false},
           {Credo.Check.Refactor.CondStatements, false},
-          # RATCHET (Credo default: 9). 24 -> 23 is the current floor: the most
-          # complex function in the tree is Mix.Tasks.Nous.Optimize.build_opts
-          # (lib/mix/tasks/nous.optimize.ex:234) at 23. Only ever move this DOWN.
-          {Credo.Check.Refactor.CyclomaticComplexity, [max_complexity: 23]},
+          # At Credo's default of 9 since the 2026-08 audit (arch F-3). The
+          # relaxed 23 was a threshold artifact: `mix credo --strict` reported
+          # zero while 30 functions exceeded the default. Only ever move DOWN.
+          {Credo.Check.Refactor.CyclomaticComplexity, []},
           {Credo.Check.Refactor.FilterCount, []},
           {Credo.Check.Refactor.FilterFilter, []},
-          # RATCHET (Credo default: 8). 15 -> 14 is the current floor: two
-          # Nous.Eval.Optimizer.Strategies.Bayesian helpers take 14 positional
-          # args (bayesian.ex:172,192). Only ever move this DOWN.
-          {Credo.Check.Refactor.FunctionArity, [max_arity: 14]},
+          # At Credo's default of 8 since the 2026-08 audit. The three
+          # 14-positional-arg optimizer helpers that pinned this at 14 are gone —
+          # the shared trial loop lives in Nous.Eval.Optimizer now. Only DOWN.
+          {Credo.Check.Refactor.FunctionArity, []},
           {Credo.Check.Refactor.LongQuoteBlocks, false},
           {Credo.Check.Refactor.MapJoin, false},
           {Credo.Check.Refactor.MatchInCondition, []},
           {Credo.Check.Refactor.NegatedConditionsInUnless, []},
           {Credo.Check.Refactor.NegatedConditionsWithElse, []},
-          # RATCHET (Credo default: 2). 5 is ALREADY the floor — the three
-          # lib/nous/eval/optimizer/strategies/*.ex run/2 bodies nest 5 deep
-          # (bayesian.ex:147, grid_search.ex:94, random.ex:85), so this cannot
-          # tighten until they are flattened. Only ever move this DOWN.
-          {Credo.Check.Refactor.Nesting, [max_nesting: 5]},
+          # At Credo's default of 2 since the 2026-08 audit. The optimizer
+          # strategy bodies that pinned this at 5 were flattened when their
+          # shared trial loop was hoisted. Only ever move this DOWN.
+          {Credo.Check.Refactor.Nesting, []},
           {Credo.Check.Refactor.RedundantWithClauseResult, false},
           {Credo.Check.Refactor.RejectReject, []},
           {Credo.Check.Refactor.UnlessWithElse, false},
@@ -102,13 +101,35 @@
           {Credo.Check.Warning.UnusedRegexOperation, []},
           {Credo.Check.Warning.UnusedStringOperation, []},
           {Credo.Check.Warning.UnusedTupleOperation, []},
-          {Credo.Check.Warning.WrongTestFileExtension, []}
+          {Credo.Check.Warning.WrongTestFileExtension, []},
+
+          ## Enabled at the 2026-08 audit (arch F-3), each scoped deliberately.
+          #
+          # Specs earn their keep on the semver surface. `test/` is excluded: a
+          # @spec on a test helper documents nothing to a consumer, and a wrong
+          # spec is worse than none because dialyzer runs in CI.
+          {Credo.Check.Readability.Specs, files: %{excluded: ["test/"]}},
+          # Was disabled, which hid six clusters (now collapsed — see
+          # Nous.Eval.Optimizer's shared trial loop, Nous.HTTP.StreamBackend
+          # .Chunking, Nous.Memory.Store.{Results,Columns} and engine.ex's
+          # choose_edge/2). Two exclusions, both deliberate:
+          #   - the two DuckDB stores: their column allowlists MUST stay
+          #     disjoint or the sec F-5 identifier-injection hole reopens. Both
+          #     files carry a comment saying so above the flagged block.
+          #   - test/: explicitness beats DRY in a test.
+          {Credo.Check.Design.DuplicatedCode,
+           files: %{
+             excluded: [
+               "test/",
+               "lib/nous/memory/store/duckdb.ex",
+               "lib/nous/decisions/store/duckdb.ex"
+             ]
+           }},
         ],
         disabled: [
           {Credo.Check.Refactor.UtcNowTruncate, []},
           {Credo.Check.Consistency.MultiAliasImportRequireUse, []},
           {Credo.Check.Consistency.UnusedVariableNames, []},
-          {Credo.Check.Design.DuplicatedCode, []},
           {Credo.Check.Design.SkipTestWithoutComment, []},
           {Credo.Check.Readability.AliasAs, []},
           {Credo.Check.Readability.BlockPipe, []},
@@ -120,7 +141,6 @@
           {Credo.Check.Readability.SeparateAliasRequire, []},
           {Credo.Check.Readability.SingleFunctionToBlockPipe, []},
           {Credo.Check.Readability.SinglePipe, []},
-          {Credo.Check.Readability.Specs, []},
           {Credo.Check.Readability.StrictModuleLayout, []},
           {Credo.Check.Readability.WithCustomTaggedTuple, []},
           {Credo.Check.Refactor.ABCSize, []},

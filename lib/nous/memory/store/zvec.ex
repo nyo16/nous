@@ -17,6 +17,7 @@ if Code.ensure_loaded?(Zvec) do
     @behaviour Nous.Memory.Store
 
     alias Nous.Memory.Entry
+    alias Nous.Memory.Store.Results
 
     @default_dimension 1536
 
@@ -25,25 +26,33 @@ if Code.ensure_loaded?(Zvec) do
       collection_path = Keyword.fetch!(opts, :collection_path)
       dimension = Keyword.get(opts, :embedding_dimension, @default_dimension)
 
-      with {:ok, collection} <- Zvec.create_collection(collection_path, dimension: dimension) do
-        # Unnamed table - named would crash a second concurrent agent.
-        # read_concurrency: the entries table is a read-side cache for search
-        # hydration; writes are one insert per stored entry.
-        table = :ets.new(__MODULE__, [:set, :public, read_concurrency: true])
-        {:ok, %{collection: collection, entries: table}}
-      end
-    rescue
-      _ ->
-        case Zvec.open_collection(collection_path) do
-          {:ok, collection} ->
-            # Unnamed table - named would crash a second concurrent agent.
-            # read_concurrency for the same reason as the create path above.
-            table = :ets.new(__MODULE__, [:set, :public, read_concurrency: true])
-            {:ok, %{collection: collection, entries: table}}
-
-          error ->
-            error
+      # Explicit `try` rather than a function-level `rescue`: the rescue clause
+      # needs `collection_path`, and a function-level rescue cannot see
+      # variables bound in the function body. As written before this it was a
+      # hard "undefined variable" compile error — invisible here because the
+      # whole arm sits behind `Code.ensure_loaded?(Zvec)` and `zvec` is not
+      # installed, so adding the dep would have broken the build.
+      try do
+        with {:ok, collection} <- Zvec.create_collection(collection_path, dimension: dimension) do
+          # Unnamed table - named would crash a second concurrent agent.
+          # read_concurrency: the entries table is a read-side cache for search
+          # hydration; writes are one insert per stored entry.
+          table = :ets.new(__MODULE__, [:set, :public, read_concurrency: true])
+          {:ok, %{collection: collection, entries: table}}
         end
+      rescue
+        _ ->
+          case Zvec.open_collection(collection_path) do
+            {:ok, collection} ->
+              # Unnamed table - named would crash a second concurrent agent.
+              # read_concurrency for the same reason as the create path above.
+              table = :ets.new(__MODULE__, [:set, :public, read_concurrency: true])
+              {:ok, %{collection: collection, entries: table}}
+
+            error ->
+              error
+          end
+      end
     end
 
     @impl true
@@ -87,27 +96,37 @@ if Code.ensure_loaded?(Zvec) do
     end
 
     @impl true
-    def update(%{collection: collection, entries: table} = state, id, updates) do
+    def update(state, id, updates) do
       case fetch(state, id) do
         {:ok, entry} ->
-          now = DateTime.utc_now()
-          updated = struct(entry, Map.put(updates, :updated_at, now))
-
-          if Map.has_key?(updates, :embedding) and updates.embedding do
-            with :ok <- Zvec.delete(collection, id),
-                 :ok <- Zvec.add(collection, id, updated.embedding) do
-              :ets.insert(table, {id, updated})
-              {:ok, state}
-            end
-          else
-            :ets.insert(table, {id, updated})
-            {:ok, state}
-          end
+          updated = struct(entry, Map.put(updates, :updated_at, DateTime.utc_now()))
+          commit_update(state, id, updated, reindex_vector?(updates))
 
         error ->
           error
       end
     end
+
+    # The embedding changed, so the vector collection has to change with it:
+    # re-index first and only commit the ETS row if Zvec succeeds, otherwise a
+    # failed re-index leaves the collection pointing at a stale vector.
+    defp commit_update(%{collection: collection, entries: table} = state, id, updated, true) do
+      with :ok <- Zvec.delete(collection, id),
+           :ok <- Zvec.add(collection, id, updated.embedding) do
+        :ets.insert(table, {id, updated})
+        {:ok, state}
+      end
+    end
+
+    defp commit_update(%{entries: table} = state, id, updated, false) do
+      :ets.insert(table, {id, updated})
+      {:ok, state}
+    end
+
+    # Re-index only when the update actually carries an embedding; a missing key
+    # or a nil/false value means "leave the collection alone".
+    defp reindex_vector?(%{embedding: embedding}), do: embedding not in [nil, false]
+    defp reindex_vector?(_updates), do: false
 
     @impl true
     def search_text(%{entries: table}, query, opts) do
@@ -120,8 +139,8 @@ if Code.ensure_loaded?(Zvec) do
 
       results =
         table
-        |> all_entries()
-        |> filter_by_scope(scope)
+        |> Results.all_entries()
+        |> Results.filter_by_scope(scope)
         |> Enum.map(fn entry ->
           score = String.jaro_distance(query_down, String.downcase(entry.content))
           {entry, score}
@@ -140,55 +159,14 @@ if Code.ensure_loaded?(Zvec) do
       min_score = Keyword.get(opts, :min_score, 0.0)
 
       with {:ok, results} <- Zvec.search(collection, embedding, limit: limit * 2) do
-        scored_entries =
-          results
-          |> Enum.flat_map(fn %{id: id, score: score} ->
-            case :ets.lookup(table, id) do
-              [{^id, entry}] -> [{entry, score}]
-              [] -> []
-            end
-          end)
-          |> filter_by_scope(scope)
-          |> Enum.filter(fn {_entry, score} -> score > min_score end)
-          |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
-          |> Enum.take(limit)
-
-        {:ok, scored_entries}
+        {:ok, Results.rank(results, table, scope, min_score, limit)}
       end
     end
 
     @impl true
     def list(%{entries: table}, opts) do
       scope = Keyword.get(opts, :scope, %{})
-
-      entries =
-        table
-        |> all_entries()
-        |> filter_by_scope(scope)
-
-      {:ok, entries}
-    end
-
-    defp all_entries(table) do
-      :ets.tab2list(table) |> Enum.map(fn {_id, entry} -> entry end)
-    end
-
-    defp filter_by_scope(entries, scope) when map_size(scope) == 0, do: entries
-
-    defp filter_by_scope(entries, scope) when is_list(entries) do
-      Enum.filter(entries, fn entry ->
-        Enum.all?(scope, fn {key, value} ->
-          Map.get(entry, key) == value
-        end)
-      end)
-    end
-
-    defp filter_by_scope(scored_entries, scope) do
-      Enum.filter(scored_entries, fn {entry, _score} ->
-        Enum.all?(scope, fn {key, value} ->
-          Map.get(entry, key) == value
-        end)
-      end)
+      {:ok, table |> Results.all_entries() |> Results.filter_by_scope(scope)}
     end
   end
 else

@@ -66,11 +66,31 @@ defmodule Nous.Plugins.SubAgent do
   > equivalent of `:all`. Upgrading is a behaviour change: if your existing
   > sub-agent flows relied on inheriting parent deps, set
   > `sub_agent_shared_deps: :all` to restore the old behaviour.
+
+  ## Workspace Confinement
+
+  The filesystem jail is **not** a dep and does not follow the opt-in rule
+  above. A sub-agent's prompt is model-authored, which makes it the
+  least-trusted actor in the system, so it inherits its parent's
+  `:workspace_root` unconditionally — otherwise dropping the key (the correct
+  default for capabilities) would hand the child `Nous.Tools.PathGuard`'s
+  `File.cwd!/0` fallback, i.e. a *wider* jail than the parent it was spawned
+  from.
+
+  To confine a child more tightly than its parent, set
+  `:sub_agent_workspace_root`. It is clamped to the parent's effective root:
+  a value outside it is refused and the parent's root used instead.
+
+      deps: %{
+        workspace_root: "/srv/ws/tenant_1",
+        sub_agent_workspace_root: "/srv/ws/tenant_1/scratch"
+      }
   """
 
   @behaviour Nous.Plugin
 
   alias Nous.{Agent, Tool}
+  alias Nous.Tools.PathGuard
 
   require Logger
 
@@ -80,6 +100,7 @@ defmodule Nous.Plugins.SubAgent do
   @plugin_internal_keys [
     :sub_agent_templates,
     :sub_agent_shared_deps,
+    :sub_agent_workspace_root,
     :parallel_max_concurrency,
     :parallel_timeout,
     :__sub_agent_pubsub__,
@@ -251,6 +272,14 @@ defmodule Nous.Plugins.SubAgent do
   # ===========================================================================
 
   @doc false
+  @spec delegate_task(Nous.Agent.Context.t(), map()) ::
+          %{
+            success: true,
+            result: term(),
+            tokens_used: non_neg_integer(),
+            iterations: non_neg_integer()
+          }
+          | %{success: false, error: String.t()}
   def delegate_task(ctx, args) do
     task = Map.fetch!(args, "task")
     template_name = Map.get(args, "template")
@@ -280,6 +309,14 @@ defmodule Nous.Plugins.SubAgent do
   # ===========================================================================
 
   @doc false
+  @spec spawn_agents(Nous.Agent.Context.t(), map()) ::
+          %{
+            total: non_neg_integer(),
+            succeeded: non_neg_integer(),
+            failed: non_neg_integer(),
+            results: [map()]
+          }
+          | %{success: false, error: String.t()}
   def spawn_agents(ctx, %{"tasks" => tasks}) when is_list(tasks) do
     max_concurrency = ctx.deps[:parallel_max_concurrency] || @default_max_concurrency
     timeout = ctx.deps[:parallel_timeout] || @default_timeout
@@ -289,10 +326,17 @@ defmodule Nous.Plugins.SubAgent do
       "Spawning #{task_count} parallel sub-agents (max_concurrency: #{max_concurrency})"
     )
 
+    # At the task ceiling, run the sub-agents one at a time rather than refusing
+    # the batch: the model gets every result, just later. `run_parallel_task/3`
+    # stays the sole per-item body on both paths, so every child still goes
+    # through `run_sub_agent/4`'s `confine_to_parent/2` clamp — the fallback
+    # cannot widen a sub-agent's filesystem reach. The per-item `timeout` is the
+    # one thing lost: with no task to kill, a sub-agent that never returns holds
+    # the caller instead of being reported as a crash.
     results =
-      Nous.TaskSupervisor
-      |> Task.Supervisor.async_stream_nolink(
-        Enum.with_index(tasks),
+      tasks
+      |> Enum.with_index()
+      |> Nous.Tasks.stream(
         fn {task_spec, index} ->
           run_parallel_task(ctx, task_spec, index)
         end,
@@ -327,6 +371,7 @@ defmodule Nous.Plugins.SubAgent do
   # ===========================================================================
 
   @doc false
+  @spec compute_sub_deps(map()) :: map()
   def compute_sub_deps(parent_deps) do
     case parent_deps[:sub_agent_shared_deps] do
       keys when is_list(keys) ->
@@ -349,6 +394,65 @@ defmodule Nous.Plugins.SubAgent do
         raise ArgumentError,
               ":sub_agent_shared_deps must be a list of keys, :all, or nil, got: #{inspect(invalid)}"
     end
+  end
+
+  # The filesystem jail is inherited independently of `:sub_agent_shared_deps`.
+  # Forwarding is an opt-in for capabilities; confinement is not a capability,
+  # and a child that inherits nothing inherits PathGuard's `File.cwd!/0`
+  # fallback — a WIDER jail than the parent's. Since a sub-agent's prompt is
+  # model-authored, it must be confined at least as tightly as its parent.
+  defp confine_to_parent(sub_deps, parent_ctx) do
+    root =
+      case PathGuard.effective_root(parent_ctx) do
+        {:ok, parent_root} ->
+          clamp_root(requested_root(sub_deps, parent_ctx), parent_root)
+
+        {:error, _reason} ->
+          # The parent's own root is unusable, so PathGuard denies every path
+          # for the parent. Pass the offending value through verbatim instead
+          # of substituting a working one: the child must fail exactly as
+          # closed as its parent, never fall back to the cwd.
+          Map.get(parent_ctx.deps, :workspace_root)
+      end
+
+    Map.put(sub_deps, :workspace_root, root)
+  end
+
+  # An operator may ask for a narrower child root; a forwarded `:workspace_root`
+  # (via `:sub_agent_shared_deps`) is the parent's own and clamps to a no-op.
+  defp requested_root(sub_deps, parent_ctx) do
+    parent_ctx.deps[:sub_agent_workspace_root] || sub_deps[:workspace_root]
+  end
+
+  defp clamp_root(nil, parent_root), do: parent_root
+
+  defp clamp_root(requested, parent_root) when is_binary(requested) and requested != "" do
+    # Relative requests resolve INSIDE the parent's root rather than against the
+    # OS cwd, which is the only reading that cannot widen.
+    expanded = Path.expand(requested, parent_root)
+
+    if expanded == parent_root or String.starts_with?(expanded, parent_root <> "/") do
+      expanded
+    else
+      Logger.warning(
+        "[sub-agent] :sub_agent_workspace_root #{inspect(requested)} is outside the parent's " <>
+          "workspace root #{inspect(parent_root)}; clamping to the parent's root"
+      )
+
+      parent_root
+    end
+  end
+
+  defp clamp_root(invalid, parent_root) do
+    # Unusable request: fall back to the parent's root, which is confinement the
+    # parent already accepted. Honouring it would deny the child every path over
+    # an operator typo; ignoring it can only narrow, never widen.
+    Logger.warning(
+      "[sub-agent] ignoring unusable :sub_agent_workspace_root #{inspect(invalid)}; " <>
+        "confining to the parent's workspace root #{inspect(parent_root)}"
+    )
+
+    parent_root
   end
 
   defp resolve_agent(ctx, template_name, _args) when is_binary(template_name) do
@@ -397,7 +501,10 @@ defmodule Nous.Plugins.SubAgent do
     label = if index, do: "[sub-agent #{index}]", else: "[sub-agent]"
     Logger.info("#{label} Starting: #{String.slice(task, 0, 80)}")
 
-    sub_deps = compute_sub_deps(parent_ctx.deps)
+    sub_deps =
+      parent_ctx.deps
+      |> compute_sub_deps()
+      |> confine_to_parent(parent_ctx)
 
     # Propagate PubSub with scoped topic
     parent_pubsub = parent_ctx.deps[:__sub_agent_pubsub__]

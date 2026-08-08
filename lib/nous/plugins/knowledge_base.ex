@@ -166,42 +166,40 @@ defmodule Nous.Plugins.KnowledgeBase do
   end
 
   defp inject_relevant_entries(ctx, config) do
-    query = latest_user_query(ctx.messages)
-
-    if query do
-      store_mod = config[:store]
-      store_state = config[:store_state]
-      limit = config[:inject_limit] || 3
-      min_score = config[:inject_min_score] || 0.3
-
-      search_opts = [
-        limit: limit,
-        min_score: min_score,
-        kb_id: config[:kb_id]
-      ]
-
-      case store_mod.search_entries(store_state, query, search_opts) do
-        {:ok, []} ->
-          ctx
-
-        {:ok, results} ->
-          kb_text =
-            results
-            |> Enum.map(fn {entry, score} ->
-              summary = entry.summary || String.slice(entry.content, 0, 200)
-              "- [[#{entry.slug}]] #{entry.title} (score: #{Float.round(score, 3)}): #{summary}"
-            end)
-            |> Enum.join("\n")
-
-          kb_msg = Nous.Message.system("[Relevant Knowledge]\n#{kb_text}")
-          %{ctx | messages: ctx.messages ++ [kb_msg]}
-
-        _ ->
-          ctx
-      end
-    else
-      ctx
+    case latest_user_query(ctx.messages) do
+      nil -> ctx
+      query -> inject_for_query(ctx, config, query)
     end
+  end
+
+  defp inject_for_query(ctx, config, query) do
+    store_mod = config[:store]
+    store_state = config[:store_state]
+
+    search_opts = [
+      limit: config[:inject_limit] || 3,
+      min_score: config[:inject_min_score] || 0.3,
+      kb_id: config[:kb_id]
+    ]
+
+    case store_mod.search_entries(store_state, query, search_opts) do
+      {:ok, []} ->
+        ctx
+
+      {:ok, results} ->
+        kb_msg = Nous.Message.system("[Relevant Knowledge]\n#{format_entries(results)}")
+        %{ctx | messages: ctx.messages ++ [kb_msg]}
+
+      _ ->
+        ctx
+    end
+  end
+
+  defp format_entries(results) do
+    Enum.map_join(results, "\n", fn {entry, score} ->
+      summary = entry.summary || String.slice(entry.content, 0, 200)
+      "- [[#{entry.slug}]] #{entry.title} (score: #{Float.round(score, 3)}): #{summary}"
+    end)
   end
 
   defp latest_user_query(messages) do

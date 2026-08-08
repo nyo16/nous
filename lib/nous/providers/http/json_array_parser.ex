@@ -102,39 +102,78 @@ defmodule Nous.Providers.HTTP.JSONArrayParser do
     end
   end
 
+  # ## Why this file never matches on `buffer` with bit syntax
+  #
+  # The stream backends grow the accumulator with `buffer <> chunk`. ERTS
+  # extends such a binary in place — O(chunk) per append — but only while
+  # the binary stays *writable*. Starting a bit-syntax match on it (a
+  # function head like `<<"{", _::binary>> = buffer`, or walking a
+  # `binary_part/3` sub-binary of it) emasculates it, and every later
+  # append then copies the whole accumulator: quadratic. Direct A/B over
+  # 5000 appends of 1 KB: 1.7 ms untouched, ~1300 ms once matched. The
+  # perf audit measured the same shape here as 125 ms of concat vs 11 ms
+  # of parse at 1920 KB, 2.68 s at 8 MB (F-3).
+  #
+  # So: inspect the accumulator only through BIFs (`:binary.at/2`,
+  # `binary_part/3`, `byte_size/1`), and hand the byte walker a
+  # `:binary.copy/1` of the unscanned tail — one chunk's worth, not the
+  # accumulated buffer. Rewriting any of this back into idiomatic binary
+  # pattern matching restores the quadratic.
+
   # A live scan_state means the buffer already starts at the `{` of the
   # object being scanned: there is no array syntax left to skip, and
   # re-trimming would invalidate the recorded offset. Anything else is a
   # stale token from a caller that didn't hand back the buffer we returned
   # — drop it and do a correct (merely slower) full parse.
-  defp resume_or_trim(<<"{", _::binary>> = buffer, scan_state) when scan_state != nil,
-    do: {buffer, scan_state}
+  defp resume_or_trim(buffer, scan_state) do
+    if scan_state != nil and object_start?(buffer) do
+      {buffer, scan_state}
+    else
+      {skip_array_syntax(buffer), nil}
+    end
+  end
 
-  defp resume_or_trim(buffer, _scan_state), do: {skip_array_syntax(buffer), nil}
+  defp object_start?(buffer), do: byte_size(buffer) > 0 and :binary.at(buffer, 0) == ?{
 
   # Skip array-level syntax: [ ] , and whitespace between objects
-  defp skip_array_syntax(<<c, rest::binary>>) when c in ~c|[,] \t\n\r|,
-    do: skip_array_syntax(rest)
+  defp skip_array_syntax(buffer), do: skip_array_syntax(buffer, 0, byte_size(buffer))
 
-  defp skip_array_syntax(buffer), do: buffer
+  defp skip_array_syntax(buffer, pos, size) when pos < size do
+    case :binary.at(buffer, pos) do
+      c when c in ~c|[,] \t\n\r| -> skip_array_syntax(buffer, pos + 1, size)
+      _ -> drop_prefix(buffer, pos, size)
+    end
+  end
+
+  defp skip_array_syntax(_buffer, _pos, _size), do: ""
+
+  # Nothing to skip: hand back the accumulator itself rather than a
+  # sub-binary of it, so the backend's next append still extends in place.
+  defp drop_prefix(buffer, 0, _size), do: buffer
+  defp drop_prefix(buffer, pos, size), do: binary_part(buffer, pos, size - pos)
 
   # Extract the next complete top-level JSON object from the buffer.
   # Only starts extraction when buffer begins with `{`.
-  defp extract_next_object(<<"{", _::binary>> = buffer, scan_state) do
-    {pos, depth, in_string} = resume_point(buffer, scan_state)
-    tail = binary_part(buffer, pos, byte_size(buffer) - pos)
+  defp extract_next_object(buffer, scan_state) do
+    if object_start?(buffer) do
+      scan_object(buffer, resume_point(buffer, scan_state))
+    else
+      {:incomplete, nil}
+    end
+  end
+
+  defp scan_object(buffer, {pos, depth, in_string}) do
+    size = byte_size(buffer)
+    tail = :binary.copy(binary_part(buffer, pos, size - pos))
 
     case find_object_end(tail, pos, depth, in_string) do
       {:ok, end_pos} ->
-        <<json::binary-size(^end_pos), rest::binary>> = buffer
-        {:ok, json, rest}
+        {:ok, binary_part(buffer, 0, end_pos), binary_part(buffer, end_pos, size - end_pos)}
 
       {:incomplete, new_pos, new_depth, new_in_string} ->
         {:incomplete, {new_pos, new_depth, new_in_string}}
     end
   end
-
-  defp extract_next_object(_, _), do: {:incomplete, nil}
 
   # Backends only ever append to the buffer, so a returned offset stays
   # valid. A caller that hands back a stale token gets a correct (merely

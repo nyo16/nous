@@ -99,19 +99,18 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   """
   @spec latin_hypercube_sample(t(), non_neg_integer()) :: [map()]
   def latin_hypercube_sample(%SearchSpace{parameters: parameters}, n) do
-    # For each parameter, divide range into n equal intervals
-    # and sample one point from each interval
+    # For each parameter, divide range into n equal intervals and sample one
+    # point from each interval. Samples are kept as tuples: Enum.at/2 walked
+    # each list from the head once per trial, making assembly O(params x n^2).
     param_samples =
       Enum.map(parameters, fn param ->
         samples = latin_hypercube_for_param(param, n)
-        {param.name, Enum.shuffle(samples)}
+        {param.name, samples |> Enum.shuffle() |> List.to_tuple()}
       end)
 
     # Combine samples from each parameter
     Enum.map(0..(n - 1), fn i ->
-      param_samples
-      |> Enum.map(fn {name, samples} -> {name, Enum.at(samples, i)} end)
-      |> Map.new()
+      Map.new(param_samples, fn {name, samples} -> {name, elem(samples, i)} end)
     end)
   end
 
@@ -141,21 +140,17 @@ defmodule Nous.Eval.Optimizer.SearchSpace do
   # Private helpers
 
   defp calculate_size(parameters) do
-    Enum.reduce(parameters, 1, fn param, acc ->
-      case acc do
-        :infinite ->
-          :infinite
+    Enum.reduce(parameters, 1, &multiply_size/2)
+  end
 
-        n ->
-          param_size = length(Parameter.values(param))
+  # A parameter with no values makes the grid unenumerable, not empty.
+  defp multiply_size(_param, :infinite), do: :infinite
 
-          if param_size == 0 do
-            :infinite
-          else
-            n * param_size
-          end
-      end
-    end)
+  defp multiply_size(param, n) do
+    case length(Parameter.values(param)) do
+      0 -> :infinite
+      param_size -> n * param_size
+    end
   end
 
   defp cartesian_product([]), do: [[]]

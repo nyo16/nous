@@ -427,6 +427,22 @@ defmodule Nous.Message.ContentPart do
     "data:#{mime_type};base64,#{base64_string}"
   end
 
+  # Extension -> MIME lookup. A data table rather than a `case` so adding a
+  # format is a one-line data change instead of another branch.
+  @mime_types %{
+    ".jpg" => "image/jpeg",
+    ".jpeg" => "image/jpeg",
+    ".png" => "image/png",
+    ".gif" => "image/gif",
+    ".bmp" => "image/bmp",
+    ".webp" => "image/webp",
+    ".svg" => "image/svg+xml",
+    ".ico" => "image/x-icon",
+    ".tiff" => "image/tiff",
+    ".tif" => "image/tiff"
+  }
+  @default_mime_type "application/octet-stream"
+
   @doc """
   Detect MIME type from file extension.
 
@@ -444,19 +460,8 @@ defmodule Nous.Message.ContentPart do
   """
   @spec detect_mime_type(String.t()) :: String.t()
   def detect_mime_type(file_path) when is_binary(file_path) do
-    case Path.extname(file_path) |> String.downcase() do
-      ".jpg" -> "image/jpeg"
-      ".jpeg" -> "image/jpeg"
-      ".png" -> "image/png"
-      ".gif" -> "image/gif"
-      ".bmp" -> "image/bmp"
-      ".webp" -> "image/webp"
-      ".svg" -> "image/svg+xml"
-      ".ico" -> "image/x-icon"
-      ".tiff" -> "image/tiff"
-      ".tif" -> "image/tiff"
-      _ -> "application/octet-stream"
-    end
+    ext = file_path |> Path.extname() |> String.downcase()
+    Map.get(@mime_types, ext, @default_mime_type)
   end
 
   @doc """

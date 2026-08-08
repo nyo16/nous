@@ -58,6 +58,7 @@ defmodule Nous.KnowledgeBase.Entry do
 
   Requires `:title` and `:content`. Auto-generates id, slug, and timestamps.
   """
+  @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
     now = DateTime.utc_now()
     id = Map.get(attrs, :id) || generate_id()
@@ -92,6 +93,7 @@ defmodule Nous.KnowledgeBase.Entry do
   Call after any mutation of `title` or `content` (e.g. store `update_entry`)
   so search never scores against a stale cache.
   """
+  @spec with_downcase_cache(t()) :: t()
   def with_downcase_cache(%Entry{} = entry) do
     %{
       entry
@@ -108,6 +110,7 @@ defmodule Nous.KnowledgeBase.Entry do
       iex> Nous.KnowledgeBase.Entry.slugify("Elixir GenServer Patterns")
       "elixir-genserver-patterns"
   """
+  @spec slugify(String.t()) :: String.t()
   def slugify(title) when is_binary(title) do
     # L-3: normalise unicode to NFD and strip combining marks so accented
     # characters are preserved as their base ASCII form ("Café" -> "cafe")

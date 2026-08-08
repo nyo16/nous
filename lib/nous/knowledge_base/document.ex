@@ -48,6 +48,7 @@ defmodule Nous.KnowledgeBase.Document do
 
   Requires `:content` and `:title`. Auto-generates id, checksum, and timestamps.
   """
+  @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
     now = DateTime.utc_now()
     id = Map.get(attrs, :id) || generate_id()
@@ -74,6 +75,7 @@ defmodule Nous.KnowledgeBase.Document do
   @doc """
   Computes SHA-256 checksum of content for change detection.
   """
+  @spec compute_checksum(String.t()) :: String.t()
   def compute_checksum(content) when is_binary(content) do
     :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
   end

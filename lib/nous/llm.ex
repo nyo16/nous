@@ -28,10 +28,35 @@ defmodule Nous.LLM do
       {:ok, stream} = Nous.stream_text("openai:gpt-4", "Write a story")
       stream |> Stream.each(&IO.write/1) |> Stream.run()
 
+  ## Relationship to `Nous.run/3`
+
+  This is the deliberately thin path: a prompt, a model, optionally tools, and
+  nothing else. Individual tool *calls* run through exactly the code the agent
+  runner uses, so tool-name cleaning, retry and timeout handling, structured
+  error formatting and the `requires_approval` gate behave identically on both
+  paths. Everything the runner layers *around* those calls is omitted here by
+  design — reach for `Nous.run/3` if you need any of it:
+
+    * **Hooks** — no `:pre_tool_use`/`:post_tool_use`; there is no registry.
+    * **Plugins and behaviour callbacks** — no `before_request`, no
+      `after_response`, no `after_tool`.
+    * **Permission policies** — `Nous.Permissions` tool filtering and
+      policy-driven approval do not apply. A tool's own `requires_approval`
+      flag still does, enforced by `Nous.ToolExecutor`.
+    * **Telemetry** — no `[:nous, :agent, :iteration, _]` events.
+    * **Parallel tool calls** — calls in one turn always run sequentially.
+    * **Context updates** — every call in a run sees the same
+      `Nous.RunContext`. A tool may still return a `Nous.Tool.ContextUpdate`,
+      but its operations are discarded rather than merged into `:deps`, so they
+      are invisible to later calls and iterations.
+    * **A configurable iteration budget** — the cap is a fixed 10 model turns.
+      `generate_text/3` returns `{:error, %Nous.Errors.MaxIterationsExceeded{}}`
+      on reaching it; `stream_text/3` yields that error as a final event.
+
   """
 
-  alias Nous.{Fallback, Model, ModelDispatcher, Message, Tool, ToolExecutor, RunContext, Messages}
-  alias Nous.AgentRunner.RequestDispatch
+  alias Nous.{Fallback, Model, ModelDispatcher, Message, Tool, RunContext, Messages}
+  alias Nous.AgentRunner.{RequestDispatch, ToolExecution}
   alias Nous.StreamNormalizer.ToolCallAccumulator
 
   # Resolve the dispatcher for this call. `override` is the caller's
@@ -272,41 +297,30 @@ defmodule Nous.LLM do
           {:halt, :done}
 
         {_messages, iteration} when iteration >= @max_tool_iterations ->
-          Logger.warning("LLM stream hit max tool iterations (#{@max_tool_iterations}); halting")
+          # Surface the cap as an event, mirroring the request-failure branch
+          # below. A silent :halt is indistinguishable from a turn that simply
+          # finished, so a consumer had no way to see its conversation was
+          # truncated. generate_text/3 returns this same error on this cap.
+          Logger.warning(
+            "LLM stream hit max tool iterations (#{@max_tool_iterations}); emitting :error event"
+          )
 
-          {:halt, :done}
+          error =
+            Nous.Errors.MaxIterationsExceeded.exception(max_iterations: @max_tool_iterations)
+
+          {[{:error, error}], :done}
 
         {messages, iteration} ->
-          case Fallback.with_fallback(model_chain, fn target_model ->
-                 target_settings =
-                   RequestDispatch.rebuild_tool_settings(
-                     target_model.provider,
-                     original_model.provider,
-                     settings,
-                     tools
-                   )
-
-                 get_dispatcher(dispatcher).request_stream(
-                   target_model,
-                   messages,
-                   target_settings
-                 )
-               end) do
+          case request_stream_with_fallback(
+                 model_chain,
+                 original_model,
+                 messages,
+                 settings,
+                 tools,
+                 dispatcher
+               ) do
             {:ok, raw_stream} ->
-              {chunks, tool_calls, content} = aggregate_stream_turn(raw_stream)
-
-              if tool_calls == [] do
-                {chunks, :done}
-              else
-                Logger.debug(
-                  "LLM stream produced #{length(tool_calls)} tool call(s), executing..."
-                )
-
-                assistant_msg = build_streamed_assistant_message(content, tool_calls)
-                tool_results = execute_tool_calls(tool_calls, tools, ctx)
-                new_messages = messages ++ [assistant_msg] ++ tool_results
-                {chunks, {new_messages, iteration + 1}}
-              end
+              continue_stream_turn(raw_stream, messages, iteration, tools, ctx)
 
             {:error, reason} ->
               # Surface the failure as an event before halting. Previously
@@ -319,6 +333,47 @@ defmodule Nous.LLM do
       end,
       fn _ -> :ok end
     )
+  end
+
+  # One streaming request across the fallback chain. Tool settings are rebuilt
+  # per attempt because the chain may land on a provider whose tool wire format
+  # differs from the one the caller's settings were written for.
+  defp request_stream_with_fallback(
+         model_chain,
+         original_model,
+         messages,
+         settings,
+         tools,
+         dispatcher
+       ) do
+    Fallback.with_fallback(model_chain, fn target_model ->
+      target_settings =
+        RequestDispatch.rebuild_tool_settings(
+          target_model.provider,
+          original_model.provider,
+          settings,
+          tools
+        )
+
+      get_dispatcher(dispatcher).request_stream(target_model, messages, target_settings)
+    end)
+  end
+
+  # Outcome of one consumed turn: halt when the model asked for no tools,
+  # otherwise append the assistant message plus tool results and loop again.
+  defp continue_stream_turn(raw_stream, messages, iteration, tools, ctx) do
+    {chunks, tool_calls, content} = aggregate_stream_turn(raw_stream)
+
+    if tool_calls == [] do
+      {chunks, :done}
+    else
+      Logger.debug("LLM stream produced #{length(tool_calls)} tool call(s), executing...")
+
+      assistant_msg = build_streamed_assistant_message(content, tool_calls)
+      tool_results = execute_tool_calls(tool_calls, tools, ctx)
+      new_messages = messages ++ [assistant_msg] ++ tool_results
+      {chunks, {new_messages, iteration + 1}}
+    end
   end
 
   defp aggregate_stream_turn(stream) do
@@ -376,7 +431,10 @@ defmodule Nous.LLM do
 
   # Private helpers
 
-  # Tool execution loop
+  # Request loop. Deliberately not the runner's `IterationLoop`: there is no
+  # %Agent{}, no %Agent.Context{} and no hook registry here (see the moduledoc
+  # for the full list of omissions). Only the per-call execution below is
+  # shared, which is where the two implementations actually drifted.
   defp run_with_tools(model, messages, settings, tools, ctx, iteration, dispatcher)
        when iteration < @max_tool_iterations do
     case get_dispatcher(dispatcher).request(model, messages, settings) do
@@ -405,27 +463,18 @@ defmodule Nous.LLM do
     {:error, Nous.Errors.MaxIterationsExceeded.exception(max_iterations: @max_tool_iterations)}
   end
 
+  # One tool executor for the whole library. `execute_single_tool/3` owns
+  # tool-name cleaning, ContextUpdate returns, the legacy `__update_context__`
+  # key and structured error formatting — this module reimplemented a subset of
+  # that and got the ContextUpdate arity wrong, raising CaseClauseError on any
+  # tool that used it.
+  #
+  # The returned context-update map is dropped: there is no %Agent.Context{} to
+  # merge it into, and this entry point's contract is stateless across calls.
   defp execute_tool_calls(tool_calls, tools, ctx) do
-    tools_by_name = Map.new(tools, fn tool -> {tool.name, tool} end)
-
     Enum.map(tool_calls, fn call ->
-      name = Nous.ToolCall.field(call, :name)
-      id = Nous.ToolCall.field(call, :id)
-      arguments = Nous.ToolCall.field(call, :arguments)
-
-      tool = Map.get(tools_by_name, name)
-
-      result =
-        if tool do
-          case ToolExecutor.execute(tool, arguments, ctx) do
-            {:ok, result} -> result
-            {:error, error} -> "Error: #{inspect(error)}"
-          end
-        else
-          "Error: Unknown tool '#{name}'"
-        end
-
-      Message.tool(id, result, name: name)
+      {result_msg, _context_updates} = ToolExecution.execute_single_tool(tools, call, ctx)
+      result_msg
     end)
   end
 

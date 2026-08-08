@@ -7,6 +7,7 @@ defmodule Nous.Messages.Gemini do
 
   alias Nous.{Message, Usage}
   alias Nous.Message.ContentPart
+  alias Nous.Messages.Cache
 
   require Logger
 
@@ -26,7 +27,7 @@ defmodule Nous.Messages.Gemini do
   @spec to_format([Message.t()]) :: {String.t() | nil, [map()]}
   def to_format(messages) when is_list(messages) do
     {system_prompt, other_messages} = Message.split_system(messages)
-    {system_prompt, Enum.map(other_messages, &message_to_gemini/1)}
+    {system_prompt, Cache.map(__MODULE__, other_messages, &message_to_gemini/1)}
   end
 
   @doc """
@@ -248,72 +249,44 @@ defmodule Nous.Messages.Gemini do
   # to text because the on-disk format is already user-edited.
   defp parse_content(parts_data) when is_list(parts_data) do
     {content_parts, reasoning_content, tool_calls} =
-      Enum.reduce(parts_data, {[], [], []}, fn item, {parts, reasoning, tools} ->
-        case item do
-          %{"text" => text} when is_binary(text) ->
-            cond do
-              # Drop whitespace-only text. Gemini emits these between tool
-              # calls and after blocked generations. Carrying them forward
-              # produces empty ContentParts that add no value.
-              String.trim(text) == "" ->
-                {parts, reasoning, tools}
-
-              Map.get(item, "thought") ->
-                {parts, [ContentPart.thinking(text) | reasoning], tools}
-
-              true ->
-                {[ContentPart.text(text) | parts], reasoning, tools}
-            end
-
-          %{"functionCall" => %{"name" => name} = function_call} when is_binary(name) ->
-            tool_call =
-              %{
-                "id" => generate_tool_call_id(),
-                "name" => name,
-                "arguments" => Map.get(function_call, "args", %{})
-              }
-              |> maybe_put_thought_signature(Map.get(item, "thoughtSignature"))
-
-            {parts, reasoning, [tool_call | tools]}
-
-          _ ->
-            {parts, reasoning, tools}
-        end
-      end)
+      Enum.reduce(parts_data, {[], [], []}, &accumulate_response_part/2)
 
     {Enum.reverse(content_parts), Enum.reverse(reasoning_content), Enum.reverse(tool_calls)}
   end
 
+  defp accumulate_response_part(%{"text" => text} = item, {parts, reasoning, tools})
+       when is_binary(text) do
+    cond do
+      # Drop whitespace-only text. Gemini emits these between tool calls and
+      # after blocked generations. Carrying them forward produces empty
+      # ContentParts that add no value.
+      String.trim(text) == "" -> {parts, reasoning, tools}
+      Map.get(item, "thought") -> {parts, [ContentPart.thinking(text) | reasoning], tools}
+      true -> {[ContentPart.text(text) | parts], reasoning, tools}
+    end
+  end
+
+  defp accumulate_response_part(
+         %{"functionCall" => %{"name" => name} = function_call} = item,
+         {parts, reasoning, tools}
+       )
+       when is_binary(name) do
+    tool_call =
+      %{
+        "id" => generate_tool_call_id(),
+        "name" => name,
+        "arguments" => Map.get(function_call, "args", %{})
+      }
+      |> maybe_put_thought_signature(Map.get(item, "thoughtSignature"))
+
+    {parts, reasoning, [tool_call | tools]}
+  end
+
+  defp accumulate_response_part(_item, acc), do: acc
+
   defp parse_parts(parts) when is_list(parts) do
     {text_parts, reasoning_parts, tool_calls} =
-      Enum.reduce(parts, {[], [], []}, fn part, {texts, reasoning, tools} ->
-        cond do
-          Map.has_key?(part, "text") ->
-            text = Map.get(part, "text", "")
-
-            if Map.get(part, "thought") do
-              {texts, [text | reasoning], tools}
-            else
-              {[text | texts], reasoning, tools}
-            end
-
-          Map.has_key?(part, "functionCall") ->
-            function_call = Map.get(part, "functionCall")
-
-            tool_call =
-              %{
-                "id" => generate_tool_call_id(),
-                "name" => Map.get(function_call, "name"),
-                "arguments" => Map.get(function_call, "args", %{})
-              }
-              |> maybe_put_thought_signature(Map.get(part, "thoughtSignature"))
-
-            {texts, reasoning, [tool_call | tools]}
-
-          true ->
-            {texts, reasoning, tools}
-        end
-      end)
+      Enum.reduce(parts, {[], [], []}, &accumulate_stored_part/2)
 
     text_content = text_parts |> Enum.reverse() |> Enum.join(" ") |> String.trim()
     reasoning_content = reasoning_parts |> Enum.reverse() |> Enum.join(" ") |> String.trim()
@@ -326,6 +299,35 @@ defmodule Nous.Messages.Gemini do
       end
 
     {text_content, reasoning_content, Enum.reverse(tool_calls)}
+  end
+
+  defp accumulate_stored_part(part, {texts, reasoning, tools} = acc) do
+    cond do
+      Map.has_key?(part, "text") -> accumulate_stored_text(part, acc)
+      Map.has_key?(part, "functionCall") -> {texts, reasoning, [stored_tool_call(part) | tools]}
+      true -> acc
+    end
+  end
+
+  defp accumulate_stored_text(part, {texts, reasoning, tools}) do
+    text = Map.get(part, "text", "")
+
+    if Map.get(part, "thought") do
+      {texts, [text | reasoning], tools}
+    else
+      {[text | texts], reasoning, tools}
+    end
+  end
+
+  defp stored_tool_call(part) do
+    function_call = Map.get(part, "functionCall")
+
+    %{
+      "id" => generate_tool_call_id(),
+      "name" => Map.get(function_call, "name"),
+      "arguments" => Map.get(function_call, "args", %{})
+    }
+    |> maybe_put_thought_signature(Map.get(part, "thoughtSignature"))
   end
 
   @doc """
@@ -459,7 +461,7 @@ defmodule Nous.Messages.Gemini do
   Build Vertex's `tools` array from function declarations and native tools.
 
   - `function_declarations` — list of Gemini-shaped function declarations
-    (already converted via `Nous.ToolSchema.to_gemini/1`). May be empty.
+    (already converted via `Nous.Tool.Wire.to_gemini/1`). May be empty.
   - `native_tools` — list of native Vertex tools, each one of:
       * `:google_search`
       * `:url_context`

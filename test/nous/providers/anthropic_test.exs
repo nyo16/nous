@@ -10,7 +10,7 @@ defmodule Nous.Providers.AnthropicTest do
   alias Nous.Model
   alias Nous.Providers.Anthropic
   alias Nous.Tool
-  alias Nous.ToolSchema
+  alias Nous.Tool.Wire
 
   @api_key "sk-ant-test-key"
   @api_version "2023-06-01"
@@ -20,11 +20,11 @@ defmodule Nous.Providers.AnthropicTest do
     %{bypass: bypass, base: "http://localhost:#{bypass.port}"}
   end
 
-  # Built through `ToolSchema.to_anthropic/1` rather than hand-written so a
+  # Built through `Wire.to_anthropic/1` rather than hand-written so a
   # regression in the conversion (e.g. emitting OpenAI's `parameters` envelope
   # instead of `input_schema`) fails here instead of passing against a fixture.
   defp weather_tool_schema do
-    ToolSchema.to_anthropic(%Tool{
+    Wire.to_anthropic(%Tool{
       name: "get_weather",
       description: "Look up the current weather for a city",
       parameters: %{

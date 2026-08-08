@@ -5,6 +5,9 @@ defmodule Nous.Tools.PathGuardTest do
 
   alias Nous.Tools.PathGuard
 
+  # Mirrors @max_symlink_depth in Nous.Tools.PathGuard.
+  @resolution_cap 40
+
   setup do
     root = Path.join(System.tmp_dir!(), "path_guard_test_#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -84,6 +87,80 @@ defmodule Nous.Tools.PathGuardTest do
     test "allows creating a new (non-existent) nested file inside the workspace",
          %{ctx: ctx} do
       assert {:ok, _} = PathGuard.validate("newdir/sub/newfile.txt", ctx)
+    end
+
+    test "rejects a symlink cycle instead of resolving forever", %{root: root, ctx: ctx} do
+      # a -> b -> a. The depth cap is the only thing between this and an
+      # unbounded recursion, and it is what turns a DoS into a readable error.
+      File.ln_s!(Path.join(root, "b"), Path.join(root, "a"))
+      File.ln_s!(Path.join(root, "a"), Path.join(root, "b"))
+
+      assert {:error, reason} = PathGuard.validate("a", ctx)
+      assert reason =~ "symlink loop"
+    end
+
+    test "rejects a symlink chain deeper than the resolution cap", %{root: root, ctx: ctx} do
+      # The cap counts every resolved component, not just symlink hops, so a
+      # chain of @max_symlink_depth + 1 links exceeds it whatever the workspace
+      # root's own depth. The chain terminates at a real file inside the
+      # workspace, so nothing but the cap can reject it — raising the cap lets
+      # this resolve, lowering it to 0 breaks the single-hop test above.
+      dir = Path.join(root, "chain")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "target.txt"), "x")
+
+      last =
+        Enum.reduce(1..(@resolution_cap + 1), "target.txt", fn i, prev ->
+          File.ln_s!(Path.join(dir, prev), Path.join(dir, "l#{i}"))
+          "l#{i}"
+        end)
+
+      assert {:error, reason} = PathGuard.validate("chain/#{last}", ctx)
+      assert reason =~ "symlink loop"
+    end
+  end
+
+  describe "an unusable :workspace_root" do
+    # A charlist, a forgotten `{:ok, path}` unwrap, an atom from a config typo:
+    # each used to raise CaseClauseError from inside the guard rather than
+    # returning the error tuple every caller already handles.
+    @unusable [nil, :atom, ~c"charlist", 123, {:ok, "/tmp"}, ""]
+
+    for value <- @unusable do
+      test "#{inspect(value)} is refused, not raised", %{root: root} do
+        ctx = %{deps: %{workspace_root: unquote(Macro.escape(value))}}
+
+        assert {:error, reason} = PathGuard.validate(Path.join(root, "ok.txt"), ctx)
+        assert reason =~ "workspace root"
+        assert reason =~ "is not a non-empty string"
+      end
+    end
+
+    test "denies a path that WOULD be legal under the cwd fallback" do
+      # The distinguishing test: a silent `nil -> File.cwd!()` fallback would
+      # accept this, since the path is inside the cwd. Only failing closed
+      # rejects it. The second assertion is the control proving the probe bites.
+      cwd_path = Path.join(File.cwd!(), "mix.exs")
+
+      assert {:error, reason} = PathGuard.validate(cwd_path, %{deps: %{workspace_root: nil}})
+      assert reason =~ "is not a non-empty string"
+
+      assert {:ok, _} = PathGuard.validate(cwd_path, %{deps: %{}})
+    end
+  end
+
+  describe "effective_root/1" do
+    test "expands a configured root", %{root: root} do
+      assert PathGuard.effective_root(%{deps: %{workspace_root: root}}) ==
+               {:ok, Path.expand(root)}
+    end
+
+    test "an ABSENT key still means the cwd - the documented default" do
+      assert PathGuard.effective_root(%{deps: %{}}) == {:ok, Path.expand(File.cwd!())}
+    end
+
+    test "an unusable value is an error, so a caller deriving a boundary cannot widen it" do
+      assert {:error, _} = PathGuard.effective_root(%{deps: %{workspace_root: :nope}})
     end
   end
 end

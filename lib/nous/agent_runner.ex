@@ -39,13 +39,7 @@ defmodule Nous.AgentRunner do
 
   alias Nous.Agent.{Behaviour, Callbacks, Context}
 
-  alias Nous.AgentRunner.{
-    IterationLoop,
-    PromptAssembly,
-    RequestDispatch,
-    Streaming,
-    ToolExecution
-  }
+  alias Nous.AgentRunner.{IterationLoop, PromptAssembly, RequestDispatch, Streaming}
 
   require Logger
 
@@ -80,149 +74,11 @@ defmodule Nous.AgentRunner do
   @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(%Agent{} = agent, prompt, opts \\ []) do
     agent = apply_runtime_overrides(agent, opts)
-    start_time = System.monotonic_time()
-
-    Logger.info(
-      "Starting agent run: #{agent.name} with model #{agent.model.provider}:#{agent.model.model}"
-    )
-
-    Logger.debug("Agent has #{length(agent.tools)} tools available")
-
-    # Emit start event
-    :telemetry.execute(
-      [:nous, :agent, :run, :start],
-      %{system_time: System.system_time(), monotonic_time: start_time},
-      %{
-        agent_name: agent.name,
-        model_provider: agent.model.provider,
-        model_name: agent.model.model,
-        tool_count: length(agent.tools),
-        has_tools: length(agent.tools) > 0
-      }
-    )
-
-    # Build context from options
-    ctx = build_context(agent, prompt, opts)
-
-    # Execute callbacks
-    Callbacks.execute(ctx, :on_agent_start, %{agent: agent})
-
-    # Get behaviour module
-    behaviour = Behaviour.get_module(agent)
-
-    # Initialize context via behaviour (optional callback)
-    ctx = Behaviour.call(behaviour, :init_context, [agent, ctx], ctx)
-
-    # Initialize context via plugins
-    ctx = Plugin.run_init(agent.plugins, agent, ctx)
-
-    # Initialize hooks registry
-    ctx =
-      if agent.hooks != [] do
-        %{ctx | hook_registry: Hook.Registry.from_hooks(agent.hooks)}
-      else
-        ctx
-      end
-
-    # Fire session_start hooks
-    Hook.Runner.run(ctx.hook_registry, :session_start, %{agent_name: agent.name})
-
-    # Patch dangling tool calls when continuing from existing context
-    ctx = Context.patch_dangling_tool_calls(ctx)
-
-    # Execute loop and emit stop/exception
-    result = IterationLoop.execute_loop(agent, behaviour, ctx)
+    {ctx, behaviour, start_time} = start_run(agent, prompt, opts)
+    loop_result = IterationLoop.execute_loop(agent, behaviour, ctx)
     duration = System.monotonic_time() - start_time
 
-    case result do
-      {:ok, final_ctx} ->
-        # Extract output via behaviour
-        case behaviour.extract_output(agent, final_ctx) do
-          {:ok, output} ->
-            agent_result = build_result(agent, final_ctx, output)
-
-            # Run after_run plugin hooks
-            updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
-
-            # Fire session_end hooks
-            Hook.Runner.run(updated_ctx.hook_registry, :session_end, %{
-              agent_name: agent.name,
-              output: output
-            })
-
-            agent_result =
-              if updated_ctx != final_ctx,
-                do: build_result(agent, updated_ctx, output),
-                else: agent_result
-
-            duration_ms = System.convert_time_unit(duration, :native, :millisecond)
-
-            Logger.info("""
-            Agent run completed: #{agent.name}
-              Duration: #{duration_ms}ms
-              Iterations: #{final_ctx.iteration}
-              Tokens: #{final_ctx.usage.total_tokens} (in: #{final_ctx.usage.input_tokens}, out: #{final_ctx.usage.output_tokens})
-              Tool calls: #{final_ctx.usage.tool_calls}
-              Requests: #{final_ctx.usage.requests}
-            """)
-
-            active_model =
-              get_in(final_ctx.deps, [:active_model]) || agent.model
-
-            :telemetry.execute(
-              [:nous, :agent, :run, :stop],
-              %{
-                duration: duration,
-                total_tokens: final_ctx.usage.total_tokens,
-                input_tokens: final_ctx.usage.input_tokens,
-                output_tokens: final_ctx.usage.output_tokens,
-                tool_calls: final_ctx.usage.tool_calls,
-                requests: final_ctx.usage.requests,
-                iterations: final_ctx.iteration
-              },
-              %{
-                agent_name: agent.name,
-                model_provider: agent.model.provider,
-                model_name: agent.model.model,
-                # When fallback fired, surface BOTH so observability can
-                # split metrics by original (intended) and active (used).
-                active_model_provider: active_model.provider,
-                active_model_name: active_model.model,
-                fallback_used: active_model != agent.model
-              }
-            )
-
-            # Execute completion callback
-            Callbacks.execute(final_ctx, :on_agent_complete, agent_result)
-
-            {:ok, agent_result}
-
-          {:error, %Errors.ValidationError{} = err} ->
-            max_retries = Keyword.get(agent.structured_output, :max_retries, 0)
-
-            case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
-              {:ok, retry_ctx, output} ->
-                agent_result = build_result(agent, retry_ctx, output)
-                Callbacks.execute(retry_ctx, :on_agent_complete, agent_result)
-                {:ok, agent_result}
-
-              {:error, reason} ->
-                emit_error_telemetry(agent, duration, reason)
-                Callbacks.execute(final_ctx, :on_error, reason)
-                {:error, reason}
-            end
-
-          {:error, reason} ->
-            emit_error_telemetry(agent, duration, reason)
-            Callbacks.execute(final_ctx, :on_error, reason)
-            {:error, reason}
-        end
-
-      {:error, error} ->
-        emit_error_telemetry(agent, duration, error)
-        Callbacks.execute(ctx, :on_error, error)
-        {:error, error}
-    end
+    finish_run(agent, behaviour, ctx, loop_result, duration)
   end
 
   @doc """
@@ -245,34 +101,13 @@ defmodule Nous.AgentRunner do
     # Get behaviour module
     behaviour = Behaviour.get_module(agent)
 
+    # Deliberately NOT routed through finish_run/5: that path also emits the
+    # run stop/exception telemetry, fires :session_end and invokes the
+    # :on_agent_complete / :on_error callbacks, none of which this entry point
+    # has ever done. Only the result building is genuinely shared.
     case IterationLoop.execute_loop(agent, behaviour, ctx) do
       {:ok, final_ctx} ->
-        case behaviour.extract_output(agent, final_ctx) do
-          {:ok, output} ->
-            agent_result = build_result(agent, final_ctx, output)
-            updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
-
-            agent_result =
-              if updated_ctx != final_ctx,
-                do: build_result(agent, updated_ctx, output),
-                else: agent_result
-
-            {:ok, agent_result}
-
-          {:error, %Errors.ValidationError{} = err} ->
-            max_retries = Keyword.get(agent.structured_output, :max_retries, 0)
-
-            case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
-              {:ok, retry_ctx, output} ->
-                {:ok, build_result(agent, retry_ctx, output)}
-
-              {:error, _} = err ->
-                err
-            end
-
-          {:error, _} = err ->
-            err
-        end
+        extract_context_output(agent, behaviour, final_ctx)
 
       {:error, _} = err ->
         err
@@ -295,73 +130,63 @@ defmodule Nous.AgentRunner do
   @spec run_stream(Agent.t(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
   def run_stream(%Agent{} = agent, prompt, opts \\ []) do
     agent = apply_runtime_overrides(agent, opts)
-    # Build context
     ctx = build_context(agent, prompt, opts)
-
-    # Get behaviour
     behaviour = Behaviour.get_module(agent)
 
-    # Run the plugin pipeline so input guards / memory / system-prompt plugins
-    # apply to streaming too. Previously run_stream skipped this entirely, so an
-    # InputGuard configured on the agent silently provided ZERO protection for
-    # streamed requests — a security control that varied by transport.
+    # Streaming runs the SAME preparation pipeline as run/3, via IterationLoop.
+    # It used to hand-roll a second copy of prepare_tools/3 + prepare_request/4
+    # that never built a hook registry, so the entire hook layer — the
+    # :pre_request deny gate included — was a silent no-op on every streamed
+    # run, and Behaviour.before_request never fired: an operator's deny/redact
+    # hook evaporated purely by switching transport. Do not re-inline this.
     ctx = Plugin.run_init(agent.plugins, agent, ctx)
+    ctx = init_hook_registry(agent, ctx)
 
-    tools = behaviour.get_tools(agent)
-    plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
-    all_tools = tools ++ plugin_tools
+    # Deliberately NO :session_start / :session_end pair here, unlike run/3.
+    # This function returns a LAZY stream: a consumer is free to abandon it
+    # (`Enum.take(stream, 5)`), so there is no point at which the session is
+    # known to have ended, and emitting only the opening half leaks one open
+    # session per streamed run in any hook that pairs them. Firing :session_end
+    # from the stream's terminal clause would not fix that, only make it rarer.
+    # The hook REGISTRY is what the streaming path was missing, and it is built
+    # above; the :pre_request gate below is what depends on it.
 
-    ctx =
-      if ctx.iteration == 0,
-        do: PromptAssembly.apply_plugin_system_prompts(agent, ctx),
-        else: ctx
+    {ctx, all_tools, pre_request_result} = IterationLoop.prepare_tools(agent, behaviour, ctx)
 
-    {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
-    all_tools = ToolExecution.maybe_filter_by_policy(agent.permissions, all_tools)
+    cond do
+      Hook.denied?(pre_request_result) ->
+        {:ok, denied_stream(ctx, pre_request_result)}
 
-    if ctx.needs_response do
-      # Build messages via behaviour (reflects any plugin context changes)
-      messages = behaviour.build_messages(agent, ctx)
+      not ctx.needs_response ->
+        # A plugin (e.g. InputGuard) halted the request before any LLM call.
+        # Emit the guard's message as a terminal stream instead of streaming a
+        # model response.
+        {:ok, blocked_stream(ctx)}
 
-      # Add tools to settings if any
-      model_settings =
-        if Enum.empty?(all_tools) do
-          agent.model_settings
-        else
-          tool_schemas =
-            RequestDispatch.convert_tools_for_provider(agent.model.provider, all_tools)
+      true ->
+        {ctx, messages, model_settings} =
+          IterationLoop.prepare_request(agent, behaviour, ctx, all_tools)
 
-          Map.put(agent.model_settings, :tools, tool_schemas)
+        case RequestDispatch.stream_with_fallback(agent, messages, model_settings, all_tools) do
+          {:ok, stream} ->
+            # Wrap stream to execute callbacks, then accumulate result
+            wrapped_stream =
+              stream
+              |> Streaming.wrap_stream_with_callbacks(ctx)
+              |> Streaming.wrap_stream_with_result()
+
+            {:ok, wrapped_stream}
+
+          error ->
+            error
         end
-
-      # Inject structured output settings for streaming
-      model_settings =
-        if agent.output_type != :string do
-          PromptAssembly.inject_structured_output_settings(agent, model_settings, all_tools)
-        else
-          model_settings
-        end
-
-      # Request stream from model (with fallback chain if configured)
-      case RequestDispatch.stream_with_fallback(agent, messages, model_settings, all_tools) do
-        {:ok, stream} ->
-          # Wrap stream to execute callbacks, then accumulate result
-          wrapped_stream =
-            stream
-            |> Streaming.wrap_stream_with_callbacks(ctx)
-            |> Streaming.wrap_stream_with_result()
-
-          {:ok, wrapped_stream}
-
-        error ->
-          error
-      end
-    else
-      # A plugin (e.g. InputGuard) halted the request before any LLM call.
-      # Emit the guard's message as a terminal stream instead of streaming a
-      # model response.
-      {:ok, blocked_stream(ctx)}
     end
+  end
+
+  defp init_hook_registry(%Agent{hooks: []}, ctx), do: ctx
+
+  defp init_hook_registry(%Agent{hooks: hooks}, ctx) do
+    %{ctx | hook_registry: Hook.Registry.from_hooks(hooks)}
   end
 
   # Build a one-shot stream carrying the guard/plugin block message, so callers
@@ -374,10 +199,21 @@ defmodule Nous.AgentRunner do
         _ -> ""
       end
 
+    terminal_stream(ctx, blocked_text)
+  end
+
+  # A :pre_request hook denied the call. Surface the hook's own reason rather
+  # than the last message, which on a deny is the user's prompt.
+  defp denied_stream(ctx, {:deny, reason}) when is_binary(reason),
+    do: terminal_stream(ctx, reason)
+
+  defp denied_stream(ctx, _result), do: terminal_stream(ctx, "")
+
+  defp terminal_stream(ctx, text) do
     events =
-      if blocked_text == "",
+      if text == "",
         do: [{:finish, "stop"}],
-        else: [{:text_delta, blocked_text}, {:finish, "stop"}]
+        else: [{:text_delta, text}, {:finish, "stop"}]
 
     events
     |> Streaming.wrap_stream_with_callbacks(ctx)
@@ -385,6 +221,153 @@ defmodule Nous.AgentRunner do
   end
 
   # Private functions
+
+  # Everything that must happen before the first model call: start telemetry,
+  # context construction, then behaviour / plugin / hook initialization in that
+  # order. Returns the start timestamp so the caller can measure the whole run.
+  defp start_run(agent, prompt, opts) do
+    start_time = System.monotonic_time()
+
+    Logger.info(
+      "Starting agent run: #{agent.name} with model #{agent.model.provider}:#{agent.model.model}"
+    )
+
+    Logger.debug("Agent has #{length(agent.tools)} tools available")
+
+    :telemetry.execute(
+      [:nous, :agent, :run, :start],
+      %{system_time: System.system_time(), monotonic_time: start_time},
+      %{
+        agent_name: agent.name,
+        model_provider: agent.model.provider,
+        model_name: agent.model.model,
+        tool_count: length(agent.tools),
+        has_tools: length(agent.tools) > 0
+      }
+    )
+
+    ctx = build_context(agent, prompt, opts)
+
+    Callbacks.execute(ctx, :on_agent_start, %{agent: agent})
+
+    behaviour = Behaviour.get_module(agent)
+
+    ctx = Behaviour.call(behaviour, :init_context, [agent, ctx], ctx)
+    ctx = Plugin.run_init(agent.plugins, agent, ctx)
+    ctx = init_hook_registry(agent, ctx)
+
+    Hook.Runner.run(ctx.hook_registry, :session_start, %{agent_name: agent.name})
+
+    # Only bites when continuing from an existing context, which can carry an
+    # assistant tool call whose result never arrived.
+    ctx = Context.patch_dangling_tool_calls(ctx)
+
+    {ctx, behaviour, start_time}
+  end
+
+  # Turn the loop's outcome into the run's return value. `ctx` is the pre-loop
+  # context and is used only when the loop failed outright, in which case no
+  # final context exists to report against.
+  defp finish_run(agent, behaviour, _ctx, {:ok, final_ctx}, duration) do
+    case behaviour.extract_output(agent, final_ctx) do
+      {:ok, output} ->
+        complete_run(agent, final_ctx, output, duration)
+
+      {:error, %Errors.ValidationError{} = err} ->
+        retry_validation_or_fail(agent, behaviour, final_ctx, err, duration)
+
+      {:error, reason} ->
+        fail_run(agent, final_ctx, reason, duration)
+    end
+  end
+
+  defp finish_run(agent, _behaviour, ctx, {:error, error}, duration) do
+    fail_run(agent, ctx, error, duration)
+  end
+
+  # Output extracted cleanly: build the result (letting plugins amend the
+  # context first), fire :session_end, then log/emit/notify.
+  #
+  # Only the returned result picks up a plugin's context changes; the teardown
+  # below deliberately reports `final_ctx`, since usage and iteration counts are
+  # the loop's, not a plugin's.
+  defp complete_run(agent, final_ctx, output, duration) do
+    {agent_result, updated_ctx} = build_result_with_plugins(agent, final_ctx, output)
+
+    Hook.Runner.run(updated_ctx.hook_registry, :session_end, %{
+      agent_name: agent.name,
+      output: output
+    })
+
+    log_run_completion(agent, final_ctx, duration)
+    emit_run_stop_telemetry(agent, final_ctx, duration)
+
+    Callbacks.execute(final_ctx, :on_agent_complete, agent_result)
+
+    {:ok, agent_result}
+  end
+
+  # Structured output failed validation. A successful retry short-circuits the
+  # teardown above: no after_run plugins, no :session_end, no stop telemetry.
+  defp retry_validation_or_fail(agent, behaviour, final_ctx, err, duration) do
+    max_retries = Keyword.get(agent.structured_output, :max_retries, 0)
+
+    case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
+      {:ok, retry_ctx, output} ->
+        agent_result = build_result(agent, retry_ctx, output)
+        Callbacks.execute(retry_ctx, :on_agent_complete, agent_result)
+        {:ok, agent_result}
+
+      {:error, reason} ->
+        fail_run(agent, final_ctx, reason, duration)
+    end
+  end
+
+  defp fail_run(agent, ctx, reason, duration) do
+    emit_error_telemetry(agent, duration, reason)
+    Callbacks.execute(ctx, :on_error, reason)
+    {:error, reason}
+  end
+
+  defp log_run_completion(agent, ctx, duration) do
+    duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+
+    Logger.info("""
+    Agent run completed: #{agent.name}
+      Duration: #{duration_ms}ms
+      Iterations: #{ctx.iteration}
+      Tokens: #{ctx.usage.total_tokens} (in: #{ctx.usage.input_tokens}, out: #{ctx.usage.output_tokens})
+      Tool calls: #{ctx.usage.tool_calls}
+      Requests: #{ctx.usage.requests}
+    """)
+  end
+
+  defp emit_run_stop_telemetry(agent, ctx, duration) do
+    active_model = get_in(ctx.deps, [:active_model]) || agent.model
+
+    :telemetry.execute(
+      [:nous, :agent, :run, :stop],
+      %{
+        duration: duration,
+        total_tokens: ctx.usage.total_tokens,
+        input_tokens: ctx.usage.input_tokens,
+        output_tokens: ctx.usage.output_tokens,
+        tool_calls: ctx.usage.tool_calls,
+        requests: ctx.usage.requests,
+        iterations: ctx.iteration
+      },
+      %{
+        agent_name: agent.name,
+        model_provider: agent.model.provider,
+        model_name: agent.model.model,
+        # When fallback fired, surface BOTH so observability can
+        # split metrics by original (intended) and active (used).
+        active_model_provider: active_model.provider,
+        active_model_name: active_model.model,
+        fallback_used: active_model != agent.model
+      }
+    )
+  end
 
   # Apply per-run overrides for output_type, structured_output and model_settings
   defp apply_runtime_overrides(agent, opts) do
@@ -412,6 +395,31 @@ defmodule Nous.AgentRunner do
     end)
   end
 
+  # The result half of run_with_context/3: extract the output the behaviour
+  # produced and, when it fails schema validation, spend the configured
+  # retries before surfacing the error.
+  defp extract_context_output(agent, behaviour, final_ctx) do
+    case behaviour.extract_output(agent, final_ctx) do
+      {:ok, output} ->
+        {agent_result, _updated_ctx} = build_result_with_plugins(agent, final_ctx, output)
+        {:ok, agent_result}
+
+      {:error, %Errors.ValidationError{} = err} ->
+        max_retries = Keyword.get(agent.structured_output, :max_retries, 0)
+
+        case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
+          {:ok, retry_ctx, output} ->
+            {:ok, build_result(agent, retry_ctx, output)}
+
+          {:error, _} = err ->
+            err
+        end
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
   defp build_context(agent, prompt, opts) do
     # Check if continuing from existing context
     case Keyword.get(opts, :context) do
@@ -425,62 +433,74 @@ defmodule Nous.AgentRunner do
         |> maybe_update_stream(opts)
 
       nil ->
-        # Build fresh context
-        message_history = Keyword.get(opts, :message_history, [])
-        stream = Keyword.get(opts, :stream, false)
+        build_fresh_context(agent, prompt, opts)
+    end
+  end
 
-        # Build system prompt
-        system_prompt =
-          resolve_prompt(agent.instructions, opts) ||
-            resolve_prompt(agent.system_prompt, opts)
+  # A run that isn't continuing from a caller-supplied context.
+  defp build_fresh_context(agent, prompt, opts) do
+    message_history = Keyword.get(opts, :message_history, [])
+    stream = Keyword.get(opts, :stream, false)
 
-        # Handle todo injection if enabled
-        system_prompt =
-          if agent.enable_todos do
-            PromptAssembly.inject_todos_into_prompt(
-              system_prompt || "",
-              Keyword.get(opts, :deps, %{})
-            )
-          else
-            system_prompt
-          end
+    system_prompt = build_system_prompt(agent, opts)
 
-        # Inject structured output schema instructions
-        system_prompt =
-          if agent.output_type != :string do
-            mode =
-              case agent.output_type do
-                {:one_of, _} -> :tool_call
-                _ -> Keyword.get(agent.structured_output, :mode, :auto)
-              end
+    # Build initial messages
+    messages = build_initial_messages(message_history, prompt, system_prompt)
 
-            suffix = OutputSchema.system_prompt_suffix(agent.output_type, mode: mode)
+    Context.new(
+      messages: messages,
+      system_prompt: system_prompt,
+      deps: Keyword.get(opts, :deps, %{}),
+      max_iterations: Keyword.get(opts, :max_iterations, @max_iterations),
+      callbacks: Keyword.get(opts, :callbacks, %{}),
+      notify_pid: Keyword.get(opts, :notify_pid),
+      agent_name: agent.name,
+      cancellation_check: Keyword.get(opts, :cancellation_check),
+      pubsub: Keyword.get(opts, :pubsub),
+      pubsub_topic: Keyword.get(opts, :pubsub_topic),
+      stream: stream
+    )
+  end
 
-            if suffix do
-              (system_prompt || "") <> "\n\n" <> suffix
-            else
-              system_prompt
-            end
-          else
-            system_prompt
-          end
+  # The run's system prompt: the agent's instructions (or its system_prompt),
+  # then the todo section, then the structured-output schema instructions. Each
+  # stage tolerates a nil prompt — an agent may carry neither instructions nor a
+  # system prompt and still want a todo or schema section.
+  defp build_system_prompt(agent, opts) do
+    base = resolve_prompt(agent.instructions, opts) || resolve_prompt(agent.system_prompt, opts)
 
-        # Build initial messages
-        messages = build_initial_messages(message_history, prompt, system_prompt)
+    base
+    |> maybe_inject_todos(agent, opts)
+    |> maybe_append_output_schema_suffix(agent)
+  end
 
-        Context.new(
-          messages: messages,
-          system_prompt: system_prompt,
-          deps: Keyword.get(opts, :deps, %{}),
-          max_iterations: Keyword.get(opts, :max_iterations, @max_iterations),
-          callbacks: Keyword.get(opts, :callbacks, %{}),
-          notify_pid: Keyword.get(opts, :notify_pid),
-          agent_name: agent.name,
-          cancellation_check: Keyword.get(opts, :cancellation_check),
-          pubsub: Keyword.get(opts, :pubsub),
-          pubsub_topic: Keyword.get(opts, :pubsub_topic),
-          stream: stream
-        )
+  defp maybe_inject_todos(system_prompt, agent, opts) do
+    if agent.enable_todos do
+      PromptAssembly.inject_todos_into_prompt(system_prompt || "", Keyword.get(opts, :deps, %{}))
+    else
+      system_prompt
+    end
+  end
+
+  defp maybe_append_output_schema_suffix(system_prompt, agent) do
+    if agent.output_type == :string do
+      system_prompt
+    else
+      mode = output_schema_mode(agent)
+
+      case OutputSchema.system_prompt_suffix(agent.output_type, mode: mode) do
+        nil -> system_prompt
+        suffix -> (system_prompt || "") <> "\n\n" <> suffix
+      end
+    end
+  end
+
+  # A {:one_of, _} output is always resolved through the synthetic tool call;
+  # every other output type honors the configured (or :auto) mode.
+  defp output_schema_mode(agent) do
+    case agent.output_type do
+      {:one_of, _} -> :tool_call
+      _ -> Keyword.get(agent.structured_output, :mode, :auto)
     end
   end
 
@@ -506,6 +526,19 @@ defmodule Nous.AgentRunner do
   defp resolve_prompt(prompt_fn, opts) when is_function(prompt_fn, 1) do
     ctx = RunContext.new(Keyword.get(opts, :deps, %{}))
     prompt_fn.(ctx)
+  end
+
+  # Build the run's result after giving plugins a chance to amend the context.
+  # A plugin that changed it gets the result rebuilt from the new one, so the
+  # caller never hands back a result describing a stale context. Returns both,
+  # because run/3's teardown still reports against the pre-plugin context.
+  defp build_result_with_plugins(agent, ctx, output) do
+    agent_result = build_result(agent, ctx, output)
+    updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, ctx)
+
+    if updated_ctx == ctx,
+      do: {agent_result, updated_ctx},
+      else: {build_result(agent, updated_ctx, output), updated_ctx}
   end
 
   defp build_result(_agent, ctx, output) do

@@ -68,10 +68,12 @@ defmodule Nous.Tools.FileGrep do
         glob_flag(glob) ++
         ["--max-count", "#{@default_limit}", "--", path]
 
-    rg = rg_path()
+    # `env -i` wrapping, not an `env:` option: System.cmd/3's `:env` MERGES into
+    # the inherited environment, so it can never remove OPENAI_API_KEY et al.
+    # See `Nous.Tools.Env`.
+    [cmd | cmd_args] = Nous.Tools.Env.scrub_argv([rg_path() | args])
 
-    # Scrubbed env keeps API keys out of the rg subprocess.
-    case System.cmd(rg, args, stderr_to_stdout: true, env: Nous.Tools.Env.scrubbed()) do
+    case System.cmd(cmd, cmd_args, stderr_to_stdout: true) do
       {output, 0} -> {:ok, String.trim(output)}
       {_output, 1} -> {:ok, "No matches found"}
       {output, _} -> {:error, "rg failed: #{String.trim(output)}"}
@@ -94,26 +96,45 @@ defmodule Nous.Tools.FileGrep do
   defp run_elixir_grep(pattern, path, glob, output_mode, ctx) do
     case Regex.compile(pattern) do
       {:ok, regex} ->
-        task =
-          Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-            files = find_files(path, glob, ctx)
-            results = search_files(files, regex, output_mode)
-            Enum.join(results, "\n")
-          end)
+        search = fn ->
+          files = find_files(path, glob, ctx)
+          results = search_files(files, regex, output_mode)
+          Enum.join(results, "\n")
+        end
 
-        case Task.yield(task, @elixir_grep_timeout) || Task.shutdown(task, :brutal_kill) do
-          {:ok, result} ->
-            {:ok, if(result == "", do: "No matches found", else: result)}
-
-          _ ->
-            {:error,
-             "search timed out after #{@elixir_grep_timeout}ms (the pattern may be " <>
-               "pathological); install ripgrep for a fast, ReDoS-immune engine"}
+        case Nous.Tasks.async_nolink(search) do
+          {:ok, task} -> await_grep(task)
+          {:error, :saturated} -> saturated_error()
         end
 
       {:error, {reason, _}} ->
         {:error, "Invalid regex: #{reason}"}
     end
+  end
+
+  defp await_grep(task) do
+    case Task.yield(task, @elixir_grep_timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} ->
+        {:ok, if(result == "", do: "No matches found", else: result)}
+
+      _ ->
+        {:error,
+         "search timed out after #{@elixir_grep_timeout}ms (the pattern may be " <>
+           "pathological); install ripgrep for a fast, ReDoS-immune engine"}
+    end
+  end
+
+  # The task IS the ReDoS guard here, so there is nothing to degrade to: running
+  # the fallback inline would put an LLM-supplied regex with NO timeout in the
+  # calling process — trading a refused search for a hung agent turn. Refuse
+  # instead. `run_rg/4` is a plain System.cmd with no task, so this can only be
+  # reached on a host without ripgrep.
+  defp saturated_error do
+    Nous.Tasks.warn_saturated("a pure-Elixir file_grep fallback")
+
+    {:error,
+     "search could not start: the task supervisor is at capacity. Retry shortly, " <>
+       "or install ripgrep so searches run without a task"}
   end
 
   # Re-validate every matched file against the workspace root (mirrors
@@ -140,31 +161,33 @@ defmodule Nous.Tools.FileGrep do
 
   defp search_files(files, regex, output_mode) do
     files
-    |> Enum.flat_map(fn file ->
-      case File.read(file) do
-        {:ok, content} ->
-          lines = String.split(content, "\n")
-
-          matches =
-            lines
-            |> Enum.with_index(1)
-            |> Enum.filter(fn {line, _} -> Regex.match?(regex, line) end)
-
-          case output_mode do
-            "files_with_matches" ->
-              if matches != [], do: [file], else: []
-
-            "count" ->
-              if matches != [], do: ["#{file}:#{length(matches)}"], else: []
-
-            _ ->
-              Enum.map(matches, fn {line, num} -> "#{file}:#{num}:#{line}" end)
-          end
-
-        _ ->
-          []
-      end
-    end)
+    |> Enum.flat_map(&file_matches(&1, regex, output_mode))
     |> Enum.take(@default_limit)
+  end
+
+  # One file's contribution to the result set. An unreadable file contributes
+  # nothing rather than aborting the whole search.
+  defp file_matches(file, regex, output_mode) do
+    case File.read(file) do
+      {:ok, content} -> format_matches(file, matching_lines(content, regex), output_mode)
+      _ -> []
+    end
+  end
+
+  defp matching_lines(content, regex) do
+    content
+    |> String.split("\n")
+    |> Enum.with_index(1)
+    |> Enum.filter(fn {line, _} -> Regex.match?(regex, line) end)
+  end
+
+  defp format_matches(_file, [], "files_with_matches"), do: []
+  defp format_matches(file, _matches, "files_with_matches"), do: [file]
+
+  defp format_matches(_file, [], "count"), do: []
+  defp format_matches(file, matches, "count"), do: ["#{file}:#{length(matches)}"]
+
+  defp format_matches(file, matches, _mode) do
+    Enum.map(matches, fn {line, num} -> "#{file}:#{num}:#{line}" end)
   end
 end

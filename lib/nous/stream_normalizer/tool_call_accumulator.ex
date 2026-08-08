@@ -125,27 +125,35 @@ defmodule Nous.StreamNormalizer.ToolCallAccumulator do
   def feed(acc, _other), do: acc
 
   defp feed_openai_one(fragment, acc) when is_map(fragment) do
-    index = Map.get(fragment, "index") || Map.get(fragment, :index) || 0
-    id = Map.get(fragment, "id") || Map.get(fragment, :id)
-    func = Map.get(fragment, "function") || Map.get(fragment, :function) || %{}
-    name = Map.get(func, "name") || Map.get(func, :name)
-    args_chunk = Map.get(func, "arguments") || Map.get(func, :arguments) || ""
+    index = fetch_either(fragment, "index", :index) || 0
+    id = fetch_either(fragment, "id", :id)
+    func = fetch_either(fragment, "function", :function) || %{}
+    name = fetch_either(func, "name", :name)
+    args_chunk = fetch_either(func, "arguments", :arguments) || ""
 
-    update_in(acc, [:openai, index], fn
-      nil ->
-        %{id: id, name: name, args_io: [args_chunk]}
-
-      existing ->
-        %{
-          existing
-          | id: existing.id || id,
-            name: existing.name || name,
-            args_io: [existing.args_io, args_chunk]
-        }
-    end)
+    update_in(acc, [:openai, index], &merge_openai_fragment(&1, id, name, args_chunk))
   end
 
   defp feed_openai_one(_, acc), do: acc
+
+  # Wire fragments arrive string-keyed over SSE but atom-keyed from in-process
+  # backends; string key wins.
+  defp fetch_either(map, string_key, atom_key) do
+    Map.get(map, string_key) || Map.get(map, atom_key)
+  end
+
+  defp merge_openai_fragment(nil, id, name, args_chunk) do
+    %{id: id, name: name, args_io: [args_chunk]}
+  end
+
+  defp merge_openai_fragment(existing, id, name, args_chunk) do
+    %{
+      existing
+      | id: existing.id || id,
+        name: existing.name || name,
+        args_io: [existing.args_io, args_chunk]
+    }
+  end
 
   defp generate_gemini_id do
     "gemini_" <> (:crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false))

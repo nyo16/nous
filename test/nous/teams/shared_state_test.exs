@@ -264,7 +264,19 @@ defmodule Nous.Teams.SharedStateTest do
         )
 
       :ok = SharedState.share_discovery(pid, "alice", %{topic: "A", content: "First"})
-      Process.sleep(300)
+
+      # Positive control, not a fixed wait: a sibling with a real TTL and the
+      # same fixture must prune first. The old Process.sleep(300) was the
+      # largest dead-time sleep in the suite AND it also passed if the expiry
+      # timer simply never fired for any TTL, which is the regression that
+      # matters here.
+      control =
+        start_supervised!({SharedState, team_id: "#{team_id}_ctl", discovery_ttl: 50},
+          id: :"disc_inf_ctl_#{team_id}"
+        )
+
+      :ok = SharedState.share_discovery(control, "alice", %{topic: "A", content: "First"})
+      assert eventually(fn -> SharedState.get_discoveries(control) == [] end)
 
       assert [%{topic: "A"}] = SharedState.get_discoveries(pid)
     end

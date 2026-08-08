@@ -157,8 +157,12 @@ defmodule Nous.Eval.Runner do
   defp run_parallel(%Suite{} = suite, opts, parallelism, setup_result) do
     opts = Keyword.put(opts, :setup_result, setup_result)
 
-    Task.Supervisor.async_stream_nolink(
-      Nous.TaskSupervisor,
+    # At the task ceiling this runs the cases one at a time — literally the work
+    # run_sequential/3 above does, so results and order are unchanged. Only the
+    # outer `timeout` is lost, and it was never the real bound: it is the
+    # per-case budget plus slack, and execute_test_case/3 already enforces that
+    # budget per case from the inside.
+    Nous.Tasks.stream(
       suite.test_cases,
       fn test_case ->
         execute_test_case(test_case, suite, opts)
@@ -272,36 +276,39 @@ defmodule Nous.Eval.Runner do
     end
   end
 
+  defp run_agent(_test_case, nil, _agent_config, _timeout), do: {:error, :no_model_configured}
+
   defp run_agent(test_case, model, agent_config, timeout) do
-    if is_nil(model) do
-      {:error, :no_model_configured}
-    else
-      # Create agent
-      agent = Nous.new(model, agent_config)
+    agent = Nous.new(model, agent_config)
+    run_opts = [deps: test_case.deps, timeout: timeout]
 
-      # Build run options
-      run_opts = [
-        deps: test_case.deps,
-        timeout: timeout
-      ]
+    # Run with timeout protection under the application TaskSupervisor so
+    # an eval crash doesn't take down the parent eval runner.
+    case Nous.Tasks.async_nolink(fn -> Nous.run(agent, test_case.input, run_opts) end) do
+      {:ok, task} ->
+        await_agent(task, timeout)
 
-      # Run with timeout protection under the application TaskSupervisor so
-      # an eval crash doesn't take down the parent eval runner.
-      task =
-        Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-          Nous.run(agent, test_case.input, run_opts)
-        end)
+      # The task bounds the run at `timeout` and keeps a crashing eval off the
+      # runner, so running inline would drop both protections. Answer with the
+      # error instead: run_with_retries/6 already retries any {:error, _} with
+      # backoff, so a transient ceiling gets another attempt rather than being
+      # scored as a failed test case on the first refusal.
+      {:error, :saturated} ->
+        Nous.Tasks.warn_saturated("an eval test-case run")
+        {:error, :saturated}
+    end
+  end
 
-      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-        {:ok, result} ->
-          result
+  defp await_agent(task, timeout) do
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} ->
+        result
 
-        {:exit, reason} ->
-          {:error, {:task_exit, reason}}
+      {:exit, reason} ->
+        {:error, {:task_exit, reason}}
 
-        nil ->
-          {:error, :timeout}
-      end
+      nil ->
+        {:error, :timeout}
     end
   end
 

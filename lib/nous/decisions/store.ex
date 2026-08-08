@@ -77,7 +77,8 @@ defmodule Nous.Decisions.Store do
   - `{:ok, node}` if found
   - `{:error, :not_found}` if no node with that ID exists
   """
-  @callback get_node(state :: term(), id :: String.t()) :: {:ok, Node.t()} | {:error, :not_found}
+  @callback fetch_node(state :: term(), id :: String.t()) ::
+              {:ok, Node.t()} | {:error, :not_found}
 
   @doc """
   Delete a node by ID.
@@ -112,6 +113,11 @@ defmodule Nous.Decisions.Store do
   ## Returns
 
   - `{:ok, edges}` -- always succeeds, returning an empty list if none found
+
+  Stays `get_` rather than `fetch_`: there is no miss to report. An absent node
+  yields `{:ok, []}`, so the `{:ok, _}` here is a uniform query envelope, not
+  `fetch_` semantics. Contrast `fetch_node/2`, which does return
+  `{:error, :not_found}`.
   """
   @callback get_edges(state :: term(), node_id :: String.t(), direction :: :outgoing | :incoming) ::
               {:ok, [Edge.t()]}

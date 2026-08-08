@@ -15,9 +15,30 @@ defmodule Nous.Tools.ResearchNotes do
   alias Nous.Tool
   alias Nous.Tool.ContextUpdate
 
+  @typedoc """
+  A finding as stored under `:research_findings` in the agent's context deps.
+  `:confidence` is whatever the model sent for the schema's `number` parameter,
+  defaulting to 0.7.
+  """
+  @type finding :: %{
+          claim: String.t(),
+          source_url: String.t() | nil,
+          source_title: String.t() | nil,
+          confidence: number(),
+          recorded_at: String.t()
+        }
+
+  @type contradiction :: %{
+          claim_a: String.t(),
+          claim_b: String.t(),
+          sources: String.t(),
+          recorded_at: String.t()
+        }
+
   @doc """
   Returns all research note tools as a list.
   """
+  @spec all_tools() :: [Tool.t()]
   def all_tools do
     [
       add_finding_tool(),
@@ -119,6 +140,10 @@ defmodule Nous.Tools.ResearchNotes do
 
   # Tool implementations
 
+  @spec add_finding(Nous.RunContext.t(), map()) ::
+          {:ok, %{status: String.t(), message: String.t()}, ContextUpdate.t()}
+          | {:ok, %{status: String.t(), finding: finding(), total_findings: pos_integer()},
+             ContextUpdate.t()}
   def add_finding(ctx, args) do
     finding = %{
       claim: Map.fetch!(args, "claim"),
@@ -145,6 +170,12 @@ defmodule Nous.Tools.ResearchNotes do
     end
   end
 
+  @spec list_findings(Nous.RunContext.t(), map()) :: %{
+          findings: [finding()],
+          count: non_neg_integer(),
+          high_confidence: non_neg_integer(),
+          low_confidence: non_neg_integer()
+        }
   def list_findings(ctx, _args) do
     findings = ctx.deps[:research_findings] || []
 
@@ -156,6 +187,9 @@ defmodule Nous.Tools.ResearchNotes do
     }
   end
 
+  @spec add_gap(Nous.RunContext.t(), map()) ::
+          {:ok, %{status: String.t(), question: String.t(), total_gaps: pos_integer()},
+           ContextUpdate.t()}
   def add_gap(ctx, args) do
     question = Map.fetch!(args, "question")
     existing = ctx.deps[:research_gaps] || []
@@ -164,11 +198,14 @@ defmodule Nous.Tools.ResearchNotes do
      ContextUpdate.new() |> ContextUpdate.append(:research_gaps, question)}
   end
 
+  @spec list_gaps(Nous.RunContext.t(), map()) :: %{gaps: [String.t()], count: non_neg_integer()}
   def list_gaps(ctx, _args) do
     gaps = ctx.deps[:research_gaps] || []
     %{gaps: gaps, count: length(gaps)}
   end
 
+  @spec add_contradiction(Nous.RunContext.t(), map()) ::
+          {:ok, %{status: String.t(), contradiction: contradiction()}, ContextUpdate.t()}
   def add_contradiction(_ctx, args) do
     contradiction = %{
       claim_a: Map.fetch!(args, "claim_a"),

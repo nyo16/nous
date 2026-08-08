@@ -3,6 +3,23 @@ defmodule Nous.Persistence.ETSTest do
 
   alias Nous.Persistence.ETS
 
+  # Bounded poll for the sweep timer, matching the helper three other files in
+  # this suite already carry. A fixed sleep past the worst-case sweep is both
+  # slower than it needs to be and only as reliable as the runner's scheduling.
+  defp eventually(fun, timeout_ms \\ 2_000, interval_ms \\ 10) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    Stream.repeatedly(fn ->
+      if fun.() do
+        true
+      else
+        Process.sleep(interval_ms)
+        false
+      end
+    end)
+    |> Enum.find(fn ok -> ok or System.monotonic_time(:millisecond) > deadline end)
+  end
+
   setup do
     # Clean up the ETS table between tests via the owner (table is :protected).
     ETS.clear()
@@ -110,10 +127,7 @@ defmodule Nous.Persistence.ETSTest do
       :ok = ETS.save("stale", %{version: 1})
       assert {:ok, %{version: 1}} = ETS.load("stale")
 
-      # ttl plus several sweep intervals.
-      Process.sleep(250)
-
-      assert {:error, :not_found} == ETS.load("stale")
+      assert eventually(fn -> ETS.load("stale") == {:error, :not_found} end)
 
       :ok = ETS.save("fresh", %{version: 1})
       assert {:ok, %{version: 1}} = ETS.load("fresh")

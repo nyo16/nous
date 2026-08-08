@@ -32,6 +32,7 @@ defmodule Nous.Workflow.Telemetry do
   """
 
   @doc false
+  @spec workflow_start(String.t(), String.t(), non_neg_integer()) :: :ok
   def workflow_start(workflow_id, workflow_name, node_count) do
     :telemetry.execute(
       [:nous, :workflow, :run, :start],
@@ -41,6 +42,7 @@ defmodule Nous.Workflow.Telemetry do
   end
 
   @doc false
+  @spec workflow_stop(String.t(), integer(), atom(), non_neg_integer()) :: :ok
   def workflow_stop(workflow_id, start_time, status, nodes_executed) do
     :telemetry.execute(
       [:nous, :workflow, :run, :stop],
@@ -50,6 +52,7 @@ defmodule Nous.Workflow.Telemetry do
   end
 
   @doc false
+  @spec workflow_exception(String.t(), integer(), term()) :: :ok
   def workflow_exception(workflow_id, start_time, reason) do
     :telemetry.execute(
       [:nous, :workflow, :run, :exception],
@@ -59,6 +62,7 @@ defmodule Nous.Workflow.Telemetry do
   end
 
   @doc false
+  @spec node_start(String.t(), String.t(), Nous.Workflow.Node.node_type()) :: :ok
   def node_start(workflow_id, node_id, node_type) do
     :telemetry.execute(
       [:nous, :workflow, :node, :start],
@@ -68,6 +72,8 @@ defmodule Nous.Workflow.Telemetry do
   end
 
   @doc false
+  @spec node_stop(String.t(), String.t(), Nous.Workflow.Node.node_type(), integer(), boolean()) ::
+          :ok
   def node_stop(workflow_id, node_id, node_type, start_time, success) do
     :telemetry.execute(
       [:nous, :workflow, :node, :stop],
@@ -77,6 +83,13 @@ defmodule Nous.Workflow.Telemetry do
   end
 
   @doc false
+  @spec node_exception(
+          String.t(),
+          String.t(),
+          Nous.Workflow.Node.node_type(),
+          integer(),
+          term()
+        ) :: :ok
   def node_exception(workflow_id, node_id, node_type, start_time, reason) do
     :telemetry.execute(
       [:nous, :workflow, :node, :exception],

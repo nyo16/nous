@@ -163,6 +163,13 @@ defmodule Nous.Transcript do
   The callback receives `{:compacted, messages}` if compaction happened,
   or `{:unchanged, messages}` if no trigger fired.
 
+  Returns `{:ok, pid}`, or `{:error, :saturated}` if `Nous.TaskSupervisor` is at
+  its `:max_children` ceiling — in which case nothing was compacted and the
+  callback never fires. Unlike `compact_async/2` this cannot degrade to running
+  inline: `callback` is caller-supplied code and running it in the calling
+  process would change where it runs. Use `maybe_compact/2` if you want the
+  work done synchronously instead.
+
   ## Examples
 
       Nous.Transcript.maybe_compact_async(messages,
@@ -174,9 +181,10 @@ defmodule Nous.Transcript do
       )
 
   """
-  @spec maybe_compact_async([Message.t()], keyword(), (term() -> any())) :: {:ok, pid()}
+  @spec maybe_compact_async([Message.t()], keyword(), (term() -> any())) ::
+          {:ok, pid()} | {:error, :saturated}
   def maybe_compact_async(messages, opts, callback) when is_function(callback, 1) do
-    Task.Supervisor.start_child(Nous.TaskSupervisor, fn ->
+    compact_and_notify = fn ->
       keep_last = Keyword.fetch!(opts, :keep_last)
       every = Keyword.get(opts, :every)
       token_budget = Keyword.get(opts, :token_budget)
@@ -191,7 +199,24 @@ defmodule Nous.Transcript do
       else
         callback.({:unchanged, messages})
       end
-    end)
+    end
+
+    case Nous.Tasks.start_child(compact_and_notify) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, :saturated} = error ->
+        # Level 2, not the inline degradation compact_async/2 takes: `compact/2`
+        # is cheap enough to run here, but `callback` is not ours to relocate.
+        # Run it in the calling process and a callback that calls back into its
+        # own GenServer deadlocks, and a raising one takes the caller down
+        # instead of an isolated task. So nothing is compacted, the callback
+        # never fires, and the caller is told so it can fall back to
+        # `maybe_compact/2`. Left unhandled, history grows exactly when the node
+        # is busiest.
+        Nous.Tasks.warn_saturated("a background transcript auto-compaction")
+        error
+    end
   end
 
   @doc """
@@ -200,6 +225,13 @@ defmodule Nous.Transcript do
   Returns a `Task` that resolves to the compacted message list.
   Useful when compaction runs inside a GenServer and you don't
   want to block the current process.
+
+  If `Nous.TaskSupervisor` is at its `:max_children` ceiling the compaction
+  runs **inline** in the calling process and comes back as an
+  already-completed `Task` (`Task.completed/1`), so `Task.await/2` still
+  works and the return type never changes. `compact/2` is a pure list
+  rewrite, so the only cost of that degradation is that this call blocks
+  instead of not blocking.
 
   ## Examples
 
@@ -216,9 +248,17 @@ defmodule Nous.Transcript do
   """
   @spec compact_async([Message.t()], pos_integer()) :: Task.t()
   def compact_async(messages, keep_last) do
-    Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-      compact(messages, keep_last)
-    end)
+    case Nous.Tasks.async_nolink(fn -> compact(messages, keep_last) end) do
+      {:ok, task} ->
+        task
+
+      # Degrade to doing the work here rather than widening a public return
+      # type over a resource ceiling. `Task.completed/1` hands back a real
+      # %Task{} that await/yield/shutdown all accept, so no caller changes.
+      {:error, :saturated} ->
+        Nous.Tasks.warn_saturated("a transcript compaction (ran inline instead)")
+        Task.completed(compact(messages, keep_last))
+    end
   end
 
   @doc """
@@ -226,7 +266,11 @@ defmodule Nous.Transcript do
 
   Starts a fire-and-forget task under `Nous.TaskSupervisor`.
   The callback receives the compacted message list when done.
-  Returns `{:ok, pid}`.
+
+  Returns `{:ok, pid}`, or `{:error, :saturated}` if `Nous.TaskSupervisor` is at
+  its `:max_children` ceiling — nothing is compacted and the callback never
+  fires. See `maybe_compact_async/3` for why this one does not degrade to
+  running inline; `compact_async/2` does.
 
   ## Examples
 
@@ -236,12 +280,23 @@ defmodule Nous.Transcript do
 
   """
   @spec compact_async([Message.t()], pos_integer(), ([Message.t()] -> any())) ::
-          {:ok, pid()}
+          {:ok, pid()} | {:error, :saturated}
   def compact_async(messages, keep_last, callback) when is_function(callback, 1) do
-    Task.Supervisor.start_child(Nous.TaskSupervisor, fn ->
+    compact_and_notify = fn ->
       compacted = compact(messages, keep_last)
       callback.(compacted)
-    end)
+    end
+
+    case Nous.Tasks.start_child(compact_and_notify) do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      # Same reasoning as maybe_compact_async/3: the compaction is cheap, the
+      # caller's callback is not ours to move into the caller's process.
+      {:error, :saturated} = error ->
+        Nous.Tasks.warn_saturated("a background transcript compaction")
+        error
+    end
   end
 
   @doc """

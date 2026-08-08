@@ -7,6 +7,7 @@ defmodule Nous.Messages.OpenAI do
 
   alias Nous.{Message, Usage}
   alias Nous.Message.ContentPart
+  alias Nous.Messages.Cache
 
   require Logger
 
@@ -25,7 +26,7 @@ defmodule Nous.Messages.OpenAI do
   """
   @spec to_format([Message.t()]) :: [map()]
   def to_format(messages) when is_list(messages) do
-    Enum.map(messages, &message_to_openai/1)
+    Cache.map(__MODULE__, messages, &message_to_openai/1)
   end
 
   @doc """
@@ -40,60 +41,50 @@ defmodule Nous.Messages.OpenAI do
   """
   @spec from_response(map()) :: Message.t()
   def from_response(response) when is_map(response) do
-    choices = Map.get(response, "choices") || Map.get(response, :choices) || []
-    choice = List.first(choices)
+    message_data = response_message(response)
 
-    message_data =
-      if choice do
-        Map.get(choice, "message") || Map.get(choice, :message)
-      end
-
-    content =
-      if message_data do
-        Map.get(message_data, "content") || Map.get(message_data, :content)
-      end
-
-    reasoning_content =
-      if message_data do
-        Map.get(message_data, "reasoning_content") || Map.get(message_data, :reasoning_content)
-      end
-
-    tool_calls =
-      if message_data do
-        Map.get(message_data, "tool_calls") || Map.get(message_data, :tool_calls) || []
-      else
-        []
-      end
-
-    usage_data = Map.get(response, "usage") || Map.get(response, :usage)
-    model_name = Map.get(response, "model") || Map.get(response, :model)
-
-    # Convert tool calls
-    converted_tool_calls = Enum.map(tool_calls, &parse_tool_call/1)
-
-    # Build message attributes
-    attrs = %{
-      role: :assistant,
-      metadata: %{
-        model_name: model_name,
-        usage: parse_usage(usage_data),
-        timestamp: DateTime.utc_now()
+    attrs =
+      %{
+        role: :assistant,
+        metadata: %{
+          model_name: fetch_either(response, "model", :model),
+          usage: parse_usage(fetch_either(response, "usage", :usage)),
+          timestamp: DateTime.utc_now()
+        }
       }
-    }
-
-    attrs = if content && content != "", do: Map.put(attrs, :content, content), else: attrs
-
-    attrs =
-      if reasoning_content && reasoning_content != "",
-        do: Map.put(attrs, :reasoning_content, reasoning_content),
-        else: attrs
-
-    attrs =
-      if length(converted_tool_calls) > 0,
-        do: Map.put(attrs, :tool_calls, converted_tool_calls),
-        else: attrs
+      |> put_present(:content, fetch_either(message_data, "content", :content))
+      |> put_present(
+        :reasoning_content,
+        fetch_either(message_data, "reasoning_content", :reasoning_content)
+      )
+      |> put_tool_calls(fetch_either(message_data, "tool_calls", :tool_calls) || [])
 
     Message.new!(attrs)
+  end
+
+  # OpenAI-compatible backends are inconsistent about string vs atom keys, and
+  # `choices`/`message` are absent entirely on error-shaped responses — hence the
+  # nil-tolerant lookup rather than a bare Map.get/2.
+  defp fetch_either(nil, _string_key, _atom_key), do: nil
+
+  defp fetch_either(map, string_key, atom_key) do
+    Map.get(map, string_key) || Map.get(map, atom_key)
+  end
+
+  defp response_message(response) do
+    choices = fetch_either(response, "choices", :choices) || []
+    choice = List.first(choices)
+
+    if choice, do: fetch_either(choice, "message", :message)
+  end
+
+  defp put_present(attrs, _key, value) when value in [nil, ""], do: attrs
+  defp put_present(attrs, key, value), do: Map.put(attrs, key, value)
+
+  defp put_tool_calls(attrs, []), do: attrs
+
+  defp put_tool_calls(attrs, tool_calls) do
+    Map.put(attrs, :tool_calls, Enum.map(tool_calls, &parse_tool_call/1))
   end
 
   @doc """

@@ -38,14 +38,28 @@ defmodule Nous.HTTP.Backend.Hackney do
     headers = ensure_content_type(headers)
     hackney_headers = Enum.map(headers, fn {k, v} -> {to_charlist(k), to_charlist(v)} end)
 
-    try do
-      json_body = JSON.encode!(body)
+    with {:ok, json_body} <- encode_body(body) do
       do_request(url, hackney_headers, json_body, timeout, connect_timeout, pool)
-    rescue
-      error ->
-        Logger.error("Failed to encode request body: #{inspect(error)}")
-        {:error, %{reason: :json_encode_error, details: error}}
     end
+  end
+
+  # The rescue covers the encode and nothing else. It used to span
+  # `do_request/6` as well, so every exception raised on the transport path —
+  # including the `UndefinedFunctionError` an app gets when `:hackney` is not
+  # in its deps — was reported as `:json_encode_error`. A confidently wrong
+  # error costs more to debug than a raw one.
+  #
+  # `JSON.encode!/1` here is the OTP-27 `:json` module, not Jason: it raises
+  # `Protocol.UndefinedError` for terms with no `JSON.Encoder` implementation
+  # and `ErlangError` (`{:invalid_byte, _}`) for invalid UTF-8 in a binary or
+  # a key. Both are verified and both are reachable from model-authored
+  # content. Nothing else in this clause raises.
+  defp encode_body(body) do
+    {:ok, JSON.encode!(body)}
+  rescue
+    e in [Protocol.UndefinedError, ErlangError] ->
+      Logger.error("Failed to encode request body: #{Exception.message(e)}")
+      {:error, %{reason: :json_encode_error, details: e}}
   end
 
   # Hackney 4 returns the body inline: `{:ok, status, headers, body}`. The

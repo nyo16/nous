@@ -82,6 +82,20 @@ defmodule Nous.AgentCancellationTest do
     def count_tokens(_messages), do: 50
   end
 
+  defmodule HangingToolDispatcher do
+    @moduledoc false
+    # Answers with one tool call whose tool never returns, so the run parks
+    # *inside a tool* rather than inside the model call.
+
+    def request(_model, _messages, _settings) do
+      Stub.request_started()
+      Stub.text("", tool_calls: [%{"id" => "call_1", "name" => "hanger", "arguments" => %{}}])
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 50
+  end
+
   setup do
     original = Application.get_env(:nous, :model_dispatcher)
     Stub.register(self())
@@ -185,6 +199,37 @@ defmodule Nous.AgentCancellationTest do
       assert state.current_task == nil
       # Reset, so the next execution is not born cancelled.
       assert :atomics.get(state.cancelled_ref, 1) == 0
+    end
+
+    test "cancelling a run kills the process the tool is executing in" do
+      use_dispatcher(HangingToolDispatcher)
+      test_pid = self()
+
+      tool =
+        Tool.from_function(
+          fn _ctx, _args ->
+            send(test_pid, {:tool_running, self()})
+            Process.sleep(:infinity)
+          end,
+          name: "hanger",
+          description: "Never returns"
+        )
+
+      pid = start_agent(tools: [tool])
+
+      AgentServer.send_message(pid, "Test")
+      assert_receive {:model_request_started, _}, 1_000
+      assert_receive {:tool_running, tool_pid}, 1_000
+
+      tool_ref = Process.monitor(tool_pid)
+
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
+
+      # Shutting the run task down is not enough. ToolExecutor deliberately
+      # runs the tool in a process linked to nothing, so a crashing tool cannot
+      # take the run with it — which also meant the tool kept running, holding
+      # whatever it held, after the run that asked for it was cancelled.
+      assert_receive {:DOWN, ^tool_ref, :process, ^tool_pid, :killed}, 2_000
     end
 
     test "cancel_execution returns :no_execution when nothing is running" do

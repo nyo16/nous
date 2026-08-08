@@ -201,4 +201,62 @@ defmodule Nous.PermissionsEnforcementTest do
       assert complete.output =~ "can't process this request"
     end
   end
+
+  describe "the hook layer is enforced on the streaming path" do
+    setup do
+      Nous.ModelDispatcher.put_dispatcher(NeverStreamDispatcher)
+      :ok
+    end
+
+    # run_stream/3 used to hand-roll its own request pipeline and never built a
+    # hook registry, so Hook.Runner.run(nil, _, _) -> :allow made the entire
+    # hook layer — the :pre_request deny gate included — a no-op on every
+    # streamed run. NeverStreamDispatcher raises if the model is reached, so
+    # these tests go red the moment the registry stops being built.
+    test "a :pre_request hook returning :deny stops run_stream before the model call" do
+      agent =
+        Agent.new("openai:test-model",
+          hooks: [Nous.Hook.new(:pre_request, handler: fn _event, _payload -> :deny end)]
+        )
+
+      assert {:ok, stream} = AgentRunner.run_stream(agent, "go")
+      assert Enum.any?(Enum.to_list(stream), &match?({:complete, _}, &1))
+    end
+
+    test "a :pre_request hook returning {:deny, reason} also stops run_stream" do
+      # The sibling fail-open: gating on `!= :deny` lets the tuple form through,
+      # so a hook that bothers to explain itself was ignored.
+      agent =
+        Agent.new("openai:test-model",
+          hooks: [
+            Nous.Hook.new(:pre_request,
+              handler: fn _event, _payload -> {:deny, "blocked by policy"} end
+            )
+          ]
+        )
+
+      assert {:ok, stream} = AgentRunner.run_stream(agent, "go")
+      assert {:text_delta, "blocked by policy"} in Enum.to_list(stream)
+    end
+
+    test "run/3 honours the {:deny, reason} shape too" do
+      test_pid = self()
+
+      agent =
+        Agent.new("openai:test-model",
+          hooks: [
+            Nous.Hook.new(:pre_request,
+              handler: fn _event, _payload ->
+                send(test_pid, :pre_request_consulted)
+                {:deny, "nope"}
+              end
+            )
+          ]
+        )
+
+      AgentRunner.run(agent, "go", max_iterations: 1)
+
+      assert_receive :pre_request_consulted
+    end
+  end
 end

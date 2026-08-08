@@ -1,7 +1,8 @@
 defmodule Nous.AgentRunner.RequestDispatchTest do
   use ExUnit.Case, async: true
 
-  alias Nous.{Tool, ToolSchema}
+  alias Nous.Tool
+  alias Nous.Tool.Wire
   alias Nous.AgentRunner.RequestDispatch
   alias Nous.Messages.Gemini
 
@@ -31,14 +32,14 @@ defmodule Nous.AgentRunner.RequestDispatchTest do
       tool = sample_tool()
 
       assert RequestDispatch.convert_tools_for_provider(:anthropic, [tool]) ==
-               [ToolSchema.to_anthropic(tool)]
+               [Wire.to_anthropic(tool)]
     end
 
     test "gemini gets bare function declarations, not the OpenAI envelope" do
       tool = sample_tool()
 
       assert [declaration] = RequestDispatch.convert_tools_for_provider(:gemini, [tool])
-      assert declaration == ToolSchema.to_gemini(tool)
+      assert declaration == Wire.to_gemini(tool)
 
       # The regression this guards: the runner used to fall through to the
       # OpenAI clause, so a %{"type" => "function", "function" => …} envelope
@@ -52,7 +53,7 @@ defmodule Nous.AgentRunner.RequestDispatchTest do
       tool = sample_tool()
 
       assert RequestDispatch.convert_tools_for_provider(:vertex_ai, [tool]) ==
-               [ToolSchema.to_gemini(tool)]
+               [Wire.to_gemini(tool)]
     end
 
     test "declarations are directly consumable by the Gemini wire builder" do
@@ -79,7 +80,7 @@ defmodule Nous.AgentRunner.RequestDispatchTest do
       rebuilt = RequestDispatch.rebuild_tool_settings(:gemini, :openai, settings, [tool])
 
       assert rebuilt.temperature == 0.5
-      assert rebuilt.tools == [ToolSchema.to_gemini(tool)]
+      assert rebuilt.tools == [Wire.to_gemini(tool)]
     end
 
     test "drops the previous provider's tool_choice and response_format" do

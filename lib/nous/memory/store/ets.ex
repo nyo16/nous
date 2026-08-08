@@ -10,6 +10,11 @@ defmodule Nous.Memory.Store.ETS do
   @behaviour Nous.Memory.Store
 
   alias Nous.Memory.Entry
+  alias Nous.Memory.Store.Results
+
+  # The Entry keyset is fixed at compile time. Rebuilding it — and rescanning it
+  # linearly — on every search_text/list was loop-invariant work.
+  @entry_fields %Entry{} |> Map.from_struct() |> Map.keys() |> MapSet.new()
 
   @impl true
   def init(_opts) do
@@ -100,9 +105,9 @@ defmodule Nous.Memory.Store.ETS do
   # requires the key to exist on the struct), so we fall back to copy+filter to
   # stay behavior-identical.
   # A non-map scope (e.g. :global) means "no scope" — return everything.
-  defp scoped_entries(table, scope) when not is_map(scope), do: all_entries(table)
+  defp scoped_entries(table, scope) when not is_map(scope), do: Results.all_entries(table)
 
-  defp scoped_entries(table, scope) when map_size(scope) == 0, do: all_entries(table)
+  defp scoped_entries(table, scope) when map_size(scope) == 0, do: Results.all_entries(table)
 
   defp scoped_entries(table, scope) do
     if scope_pushable?(scope) do
@@ -112,26 +117,13 @@ defmodule Nous.Memory.Store.ETS do
       |> :ets.select([{pattern, [], [:"$_"]}])
       |> Enum.map(fn {_id, entry} -> entry end)
     else
-      table |> all_entries() |> filter_by_scope(scope)
+      # Fallback path only — reached when scope is non-empty AND has a
+      # non-Entry key (the clauses above short-circuit the empty-scope case).
+      table |> Results.all_entries() |> Results.filter_by_scope(scope)
     end
   end
 
   defp scope_pushable?(scope) do
-    entry_fields = %Entry{} |> Map.from_struct() |> Map.keys()
-    Enum.all?(Map.keys(scope), &(&1 in entry_fields))
-  end
-
-  defp all_entries(table) do
-    :ets.tab2list(table) |> Enum.map(fn {_id, entry} -> entry end)
-  end
-
-  # Fallback path only — reached when scope is non-empty AND has a non-Entry
-  # key (scoped_entries/2 short-circuits the empty-scope case).
-  defp filter_by_scope(entries, scope) do
-    Enum.filter(entries, fn entry ->
-      Enum.all?(scope, fn {key, value} ->
-        Map.get(entry, key) == value
-      end)
-    end)
+    Enum.all?(Map.keys(scope), &MapSet.member?(@entry_fields, &1))
   end
 end

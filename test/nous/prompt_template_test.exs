@@ -84,11 +84,19 @@ defmodule Nous.PromptTemplateTest do
   end
 
   describe "extract_variables/1" do
-    test "returns existing atoms when known" do
-      vars = PromptTemplate.extract_variables("Hello <%= @name %> from <%= @source %>")
-      # role/content are existing atoms in this codebase but name/source likely aren't
-      # at extraction time - assert each is either an atom or string.
-      Enum.each(vars, fn v -> assert is_atom(v) or is_binary(v) end)
+    test "reuses an existing atom and never mints a new one" do
+      # The contract is AGENTS.md invariant #1: a template body is untrusted
+      # input, so extraction may reuse an existing atom but must never create
+      # one. The old assertion (`is_atom(v) or is_binary(v)`) holds for any
+      # return value the function could possibly produce, including the one
+      # this test exists to forbid.
+      novel = "nous_never_an_atom_#{System.unique_integer([:positive])}"
+
+      assert [:role, ^novel] =
+               PromptTemplate.extract_variables("Hello <%= @role %> from <%= @#{novel} %>")
+
+      # The effect, not the return value: the atom table is unchanged.
+      assert_raise ArgumentError, fn -> String.to_existing_atom(novel) end
     end
 
     test "deduplicates" do

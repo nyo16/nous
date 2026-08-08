@@ -7,6 +7,7 @@ defmodule Nous.Messages.Anthropic do
 
   alias Nous.{Message, Usage}
   alias Nous.Message.ContentPart
+  alias Nous.Messages.Cache
 
   @doc """
   Convert messages to Anthropic format.
@@ -24,7 +25,7 @@ defmodule Nous.Messages.Anthropic do
   @spec to_format([Message.t()]) :: {String.t() | nil, [map()]}
   def to_format(messages) when is_list(messages) do
     {system_prompt, other_messages} = Message.split_system(messages)
-    {system_prompt, Enum.map(other_messages, &message_to_anthropic/1)}
+    {system_prompt, Cache.map(__MODULE__, other_messages, &message_to_anthropic/1)}
   end
 
   @doc """

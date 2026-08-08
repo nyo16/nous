@@ -40,6 +40,25 @@ defmodule Nous.Messages do
   alias Nous.Message
   alias Nous.Messages.{OpenAI, Anthropic, Gemini}
 
+  # Every provider below speaks the OpenAI `/chat/completions` dialect in both
+  # directions; :anthropic and the Gemini pair are the only real branches. Held
+  # as attributes so the encode and decode dispatches cannot drift apart.
+  @openai_dialect [
+    :openai,
+    :openai_compatible,
+    :groq,
+    :lmstudio,
+    :ollama,
+    :openrouter,
+    :together,
+    :vllm,
+    :sglang,
+    :mistral,
+    :llamacpp,
+    :custom
+  ]
+  @gemini_dialect [:gemini, :vertex_ai]
+
   # Conversation utilities
 
   @doc """
@@ -193,6 +212,10 @@ defmodule Nous.Messages do
 
   Dispatches to the appropriate provider-specific conversion function.
 
+  The agent loop calls this once per iteration over a history that only grows at
+  the tail, so the per-message payloads are memoized per calling process and
+  only the new tail is converted. See `Nous.Messages.Cache`.
+
   ## Examples
 
       iex> conversation = [Message.system("Be helpful"), Message.user("Hello")]
@@ -206,58 +229,11 @@ defmodule Nous.Messages do
   """
   @spec to_provider_format([Message.t()], atom()) :: any()
   def to_provider_format(messages, provider) when is_list(messages) do
-    case provider do
-      :openai ->
-        to_openai_format(messages)
-
-      :openai_compatible ->
-        to_openai_format(messages)
-
-      :groq ->
-        to_openai_format(messages)
-
-      :lmstudio ->
-        to_openai_format(messages)
-
-      :ollama ->
-        to_openai_format(messages)
-
-      :openrouter ->
-        to_openai_format(messages)
-
-      :together ->
-        to_openai_format(messages)
-
-      :vllm ->
-        to_openai_format(messages)
-
-      :sglang ->
-        to_openai_format(messages)
-
-      :anthropic ->
-        to_anthropic_format(messages)
-
-      :gemini ->
-        to_gemini_format(messages)
-
-      :vertex_ai ->
-        to_gemini_format(messages)
-
-      :mistral ->
-        to_openai_format(messages)
-
-      :llamacpp ->
-        to_openai_format(messages)
-
-      :custom ->
-        to_openai_format(messages)
-
-      _ ->
-        raise ArgumentError, """
-        Unsupported provider: #{inspect(provider)}
-
-        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :vertex_ai, :mistral
-        """
+    cond do
+      provider in @openai_dialect -> to_openai_format(messages)
+      provider in @gemini_dialect -> to_gemini_format(messages)
+      provider == :anthropic -> to_anthropic_format(messages)
+      true -> raise ArgumentError, unsupported_provider_message(provider)
     end
   end
 
@@ -331,58 +307,11 @@ defmodule Nous.Messages do
   """
   @spec from_provider_response(map(), atom()) :: Message.t()
   def from_provider_response(response, provider) when is_map(response) do
-    case provider do
-      :openai ->
-        from_openai_response(response)
-
-      :openai_compatible ->
-        from_openai_response(response)
-
-      :groq ->
-        from_openai_response(response)
-
-      :lmstudio ->
-        from_openai_response(response)
-
-      :ollama ->
-        from_openai_response(response)
-
-      :openrouter ->
-        from_openai_response(response)
-
-      :together ->
-        from_openai_response(response)
-
-      :vllm ->
-        from_openai_response(response)
-
-      :sglang ->
-        from_openai_response(response)
-
-      :anthropic ->
-        from_anthropic_response(response)
-
-      :gemini ->
-        from_gemini_response(response)
-
-      :vertex_ai ->
-        from_gemini_response(response)
-
-      :mistral ->
-        from_openai_response(response)
-
-      :llamacpp ->
-        from_openai_response(response)
-
-      :custom ->
-        from_openai_response(response)
-
-      _ ->
-        raise ArgumentError, """
-        Unsupported provider: #{inspect(provider)}
-
-        Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :vertex_ai, :mistral
-        """
+    cond do
+      provider in @openai_dialect -> from_openai_response(response)
+      provider in @gemini_dialect -> from_gemini_response(response)
+      provider == :anthropic -> from_anthropic_response(response)
+      true -> raise ArgumentError, unsupported_provider_message(provider)
     end
   end
 
@@ -430,29 +359,23 @@ defmodule Nous.Messages do
 
   defp detect_format([]), do: :message
 
-  defp detect_format([first | _rest]) do
-    cond do
-      is_struct(first, Message) ->
-        :message
+  defp detect_format([first | _rest]), do: format_of(first)
 
-      match?({:system_prompt, _}, first) or match?({:user_prompt, _}, first) ->
-        :legacy
+  defp format_of(%Message{}), do: :message
+  defp format_of({:system_prompt, _}), do: :legacy
+  defp format_of({:user_prompt, _}), do: :legacy
+  defp format_of(%{__struct__: _} = struct) when is_map_key(struct, :role), do: :openai
+  defp format_of(%{"role" => _, "content" => _}), do: :anthropic
+  defp format_of(%{"role" => _, "parts" => _}), do: :gemini
+  defp format_of(%{role: _}), do: :openai
+  defp format_of(_other), do: :unknown
 
-      is_struct(first) and Map.has_key?(first, :role) ->
-        :openai
+  defp unsupported_provider_message(provider) do
+    """
+    Unsupported provider: #{inspect(provider)}
 
-      is_map(first) and Map.has_key?(first, "role") and Map.has_key?(first, "content") ->
-        :anthropic
-
-      is_map(first) and Map.has_key?(first, "role") and Map.has_key?(first, "parts") ->
-        :gemini
-
-      is_map(first) and Map.has_key?(first, :role) ->
-        :openai
-
-      true ->
-        :unknown
-    end
+    Supported providers: :openai, :openai_compatible, :groq, :lmstudio, :llamacpp, :vllm, :sglang, :anthropic, :gemini, :vertex_ai, :mistral
+    """
   end
 
   defp attempt_generic_conversion(messages) do

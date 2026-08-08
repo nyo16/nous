@@ -270,4 +270,134 @@ defmodule Nous.Tools.WebFetchTest do
       assert %{success: true} = WebFetch.fetch_page(nil, %{"url" => url(bypass, "/page")})
     end
   end
+
+  describe "connection pooling" do
+    test "distinct hostnames leave no pool behind", %{bypass: bypass} do
+      hosts = for i <- 1..5, do: "nous-pool-probe-#{i}"
+      stub_hosts(hosts)
+      Bypass.expect(bypass, "GET", "/page", &html/1)
+
+      # brave_search and friends also use Req's :connect_options, so the
+      # baseline is whatever is already parked there, not zero.
+      before = length(DynamicSupervisor.which_children(Req.FinchSupervisor))
+
+      for host <- hosts do
+        assert {:ok, %{title: "Test Page"}} =
+                 WebFetch.do_fetch("http://#{host}:#{bypass.port}/page")
+      end
+
+      # Req's :connect_options path starts a Finch supervision tree keyed by a
+      # hash of those options — which carry the hostname — and never stops it.
+      # Five model-chosen hostnames used to mean five permanent trees (and five
+      # permanent atoms). web_fetch owns its pool now, so this stays flat.
+      assert length(DynamicSupervisor.which_children(Req.FinchSupervisor)) == before
+      assert live_pinned_pools() == []
+    end
+
+    test "every hop of a redirect chain gives its slot back", %{bypass: bypass} do
+      Bypass.expect_once(bypass, "GET", "/start", &redirect(&1, "/middle"))
+      Bypass.expect_once(bypass, "GET", "/middle", &redirect(&1, "/final"))
+      Bypass.expect_once(bypass, "GET", "/final", &html/1)
+
+      assert {:ok, %{title: "Test Page"}} = WebFetch.do_fetch(url(bypass, "/start"))
+      assert live_pinned_pools() == []
+    end
+
+    test "a failed fetch gives its slot back", %{bypass: bypass} do
+      Bypass.expect_once(bypass, "GET", "/gone", &Plug.Conn.resp(&1, 404, ""))
+
+      assert {:error, "HTTP 404"} = WebFetch.do_fetch(url(bypass, "/gone"))
+      assert live_pinned_pools() == []
+    end
+
+    test "concurrent fetches take distinct slots and return them all", %{bypass: bypass} do
+      Bypass.expect(bypass, "GET", "/page", &html/1)
+
+      results =
+        1..8
+        |> Task.async_stream(fn _ -> WebFetch.do_fetch(url(bypass, "/page")) end,
+          max_concurrency: 8
+        )
+        |> Enum.map(fn {:ok, result} -> result end)
+
+      assert Enum.all?(results, &match?({:ok, %{title: "Test Page"}}, &1))
+      assert live_pinned_pools() == []
+    end
+  end
+
+  describe "retry policy" do
+    test "a transient failure is fetched exactly once", %{bypass: bypass} do
+      attempts = :counters.new(1, [])
+
+      Bypass.expect(bypass, "GET", "/flaky", fn conn ->
+        :counters.add(attempts, 1, 1)
+        Plug.Conn.resp(conn, 503, "")
+      end)
+
+      assert {:error, "HTTP 503"} = WebFetch.do_fetch(url(bypass, "/flaky"))
+
+      # Req's default `retry: :safe_transient` would make this 4 — four full
+      # body transfers and four DNS resolutions against a model-supplied URL,
+      # only the first of which the SSRF guard validated.
+      assert :counters.get(attempts, 1) == 1
+    end
+  end
+
+  # The nil-pin clause is unreachable from do_fetch/3 by construction —
+  # UrlGuard only returns a nil pin under `allow_private_hosts: true`, which
+  # web_fetch never passes — and that is exactly how the one branch of this
+  # SSRF defence with no test stayed untested through two audits while the
+  # battery around it grew to 22 cases. pin_connection/2 is `@doc false`
+  # public so the branch has a seam.
+  describe "pin_connection/2 fail-closed" do
+    test "refuses to build a request when host validation produced no pinned IP" do
+      assert {:error, reason} = WebFetch.pin_connection(URI.parse("https://example.com/x"), nil)
+      assert reason =~ "pinned IP"
+      assert reason =~ "host validation was skipped"
+    end
+
+    test "an IPv4 pin replaces the host and keeps the hostname for TLS" do
+      # Negative control for the clause above: a blanket
+      # `pin_connection(_, _), do: {:error, _}` would satisfy the fail-closed
+      # test and break every fetch, and nothing else here calls this directly.
+      assert {:ok, {"https://93.184.216.34:8443/a/b?q=1", "example.com"}} =
+               WebFetch.pin_connection(
+                 URI.parse("https://example.com:8443/a/b?q=1"),
+                 {93, 184, 216, 34}
+               )
+    end
+
+    test "an IPv6 pin is bracketed in the authority" do
+      assert {:ok, {"https://[2606:4700::1111]:443/x", "example.com"}} =
+               WebFetch.pin_connection(
+                 URI.parse("https://example.com/x"),
+                 {0x2606, 0x4700, 0, 0, 0, 0, 0, 0x1111}
+               )
+    end
+  end
+
+  # Each pinned Finch instance registers its supervisor, registries and pool
+  # manager under the slot name, so "no process left with that prefix" is the
+  # reclamation assertion. No hardcoded slot count, no atoms minted here.
+  defp live_pinned_pools do
+    Enum.filter(Process.registered(), fn name ->
+      String.starts_with?(Atom.to_string(name), "Elixir.Nous.Tools.WebFetch.Finch.")
+    end)
+  end
+
+  # The pool is keyed by hostname (web_fetch connects to the pinned IP and
+  # hands Mint the hostname separately), so exercising the leak needs several
+  # names — all resolving to the 127.0.0.1 Bypass listens on. `:inet_db`'s
+  # hosts table is the seam; `:file` has to precede `:native` in the lookup
+  # order for it to be consulted at all.
+  defp stub_hosts(hosts) do
+    previous_lookup = :inet_db.res_option(:lookup)
+    :inet_db.set_lookup([:file, :native])
+    :inet_db.add_host({127, 0, 0, 1}, Enum.map(hosts, &String.to_charlist/1))
+
+    on_exit(fn ->
+      :inet_db.del_host({127, 0, 0, 1})
+      :inet_db.set_lookup(previous_lookup)
+    end)
+  end
 end

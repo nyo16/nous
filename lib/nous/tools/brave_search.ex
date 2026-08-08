@@ -39,6 +39,36 @@ defmodule Nous.Tools.BraveSearch do
 
   alias Nous.Tools.Search.Common
 
+  @typedoc """
+  One web result. Values are copied verbatim out of the Brave JSON payload —
+  the keys are what this tool guarantees, not the shape of what Brave puts in
+  them. `:age`/`:page_age` are absent from most payloads and come back as nil.
+  """
+  @type web_result :: %{
+          title: term(),
+          url: term(),
+          description: term(),
+          age: term(),
+          page_age: term()
+        }
+
+  @typedoc """
+  One news result. Same caveat as `t:web_result/0` about the values.
+  """
+  @type news_result :: %{
+          title: term(),
+          url: term(),
+          description: term(),
+          age: term(),
+          source: term()
+        }
+
+  @typedoc """
+  The failure envelope `Nous.Tools.Search.Common.run_search/4` returns for a
+  missing API key or a failed request.
+  """
+  @type search_error :: %{query: String.t(), error: String.t(), success: false}
+
   @doc """
   Search the web using Brave Search API.
 
@@ -58,6 +88,14 @@ defmodule Nous.Tools.BraveSearch do
   - result_count: Number of results returned
   - success: Whether the search succeeded
   """
+  @spec web_search(Nous.RunContext.t(), map()) ::
+          %{
+            query: String.t(),
+            results: [web_result()],
+            result_count: non_neg_integer(),
+            success: true
+          }
+          | search_error()
   def web_search(ctx, args) do
     query = Common.query(args)
     # Max 20 results
@@ -92,6 +130,14 @@ defmodule Nous.Tools.BraveSearch do
   - country: Country code for localized results
   - search_lang: Language of search
   """
+  @spec news_search(Nous.RunContext.t(), map()) ::
+          %{
+            query: String.t(),
+            results: [news_result()],
+            result_count: non_neg_integer(),
+            success: true
+          }
+          | search_error()
   def news_search(ctx, args) do
     query = Common.query(args)
     count = Map.get(args, "count", 5) |> min(20)
@@ -142,6 +188,12 @@ defmodule Nous.Tools.BraveSearch do
   # and doesn't share Nous's Finch pool) to Req. The previous code path
   # accepted MITM-altered TLS connections and would silently leak the
   # Brave API key to any attacker on-path.
+  #
+  # retry: false — Req's default `:safe_transient` turns one agent tool call
+  # into up to 4 GETs against a metered API on any 429/5xx. A 429 here means
+  # the subscription quota is spent, so retrying behind the model's back only
+  # burns the quota faster and stretches the tool call across the backoff.
+  # Surfacing the error lets the agent decide.
   defp do_brave_request(url, params, api_key, parse_results, label) do
     case Req.get(url,
            params: params,
@@ -150,7 +202,8 @@ defmodule Nous.Tools.BraveSearch do
              {"accept", "application/json"}
            ],
            connect_options: [transport_opts: [verify: :verify_peer]],
-           receive_timeout: 15_000
+           receive_timeout: 15_000,
+           retry: false
          ) do
       {:ok, %Req.Response{status: 200, body: body}} when is_map(body) ->
         {:ok, parse_results.(body)}

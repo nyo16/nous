@@ -9,7 +9,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
     also keeps content and tool calls when a stream degenerates into a
     single complete response object.
 
-    Requires optional dep: `{:llama_cpp_ex, "~> 0.6.5"}`
+    Requires optional dep: `{:llama_cpp_ex, "~> 0.8"}`
     """
 
     @behaviour Nous.StreamNormalizer
@@ -36,28 +36,28 @@ if Code.ensure_loaded?(LlamaCppEx) do
     defdelegate convert_complete_response(chunk), to: OpenAI
 
     defp parse_delta_chunk(chunk) do
-      choices = Map.get(chunk, :choices) || Map.get(chunk, "choices") || []
-
-      case choices do
-        [choice | _] ->
-          delta = Map.get(choice, :delta) || Map.get(choice, "delta")
-          finish_reason = Map.get(choice, :finish_reason) || Map.get(choice, "finish_reason")
-          content = delta && (Map.get(delta, :content) || Map.get(delta, "content"))
-
-          cond do
-            content && content != "" ->
-              [{:text_delta, content}]
-
-            finish_reason ->
-              [{:finish, finish_reason}]
-
-            true ->
-              [{:unknown, chunk}]
-          end
-
-        _ ->
-          [{:unknown, chunk}]
+      case fetch_either(chunk, :choices, "choices") || [] do
+        [choice | _] -> choice_events(choice, chunk)
+        _ -> [{:unknown, chunk}]
       end
+    end
+
+    defp choice_events(choice, chunk) do
+      delta = fetch_either(choice, :delta, "delta")
+      finish_reason = fetch_either(choice, :finish_reason, "finish_reason")
+      content = delta && fetch_either(delta, :content, "content")
+
+      cond do
+        content && content != "" -> [{:text_delta, content}]
+        finish_reason -> [{:finish, finish_reason}]
+        true -> [{:unknown, chunk}]
+      end
+    end
+
+    # NIF chunks arrive as structs with atom keys; the same shape reaches us with
+    # string keys when llama.cpp's HTTP server is in front. Atom key wins.
+    defp fetch_either(data, atom_key, string_key) do
+      Map.get(data, atom_key) || Map.get(data, string_key)
     end
   end
 else
@@ -65,7 +65,7 @@ else
     @moduledoc """
     Stream normalizer for LlamaCppEx `%ChatCompletionChunk{}` structs.
 
-    **Not available** - add `{:llama_cpp_ex, "~> 0.6.5"}` to your mix.exs deps.
+    **Not available** - add `{:llama_cpp_ex, "~> 0.8"}` to your mix.exs deps.
     """
 
     @behaviour Nous.StreamNormalizer

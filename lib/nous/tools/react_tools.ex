@@ -16,7 +16,7 @@ defmodule Nous.Tools.ReActTools do
 
   ## Usage
 
-      agent = ReActAgent.new("lmstudio:qwen3-vl-4b-thinking-mlx",
+      agent = Nous.Agent.ReAct.new("lmstudio:qwen3-vl-4b-thinking-mlx",
         instructions: "Solve complex problems step by step"
       )
 
@@ -24,6 +24,30 @@ defmodule Nous.Tools.ReActTools do
   """
 
   require Logger
+
+  @typedoc """
+  A todo as it lives in `ctx.deps[:todos]`. `:item` and `:priority` are passed
+  through from the model unchanged, so `:priority` is only *conventionally* one
+  of "high"/"medium"/"low". `:completed_at` appears once the item is completed.
+  """
+  @type todo :: %{
+          required(:id) => pos_integer(),
+          required(:item) => String.t(),
+          required(:priority) => term(),
+          required(:status) => :pending | :completed,
+          required(:created_at) => String.t(),
+          optional(:completed_at) => String.t()
+        }
+
+  @type plan_entry :: %{task: String.t(), timestamp: String.t(), created_at: String.t()}
+
+  @type note_entry :: %{content: String.t(), timestamp: String.t()}
+
+  @type todo_stats :: %{
+          completed: non_neg_integer(),
+          pending: non_neg_integer(),
+          total: non_neg_integer()
+        }
 
   @doc """
   Create a structured plan for solving a task.
@@ -43,6 +67,11 @@ defmodule Nous.Tools.ReActTools do
 
   A confirmation message. The plan is stored in context for reference.
   """
+  @spec plan(Nous.RunContext.t(), map()) :: %{
+          success: true,
+          message: String.t(),
+          __update_context__: %{plans: [plan_entry(), ...]}
+        }
   def plan(ctx, args) do
     # Support multiple parameter formats
     task =
@@ -96,6 +125,11 @@ defmodule Nous.Tools.ReActTools do
 
   Confirmation message.
   """
+  @spec note(Nous.RunContext.t(), %{required(String.t()) => term()}) :: %{
+          success: true,
+          message: String.t(),
+          __update_context__: %{notes: [note_entry(), ...]}
+        }
   def note(ctx, %{"content" => content}) do
     timestamp = DateTime.utc_now() |> DateTime.to_string()
 
@@ -130,6 +164,12 @@ defmodule Nous.Tools.ReActTools do
 
   Confirmation with current todo count.
   """
+  @spec add_todo(Nous.RunContext.t(), map()) :: %{
+          success: true,
+          message: String.t(),
+          todo_id: pos_integer(),
+          __update_context__: %{todos: [todo(), ...]}
+        }
   def add_todo(ctx, args) do
     item = Map.get(args, "item") || Map.get(args, "task", "")
     priority = Map.get(args, "priority", "medium")
@@ -174,6 +214,15 @@ defmodule Nous.Tools.ReActTools do
 
   Confirmation message.
   """
+  @spec complete_todo(Nous.RunContext.t(), map()) ::
+          %{
+            success: true,
+            message: String.t(),
+            completed_id: pos_integer(),
+            stats: todo_stats(),
+            __update_context__: %{todos: [todo(), ...]}
+          }
+          | %{success: false, message: String.t(), __update_context__: %{}}
   def complete_todo(ctx, args) do
     todos = ctx.deps[:todos] || []
 
@@ -225,6 +274,9 @@ defmodule Nous.Tools.ReActTools do
 
   Formatted list of todos.
   """
+  @spec list_todos(Nous.RunContext.t(), map()) ::
+          %{success: true, message: String.t(), todos: []}
+          | %{success: true, message: String.t(), todos: [todo(), ...], stats: todo_stats()}
   def list_todos(ctx, _args \\ %{}) do
     todos = ctx.deps[:todos] || []
 
@@ -277,6 +329,17 @@ defmodule Nous.Tools.ReActTools do
 
   The final answer wrapped with completion metadata.
   """
+  @spec final_answer(Nous.RunContext.t(), %{required(String.t()) => term()}) :: %{
+          success: true,
+          final_answer: String.t(),
+          message: String.t(),
+          metadata: %{
+            todos_completed: non_neg_integer(),
+            todos_pending: non_neg_integer(),
+            plans_count: non_neg_integer(),
+            notes_count: non_neg_integer()
+          }
+        }
   def final_answer(ctx, %{"answer" => answer}) do
     todos = ctx.deps[:todos] || []
     plans = ctx.deps[:plans] || []

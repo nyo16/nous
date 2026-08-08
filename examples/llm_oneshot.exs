@@ -81,7 +81,8 @@ IO.puts("")
 # (it internally filters {:text_delta, _} events and maps them to the text).
 # There is no {:finish, _} or {:complete, _} terminator here - the stream just
 # ends. (When tools are supplied, the stream may additionally yield an
-# {:error, reason} tuple if a turn fails.)
+# {:error, reason} tuple - if a turn fails, or if the tool loop hits its
+# 10-iteration cap.)
 
 IO.puts("--- 3. stream_text/3 (yields text chunks) ---")
 IO.puts("Prompt: Count from 1 to 5, one number per line.\n")

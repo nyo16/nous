@@ -16,6 +16,7 @@ if Code.ensure_loaded?(Exqlite) do
     require Logger
 
     alias Nous.Memory.Entry
+    alias Nous.Memory.Store.Columns
 
     @create_memories """
     CREATE TABLE IF NOT EXISTS memories (
@@ -108,18 +109,10 @@ if Code.ensure_loaded?(Exqlite) do
     def fetch(conn, id) do
       sql = "SELECT * FROM memories WHERE id = ?1"
 
-      with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-           :ok <- Exqlite.Sqlite3.bind(conn, stmt, [id]) do
-        case Exqlite.Sqlite3.step(conn, stmt) do
-          {:row, row} ->
-            columns = Exqlite.Sqlite3.columns(conn, stmt)
-            Exqlite.Sqlite3.release(conn, stmt)
-            {:ok, row_to_entry(columns, row)}
-
-          :done ->
-            Exqlite.Sqlite3.release(conn, stmt)
-            {:error, :not_found}
-        end
+      with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql) do
+        result = fetch_one(conn, stmt, id)
+        Exqlite.Sqlite3.release(conn, stmt)
+        result
       end
     end
 
@@ -140,42 +133,51 @@ if Code.ensure_loaded?(Exqlite) do
 
     @impl true
     def update(conn, id, updates) when is_map(updates) do
+      # Reject unknown identifiers before any driver call: fail fast on bad
+      # input rather than after a round trip, and keep the control reachable
+      # without a live connection.
+      :ok = Columns.validate!(updates)
+
       case fetch(conn, id) do
-        {:ok, entry} ->
-          now = DateTime.utc_now()
-          updates = Map.put(updates, :updated_at, now)
-          updated = struct(entry, updates)
-
-          set_clauses =
-            updates
-            |> Map.keys()
-            |> Enum.map(&field_to_column/1)
-            |> Enum.with_index(1)
-            |> Enum.map(fn {col, idx} -> "#{col} = ?#{idx}" end)
-            |> Enum.join(", ")
-
-          params =
-            updates
-            |> Map.keys()
-            |> Enum.map(fn key -> encode_field(key, Map.get(updated, key)) end)
-
-          sql = "UPDATE memories SET #{set_clauses} WHERE id = ?#{map_size(updates) + 1}"
-          params = params ++ [id]
-
-          transaction(conn, fn ->
-            with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-                 :ok <- bind_and_step(conn, stmt, params) do
-              if Map.has_key?(updates, :content) do
-                update_fts(conn, id, updated.content)
-              end
-
-              {:ok, conn}
-            end
-          end)
-
-        error ->
-          error
+        {:ok, entry} -> write_update(conn, id, entry, updates)
+        error -> error
       end
+    end
+
+    defp write_update(conn, id, entry, updates) do
+      updates = Map.put(updates, :updated_at, DateTime.utc_now())
+      updated = struct(entry, updates)
+      {sql, params} = update_statement(id, updates, updated)
+
+      transaction(conn, fn ->
+        with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
+             :ok <- bind_and_step(conn, stmt, params),
+             :ok <- maybe_update_fts(conn, id, updates, updated.content) do
+          {:ok, conn}
+        end
+      end)
+    end
+
+    # `updates` supplies the columns to write, `updated` the values: the caller
+    # has already merged the two, so a key present in `updates` with a stale
+    # value still binds the merged struct's value.
+    defp update_statement(id, updates, updated) do
+      set_clauses =
+        updates
+        |> Map.keys()
+        |> Enum.map(&Columns.fetch!/1)
+        |> Enum.with_index(1)
+        |> Enum.map(fn {col, idx} -> "#{col} = ?#{idx}" end)
+        |> Enum.join(", ")
+
+      params =
+        updates
+        |> Map.keys()
+        |> Enum.map(fn key -> encode_field(key, Map.get(updated, key)) end)
+
+      sql = "UPDATE memories SET #{set_clauses} WHERE id = ?#{map_size(updates) + 1}"
+
+      {sql, params ++ [id]}
     end
 
     # Run `fun` inside a SQLite transaction. Commits on {:ok, _}, rolls
@@ -310,30 +312,63 @@ if Code.ensure_loaded?(Exqlite) do
 
     # -- Private helpers --
 
-    defp bind_and_step(conn, stmt, params) do
-      with :ok <- Exqlite.Sqlite3.bind(conn, stmt, params) do
+    # Split out of `fetch/2` so the statement is released on exactly one path.
+    defp fetch_one(conn, stmt, id) do
+      with :ok <- Exqlite.Sqlite3.bind(stmt, [id]) do
         case Exqlite.Sqlite3.step(conn, stmt) do
+          # `columns/2` is spec'd `{:ok, [binary()]}`, not a bare list. Hard-match
+          # the documented shape: drift then raises a MatchError here instead of
+          # handing `row_to_entry/2` a tuple, which zips against nothing and
+          # decodes every field to nil — a corrupt entry that looks valid.
+          {:row, row} ->
+            {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
+            {:ok, row_to_entry(columns, row)}
+
           :done ->
-            Exqlite.Sqlite3.release(conn, stmt)
-            :ok
+            {:error, :not_found}
 
-          {:row, _} ->
-            Exqlite.Sqlite3.release(conn, stmt)
-            :ok
-
-          {:error, _} = error ->
-            Exqlite.Sqlite3.release(conn, stmt)
-            error
+          other ->
+            step_error(other)
         end
       end
     end
 
+    # `bind/2` takes no connection — the statement carries it. Spec'd `:: :ok`,
+    # but it returns `{:error, reason}` when the driver cannot count the
+    # statement's parameters, so both are handled; a count mismatch or an
+    # unbindable term raises `ArgumentError` out of the driver, which
+    # `transaction/2` turns into a ROLLBACK before reraising.
+    defp bind_and_step(conn, stmt, params) do
+      result =
+        with :ok <- Exqlite.Sqlite3.bind(stmt, params) do
+          case Exqlite.Sqlite3.step(conn, stmt) do
+            :done -> :ok
+            {:row, _} -> :ok
+            other -> step_error(other)
+          end
+        end
+
+      Exqlite.Sqlite3.release(conn, stmt)
+      result
+    end
+
     defp query_all(conn, sql, params) do
-      with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-           :ok <- Exqlite.Sqlite3.bind(conn, stmt, params) do
-        columns = Exqlite.Sqlite3.columns(conn, stmt)
-        rows = fetch_rows(conn, stmt, [])
+      with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql) do
+        result = collect_rows(conn, stmt, params)
         Exqlite.Sqlite3.release(conn, stmt)
+        result
+      end
+    end
+
+    # Split out of `query_all/3` so the statement is released on exactly one path.
+    defp collect_rows(conn, stmt, params) do
+      # Column names are readable on a prepared statement before the first step,
+      # which is the order exqlite's own connection uses. Hard-matched for the
+      # same reason as in `fetch_one/3`.
+      {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
+
+      with :ok <- Exqlite.Sqlite3.bind(stmt, params),
+           {:ok, rows} <- fetch_rows(conn, stmt, []) do
         {:ok, rows, columns}
       end
     end
@@ -341,10 +376,27 @@ if Code.ensure_loaded?(Exqlite) do
     defp fetch_rows(conn, stmt, acc) do
       case Exqlite.Sqlite3.step(conn, stmt) do
         {:row, row} -> fetch_rows(conn, stmt, [row | acc])
-        :done -> Enum.reverse(acc)
+        :done -> {:ok, Enum.reverse(acc)}
+        other -> step_error(other)
       end
     end
 
+    # `step/2` is spec'd `:done | :busy | {:row, row()} | {:error, reason()}`.
+    # `:busy` is a locked database, not an empty result set — folding it into
+    # `{:error, :not_found}` or an empty row list would report contention as
+    # missing data. A return outside the spec matches no clause and raises.
+    defp step_error(:busy), do: {:error, :busy}
+    defp step_error({:error, reason}), do: {:error, reason}
+
+    # Deliberate near-clone of `Nous.Memory.Store.DuckDB.row_to_entry/2`
+    # (credo mass-49, arch F-8). The shape matches; the substance does not.
+    # SQLite stores the embedding as a JSON string and booleans as integers,
+    # so this decoder needs `decode_embedding/1` and `int_to_bool/1` where the
+    # DuckDB one reads native values straight through. A shared decoder would
+    # have to branch on its own backend at the two fields that actually
+    # differ. `duckdbex` is still absent from `mix.exs`, so the DuckDB half of
+    # any merge could not be exercised. The one genuinely identical part is the
+    # `@memory_types` pair below, five lines, kept local for the same reason.
     defp row_to_entry(columns, row) do
       map =
         columns
@@ -354,7 +406,7 @@ if Code.ensure_loaded?(Exqlite) do
       %Entry{
         id: map["id"],
         content: map["content"],
-        type: String.to_existing_atom(map["type"]),
+        type: decode_memory_type(map["type"]),
         importance: map["importance"] || 0.5,
         evergreen: int_to_bool(map["evergreen"]),
         embedding: decode_embedding(map["embedding"]),
@@ -370,21 +422,42 @@ if Code.ensure_loaded?(Exqlite) do
       }
     end
 
-    defp build_scope_clause(scope, param_offset) when map_size(scope) == 0,
-      do: {"", List.duplicate(nil, 0) |> then(fn _ -> [] end)}
+    # A persisted row sits outside the BEAM's type system: a corrupt or
+    # hand-edited database file can hold any string, and `to_existing_atom/1`
+    # on it raises `ArgumentError` out of every read path. Decode the closed
+    # enum through an allowlist instead — an unrecognised value becomes `nil`,
+    # which matches no category, rather than crashing the caller or
+    # masquerading as a valid one.
+    @memory_types %{
+      "semantic" => :semantic,
+      "episodic" => :episodic,
+      "procedural" => :procedural
+    }
+
+    defp decode_memory_type(value), do: Map.get(@memory_types, value)
+
+    defp build_scope_clause(scope, _param_offset) when map_size(scope) == 0, do: {"", []}
 
     defp build_scope_clause(scope, param_offset) do
       {clauses, params} =
         scope
         |> Enum.with_index(param_offset + 1)
         |> Enum.map(fn {{key, value}, idx} ->
-          col = field_to_column(key)
+          col = Columns.fetch!(key)
           {"#{col} = ?#{idx}", value}
         end)
         |> Enum.unzip()
 
       sql = "WHERE " <> Enum.join(clauses, " AND ")
       {sql, params}
+    end
+
+    # The FTS row has to move with the content or `search_text/3` keeps matching
+    # the stale text. Its result belongs in `update/3`'s `with`: discarding it
+    # committed the transaction over a failed FTS write, which is the exact
+    # divergence the transaction in `store/2` exists to prevent.
+    defp maybe_update_fts(conn, id, updates, new_content) do
+      if Map.has_key?(updates, :content), do: update_fts(conn, id, new_content), else: :ok
     end
 
     defp update_fts(conn, id, new_content) do
@@ -396,41 +469,6 @@ if Code.ensure_loaded?(Exqlite) do
            {:ok, ins_stmt} <- Exqlite.Sqlite3.prepare(conn, ins_sql),
            :ok <- bind_and_step(conn, ins_stmt, [id, new_content]) do
         :ok
-      end
-    end
-
-    # Allowlist of Entry field → physical column. Used to build `SET col = ?`
-    # and `WHERE col = ?` fragments via string interpolation, so the column name
-    # MUST NOT come from an arbitrary `to_string/1` of caller input — that would
-    # be a SQL-identifier injection primitive. Keys are internal Entry field
-    # atoms today, but an unknown field is a bug (or an attack), so fail loudly.
-    @column_map %{
-      id: "id",
-      content: "content",
-      type: "type",
-      importance: "importance",
-      evergreen: "evergreen",
-      embedding: "embedding",
-      agent_id: "agent_id",
-      session_id: "session_id",
-      user_id: "user_id",
-      namespace: "namespace",
-      metadata: "metadata_json",
-      access_count: "access_count",
-      created_at: "created_at",
-      updated_at: "updated_at",
-      last_accessed_at: "last_accessed_at"
-    }
-
-    defp field_to_column(field) do
-      case Map.fetch(@column_map, field) do
-        {:ok, col} ->
-          col
-
-        :error ->
-          raise ArgumentError,
-                "unknown memory column #{inspect(field)} — not in the allowlist " <>
-                  "(#{@column_map |> Map.keys() |> Enum.sort() |> Enum.map_join(", ", &inspect/1)})"
       end
     end
 

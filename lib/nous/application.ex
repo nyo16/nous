@@ -7,24 +7,6 @@ defmodule Nous.Application do
   def start(_type, _args) do
     configure_hackney_pool()
 
-    children =
-      [
-        {Finch, name: Nous.Finch, pools: finch_pools()},
-        # Task supervisor for async agent tasks
-        {Task.Supervisor, name: Nous.TaskSupervisor},
-        # Agent process registry and dynamic supervisor
-        Nous.AgentRegistry,
-        Nous.AgentDynamicSupervisor,
-        # ETS persistence table owner - keeps the :nous_persistence table
-        # alive across transient agent processes. Without this the table
-        # dies with whichever process happens to call save/load first.
-        Nous.Persistence.ETS,
-        # Same ownership pattern for the workflow checkpoint table — without
-        # a supervised owner, suspended workflows could vanish whenever the
-        # process that saved them exited.
-        Nous.Workflow.Checkpoint.ETS
-      ] ++ optional_bumblebee_children()
-
     # Tuned restart limits to match AgentDynamicSupervisor - default 3-in-5
     # would cascade to take Nous.AgentRegistry + the dynamic supervisor down
     # together if a Finch / Task.Supervisor restart trips the limit.
@@ -35,7 +17,32 @@ defmodule Nous.Application do
       max_seconds: 10
     ]
 
-    Supervisor.start_link(children, opts)
+    Supervisor.start_link(children(), opts)
+  end
+
+  # Public (but `@doc false`), like `finch_pools/0` below, so the child specs
+  # are testable without restarting the supervisor. A pool size that never
+  # reaches Finch's child spec is the P-2 bug itself, and asserting only
+  # `finch_pools/0`'s return value cannot see it.
+  @doc false
+  @spec children() :: [Supervisor.child_spec() | {module(), term()} | module()]
+  def children do
+    [
+      {Finch, name: Nous.Finch, pools: finch_pools()},
+      # Task supervisor for async agent tasks
+      {Task.Supervisor, name: Nous.TaskSupervisor, max_children: task_supervisor_max_children()},
+      # Agent process registry and dynamic supervisor
+      Nous.AgentRegistry,
+      Nous.AgentDynamicSupervisor,
+      # ETS persistence table owner - keeps the :nous_persistence table
+      # alive across transient agent processes. Without this the table
+      # dies with whichever process happens to call save/load first.
+      Nous.Persistence.ETS,
+      # Same ownership pattern for the workflow checkpoint table — without
+      # a supervised owner, suspended workflows could vanish whenever the
+      # process that saved them exited.
+      Nous.Workflow.Checkpoint.ETS
+    ] ++ optional_bumblebee_children()
   end
 
   # Bumblebee is an optional dep. When loaded, the embedding provider
@@ -51,6 +58,42 @@ defmodule Nous.Application do
     end
   else
     defp optional_bumblebee_children, do: []
+  end
+
+  # Aggregate ceiling on Nous.TaskSupervisor (perf-audit F-4). Every consumer
+  # bounds its own fan-out — the parallel tool-call batch, search_scrape's URL
+  # list, research's search phase, workflow parallel/map nodes, one task per
+  # in-flight stream and per offloaded agent run — but the supervisor itself
+  # defaulted to :infinity, so N concurrent runs multiplied every per-unit
+  # bound with nothing above them. A per-unit bound is not an aggregate one.
+  #
+  # 1_000 is a runaway valve, not a routine limit. The largest realistic
+  # steady state is roughly one task per concurrent agent run plus its tool
+  # fan-out (16, see Nous.AgentRunner.ToolExecution), i.e. ~50 concurrent runs
+  # at full width — an order of magnitude below the ceiling — while a wedged
+  # loop that spawns per token still hits a wall instead of the memory limit.
+  #
+  # Two constraints on raising or lowering it: a task that cannot claim a slot
+  # is refused, not queued — Nous.AgentRunner.ToolExecution.fan_out/5 catches
+  # that refusal and degrades the batch to tool errors, but other callsites do
+  # not, so every per-unit :max_concurrency should stay well under this number;
+  # and streams are long-lived, so the ceiling has to cover peak concurrent
+  # runs, not peak request rate.
+  #
+  #     config :nous, :task_supervisor_max_children, 5_000
+  #
+  # Public (but `@doc false`), like `finch_pools/0` below, so the config
+  # contract is testable without restarting the application supervisor.
+  @default_task_supervisor_max_children 1_000
+
+  @doc false
+  @spec task_supervisor_max_children() :: pos_integer() | :infinity
+  def task_supervisor_max_children do
+    Application.get_env(
+      :nous,
+      :task_supervisor_max_children,
+      @default_task_supervisor_max_children
+    )
   end
 
   # Finch pool sizing (P-2). This was `size: 10, count: 1`, which capped the
@@ -81,6 +124,7 @@ defmodule Nous.Application do
   # Public (but @doc false) so the config contract is testable without
   # restarting the application supervisor.
   @doc false
+  @spec finch_pools() :: %{optional(binary() | :default) => keyword()}
   def finch_pools do
     Application.get_env(:nous, :finch_pools, %{
       default: [size: 50, count: min(System.schedulers_online(), 4)]
@@ -103,6 +147,7 @@ defmodule Nous.Application do
   # Public (but `@doc false`), like `finch_pools/0` above, so the config
   # contract is testable without restarting the application supervisor.
   @doc false
+  @spec configure_hackney_pool() :: :ok
   def configure_hackney_pool do
     case Application.get_env(:nous, :hackney_pool) do
       nil ->

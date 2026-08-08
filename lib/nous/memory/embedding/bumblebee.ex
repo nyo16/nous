@@ -88,6 +88,7 @@ if Code.ensure_loaded?(Bumblebee) do
     @moduledoc false
     use DynamicSupervisor
 
+    @spec start_link(keyword()) :: Supervisor.on_start()
     def start_link(opts) do
       DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
     end
@@ -109,6 +110,13 @@ if Code.ensure_loaded?(Bumblebee) do
 
     @registry Nous.Memory.Embedding.Bumblebee.Registry
 
+    @typedoc """
+    Holder start argument: the HuggingFace model name, the provider opts the
+    caller passed to `embed/2`, and the eager-load timeout `init/1` may take.
+    """
+    @type init_arg :: {model_name :: String.t(), opts :: keyword(), load_timeout :: timeout()}
+
+    @spec child_spec(init_arg()) :: Supervisor.child_spec()
     def child_spec({model_name, opts, load_timeout}) do
       %{
         id: {__MODULE__, model_name},
@@ -119,6 +127,7 @@ if Code.ensure_loaded?(Bumblebee) do
       }
     end
 
+    @spec start_link(init_arg()) :: GenServer.on_start()
     def start_link({model_name, opts, load_timeout}) do
       GenServer.start_link(__MODULE__, {model_name, opts, load_timeout},
         name: {:via, Registry, {@registry, model_name}}
@@ -126,6 +135,7 @@ if Code.ensure_loaded?(Bumblebee) do
     end
 
     @doc "Run the serving on a single text input."
+    @spec run(pid(), String.t(), timeout()) :: {:ok, [float()]} | {:error, String.t()}
     def run(pid, text, timeout) do
       # Fetch the serving struct via a cheap GenServer.call (returns the
       # already-loaded reference, no inference inside the GenServer), then
@@ -143,6 +153,7 @@ if Code.ensure_loaded?(Bumblebee) do
     end
 
     @doc "Run the serving on a batch of text inputs."
+    @spec run_batch(pid(), [String.t()], timeout()) :: {:ok, [[float()]]} | {:error, String.t()}
     def run_batch(pid, texts, timeout) do
       with {:ok, serving} <- get_serving(pid, timeout) do
         try do
@@ -161,6 +172,7 @@ if Code.ensure_loaded?(Bumblebee) do
     end
 
     @doc false
+    @spec get_serving(pid(), timeout()) :: {:ok, Nx.Serving.t()}
     def get_serving(pid, timeout \\ 5_000) do
       GenServer.call(pid, :get_serving, timeout)
     end

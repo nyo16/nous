@@ -76,7 +76,19 @@ defmodule Nous.Memory.SearchTest do
       {:ok, results} =
         Search.search(Store.ETS, table, "meeting notes", nil, type: :episodic)
 
+      # Enum.each over [] runs zero assertions, and over-filtering to [] is the
+      # most likely filter bug — so the loop needs a non-empty precondition.
+      assert length(results) > 0
       Enum.each(results, fn {entry, _} -> assert entry.type == :episodic end)
+
+      # And the filter must actually remove something: this query reaches a
+      # :semantic entry unfiltered, so a filter that passes everything through
+      # fails here rather than looking identical to a working one.
+      {:ok, unfiltered} = Search.search(Store.ETS, table, "dark mode", nil, [])
+      assert Enum.any?(unfiltered, fn {entry, _} -> entry.type == :semantic end)
+
+      {:ok, filtered} = Search.search(Store.ETS, table, "dark mode", nil, type: :episodic)
+      refute Enum.any?(filtered, fn {entry, _} -> entry.type == :semantic end)
     end
 
     test "global scope returns all entries", %{table: table} do

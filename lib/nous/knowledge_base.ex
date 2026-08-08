@@ -73,6 +73,7 @@ defmodule Nous.KnowledgeBase do
     * `:embedding` - Embedding provider module
     * `:embedding_opts` - Embedding options
   """
+  @spec ingest([map()], keyword()) :: {:ok, Nous.Workflow.State.t()} | {:error, term()}
   def ingest(documents, opts) do
     pipeline = Workflows.build_ingest_pipeline(opts)
     kb_config = Keyword.fetch!(opts, :kb_config)
@@ -82,6 +83,8 @@ defmodule Nous.KnowledgeBase do
   @doc """
   Incrementally update the knowledge base with new or changed documents.
   """
+  @spec incremental_update([map()], keyword()) ::
+          {:ok, Nous.Workflow.State.t()} | {:error, term()}
   def incremental_update(documents, opts) do
     pipeline = Workflows.build_incremental_pipeline(opts)
     kb_config = Keyword.fetch!(opts, :kb_config)
@@ -91,6 +94,7 @@ defmodule Nous.KnowledgeBase do
   @doc """
   Run a health check audit on the knowledge base.
   """
+  @spec health_check(keyword()) :: {:ok, Nous.Workflow.State.t()} | {:error, term()}
   def health_check(opts) do
     pipeline = Workflows.build_health_check_pipeline(opts)
     kb_config = Keyword.fetch!(opts, :kb_config)
@@ -105,6 +109,8 @@ defmodule Nous.KnowledgeBase do
     * `output_type` - `:report`, `:summary`, or `:slides`
     * `opts` - Must include `:kb_config` and `:topic`
   """
+  @spec generate(:report | :summary | :slides, keyword()) ::
+          {:ok, Nous.Workflow.State.t()} | {:error, term()}
   def generate(output_type, opts) do
     pipeline = Workflows.build_output_pipeline(opts)
     kb_config = Keyword.fetch!(opts, :kb_config)
@@ -124,14 +130,21 @@ defmodule Nous.KnowledgeBase do
   @doc """
   Search knowledge base entries directly.
   """
+  @spec search(module(), term(), String.t(), keyword()) ::
+          {:ok, [{Nous.KnowledgeBase.Entry.t(), float()}]}
   def search(store_mod, store_state, query, opts \\ []) do
     store_mod.search_entries(store_state, query, opts)
   end
 
   @doc """
-  Get a specific entry by slug or ID.
+  Fetch a specific entry by slug, falling back to ID.
+
+  Returns `{:ok, entry}` or `{:error, :not_found}` — `fetch_`, not `get_`,
+  because there is no default: a miss is an error tuple, not `nil`.
   """
-  def get_entry(store_mod, store_state, slug_or_id) do
+  @spec fetch_entry(module(), term(), String.t()) ::
+          {:ok, Nous.KnowledgeBase.Entry.t()} | {:error, :not_found}
+  def fetch_entry(store_mod, store_state, slug_or_id) do
     case store_mod.fetch_entry_by_slug(store_state, slug_or_id) do
       {:ok, _} = result -> result
       {:error, :not_found} -> store_mod.fetch_entry(store_state, slug_or_id)
@@ -141,6 +154,7 @@ defmodule Nous.KnowledgeBase do
   @doc """
   List all entries, optionally filtered.
   """
+  @spec list_entries(module(), term(), keyword()) :: {:ok, [Nous.KnowledgeBase.Entry.t()]}
   def list_entries(store_mod, store_state, opts \\ []) do
     store_mod.list_entries(store_state, opts)
   end
@@ -148,6 +162,8 @@ defmodule Nous.KnowledgeBase do
   @doc """
   List all documents, optionally filtered.
   """
+  @spec list_documents(module(), term(), keyword()) ::
+          {:ok, [Nous.KnowledgeBase.Document.t()]}
   def list_documents(store_mod, store_state, opts \\ []) do
     store_mod.list_documents(store_state, opts)
   end
@@ -155,6 +171,7 @@ defmodule Nous.KnowledgeBase do
   @doc """
   Get backlinks for an entry.
   """
+  @spec backlinks(module(), term(), String.t()) :: {:ok, [Nous.KnowledgeBase.Link.t()]}
   def backlinks(store_mod, store_state, entry_id) do
     store_mod.backlinks(store_state, entry_id)
   end
@@ -162,6 +179,8 @@ defmodule Nous.KnowledgeBase do
   @doc """
   Get related entries (connected by any link direction).
   """
+  @spec related_entries(module(), term(), String.t(), keyword()) ::
+          {:ok, [Nous.KnowledgeBase.Entry.t()]}
   def related_entries(store_mod, store_state, entry_id, opts \\ []) do
     store_mod.related_entries(store_state, entry_id, opts)
   end

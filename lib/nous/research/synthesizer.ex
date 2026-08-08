@@ -212,23 +212,27 @@ defmodule Nous.Research.Synthesizer do
         |> String.split("\n")
         |> Enum.map(&String.trim/1)
         |> Enum.filter(&String.starts_with?(&1, "-"))
-        |> Enum.map(fn line ->
-          case String.split(line, " vs ", parts: 2) do
-            [a, b] ->
-              %{
-                claim_a: String.trim_leading(a, "- "),
-                claim_b: String.replace(b, ~r/\[sources:.*\]/, "") |> String.trim(),
-                sources: ""
-              }
-
-            _ ->
-              nil
-          end
-        end)
+        |> Enum.map(&parse_contradiction/1)
         |> Enum.reject(&is_nil/1)
 
       _ ->
         []
+    end
+  end
+
+  # A contradiction line is "- <claim A> vs <claim B> [sources: ...]"; anything
+  # without the " vs " separator is not a contradiction and is dropped.
+  defp parse_contradiction(line) do
+    case String.split(line, " vs ", parts: 2) do
+      [a, b] ->
+        %{
+          claim_a: String.trim_leading(a, "- "),
+          claim_b: String.replace(b, ~r/\[sources:.*\]/, "") |> String.trim(),
+          sources: ""
+        }
+
+      _ ->
+        nil
     end
   end
 end

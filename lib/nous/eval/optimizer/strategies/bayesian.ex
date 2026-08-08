@@ -58,58 +58,38 @@ defmodule Nous.Eval.Optimizer.Strategies.Bayesian do
     n_trials = Keyword.get(opts, :n_trials, 100)
     n_initial = Keyword.get(opts, :n_initial, min(10, n_trials))
     gamma = Keyword.get(opts, :gamma, 0.25)
-    timeout = Keyword.get(opts, :timeout, 3_600_000)
-    verbose = Keyword.get(opts, :verbose, true)
-    early_stop = Keyword.get(opts, :early_stop)
 
     start_time = System.monotonic_time(:millisecond)
+    loop = Optimizer.trial_loop(opts, n_trials, start_time)
 
-    if verbose do
+    if loop.verbose do
       IO.puts("Bayesian Optimization: #{n_trials} trials (#{n_initial} initial)")
     end
 
-    # Phase 1: Initial random exploration
+    # Phase 1: random exploration, to have something to model.
     initial_configs = SearchSpace.latin_hypercube_sample(space, n_initial)
+    {initial_trials, _count} = Optimizer.run_trials(suite, initial_configs, metric, opts, loop)
 
-    {initial_trials, _} =
-      run_trials(
-        suite,
-        initial_configs,
-        metric,
-        opts,
-        verbose,
-        0,
-        n_trials,
-        start_time,
-        timeout,
-        early_stop
-      )
-
-    # Check if we should stop early
-    if should_stop?(initial_trials, early_stop, start_time, timeout) do
+    if should_stop?(initial_trials, loop) do
       {:ok, initial_trials}
     else
-      # Phase 2: Bayesian optimization
+      # Phase 2: TPE-guided sampling for whatever budget is left.
       remaining = n_trials - length(initial_trials)
 
       if remaining > 0 do
+        # Everything the recursion needs but never varies, grouped so the loop
+        # keeps a workable arity.
+        ctx = %{
+          suite: suite,
+          space: space,
+          metric: metric,
+          maximize: maximize,
+          gamma: gamma,
+          opts: opts
+        }
+
         bayesian_trials =
-          bayesian_loop(
-            suite,
-            space,
-            metric,
-            maximize,
-            initial_trials,
-            remaining,
-            gamma,
-            opts,
-            verbose,
-            length(initial_trials),
-            n_trials,
-            start_time,
-            timeout,
-            early_stop
-          )
+          bayesian_loop(ctx, initial_trials, remaining, %{loop | index: length(initial_trials)})
 
         {:ok, initial_trials ++ bayesian_trials}
       else
@@ -118,164 +98,28 @@ defmodule Nous.Eval.Optimizer.Strategies.Bayesian do
     end
   end
 
-  # Run trials and collect results
-  defp run_trials(
-         suite,
-         configs,
-         metric,
-         opts,
-         verbose,
-         start_idx,
-         total,
-         start_time,
-         timeout,
-         early_stop
-       ) do
-    Enum.reduce_while(configs, {[], start_idx}, fn config, {acc, idx} ->
-      elapsed = System.monotonic_time(:millisecond) - start_time
-
-      if elapsed > timeout do
-        {:halt, {acc, idx}}
-      else
-        if verbose do
-          IO.write("\rTrial #{idx + 1}/#{total}")
-        end
-
-        case Optimizer.run_trial(suite, config, metric, opts) do
-          {:ok, trial} ->
-            if early_stop && trial.score >= early_stop do
-              if verbose, do: IO.puts("\nEarly stop: score #{trial.score} >= #{early_stop}")
-              {:halt, {[trial | acc], idx + 1}}
-            else
-              {:cont, {[trial | acc], idx + 1}}
-            end
-
-          {:error, reason} ->
-            if verbose do
-              IO.puts("\nTrial #{idx + 1} failed: #{inspect(reason)}")
-            end
-
-            failed_trial = %{
-              config: config,
-              score: 0.0,
-              metrics: %{error: reason},
-              duration_ms: 0
-            }
-
-            {:cont, {[failed_trial | acc], idx + 1}}
-        end
-      end
-    end)
-  end
-
-  # Main Bayesian optimization loop
-  defp bayesian_loop(
-         _suite,
-         _space,
-         _metric,
-         _maximize,
-         _trials,
-         0,
-         _gamma,
-         _opts,
-         verbose,
-         _idx,
-         _total,
-         _start,
-         _timeout,
-         _early_stop
-       ) do
-    if verbose, do: IO.puts("")
+  # Unlike the other strategies, each candidate depends on the trials before
+  # it, so this drives `Optimizer.attempt_trial/5` itself instead of handing a
+  # pre-computed list to `Optimizer.run_trials/5`.
+  defp bayesian_loop(_ctx, _trials, 0, loop) do
+    if loop.verbose, do: IO.puts("")
     []
   end
 
-  defp bayesian_loop(
-         suite,
-         space,
-         metric,
-         maximize,
-         trials,
-         remaining,
-         gamma,
-         opts,
-         verbose,
-         idx,
-         total,
-         start_time,
-         timeout,
-         early_stop
-       ) do
-    elapsed = System.monotonic_time(:millisecond) - start_time
-
-    if elapsed > timeout do
-      if verbose, do: IO.puts("\nTimeout reached")
+  defp bayesian_loop(ctx, trials, remaining, loop) do
+    if Optimizer.timed_out?(loop) do
+      if loop.verbose, do: IO.puts("\nTimeout reached")
       []
     else
-      # Generate next configuration using TPE-inspired sampling
-      next_config = suggest_next(space, trials, gamma, maximize)
+      next_config = suggest_next(ctx.space, trials, ctx.gamma, ctx.maximize)
 
-      if verbose do
-        IO.write("\rTrial #{idx + 1}/#{total}")
-      end
+      case Optimizer.attempt_trial(ctx.suite, next_config, ctx.metric, ctx.opts, loop) do
+        {:halt, trial} ->
+          [trial]
 
-      case Optimizer.run_trial(suite, next_config, metric, opts) do
-        {:ok, trial} ->
-          if early_stop && trial.score >= early_stop do
-            if verbose, do: IO.puts("\nEarly stop: score #{trial.score} >= #{early_stop}")
-            [trial]
-          else
-            [
-              trial
-              | bayesian_loop(
-                  suite,
-                  space,
-                  metric,
-                  maximize,
-                  [trial | trials],
-                  remaining - 1,
-                  gamma,
-                  opts,
-                  verbose,
-                  idx + 1,
-                  total,
-                  start_time,
-                  timeout,
-                  early_stop
-                )
-            ]
-          end
-
-        {:error, reason} ->
-          if verbose do
-            IO.puts("\nTrial #{idx + 1} failed: #{inspect(reason)}")
-          end
-
-          failed_trial = %{
-            config: next_config,
-            score: 0.0,
-            metrics: %{error: reason},
-            duration_ms: 0
-          }
-
-          [
-            failed_trial
-            | bayesian_loop(
-                suite,
-                space,
-                metric,
-                maximize,
-                [failed_trial | trials],
-                remaining - 1,
-                gamma,
-                opts,
-                verbose,
-                idx + 1,
-                total,
-                start_time,
-                timeout,
-                early_stop
-              )
-          ]
+        {:cont, trial} ->
+          next_loop = %{loop | index: loop.index + 1}
+          [trial | bayesian_loop(ctx, [trial | trials], remaining - 1, next_loop)]
       end
     end
   end
@@ -369,26 +213,12 @@ defmodule Nous.Eval.Optimizer.Strategies.Bayesian do
   # Sample avoiding bad regions
   defp sample_avoiding_bad(%Parameter{type: type} = param, bad_values)
        when type in [:float, :integer] do
-    # Try to sample away from bad values
     candidate = Parameter.sample(param)
 
-    if length(bad_values) > 0 do
-      # Calculate distance from bad values
-      avg_bad = Enum.sum(bad_values) / length(bad_values)
-
-      # If too close to bad region, shift away
-      if abs(candidate - avg_bad) < (param.max - param.min) * 0.1 do
-        # Move in opposite direction
-        if candidate < avg_bad do
-          max(param.min, candidate - (param.max - param.min) * 0.1)
-        else
-          min(param.max, candidate + (param.max - param.min) * 0.1)
-        end
-      else
-        candidate
-      end
-    else
+    if bad_values == [] do
       candidate
+    else
+      nudge_away_from(candidate, Enum.sum(bad_values) / length(bad_values), param)
     end
   end
 
@@ -421,10 +251,23 @@ defmodule Nous.Eval.Optimizer.Strategies.Bayesian do
     end
   end
 
-  defp should_stop?(trials, early_stop, start_time, timeout) do
+  # A candidate landing within a tenth of the parameter's span of the bad
+  # region's centre gets pushed a tenth of the span the other way, clamped to
+  # the parameter's range.
+  defp nudge_away_from(candidate, avg_bad, param) do
+    span = param.max - param.min
+
     cond do
-      early_stop && Enum.any?(trials, fn t -> t.score >= early_stop end) -> true
-      System.monotonic_time(:millisecond) - start_time > timeout -> true
+      abs(candidate - avg_bad) >= span * 0.1 -> candidate
+      candidate < avg_bad -> max(param.min, candidate - span * 0.1)
+      true -> min(param.max, candidate + span * 0.1)
+    end
+  end
+
+  defp should_stop?(trials, loop) do
+    cond do
+      loop.early_stop && Enum.any?(trials, fn t -> t.score >= loop.early_stop end) -> true
+      Optimizer.timed_out?(loop) -> true
       true -> false
     end
   end

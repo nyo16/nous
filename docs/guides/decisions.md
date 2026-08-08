@@ -121,7 +121,7 @@ edge = Edge.new(%{from_id: a.id, to_id: b.id, edge_type: :leads_to})
 {:ok, state} = Decisions.update_node(Store.ETS, state, node.id, %{status: :completed})
 
 # Fetch a single node
-{:ok, node} = Decisions.get_node(Store.ETS, state, node.id)
+{:ok, node} = Decisions.fetch_node(Store.ETS, state, node.id)
 ```
 
 ### Supersede
@@ -183,7 +183,7 @@ Three traversal helpers on `Nous.Decisions` are **deprecated**. They remain as t
 
 ## Store Backends
 
-Both backends implement the `Nous.Decisions.Store` behaviour. The behaviour requires `init/1`, `add_node/2`, `update_node/3`, `get_node/2`, `delete_node/2`, `add_edge/2`, `get_edges/3`, and `query/3`. Every backend must support the same five query types: `:active_goals`, `:recent_decisions`, `:path_between`, `:descendants`, and `:ancestors`.
+Both backends implement the `Nous.Decisions.Store` behaviour. The behaviour requires `init/1`, `add_node/2`, `update_node/3`, `fetch_node/2`, `delete_node/2`, `add_edge/2`, `get_edges/3`, and `query/3`. Every backend must support the same five query types: `:active_goals`, `:recent_decisions`, `:path_between`, `:descendants`, and `:ancestors`.
 
 | Backend | Graph Queries | External Deps |
 |---------|---------------|---------------|
@@ -239,7 +239,7 @@ If `duckdbex` is not compiled in, the module falls back to a stub whose every ca
 
 ### Queries never error on "missing"
 
-Query callbacks always return `{:ok, list}` — an empty list means "no matches", not a failure. Match on the list, not on `{:error, :not_found}`, for query results. `get_node/3` is the exception: it returns `{:error, :not_found}` for a missing ID.
+Query callbacks always return `{:ok, list}` — an empty list means "no matches", not a failure. Match on the list, not on `{:error, :not_found}`, for query results. `fetch_node/3` is the exception: it returns `{:error, :not_found}` for a missing ID.
 
 ### ETS state is ephemeral
 

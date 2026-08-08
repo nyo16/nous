@@ -16,6 +16,13 @@ if Code.ensure_loaded?(Floki) do
           tools: [&SearchScrape.scrape_results/2],
           deps: %{summary_model: "openai:gpt-4o-mini"}
         )
+
+    ## Limits
+
+    At most 50 URLs per call, and each page is subject to the same response
+    ceiling as `Nous.Tools.WebFetch` — `ctx.deps[:web_fetch_max_bytes]` or
+    `config :nous, web_fetch_max_bytes: bytes`, defaulting to WebFetch's own
+    5_000_000.
     """
 
     alias Nous.Tools.{WebFetch, Summarize}
@@ -26,6 +33,29 @@ if Code.ensure_loaded?(Floki) do
     @default_timeout 10_000
     # Upper bound on URLs fetched per call so a model can't request unbounded work.
     @max_urls 50
+
+    @typedoc """
+    One scraped page. The second variant is what a failed fetch contributes —
+    the URL still appears in the results so the model can see what was tried.
+    `:url` is echoed from the model-supplied list without validation.
+    """
+    @type page_result ::
+            %{
+              url: term(),
+              title: String.t() | nil,
+              summary: String.t(),
+              key_facts: [String.t()],
+              relevance: float(),
+              word_count: non_neg_integer()
+            }
+            | %{
+                url: term(),
+                title: nil,
+                summary: nil,
+                key_facts: [],
+                relevance: float(),
+                error: String.t()
+              }
 
     @doc """
     Fetch and summarize content from multiple URLs in parallel.
@@ -41,6 +71,14 @@ if Code.ensure_loaded?(Floki) do
 
     A list of results with url, title, summary, key_facts, and relevance.
     """
+    @spec scrape_results(Nous.RunContext.t(), map()) ::
+            %{results: [], error: String.t()}
+            | %{
+                required(:results) => [page_result()],
+                required(:total_fetched) => non_neg_integer(),
+                required(:total_requested) => non_neg_integer(),
+                optional(:note) => String.t()
+              }
     def scrape_results(ctx, args) do
       all_urls = Map.get(args, "urls", [])
       query = Map.get(args, "query", "")
@@ -55,9 +93,13 @@ if Code.ensure_loaded?(Floki) do
       if Enum.empty?(urls) do
         %{results: [], error: "No URLs provided"}
       else
+        # Fan out, or fetch sequentially when the node is at its task ceiling:
+        # a slower scrape beats no scrape, and refusing the batch would cost the
+        # model every page. Each page stays bounded by WebFetch's own connect and
+        # receive timeouts, and the whole call by ToolExecutor's per-tool budget,
+        # so the dropped per-item `:timeout` is not the only thing holding this.
         results =
-          Task.Supervisor.async_stream_nolink(
-            Nous.TaskSupervisor,
+          Nous.Tasks.stream(
             urls,
             fn url -> fetch_and_summarize(ctx, url, query) end,
             max_concurrency: concurrency,
@@ -88,7 +130,7 @@ if Code.ensure_loaded?(Floki) do
     defp clamp_int(_value, lo, _hi), do: lo
 
     defp fetch_and_summarize(ctx, url, query) do
-      case WebFetch.do_fetch(url) do
+      case WebFetch.do_fetch(url, nil, fetch_opts(ctx)) do
         {:ok, page} ->
           # Summarize the content focused on the research query
           summary_result =
@@ -120,6 +162,36 @@ if Code.ensure_loaded?(Floki) do
           }
       end
     end
+
+    # `WebFetch.do_fetch/3` falls back to WebFetch's own compiled-in default
+    # when no `:max_bytes` is given, so calling it bare made every scrape
+    # ignore the ceiling the host declared for exactly this traffic — and this
+    # tool fetches up to @max_urls pages per call, so it is the larger
+    # exposure of the two. Resolve the identical keys `fetch_page/2` resolves
+    # (deps first, then application config) and pass the result through.
+    # Nothing is forwarded when neither is set, which keeps WebFetch the one
+    # place the default lives.
+    defp fetch_opts(ctx) do
+      ceiling =
+        positive_int(ctx_deps(ctx)[:web_fetch_max_bytes]) ||
+          positive_int(Application.get_env(:nous, :web_fetch_max_bytes))
+
+      if ceiling, do: [max_bytes: ceiling], else: []
+    end
+
+    defp ctx_deps(%{deps: deps}) when is_map(deps), do: deps
+    defp ctx_deps(_ctx), do: %{}
+
+    defp positive_int(n) when is_integer(n) and n > 0, do: n
+
+    defp positive_int(s) when is_binary(s) do
+      case Integer.parse(s) do
+        {n, ""} when n > 0 -> n
+        _ -> nil
+      end
+    end
+
+    defp positive_int(_other), do: nil
   end
 else
   defmodule Nous.Tools.SearchScrape do
@@ -130,6 +202,7 @@ else
     Add `{:floki, "~> 0.36"}` to your deps.
     """
 
+    @spec scrape_results(Nous.RunContext.t(), map()) :: %{success: false, error: String.t()}
     def scrape_results(_ctx, _args) do
       %{success: false, error: "Floki is required. Add {:floki, \"~> 0.36\"} to your deps."}
     end

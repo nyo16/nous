@@ -2,10 +2,17 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
   @moduledoc false
   # Parallel fan-out/fan-in for `Nous.Workflow.Engine`. Two patterns:
   # `:parallel` nodes run named branch subgraphs concurrently; `:parallel_map`
-  # nodes map over a runtime-computed list, one task per item. Both use
-  # `Task.Supervisor.async_stream_nolink/4` on `Nous.TaskSupervisor`, matching
-  # `Nous.Plugins.SubAgent`. Internal to the engine — the public entry point
-  # is `Nous.Workflow.Engine.execute/2`.
+  # nodes map over a runtime-computed list, one task per item. Both fan out via
+  # `Nous.Tasks.stream/3`, matching `Nous.Plugins.SubAgent`. Internal to the
+  # engine — the public entry point is `Nous.Workflow.Engine.execute/2`.
+  #
+  # At `Nous.TaskSupervisor`'s `:max_children` ceiling both patterns run their
+  # branches/items sequentially instead of failing the node: a workflow that
+  # finishes slowly is worth more than one that dies because the node was busy.
+  # `Nous.Tasks.stream/3` emits the same per-item tuples on either path, so the
+  # `:on_error` handling and the deterministic ordering below are untouched. The
+  # one casualty is the per-branch `:timeout`, which needs a task to kill — a
+  # handler that hangs then hangs the node.
 
   alias Nous.Workflow.{State, Node}
   alias Nous.Workflow.Engine.{Executor, StateMerger}
@@ -46,9 +53,8 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
     )
 
     results =
-      Nous.TaskSupervisor
-      |> Task.Supervisor.async_stream_nolink(
-        branch_ids,
+      branch_ids
+      |> Nous.Tasks.stream(
         fn branch_id ->
           branch_node = Map.fetch!(graph_nodes, branch_id)
           {branch_id, Executor.execute(branch_node, state)}
@@ -150,9 +156,9 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
       {:ok, [], updated_state}
     else
       results =
-        Nous.TaskSupervisor
-        |> Task.Supervisor.async_stream_nolink(
-          Enum.with_index(items),
+        items
+        |> Enum.with_index()
+        |> Nous.Tasks.stream(
           fn {item, index} ->
             {index, safely_run_handler(handler_fn, item, state)}
           end,
@@ -179,27 +185,30 @@ defmodule Nous.Workflow.Engine.ParallelExecutor do
       if all_failures != [] and on_error == :fail_fast do
         {:error, {:parallel_map_failed, "#{length(all_failures)} items failed"}}
       else
-        # Collect successful results in original order
-        successful_results =
-          successes
-          |> Enum.sort_by(fn {index, _} -> index end)
-          |> Enum.map(fn {_index, result} -> result end)
-
-        updated_state =
-          state
-          |> State.update_data(&Map.put(&1, result_key, successful_results))
-          |> State.put_result(node.id, successful_results)
-
-        # Record errors keyed by the failing item's index for attribution.
-        updated_state =
-          Enum.reduce(all_failures, updated_state, fn
-            {index, reason}, acc ->
-              State.put_error(acc, "#{node.id}_item_#{index}", reason)
-          end)
-
-        {:ok, successful_results, updated_state}
+        finish_parallel_map(node, state, result_key, successes, all_failures)
       end
     end
+  end
+
+  defp finish_parallel_map(node, state, result_key, successes, failures) do
+    # Collect successful results in original order
+    successful_results =
+      successes
+      |> Enum.sort_by(fn {index, _} -> index end)
+      |> Enum.map(fn {_index, result} -> result end)
+
+    updated_state =
+      state
+      |> State.update_data(&Map.put(&1, result_key, successful_results))
+      |> State.put_result(node.id, successful_results)
+
+    # Record errors keyed by the failing item's index for attribution.
+    updated_state =
+      Enum.reduce(failures, updated_state, fn {index, reason}, acc ->
+        State.put_error(acc, "#{node.id}_item_#{index}", reason)
+      end)
+
+    {:ok, successful_results, updated_state}
   end
 
   # Distinguish three handler outcomes:

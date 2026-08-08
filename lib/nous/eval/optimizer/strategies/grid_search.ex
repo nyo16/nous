@@ -39,84 +39,39 @@ defmodule Nous.Eval.Optimizer.Strategies.GridSearch do
   @impl true
   def run(%Suite{} = suite, %SearchSpace{} = space, metric, _maximize, opts) do
     max_trials = Keyword.get(opts, :max_trials, :infinity)
-    timeout = Keyword.get(opts, :timeout, 3_600_000)
-    verbose = Keyword.get(opts, :verbose, true)
-    shuffle = Keyword.get(opts, :shuffle, false)
-    early_stop = Keyword.get(opts, :early_stop)
-
     start_time = System.monotonic_time(:millisecond)
 
-    # Generate all configurations
     configs =
-      try do
-        SearchSpace.grid(space)
-      rescue
-        ArgumentError ->
-          # Infinite space - use sampling instead
-          n = if max_trials == :infinity, do: 100, else: max_trials
-          SearchSpace.sample_n(space, n)
-      end
+      space
+      |> all_configs(max_trials)
+      |> maybe_shuffle(Keyword.get(opts, :shuffle, false))
+      |> limit(max_trials)
 
-    # Optionally shuffle
-    configs = if shuffle, do: Enum.shuffle(configs), else: configs
+    loop = Optimizer.trial_loop(opts, length(configs), start_time)
 
-    # Limit to max_trials
-    configs =
-      if max_trials != :infinity do
-        Enum.take(configs, max_trials)
-      else
-        configs
-      end
-
-    total = length(configs)
-
-    if verbose do
-      IO.puts("Grid Search: #{total} configurations to evaluate")
+    if loop.verbose do
+      IO.puts("Grid Search: #{loop.total} configurations to evaluate")
     end
 
-    # Run trials
-    {trials, _} =
-      Enum.reduce_while(configs, {[], 0}, fn config, {acc, idx} ->
-        # Check timeout
-        elapsed = System.monotonic_time(:millisecond) - start_time
+    {trials, _count} = Optimizer.run_trials(suite, configs, metric, opts, loop)
 
-        if elapsed > timeout do
-          {:halt, {acc, idx}}
-        else
-          if verbose do
-            IO.write("\rTrial #{idx + 1}/#{total}")
-          end
+    if loop.verbose, do: IO.puts("")
 
-          case Optimizer.run_trial(suite, config, metric, opts) do
-            {:ok, trial} ->
-              # Check early stop
-              if early_stop && trial.score >= early_stop do
-                if verbose, do: IO.puts("\nEarly stop: score #{trial.score} >= #{early_stop}")
-                {:halt, {[trial | acc], idx + 1}}
-              else
-                {:cont, {[trial | acc], idx + 1}}
-              end
-
-            {:error, reason} ->
-              # Log error but continue
-              if verbose do
-                IO.puts("\nTrial #{idx + 1} failed: #{inspect(reason)}")
-              end
-
-              failed_trial = %{
-                config: config,
-                score: 0.0,
-                metrics: %{error: reason},
-                duration_ms: 0
-              }
-
-              {:cont, {[failed_trial | acc], idx + 1}}
-          end
-        end
-      end)
-
-    if verbose, do: IO.puts("")
-
-    {:ok, Enum.reverse(trials)}
+    {:ok, trials}
   end
+
+  defp all_configs(space, max_trials) do
+    SearchSpace.grid(space)
+  rescue
+    # A continuous space has no enumerable grid — sample it instead.
+    ArgumentError ->
+      n = if max_trials == :infinity, do: 100, else: max_trials
+      SearchSpace.sample_n(space, n)
+  end
+
+  defp maybe_shuffle(configs, true), do: Enum.shuffle(configs)
+  defp maybe_shuffle(configs, false), do: configs
+
+  defp limit(configs, :infinity), do: configs
+  defp limit(configs, max_trials), do: Enum.take(configs, max_trials)
 end

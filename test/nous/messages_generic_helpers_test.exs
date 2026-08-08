@@ -3,6 +3,15 @@ defmodule Nous.MessagesGenericHelpersTest do
 
   alias Nous.{Message, Messages, Usage}
 
+  # Elixir's set-theoretic checker infers the second argument of
+  # `to_provider_format/2` and `from_provider_response/2` from their
+  # non-raising `case` clauses, so a literal `:unknown` at the call site is
+  # reported as an incompatible type — even though the raising fallthrough is
+  # exactly the contract these two negative tests exist to pin. Routing the
+  # atom through a call the checker cannot narrow keeps the suite clean under
+  # `mix test --warnings-as-errors` without suppressing warnings anywhere else.
+  defp unsupported_provider, do: Enum.random([:unknown])
+
   describe "to_provider_format/2" do
     setup do
       messages = [
@@ -105,7 +114,7 @@ defmodule Nous.MessagesGenericHelpersTest do
 
     test "raises error for unsupported provider", %{messages: messages} do
       assert_raise ArgumentError, ~r/Unsupported provider: :unknown/, fn ->
-        Messages.to_provider_format(messages, :unknown)
+        Messages.to_provider_format(messages, unsupported_provider())
       end
     end
 
@@ -357,7 +366,7 @@ defmodule Nous.MessagesGenericHelpersTest do
       response = %{"test" => "response"}
 
       assert_raise ArgumentError, ~r/Unsupported provider: :unknown/, fn ->
-        Messages.from_provider_response(response, :unknown)
+        Messages.from_provider_response(response, unsupported_provider())
       end
     end
   end

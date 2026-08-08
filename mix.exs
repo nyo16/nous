@@ -23,16 +23,52 @@ defmodule Nous.MixProject do
       elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool]],
       # Coverage ratchet. `mix test --cover` defaults to a 90% threshold this
       # project has never met, and no CI job ran it, so the gate was purely
-      # decorative. 59 is the current measured floor (60.05%, :llm/:llama
-      # excluded as in CI) with ~1pp of headroom, enforced by the `coverage`
-      # job in .github/workflows/ci.yml. Raise it as coverage improves; never
-      # lower it. History: 56.80% at the audit, 57 after the perf wave, 59 once
-      # the provider/web_fetch/prompt_template suites landed.
+      # decorative. The floor is enforced by the `coverage` job in
+      # .github/workflows/ci.yml. Raise it as coverage improves; never lower it.
+      # History: 56.80% at the 2026-06 audit, 57 after the perf wave, 59 once
+      # the provider/web_fetch/prompt_template suites landed, 70 once
+      # `ignore_modules` took the untestable-by-design code out of the
+      # denominator (2026-08 audit, test F-3).
       #
       # :threshold MUST be nested under :summary — a bare
       # `test_coverage: [threshold: n]` is silently ignored and you keep the
       # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
-      test_coverage: [summary: [threshold: 59]],
+      #
+      # :ignore_modules exists because 18.2% of the old denominator (1821 of
+      # 9978 relevant lines, 63 modules at 3.90%) was code nobody intends to
+      # unit-test, so the ratchet tracked noise instead of intent. Each entry:
+      #   - Nous.Skills.*      — 21 static prompt-string modules, 4 lines each
+      #   - the Nous.Eval harness — runner/suite/optimizer/reporter/loader are
+      #     exercised only by the :llm suites. `Nous.Eval.Evaluators.*` is
+      #     deliberately NOT ignored: those are pure functions, and one of them
+      #     shipped a scoring bug for two audits precisely because nothing
+      #     watched them.
+      #   - Mix.Tasks.*        — CLI entry points, exercised by hand
+      #   - optional-dep backends — unloadable without the optional dep
+      #   - Inspect.*/Errors.Base/PromEx.Plugin/LLMTestHelper — protocol impls,
+      #     an exception-struct base, an integration shim, a test helper
+      test_coverage: [
+        summary: [threshold: 77],
+        ignore_modules: [
+          ~r/^Nous\.Skills\./,
+          ~r/^Nous\.Eval$/,
+          ~r/^Nous\.Eval\.(Runner|Suite|SuiteResult|Config|Result|TestCase|Evaluator|YamlLoader)$/,
+          ~r/^Nous\.Eval\.(Optimizer|Reporter|Metrics)($|\.)/,
+          ~r/^Mix\.Tasks\./,
+          ~r/^Inspect\./,
+          # SQLite is deliberately NOT here: `:exqlite` became a declared
+          # optional dep this cycle, so the store compiles and now carries a
+          # real round-trip suite. It was excluded-by-accident for as long as it
+          # was broken-by-accident.
+          ~r/^Nous\.Memory\.Store\.(DuckDB|Zvec|Muninn|Hybrid)$/,
+          ~r/^Nous\.Memory\.Embedding\.(Local|Bumblebee)$/,
+          ~r/^Nous\.Decisions\.Store\.DuckDB$/,
+          ~r/^Nous\.Providers\.LlamaCpp$/,
+          ~r/^Nous\.Errors\.Base$/,
+          ~r/^Nous\.PromEx\.Plugin$/,
+          ~r/^Nous\.LLMTestHelper$/
+        ]
+      ],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix, :ex_unit]
@@ -55,6 +91,20 @@ defmodule Nous.MixProject do
 
   defp deps do
     [
+      # 0.x UPPER-BOUND POLICY (deps F-7). A two-segment `~>` on a 0.x version
+      # means ">= 0.y.0 and < 1.0.0" — i.e. NO upper bound across 0.x
+      # boundaries, which for a 0.x package is exactly where breaking changes
+      # live. The Req 0.7 incident is the proof: `"~> 0.5 or ~> 0.6"` admitted
+      # both a version whose auto-decompression falsified a security comment and
+      # a version that removed an API we call.
+      #
+      # The policy is NOT "three-segment everything": that tightens resolution
+      # for downstreams and generates bump PRs for deps we merely consume.
+      # Three-segment `~> x.y.z` goes on the 0.x deps whose *behaviour or
+      # internals* we reach into — req, finch, floki, llama_cpp_ex. Every other
+      # 0.x/1.x dep keeps a two-segment range with a comment saying why the
+      # looseness is deliberate.
+
       # YAML (for evaluation framework)
       {:yaml_elixir, "~> 2.9"},
 
@@ -70,30 +120,45 @@ defmodule Nous.MixProject do
       # unbounded mailbox growth — see review M-12.) To use the hackney
       # backend, declare `{:hackney, "~> 4.0"}` in your app's deps and select
       # it via `NOUS_HTTP_BACKEND=hackney` (or the streaming variant).
-      {:finch, "~> 0.19"},
-      # Locked on req 0.6.3. `~> 0.5` already admits 0.6.x
-      # (`Version.match?("0.6.3", "~> 0.5") == true`), so `or ~> 0.6` is a
-      # verified no-op — kept only so downstream resolvers don't churn.
-      {:req, "~> 0.5 or ~> 0.6"},
+      # Three-segment (0.x policy above): we reach into Finch's internals — the
+      # `finch: [name: _]` shim in `http/backend/req.ex`, our own pool started
+      # in `Nous.Application`, `web_fetch`'s pools, and `Finch.stream/5`'s
+      # push-vs-pull semantics, which the streaming backpressure design depends
+      # on. A minor bump can change any of those.
+      {:finch, "~> 0.23.0"},
+      # `~> 0.7.2`, deliberately narrow at BOTH ends. The old
+      # `"~> 0.5 or ~> 0.6"` resolved to `>= 0.5.0 and < 1.0.0`, which was wrong
+      # in two directions: the lower end admitted 0.5.x, whose automatic
+      # response decompression falsifies the security comment in
+      # `web_fetch.ex` (the byte cap is applied to the compressed stream, so a
+      # decompression bomb bypasses it); the upper end admitted 0.8+, which
+      # REMOVES the `finch: name` shim that `http/backend/req.ex` and
+      # `http/stream_backend/req.ex` rely on (0.7 warns, 0.8 raises). Bump this
+      # deliberately, after re-reading Req's CHANGELOG.
+      {:req, "~> 0.7.2"},
       {:hackney, "~> 4.0", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
       {:goth, "~> 1.4", optional: true},
 
-      # HTML parsing (for web content extraction in research tools)
-      {:floki, "~> 0.36", optional: true},
+      # HTML parsing (for web content extraction in research tools).
+      # Three-segment (0.x policy above): we call parse_document/1, find/2 and
+      # text/1 and depend on their return shapes.
+      {:floki, "~> 0.38.4", optional: true},
 
       # Memory system store backends (all optional — add to your app's deps to unlock)
       # {:muninn, "~> 0.4", optional: true},
       # {:zvec, "~> 0.2", optional: true},
-      # {:exqlite, "~> 0.27", optional: true},
+      {:exqlite, "~> 0.27", optional: true},
       # {:duckdbex, "~> 0.3", optional: true},
 
       # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
       # to unlock the LlamaCpp provider). optional: true keeps it out of
       # downstream apps' builds unless they opt in, while still being available
       # for Nous's own dev/test (e.g. the tagged llamacpp smoke test).
-      {:llama_cpp_ex, "~> 0.8", optional: true},
+      # Three-segment (0.x policy above): a NIF API, so a minor bump can change
+      # both the Elixir surface and the compiled artifact.
+      {:llama_cpp_ex, "~> 0.8.42", optional: true},
 
       # Memory system embedding providers (all optional — add to your app's deps to unlock)
       # {:bumblebee, "~> 0.6", optional: true},
@@ -106,7 +171,8 @@ defmodule Nous.MixProject do
       # waiting on a nous release.
       {:net_runner, "~> 1.0"},
 
-      # Telemetry
+      # Telemetry. Two-segment deliberately (0.x policy above): 1.x, and we use
+      # only the stable `:telemetry.execute/3` surface.
       {:telemetry, "~> 1.2"},
 
       # Note: For Prometheus metrics, users can add {:prom_ex, "~> 1.11"} and {:plug, "~> 1.18"}
@@ -209,8 +275,11 @@ defmodule Nous.MixProject do
       # the stale reference is.
       skip_code_autolink_to: [
         "Nous.Application",
+        "Nous.Errors.Base",
+        "Nous.Messages.Cache",
         "Nous.OutputSchema.UseMacro",
         "Nous.Persistence.ETS.TableOwner",
+        "Nous.Util",
         "Nous.Workflow.Engine.Executor",
         "Nous.Workflow.Engine.ParallelExecutor",
         "Nous.Workflow.Engine.StateMerger"
@@ -268,7 +337,7 @@ defmodule Nous.MixProject do
           Nous.Agent.Context,
           Nous.Agent.Behaviour,
           Nous.Agent.Callbacks,
-          Nous.ReActAgent,
+          Nous.Agent.ReAct,
           Nous.Transcript,
           Nous.LLM,
           Nous.RunContext
@@ -332,7 +401,8 @@ defmodule Nous.MixProject do
           Nous.Tool.Validator,
           Nous.Tool.Registry,
           Nous.Tool.Schema,
-          Nous.ToolSchema,
+          Nous.Tool.Wire,
+          Nous.ToolCall,
           Nous.ToolExecutor
         ],
         "Structured Output": [
@@ -356,7 +426,8 @@ defmodule Nous.MixProject do
           Nous.Tools.FileGrep,
           Nous.Tools.TodoTools,
           Nous.Tools.PathGuard,
-          Nous.Tools.UrlGuard
+          Nous.Tools.UrlGuard,
+          Nous.Tools.Env
         ],
         "Utility Tools": [
           Nous.Tools.DateTimeTools,
@@ -507,7 +578,8 @@ defmodule Nous.MixProject do
           Nous.PubSub.Approval
         ],
         Persistence: [
-          Nous.Persistence
+          Nous.Persistence,
+          Nous.Persistence.ETS
         ],
         Supervision: [
           Nous.AgentRegistry,

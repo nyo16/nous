@@ -23,6 +23,7 @@ defmodule Nous.Research.Finding do
     timestamp: nil
   ]
 
+  @spec new(map()) :: t()
   def new(attrs) do
     %Finding{
       claim: Map.fetch!(attrs, :claim),

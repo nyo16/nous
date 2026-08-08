@@ -3,6 +3,7 @@ defmodule Nous.AgentDynamicSupervisor do
 
   use DynamicSupervisor
 
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
     DynamicSupervisor.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -28,6 +29,11 @@ defmodule Nous.AgentDynamicSupervisor do
 
   Accepts all options supported by `Nous.AgentServer.start_link/1`.
   """
+  @spec start_agent(
+          String.t(),
+          %{required(:model) => String.t(), optional(atom()) => term()},
+          keyword()
+        ) :: DynamicSupervisor.on_start_child()
   def start_agent(session_id, agent_config, opts \\ []) do
     child_spec =
       {Nous.AgentServer,
@@ -43,6 +49,7 @@ defmodule Nous.AgentDynamicSupervisor do
   @doc """
   Stop an agent by session ID.
   """
+  @spec stop_agent(String.t()) :: :ok | {:error, :not_found}
   def stop_agent(session_id) do
     case Nous.AgentRegistry.lookup(session_id) do
       {:ok, pid} -> DynamicSupervisor.terminate_child(__MODULE__, pid)
@@ -53,6 +60,7 @@ defmodule Nous.AgentDynamicSupervisor do
   @doc """
   Find an agent process by session ID.
   """
+  @spec find_agent(String.t()) :: {:ok, pid()} | {:error, :not_found}
   def find_agent(session_id) do
     Nous.AgentRegistry.lookup(session_id)
   end

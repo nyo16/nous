@@ -1,3 +1,47 @@
+# Compiled unconditionally, unlike the store below it. `duckdbex` is an optional
+# dependency that CI does not install, so anything inside the `Code.ensure_loaded?`
+# gate is invisible to `mix test` — which is exactly where the SQL-identifier
+# allowlist must not live. The data and the check sit here; the store calls in.
+defmodule Nous.Decisions.Store.DuckDB.Columns do
+  @moduledoc false
+
+  # Allowlist of `Nous.Decisions.Node` field → physical `decision_nodes` column.
+  # Column names are interpolated into `SET col = $n`, so they must never be a
+  # raw `to_string/1` of caller input (SQL-identifier injection primitive).
+  # Deliberately disjoint from the memory stores' allowlist: one shared map
+  # would let either store address the other's columns.
+  @column_map %{
+    id: "id",
+    type: "node_type",
+    label: "label",
+    status: "status",
+    confidence: "confidence",
+    rationale: "rationale",
+    metadata: "metadata_json",
+    created_at: "created_at",
+    updated_at: "updated_at"
+  }
+
+  @spec column_map() :: %{atom() => String.t()}
+  def column_map, do: @column_map
+
+  @spec fetch!(term()) :: String.t()
+  def fetch!(field) do
+    case Map.fetch(@column_map, field) do
+      {:ok, col} ->
+        col
+
+      :error ->
+        raise ArgumentError,
+              "unknown decision column #{inspect(field)} — not in the allowlist " <>
+                "(#{@column_map |> Map.keys() |> Enum.sort() |> Enum.map_join(", ", &inspect/1)})"
+    end
+  end
+
+  @spec validate!(map()) :: :ok
+  def validate!(updates) when is_map(updates), do: Enum.each(Map.keys(updates), &fetch!/1)
+end
+
 if Code.ensure_loaded?(Duckdbex) do
   defmodule Nous.Decisions.Store.DuckDB do
     @moduledoc """
@@ -21,6 +65,7 @@ if Code.ensure_loaded?(Duckdbex) do
     @behaviour Nous.Decisions.Store
 
     alias Nous.Decisions.{Node, Edge}
+    alias Nous.Decisions.Store.DuckDB.Columns
 
     @create_nodes """
     CREATE TABLE IF NOT EXISTS decision_nodes (
@@ -96,10 +141,25 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    # The set-clause builder below is a deliberate clone of
+    # `Nous.Memory.Store.DuckDB.update/3` (credo mass-51, arch F-8). Three
+    # reasons it stays a clone rather than becoming a shared builder: the two
+    # column allowlists are disjoint on purpose — `:type` maps to "node_type"
+    # here and to "type" there, and one shared map would let either store
+    # address the other's columns, which is the injection hole P5-T3 closed;
+    # `encode_field/2` is per-domain (`Node` here, `Entry` there); and
+    # `duckdbex` is not in `mix.exs`, so a shared base module would be code
+    # neither the compiler nor the suite in this repo can reach. Keeping the
+    # two in step is a manual job — change both.
     @impl true
     @spec update_node(map(), String.t(), map()) :: {:ok, map()} | {:error, term()}
     def update_node(%{conn: conn} = state, id, updates) when is_map(updates) do
-      case get_node(state, id) do
+      # Reject unknown identifiers before any driver call: fail fast on bad
+      # input rather than after a round trip, and keep the control reachable
+      # without a live connection.
+      :ok = Columns.validate!(updates)
+
+      case fetch_node(state, id) do
         {:ok, node} ->
           now = DateTime.utc_now()
           updates = Map.put(updates, :updated_at, now)
@@ -109,7 +169,7 @@ if Code.ensure_loaded?(Duckdbex) do
             updates
             |> Enum.with_index(1)
             |> Enum.map(fn {{key, _val}, idx} ->
-              col = field_to_column(key)
+              col = Columns.fetch!(key)
               value = encode_field(key, Map.get(updated, key))
               {"#{col} = $#{idx}", value}
             end)
@@ -131,8 +191,8 @@ if Code.ensure_loaded?(Duckdbex) do
     end
 
     @impl true
-    @spec get_node(map(), String.t()) :: {:ok, Node.t()} | {:error, :not_found}
-    def get_node(%{conn: conn}, id) do
+    @spec fetch_node(map(), String.t()) :: {:ok, Node.t()} | {:error, :not_found}
+    def fetch_node(%{conn: conn}, id) do
       sql = "SELECT * FROM decision_nodes WHERE id = $1"
 
       with {:ok, result} <- Duckdbex.query(conn, sql, [id]) do
@@ -358,9 +418,9 @@ if Code.ensure_loaded?(Duckdbex) do
 
       %Node{
         id: map["id"],
-        type: String.to_existing_atom(map["node_type"]),
+        type: decode_node_type(map["node_type"]),
         label: map["label"],
-        status: String.to_existing_atom(map["status"]),
+        status: decode_node_status(map["status"]),
         confidence: map["confidence"],
         rationale: map["rationale"],
         metadata: decode_json(map["metadata_json"]),
@@ -376,15 +436,50 @@ if Code.ensure_loaded?(Duckdbex) do
         id: map["id"],
         from_id: map["from_id"],
         to_id: map["to_id"],
-        edge_type: String.to_existing_atom(map["edge_type"]),
+        edge_type: decode_edge_type(map["edge_type"]),
         metadata: decode_json(map["metadata_json"]),
         created_at: parse_datetime(map["created_at"])
       }
     end
 
-    defp field_to_column(:type), do: "node_type"
-    defp field_to_column(:metadata), do: "metadata_json"
-    defp field_to_column(field), do: to_string(field)
+    # A persisted row sits outside the BEAM's type system: a corrupt or
+    # hand-edited database file can hold any string, and `to_existing_atom/1`
+    # on it raises `ArgumentError` out of every read path. Decode the closed
+    # enums through an allowlist instead — an unrecognised value becomes `nil`,
+    # which matches no category, rather than crashing the caller or
+    # masquerading as a valid one.
+    @node_types %{
+      "goal" => :goal,
+      "decision" => :decision,
+      "option" => :option,
+      "action" => :action,
+      "outcome" => :outcome,
+      "observation" => :observation,
+      "revisit" => :revisit
+    }
+
+    @node_statuses %{
+      "active" => :active,
+      "completed" => :completed,
+      "superseded" => :superseded,
+      "rejected" => :rejected
+    }
+
+    @edge_types %{
+      "leads_to" => :leads_to,
+      "chosen" => :chosen,
+      "rejected" => :rejected,
+      "requires" => :requires,
+      "blocks" => :blocks,
+      "enables" => :enables,
+      "supersedes" => :supersedes
+    }
+
+    defp decode_node_type(value), do: Map.get(@node_types, value)
+
+    defp decode_node_status(value), do: Map.get(@node_statuses, value)
+
+    defp decode_edge_type(value), do: Map.get(@edge_types, value)
 
     defp encode_field(:metadata, val), do: JSON.encode!(val || %{})
     defp encode_field(:type, val), do: to_string(val)
@@ -429,7 +524,7 @@ else
                init: 1,
                add_node: 2,
                update_node: 3,
-               get_node: 2,
+               fetch_node: 2,
                delete_node: 2,
                add_edge: 2,
                get_edges: 3,
@@ -448,7 +543,7 @@ else
     def update_node(_state, _id, _updates), do: @error
 
     @impl true
-    def get_node(_state, _id), do: @error
+    def fetch_node(_state, _id), do: @error
 
     @impl true
     def delete_node(_state, _id), do: @error

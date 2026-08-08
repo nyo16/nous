@@ -50,6 +50,7 @@ defmodule Nous.Persistence.ETS do
     @default_max_entries 10_000
     @default_sweep_interval :timer.minutes(5)
 
+    @spec start_link(keyword()) :: GenServer.on_start()
     def start_link(_opts) do
       GenServer.start_link(__MODULE__, :ok, name: __MODULE__)
     end
@@ -157,6 +158,7 @@ defmodule Nous.Persistence.ETS do
   end
 
   @doc false
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(_opts) do
     %{id: __MODULE__, start: {TableOwner, :start_link, [[]]}, type: :worker}
   end
@@ -192,6 +194,7 @@ defmodule Nous.Persistence.ETS do
   Remove all persisted sessions. Routed through the owner (the table is
   `:protected`, so only the owner may write). Useful for tests.
   """
+  @spec clear() :: :ok
   def clear do
     GenServer.call(owner(), :clear)
   end

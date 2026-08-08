@@ -21,6 +21,18 @@ defmodule Nous.Session.Config do
         {:error, :max_budget_reached} -> stop_session()
       end
 
+  ## Why this is not wired into the runner
+
+  Nothing in `lib/` calls `Nous.Session.*`, and that is deliberate rather than
+  unfinished: these are pure functions the *caller* composes into its own
+  session process, which is why `Nous.Session.Guardrails` documents a GenServer
+  integration instead of shipping one. A session's turn and budget policy
+  belongs to the application that owns the conversation, not to the agent loop —
+  `Agent.Context.max_iterations` already bounds the inner loop, and these bound
+  the outer one on whatever schedule the host decides.
+
+  Reviewed and kept in the 2026-08 audit (arch F-11). Do not "wire it up" or
+  delete it as dead code without changing that decision first.
   """
 
   defstruct max_turns: 10,

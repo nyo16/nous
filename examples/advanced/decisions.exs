@@ -72,7 +72,7 @@ edge2 = Edge.new(%{from_id: goal.id, to_id: decision2.id, edge_type: :leads_to})
 
 # --- Queries --------------------------------------------------------------
 # Queries always return {:ok, list}; an empty list means "no matches", never
-# an error. Only get_node/3 returns {:error, :not_found}.
+# an error. Only fetch_node/3 returns {:error, :not_found}.
 {:ok, goals} = Decisions.active_goals(Store.ETS, state)
 IO.puts("Active goals (#{length(goals)}):")
 
@@ -89,7 +89,7 @@ end
 
 # Fetching a single node by ID, and updating its fields (bumps updated_at).
 {:ok, state} = Decisions.update_node(Store.ETS, state, goal.id, %{status: :completed})
-{:ok, refreshed} = Decisions.get_node(Store.ETS, state, goal.id)
+{:ok, refreshed} = Decisions.fetch_node(Store.ETS, state, goal.id)
 IO.puts("\nGoal status after update_node: #{refreshed.status}")
 
 # After completing the goal it is no longer "active".

@@ -114,57 +114,44 @@ defmodule Nous.StreamNormalizer.OpenAI do
   # Previously this returned a single event via cond/0 and silently dropped
   # all but one signal per chunk.
   defp parse_delta_chunk(chunk) do
-    choices = get_choices(chunk)
-    choice = List.first(choices)
-    usage_events = maybe_usage_event(chunk)
-
-    if choice do
-      delta = get_flexible(choice, :delta) || %{}
-      content = get_flexible(delta, :content)
-      tool_calls = get_flexible(delta, :tool_calls)
-      finish_reason = get_flexible(choice, :finish_reason)
-
-      # vLLM uses "reasoning", DeepSeek/SGLang use "reasoning_content"
-      reasoning = get_flexible(delta, :reasoning) || get_flexible(delta, :reasoning_content)
-
-      events =
-        []
-        |> append_if(reasoning && reasoning != "", {:thinking_delta, reasoning})
-        |> append_if(content && content != "", {:text_delta, content})
-        |> append_if(is_list(tool_calls) and tool_calls != [], {:tool_call_delta, tool_calls})
-        |> append_if(not is_nil(finish_reason), {:finish, finish_reason})
-
-      cond do
-        events != [] -> events ++ usage_events
-        usage_events != [] -> usage_events
-        true -> [{:unknown, chunk}]
+    choice_events =
+      case List.first(get_choices(chunk)) do
+        nil -> []
+        choice -> delta_events(choice)
       end
-    else
-      # OpenAI's final usage-only chunk has empty choices and a populated
-      # `usage` field. Emit just the usage event in that case.
-      if usage_events == [], do: [{:unknown, chunk}], else: usage_events
+
+    # Usage events are non-empty only for OpenAI's final usage-only chunk, which
+    # carries empty choices. A chunk with neither delta nor usage is not
+    # something we can normalize.
+    case choice_events ++ maybe_usage_event(chunk) do
+      [] -> [{:unknown, chunk}]
+      events -> events
     end
+  end
+
+  defp delta_events(choice) do
+    delta = get_flexible(choice, :delta) || %{}
+    content = get_flexible(delta, :content)
+    tool_calls = get_flexible(delta, :tool_calls)
+    finish_reason = get_flexible(choice, :finish_reason)
+
+    # vLLM uses "reasoning", DeepSeek/SGLang use "reasoning_content"
+    reasoning = get_flexible(delta, :reasoning) || get_flexible(delta, :reasoning_content)
+
+    []
+    |> append_if(reasoning && reasoning != "", {:thinking_delta, reasoning})
+    |> append_if(content && content != "", {:text_delta, content})
+    |> append_if(is_list(tool_calls) and tool_calls != [], {:tool_call_delta, tool_calls})
+    |> append_if(not is_nil(finish_reason), {:finish, finish_reason})
   end
 
   defp append_if(list, true, event), do: list ++ [event]
   defp append_if(list, _, _event), do: list
 
   # Get choices from chunk, handling struct, atom-map, and string-map formats
-  defp get_choices(chunk) do
-    cond do
-      is_struct(chunk) && Map.has_key?(chunk, :choices) ->
-        chunk.choices || []
-
-      is_map(chunk) && Map.has_key?(chunk, :choices) ->
-        chunk.choices || []
-
-      is_map(chunk) && Map.has_key?(chunk, "choices") ->
-        chunk["choices"] || []
-
-      true ->
-        []
-    end
-  end
+  defp get_choices(%{choices: choices}), do: choices || []
+  defp get_choices(%{"choices" => choices}), do: choices || []
+  defp get_choices(_chunk), do: []
 
   # Flexible field access - tries atom key first, then string key
   defp get_flexible(nil, _key), do: nil

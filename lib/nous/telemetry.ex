@@ -191,6 +191,7 @@ defmodule Nous.Telemetry do
       Nous.Telemetry.attach_default_handler()
 
   """
+  @spec attach_default_handler() :: :ok | {:error, :already_exists}
   def attach_default_handler do
     events = [
       # Agent events
@@ -228,6 +229,7 @@ defmodule Nous.Telemetry do
   @doc """
   Detaches the default handler.
   """
+  @spec detach_default_handler() :: :ok | {:error, :not_found}
   def detach_default_handler do
     :telemetry.detach("nous-default-handler")
   end

@@ -15,9 +15,24 @@ defmodule Nous.KnowledgeBase.Tools do
   alias Nous.Tool
   alias Nous.Tool.ContextUpdate
 
+  @typedoc """
+  Either context struct that carries `:deps`. The tool executor hands tools a
+  `RunContext`; the agent loop and tests hand them an `Agent.Context`. Only
+  `deps[:kb_config]` is read, so both work.
+  """
+  @type ctx :: Nous.RunContext.t() | Nous.Agent.Context.t()
+
+  @typedoc """
+  Every tool answers with an `:ok` triple. Failures are reported *in band* as
+  `%{status: "error", message: ...}` so the model can read and react to them
+  instead of the executor aborting the turn.
+  """
+  @type tool_result :: {:ok, map(), ContextUpdate.t()}
+
   @doc """
   Returns all knowledge base tools as a list.
   """
+  @spec all_tools() :: [Tool.t()]
   def all_tools do
     [
       kb_search_tool(),
@@ -313,6 +328,7 @@ defmodule Nous.KnowledgeBase.Tools do
   # Tool implementations
   # ---------------------------------------------------------------------------
 
+  @spec kb_search(ctx(), map()) :: tool_result()
   def kb_search(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       query = Map.fetch!(args, "query")
@@ -326,19 +342,7 @@ defmodule Nous.KnowledgeBase.Tools do
 
       case store_mod.search_entries(store_state, query, opts) do
         {:ok, results} ->
-          formatted =
-            Enum.map(results, fn {entry, score} ->
-              %{
-                slug: entry.slug,
-                title: entry.title,
-                summary: entry.summary,
-                entry_type: to_string(entry.entry_type),
-                concepts: entry.concepts,
-                tags: entry.tags,
-                confidence: entry.confidence,
-                score: Float.round(score, 4)
-              }
-            end)
+          formatted = Enum.map(results, &format_search_hit/1)
 
           {:ok, %{status: "found", count: length(formatted), entries: formatted},
            ContextUpdate.new()}
@@ -352,6 +356,20 @@ defmodule Nous.KnowledgeBase.Tools do
     end
   end
 
+  defp format_search_hit({entry, score}) do
+    %{
+      slug: entry.slug,
+      title: entry.title,
+      summary: entry.summary,
+      entry_type: to_string(entry.entry_type),
+      concepts: entry.concepts,
+      tags: entry.tags,
+      confidence: entry.confidence,
+      score: Float.round(score, 4)
+    }
+  end
+
+  @spec kb_read(ctx(), map()) :: tool_result()
   def kb_read(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       slug_or_id = Map.fetch!(args, "slug_or_id")
@@ -389,6 +407,7 @@ defmodule Nous.KnowledgeBase.Tools do
     end
   end
 
+  @spec kb_list(ctx(), map()) :: tool_result()
   def kb_list(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       limit = Map.get(args, "limit", 20)
@@ -402,16 +421,7 @@ defmodule Nous.KnowledgeBase.Tools do
 
       case store_mod.list_entries(store_state, opts) do
         {:ok, entries} ->
-          formatted =
-            Enum.map(entries, fn entry ->
-              %{
-                slug: entry.slug,
-                title: entry.title,
-                entry_type: to_string(entry.entry_type),
-                concepts: entry.concepts,
-                tags: entry.tags
-              }
-            end)
+          formatted = Enum.map(entries, &format_entry_row/1)
 
           {:ok, %{status: "ok", count: length(formatted), entries: formatted},
            ContextUpdate.new()}
@@ -421,6 +431,17 @@ defmodule Nous.KnowledgeBase.Tools do
     end
   end
 
+  defp format_entry_row(entry) do
+    %{
+      slug: entry.slug,
+      title: entry.title,
+      entry_type: to_string(entry.entry_type),
+      concepts: entry.concepts,
+      tags: entry.tags
+    }
+  end
+
+  @spec kb_ingest(ctx(), map()) :: tool_result()
   def kb_ingest(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       doc =
@@ -451,6 +472,7 @@ defmodule Nous.KnowledgeBase.Tools do
     end
   end
 
+  @spec kb_add_entry(ctx(), map()) :: tool_result()
   def kb_add_entry(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       config = ctx.deps[:kb_config] || %{}
@@ -492,6 +514,7 @@ defmodule Nous.KnowledgeBase.Tools do
     end
   end
 
+  @spec kb_link(ctx(), map()) :: tool_result()
   def kb_link(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       from_slug = Map.fetch!(args, "from_slug")
@@ -499,30 +522,7 @@ defmodule Nous.KnowledgeBase.Tools do
 
       with {:ok, from_entry} <- resolve_entry(store_mod, store_state, from_slug),
            {:ok, to_entry} <- resolve_entry(store_mod, store_state, to_slug) do
-        link =
-          Link.new(%{
-            from_entry_id: from_entry.id,
-            to_entry_id: to_entry.id,
-            link_type: parse_link_type(Map.get(args, "link_type")),
-            label: Map.get(args, "label"),
-            kb_id: get_kb_id(ctx)
-          })
-
-        case store_mod.store_link(store_state, link) do
-          {:ok, new_state} ->
-            {:ok,
-             %{
-               status: "linked",
-               id: link.id,
-               from: from_entry.slug,
-               to: to_entry.slug,
-               link_type: to_string(link.link_type)
-             }, update_store_state(ctx, new_state)}
-
-          {:error, reason} ->
-            {:ok, %{status: "error", message: "Link failed: #{inspect(reason)}"},
-             ContextUpdate.new()}
-        end
+        store_new_link(ctx, {store_mod, store_state}, {from_entry, to_entry}, args)
       else
         {:error, :not_found} ->
           {:ok,
@@ -534,30 +534,40 @@ defmodule Nous.KnowledgeBase.Tools do
     end
   end
 
+  defp store_new_link(ctx, {store_mod, store_state}, {from_entry, to_entry}, args) do
+    link =
+      Link.new(%{
+        from_entry_id: from_entry.id,
+        to_entry_id: to_entry.id,
+        link_type: parse_link_type(Map.get(args, "link_type")),
+        label: Map.get(args, "label"),
+        kb_id: get_kb_id(ctx)
+      })
+
+    case store_mod.store_link(store_state, link) do
+      {:ok, new_state} ->
+        {:ok,
+         %{
+           status: "linked",
+           id: link.id,
+           from: from_entry.slug,
+           to: to_entry.slug,
+           link_type: to_string(link.link_type)
+         }, update_store_state(ctx, new_state)}
+
+      {:error, reason} ->
+        {:ok, %{status: "error", message: "Link failed: #{inspect(reason)}"}, ContextUpdate.new()}
+    end
+  end
+
+  @spec kb_backlinks(ctx(), map()) :: tool_result()
   def kb_backlinks(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       slug_or_id = Map.fetch!(args, "slug_or_id")
 
       with {:ok, entry} <- resolve_entry(store_mod, store_state, slug_or_id),
            {:ok, links} <- store_mod.backlinks(store_state, entry.id) do
-        # Fetch the source entries for each backlink
-        entries =
-          links
-          |> Enum.map(fn link ->
-            case store_mod.fetch_entry(store_state, link.from_entry_id) do
-              {:ok, e} ->
-                %{
-                  slug: e.slug,
-                  title: e.title,
-                  link_type: to_string(link.link_type),
-                  label: link.label
-                }
-
-              _ ->
-                nil
-            end
-          end)
-          |> Enum.reject(&is_nil/1)
+        entries = summarize_backlinks(store_mod, store_state, links)
 
         {:ok,
          %{
@@ -576,6 +586,30 @@ defmodule Nous.KnowledgeBase.Tools do
     end
   end
 
+  # A backlink whose source entry has since been deleted is dropped rather
+  # than surfaced as a dangling row.
+  defp summarize_backlinks(store_mod, store_state, links) do
+    links
+    |> Enum.map(&summarize_backlink(store_mod, store_state, &1))
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp summarize_backlink(store_mod, store_state, link) do
+    case store_mod.fetch_entry(store_state, link.from_entry_id) do
+      {:ok, e} ->
+        %{
+          slug: e.slug,
+          title: e.title,
+          link_type: to_string(link.link_type),
+          label: link.label
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  @spec kb_health_check(ctx(), map()) :: tool_result()
   def kb_health_check(ctx, _args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       kb_id = get_kb_id(ctx)
@@ -594,31 +628,7 @@ defmodule Nous.KnowledgeBase.Tools do
       # Identify issues
       issues = identify_issues(store_mod, store_state, entries, docs)
 
-      # Compute scores
-      now = DateTime.utc_now()
-
-      freshness_score =
-        if entries == [] do
-          0.0
-        else
-          avg_age =
-            entries
-            |> Enum.map(fn e -> DateTime.diff(now, e.updated_at, :hour) end)
-            |> then(fn ages -> Enum.sum(ages) / length(ages) end)
-
-          # Score decays over 30 days (720 hours)
-          Float.round(:math.exp(-avg_age / 720), 3)
-        end
-
       pending_docs = Enum.count(docs, fn d -> d.status == :pending end)
-
-      coverage_score =
-        if docs == [] do
-          1.0
-        else
-          compiled = Enum.count(docs, fn d -> d.status == :compiled end)
-          Float.round(compiled / length(docs), 3)
-        end
 
       report =
         Nous.KnowledgeBase.HealthReport.new(%{
@@ -627,30 +637,9 @@ defmodule Nous.KnowledgeBase.Tools do
           total_links: link_count,
           total_documents: length(docs),
           issues: issues,
-          coverage_score: coverage_score,
-          freshness_score: freshness_score,
-          # L-4: weight by severity so a single high-severity issue isn't
-          # treated like a single low-severity nit. Clamps before rounding
-          # so very-bad KBs saturate at 0.0 cleanly.
-          coherence_score:
-            if(issues == [],
-              do: 1.0,
-              else:
-                issues
-                |> Enum.reduce(1.0, fn issue, acc ->
-                  weight =
-                    case issue.severity do
-                      :high -> 0.2
-                      :medium -> 0.1
-                      :low -> 0.05
-                      _ -> 0.05
-                    end
-
-                  acc - weight
-                end)
-                |> max(0.0)
-                |> Float.round(3)
-            )
+          coverage_score: coverage_score(docs),
+          freshness_score: freshness_score(entries, DateTime.utc_now()),
+          coherence_score: coherence_score(issues)
         })
 
       {:ok,
@@ -664,20 +653,57 @@ defmodule Nous.KnowledgeBase.Tools do
          freshness_score: report.freshness_score,
          coherence_score: report.coherence_score,
          issue_count: length(report.issues),
-         issues:
-           Enum.map(report.issues, fn issue ->
-             %{
-               type: to_string(issue.type),
-               description: issue.description,
-               severity: to_string(issue.severity)
-             }
-           end)
+         issues: Enum.map(report.issues, &format_issue/1)
        }, ContextUpdate.new()}
     else
       {:error, :not_initialized} -> not_initialized_error()
     end
   end
 
+  # Mean entry age decayed over a 30-day (720h) window. An empty KB scores
+  # 0.0: there is nothing fresh to credit it for.
+  defp freshness_score([], _now), do: 0.0
+
+  defp freshness_score(entries, now) do
+    ages = Enum.map(entries, fn e -> DateTime.diff(now, e.updated_at, :hour) end)
+    avg_age = Enum.sum(ages) / length(ages)
+    Float.round(:math.exp(-avg_age / 720), 3)
+  end
+
+  # Share of ingested documents that reached :compiled. With no documents at
+  # all there is nothing uncovered, so coverage is 1.0 rather than 0.0.
+  defp coverage_score([]), do: 1.0
+
+  defp coverage_score(docs) do
+    compiled = Enum.count(docs, fn d -> d.status == :compiled end)
+    Float.round(compiled / length(docs), 3)
+  end
+
+  # L-4: weight by severity so a single high-severity issue isn't treated
+  # like a single low-severity nit. Clamps before rounding so very-bad KBs
+  # saturate at 0.0 cleanly.
+  defp coherence_score([]), do: 1.0
+
+  defp coherence_score(issues) do
+    issues
+    |> Enum.reduce(1.0, fn issue, acc -> acc - severity_weight(issue.severity) end)
+    |> max(0.0)
+    |> Float.round(3)
+  end
+
+  defp severity_weight(:high), do: 0.2
+  defp severity_weight(:medium), do: 0.1
+  defp severity_weight(_), do: 0.05
+
+  defp format_issue(issue) do
+    %{
+      type: to_string(issue.type),
+      description: issue.description,
+      severity: to_string(issue.severity)
+    }
+  end
+
+  @spec kb_generate(ctx(), map()) :: tool_result()
   def kb_generate(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       topic = Map.fetch!(args, "topic")
@@ -689,14 +715,7 @@ defmodule Nous.KnowledgeBase.Tools do
 
       case store_mod.search_entries(store_state, topic, opts) do
         {:ok, results} ->
-          entries = Enum.map(results, fn {entry, _score} -> entry end)
-
-          content =
-            case output_type do
-              "slides" -> format_as_slides(topic, entries)
-              "report" -> format_as_report(topic, entries)
-              _ -> format_as_summary(topic, entries)
-            end
+          entries = drop_scores(results)
 
           {:ok,
            %{
@@ -704,7 +723,7 @@ defmodule Nous.KnowledgeBase.Tools do
              output_type: output_type,
              topic: topic,
              entry_count: length(entries),
-             content: content
+             content: format_output(output_type, topic, entries)
            }, ContextUpdate.new()}
 
         {:error, reason} ->
@@ -715,6 +734,12 @@ defmodule Nous.KnowledgeBase.Tools do
       {:error, :not_initialized} -> not_initialized_error()
     end
   end
+
+  defp format_output("slides", topic, entries), do: format_as_slides(topic, entries)
+  defp format_output("report", topic, entries), do: format_as_report(topic, entries)
+  defp format_output(_type, topic, entries), do: format_as_summary(topic, entries)
+
+  defp drop_scores(results), do: Enum.map(results, fn {entry, _score} -> entry end)
 
   # ---------------------------------------------------------------------------
   # Helpers

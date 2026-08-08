@@ -52,6 +52,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining advisories reach the build through `bypass`
   (`only: [:dev, :test]`) and never ship to consumers.
 
+- **Two resource-ceiling `deps` keys are now protected against tool rewrites.**
+  `:file_read_max_bytes` and `:web_fetch_max_bytes` are read from `ctx.deps`
+  ahead of application config and trusted as ceilings, but were absent from
+  `Nous.Agent.Context.protected_deps_keys/0` — so a tool-supplied context update
+  could **raise** them, and `Nous.Tools.WebFetch`'s guarantee that a
+  model-supplied `max_bytes` "may only lower the ceiling" held for the argument
+  while the ceiling itself moved. A `%{file_read_max_bytes: 100_000_000_000}`
+  update made the next `file_read` build a 100 GB iodata list. Both keys are now
+  on the denylist. Host applications set them via `Agent.new(deps: …)`, which
+  goes through `merge_deps/2` and is unaffected.
+
+- **Tool subprocesses no longer inherit the BEAM's environment.** `Nous.Tools.Env`
+  has existed to scrub API keys out of `bash`, `file_grep` and command hooks
+  since it was introduced, and it never worked: neither spawn API can *remove*
+  an inherited variable. `NetRunner` has no `:env` option in any version — the
+  keyword was accepted and silently dropped, and the NIF's `execvp` inherits
+  `environ` unconditionally — while `System.cmd/3`'s `:env` *merges into* the
+  inherited environment rather than replacing it. An approved `make` or
+  `npm ci` was one `printenv` away from every key in the parent process, and
+  `hook/runner.ex` never passed `env:` at all. New `Env.scrub_argv/1` prefixes
+  `env -i NAME=VALUE …` to the argv, so the child starts from a genuinely empty
+  environment with only the allowlist re-established. This preserves
+  `NetRunner`'s process-tree kill guarantee (verified: identical orphan counts
+  wrapped and unwrapped), which reimplementing the spawn on `Port.open/2` would
+  have cost. All three spawn sites route through it and the dead `env:` options
+  are gone.
+
+- **`Nous.Tool.from_function/2` inherits `requires_approval` instead of
+  hardcoding `false`.** `tools: [&Nous.Tools.Bash.execute/2]` was ungated on
+  every path, while the `from_module/2` sibling had already been fixed and
+  carried a comment naming this exact hazard. The owning module's metadata is
+  now consulted, failing closed.
+
+- **`Nous.Agent.Context.to_run_context/1` no longer mints an "already approved"
+  context.** It stamped `approval_gated?: true` unconditionally, making a public
+  constructor into a bypass primitive for any caller — a sub-agent, a workflow
+  node, a deserialized checkpoint. The flag now defaults to `false` and is
+  **asserted**, never inferred: new `to_run_context/2` takes
+  `approval_gated?: true`, and `Nous.AgentRunner.ToolExecution` is the one caller
+  that passes it, after it has run `check_tool_approval/3`. Deriving the flag
+  from handler presence was considered and rejected as also fail-open —
+  `Nous.ToolExecutor` matches `approval_gated?: true` *before* the handler
+  clause, so a caller that merely installs a handler would have had even a
+  `:reject` handler waved through. The `false` default hands the decision back
+  to that handler.
+
+- **The hook layer is enforced on the streaming path.** `run_stream/3` hand-rolled
+  a second copy of the request pipeline and never built a hook registry, so
+  `Hook.Runner.run(nil, _, _) -> :allow` made the *entire* hook layer — the
+  `:pre_request` deny gate included — a silent no-op on every streamed run, and
+  `Behaviour.before_request` never fired. An operator's deny or redact hook
+  evaporated purely by switching transport. A third sibling of the same fault
+  was found while fixing it: the gated path tested `pre_request_result != :deny`,
+  so a hook returning `{:deny, reason}` sailed straight through. New
+  `Nous.Hook.denied?/1` gates both shapes on both paths.
+
+- **Tool context updates can no longer rewrite security-bearing `deps` keys.**
+  A tool-supplied `__update_context__` map or `%Nous.Tool.ContextUpdate{}` could
+  overwrite `:workspace_root` and the sub-agent confinement keys. `Nous.Agent.
+  Context.protected_deps_keys/0` names them and the new `merge_tool_deps/2`
+  filters them out; `merge_deps/2` stays deliberately unfiltered because
+  `Nous.AgentServer` uses it to re-apply the *operator's* deps over a
+  deserialized context, where filtering would let a poisoned persisted value win.
+
+- **Sub-agents can no longer widen their parent's workspace jail.**
+  `:sub_agent_shared_deps` correctly defaults to `[]`, which dropped
+  `:workspace_root` along with the secrets — so the child fell back to
+  `File.cwd!()` and a parent confined to a temp directory spawned a child
+  confined to the repository root. The confinement floor is now inherited
+  independently of the opt-in deps list, and may only be *narrowed*, via the new
+  `:sub_agent_workspace_root` key.
+
+- **`Nous.Tools.PathGuard` fails closed on an unusable `workspace_root`.** A
+  non-binary value raised out of the guard. It now returns an error, and a path
+  that would be legal under `cwd` is still refused rather than silently falling
+  back to it. The private root resolver is now the documented
+  `PathGuard.effective_root/1`, so the sub-agent clamp and the guard cannot drift.
+
+- **The decisions DuckDB store allowlists SQL identifiers.** It carried the same
+  catch-all `to_string(field)` interpolation the memory stores had removed in the
+  2026-06 cycle. It now uses the identical `@column_map` allowlist that raises
+  `ArgumentError` on an unknown field, and validation runs *before* any driver
+  call so the control is reachable in CI without the optional `:duckdbex` dep.
+
+- **`bash`'s model-controlled timeout is clamped.** `@default_timeout` bounded
+  nothing; a model could pin an OS process and its output buffer indefinitely.
+  Clamped to 600s, configurable via `config :nous, :bash_max_timeout`.
+
+- **`file_read` streams and caps its output** rather than reading a whole file
+  into memory before applying `offset`/`limit` (1 MB default, `config :nous,
+  :file_read_max_bytes`), and **`search_scrape` honours the host-configured
+  fetch ceiling** it previously ignored.
+
+- **LLM-authored and persisted strings no longer crash callers via
+  `String.to_existing_atom/1`.** This was never an atom-table risk — there is
+  zero dynamic atom creation in `lib/` — but an availability one: an unknown
+  string raised out of the decode path. The decisions and memory stores, the
+  knowledge-base health report and the input-guard verdict decode now go through
+  explicit string-to-atom maps with documented fallbacks. `Nous.Persistence`'s
+  moduledoc no longer teaches the unguarded form as copy-paste template code.
+
 ### Performance
 
 - **Gemini/Vertex JSON-array streaming is no longer O(n²).** The
@@ -122,6 +223,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tables whose access pattern warrants them (not blanket-applied — the flags
   cost memory and hurt single-writer tables).
 
+- **The default SSE parser honours the resumable scan state it was already
+  handed.** The resumable-scan contract was built, threaded through both stream
+  backends, and wired to `JSONArrayParser` — which only Gemini uses. The default
+  parser discarded the state and rescanned the whole accumulated buffer on every
+  chunk, so three of four provider paths were unfixed: 4.0× per doubling, and
+  20.1s of pure CPU for one 8 MB event of which concatenation was 0 ms. The scan
+  offset is now threaded through the delimiter search, backing up
+  `delimiter_size - 1` bytes so an event split exactly at the delimiter still
+  parses.
+
+- **`JSONArrayParser` no longer copies its accumulator on every chunk.** The
+  earlier Gemini fix traded a scan quadratic for a copy quadratic. The cause was
+  not sub-binary aliasing as previously recorded but **bit-syntax matching on the
+  accumulator**, which makes ERTS copy the whole buffer on every subsequent
+  append — measured 1.7 ms → 1257 ms over 5000 1 KB appends. Every match on the
+  accumulator is gone, replaced by `:binary.at/2` and offset arithmetic.
+
+- **Message history is no longer re-converted to provider format on every agent
+  iteration.** An N-iteration run with M messages rebuilt all M payloads N times,
+  plus a second full pass on the llamacpp path. New `Nous.Messages.Cache`
+  memoizes per-message payloads by walking the new list against the previous one
+  and reusing every pointer-identical head, so conversion cost is O(new messages).
+
+- **`Nous.Eval.Evaluators.FuzzyMatch` is no longer cubic.** `Enum.at/2` inside a
+  nested loop made Levenshtein O(n³): 796 ms for one 800-character pair against
+  13 ms for a correct reference. Now a two-row DP with no list indexing, ~53×
+  faster, plus an identical-string fast path.
+
+- **Loop-invariant work hoisted out of hot paths.** `scope_pushable?/1` rebuilt a
+  struct keyset per search (now a module attribute and a `MapSet`); skill
+  descriptions were re-downcased and re-split per turn (now indexed at
+  registration); the eval optimizer's Latin-hypercube sampler was O(params × n²)
+  via `Enum.at` (now O(params × n)). `Nous.Memory.Store.Muninn`'s ETS tables gain
+  `read_concurrency`, and the workflow scratch table gains `write_concurrency`,
+  matching their sibling caches.
+
+- **Concurrency is bounded in aggregate, not just per unit.** The 8 MB in-flight
+  byte window bounds *one* stream; N concurrent streams were unbounded, and
+  `Nous.TaskSupervisor` had no `max_children` while the parallel tool fan-out had
+  no `max_concurrency` and defaulted to `System.schedulers_online()` for IO-bound
+  work. Both are now explicit and configurable
+  (`:task_supervisor_max_children`, default 1000;
+  `:parallel_tool_call_max_concurrency`, default 16). Saturation returns a tool
+  error naming the ceiling rather than raising or queueing. Cancelling a run now
+  reaps the tool processes it spawned — `spawn_monitor` monitored without
+  linking, so they were orphaned. Note for anyone reading the old comment: the
+  suggested `Task.Supervisor.async_nolink` + `Task.shutdown` does **not** reap on
+  caller death; a monitor-based watchdog does.
+
 ### Changed
 
 - **`Nous.HTTP.Buffer` extracted.** Both stream backends reached up into
@@ -145,6 +295,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LiveView guide. Those are now documented as public. Only
   `Nous.Workflow.Engine.{Executor,ParallelExecutor,StateMerger}` were genuinely
   internal; they gain `@moduledoc false` and leave the docs groups.
+
+- **Dependency constraint policy for 0.x packages.** A two-segment `~>` on a 0.x
+  version means `>= 0.y.0 and < 1.0.0` — no upper bound across exactly the
+  boundaries where a 0.x package breaks. Three-segment `~> x.y.z` now applies to
+  the 0.x deps whose behaviour or internals Nous reaches into: `req ~> 0.7.2`,
+  `finch ~> 0.23.0`, `floki ~> 0.38.4`, `llama_cpp_ex ~> 0.8.42`. Every other
+  requirement keeps a two-segment range with a comment saying why the looseness
+  is deliberate. **Downstream resolution is tighter than before** for those four.
+
+- **`:exqlite` is now a declared optional dependency.** It was commented out, so
+  `Nous.Memory.Store.SQLite` sat behind `Code.ensure_loaded?` and never compiled
+  — which is how the API drift below went unnoticed, and why three test files
+  compiled to nothing in CI. The remaining optional-dep test files now report a
+  skip with a reason instead of vanishing silently.
+
+- **Breaking: `Nous.ToolSchema` is now `Nous.Tool.Wire`.** Two public modules
+  differing only by a dot meant a wrong autocomplete compiled and failed at the
+  wire format. `Nous.Tool.Schema` (the `use`-able macro, inbound) is unchanged;
+  the provider serialiser (outbound) is renamed. No shim.
+
+- **Breaking: `Nous.ReActAgent` is now `Nous.Agent.ReAct`**, and its file moved
+  out of `lib/nous/`. `Nous.Agents.ReActAgent` (the behaviour implementation) is
+  unchanged. No shim.
+
+- **Breaking: `get_*` functions with `fetch_*` semantics are renamed.**
+  `Nous.KnowledgeBase.get_entry/3` → `fetch_entry/3`; `Nous.Decisions.get_node/3`,
+  the `Nous.Decisions.Store` callback `get_node/2` and both store implementations
+  → `fetch_node`. Custom `Nous.Decisions.Store` implementations must rename the
+  callback. `get_edges/3` deliberately keeps `get_` — it returns a plain list.
+
+- **`Nous.Tools.WebFetch` no longer leaks a Finch pool per hostname.** Each
+  distinct model-chosen host started a permanent supervision tree *and* a
+  permanent atom, never reclaimed. A distinct Finch instance is forced by Finch's
+  API — the DNS pin lives in `conn_opts`, which is pool configuration — so the
+  pool is now claimed from 64 compile-time slots, linked to the fetching process
+  and stopped after the request. **Behavioural:** connections are no longer
+  reused across fetches, and a 65th concurrent in-flight fetch returns an error
+  rather than queueing. Req's default retry is disabled on both agent-facing GET
+  paths, so a model-supplied URL is fetched once.
+
+- **`Nous.stream_text/3` reports hitting the iteration cap.** The stream tool
+  loop logged a warning and halted silently, so a consumer could not distinguish
+  "the model finished" from "truncated at 10 turns". It now emits
+  `{:error, %Nous.Errors.MaxIterationsExceeded{}}` as a final event after the
+  accumulated content, matching what `generate_text/3` already returned.
+
+- **`Nous.Session.*` and `lib/nous/eval/` are documented as intentional.** Both
+  were flagged as unwired. `Nous.Session.{Config,Guardrails}` are pure functions
+  the host composes into its own session process — that is their contract, not an
+  unfinished state — and the eval framework stays in-repo because it computes the
+  metric Nous's own suites are calibrated against; a scoring bug there went
+  unnoticed for two audits, which is an argument for keeping it inside CI's
+  reach, not outside it. The 12-node `mix xref` cycle rooted at `Nous.Eval` is an
+  artifact of an atom-valued config key, not a code dependency, and is documented
+  as such.
+
+- **Credo runs at upstream defaults.** `mix credo --strict` reporting zero was a
+  threshold artifact: five checks were relaxed or disabled, hiding 570 issues.
+  `Nesting` 5 → 2, `CyclomaticComplexity` 23 → 9, `FunctionArity` 14 → 8, and
+  `Design.DuplicatedCode` and `Readability.Specs` are enabled. Two deliberate
+  exclusions, both commented in `.credo.exs` and in the code: `Specs` skips
+  `test/`, and `DuplicatedCode` skips `test/` plus the two DuckDB stores, whose
+  column allowlists must stay disjoint or the identifier-injection hole reopens.
+
+- **`Nous.AgentRunner.run_stream/3` deliberately emits no `:session_start` /
+  `:session_end` pair.** Restoring the hook registry on the streaming path (see
+  Security) briefly fired `:session_start` there, with no `:session_end` anywhere
+  the stream path reaches — so any hook that pairs them leaked one open session
+  per streamed run. Emitting `:session_end` from the stream's terminal clause
+  would not have fixed it: `Stream.resource`'s after-fun runs on
+  `Enum.take/2` but **not** when a caller receives `{:ok, stream}` and never
+  enumerates at all, so the pair is not expressible for a lazy stream. The
+  registry itself — which is what the streaming path was actually missing, and
+  what the `:pre_request` deny gate depends on — is built as before.
 
 ### Tests
 
@@ -200,14 +424,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency removed; `bypass` narrowed to `only: :test` so a Cowboy server is
   no longer on the `:dev` code path.
 
-- **CI now enforces test coverage.** Total went 56.80% → ~60%, and the gate is
-  a ratchet at 59 rather than an aspiration — the 90% threshold configured in
-  `mix.exs` was never run by any job, and was additionally mis-nested:
-  `:threshold` must sit under `:summary` or Mix silently keeps its default.
+- **CI now enforces test coverage.** The 90% threshold configured in `mix.exs`
+  was never run by any job, and was additionally mis-nested: `:threshold` must
+  sit under `:summary` or Mix silently keeps its default. The gate is a ratchet,
+  not an aspiration; see the re-baselining below for its current floor.
 
-- **Credo thresholds ratcheted** to the tightest values the codebase passes
-  today (`max_complexity` 24 → 23, `max_arity` 15 → 14) so they can only move
-  down. `max_nesting` was already at its floor.
+- **Credo thresholds ratcheted** to the tightest values the codebase passed at
+  the time (`max_complexity` 24 → 23, `max_arity` 15 → 14). Superseded later in
+  this same release: all five relaxed or disabled checks now run at Credo's
+  defaults — see Changed.
+
+- **The coverage ratchet tracks intentional code.** The gate was real but
+  brittle: 0.96pp of headroom over a denominator that was 18.2% skills, eval
+  harness and optional-dep backends sitting at 3.90% that nobody intends to test.
+  `ignore_modules` now excludes that set with a per-entry justification, and the
+  floor moved 59 → 77 against a measured 78.78%. `Nous.Eval.Evaluators.*` is
+  deliberately *not* excluded even though the surrounding harness is — that is
+  where the scoring bug lived. `Nous.Memory.Store.SQLite` came out of the
+  exclusion list once it compiled and gained a real suite.
+
+- **Test-file warnings are gated.** `mix compile --warnings-as-errors` never sees
+  `test/**/*_test.exs`, and `mix test` ran without the flag, so nothing checked
+  them. CI now runs `mix test --warnings-as-errors`.
+
+- **Security tests that could not fail have been rewritten.** The `rg --pre`
+  preprocessor-injection test had an unconditional `{:error, _} -> :ok` arm and a
+  `refute` that held regardless — deleting the `--` terminator from `file_grep`
+  left it green. It now plants an executable outside the workspace and asserts
+  the marker file never appears. `Nous.Tools.Env`'s tests asserted the helper's
+  *return value* while the control it described was entirely dead at 100% line
+  coverage; they now assert the spawned child's environment at each of the three
+  spawn sites, each with a paired control proving the probe bites. Four more
+  constant-passing tests and two that asserted nothing were replaced the same way.
+
+- **The untested branches of the SSRF and path defences are covered:** WebFetch's
+  DNS-pin fail-closed clause, `UrlGuard`'s `fc00::/7`, and `PathGuard`'s
+  symlink-loop and resolution-depth caps.
+
+- **Coverage raised on the risk-ranked agent-reachable modules** that sat at
+  0–29%, in the report's risk order. 184 tests across nine files, each validated
+  by mutating the code it defends. Two live bugs fell out of writing them (see
+  Fixed).
+
+- **Test hygiene.** The suite's last racy sleep (the `AgentServer` save offload,
+  a sleep plus a wall-clock upper bound) is gone, along with four dead-time
+  sleeps; `agent_runner_parallel_tools_test.exs` is `async: true`; and two
+  `async: true` modules no longer key mock state on a BEAM-global ETS name.
+
+- **A test now pins the doc contract mechanically** — no `@moduledoc false`
+  module may appear in `groups_for_modules`, and no published module may be
+  missing from it — so the drift that arch F-7/F-9 found cannot recur silently.
 
 ### Fixed
 
@@ -248,10 +514,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   surfaces `%Req.TransportError{}`, so the clause went dead and transport
   failures fell through to the generic handler. Both structs are handled.
 
+- **`Nous.Eval.Evaluators.FuzzyMatch` scored everything wrong. This changes eval
+  results.** Two off-by-one errors in `levenshtein_distance/2` — `prev_diag`
+  seeded `i + 1` where the recurrence needs `prev_row[0]`, and threaded as
+  `prev_row[j]` where the next column needs `prev_row[j+1]` — inflated the
+  distance monotonically past `max_len` and drove the similarity **negative**,
+  violating the documented 0.0–1.0 contract. An exact match scored **0.333** and
+  therefore *failed* the default 0.8 threshold; `abc`/`xyz` scored **−0.333**.
+  Every `:fuzzy_match` eval case was silently miscalibrated, and any recorded
+  baseline was computed against a broken metric. Expect previously-failing fuzzy
+  cases to start passing: that is the fix working, not a regression.
+  `calculate_similarity/2` is now clamped to `[0.0, 1.0]` structurally.
+
+- **`Nous.Memory.Store.SQLite` never functioned.** Not a regression — this
+  backend could not have worked against any `exqlite` its own constraint
+  permitted. `Exqlite.Sqlite3.bind/3` was deprecated in 0.26 and removed in 0.29,
+  and `columns/2` has always returned `{:ok, list}` while the store fed the tuple
+  straight to `Enum.zip/2`. Every callback except `init/1` raised. The drift is
+  fixed, `step/2`'s `:busy` and error returns are handled instead of falling
+  through a `case`, statements are released exactly once on every path, and a
+  mid-scan driver error is no longer discarded as a short row list. The store now
+  has a 21-test round-trip suite that will catch the next drift.
+
+- **`Nous.Memory.Store.Muninn.init/1` and `Nous.Memory.Store.Zvec.init/1` could
+  not compile.** Both referenced variables bound in the function body from a
+  function-level `rescue`, which cannot see them — a hard `CompileError`. Both
+  arms sit behind `Code.ensure_loaded?`, so adding either dependency would have
+  broken the build outright.
+
+- **A tool returning a `%Nous.Tool.ContextUpdate{}` crashed
+  `Nous.generate_text/3`.** `Nous.LLM`'s tool loop matched only the two-tuple
+  returns from `ToolExecutor.execute/3` and not the documented
+  `{:ok, result, context_update}` three-tuple, so any such tool raised
+  `CaseClauseError` out of both `generate_text/3` and the `stream_text/3` tool
+  path. Fixed by routing per-call execution through the runner's single tool
+  executor, which handles it.
+
+- **`Nous.Plugins.Skills` never activated a skill for multimodal input.** The
+  user-text extraction matched `%{type: :text, text: text}`, but
+  `Nous.Message.ContentPart` has no `:text` field — it is `:content`. Any user
+  message whose content was a list of content parts yielded `nil`, so skill
+  auto-activation was silently dead. It now uses the one shared
+  `Nous.Message.extract_text/1`; this was the fourth private copy of that join
+  rule.
+
+- **`Nous.Agent.new/2` silently dropped `:enable_todos`.** A documented option
+  that never reached the struct, so todo injection was unreachable through the
+  public API. Every other documented option was audited and does land.
+
+- **`Nous.Tools.DateTimeTools` raised on any timezone but `"Etc/UTC"`** — a
+  model-supplied argument crashing the caller, including for the `"UTC"` a model
+  will produce constantly. `"UTC"` is now an alias and anything unsupported
+  returns an error naming the supported zones.
+
+- **`Nous.HTTP.Backend.Hackney` reported every transport failure as a JSON
+  encoding error.** One bare `rescue` wrapped both `JSON.encode!/1` and the
+  request, so an `:econnrefused` — or the `UndefinedFunctionError` from the
+  optional dep being absent — came back as `%{reason: :json_encode_error}`. The
+  rescue now covers only the encode.
+
+- **The optional `:hackney` backend is guarded on all three selection routes.**
+  Only the `NOUS_HTTP_BACKEND` env-var branch checked whether the dep was
+  loaded; the documented `config :nous, :http_backend` path and the per-call
+  `:backend` option reached `:hackney.request/5` unguarded. All three now funnel
+  through one guard and degrade to the default backend with a warning.
+
+- **`Nous.Eval.Config`'s `store_results: false` could never take effect** —
+  `opts[:x] || app[:x] || true` discards an explicit `false` at either layer.
+
+- **`Nous.Providers.LlamaCpp`'s optional-dep error message quoted a constraint
+  that cannot be satisfied** against the one `mix.exs` declares.
+
+- **`Nous.PromEx.Plugin` published its raising placeholder to hexdocs.** `:prom_ex`
+  is absent from `mix.exs`, so the real implementation has never compiled here and
+  the else-arm stub is what shipped documentation. Both arms now share one
+  moduledoc describing the real contract and stating what activates it.
+
+- **The new `Nous.TaskSupervisor` ceiling no longer turns a busy node into lost
+  data and hung callers.** `max_children` was added to bound the aggregate (see
+  Performance), but `Task.Supervisor` reports refusal three different ways —
+  `start_child/2` returns `{:error, :max_children}`, while `async_nolink/3` and
+  `async_stream_nolink/4` *raise* — and only the tool fan-out handled any of
+  them. The remaining ~16 callsites inherited a brand-new failure mode: a
+  discarded context save that still reported `:ok`, two `handle_call` paths whose
+  deferred reply never arrived so the caller blocked for its full timeout, a
+  raise out of `handle_cast` that killed the `AgentServer` and took the live
+  session's context with it, and a raise out of the lazy public stream returned
+  by every provider's streaming path.
+
+  All of them now route through one new internal seam, `Nous.Tasks`, and answer
+  `{:error, :saturated}`. Each callsite degrades in its own terms: the seven
+  parallel fan-outs run the same work **sequentially** (one shared emulation in
+  `Nous.Tasks.stream/3` emits the identical result tuples, so ordering,
+  per-item error attribution and `on_error` semantics are unchanged);
+  `Nous.Plugins.InputGuard` degrades **closed**, still running every strategy,
+  because screening fewer inputs because the node is busy would be a bypass;
+  the two `handle_call`s answer immediately; the streaming backend emits a
+  terminal `{:stream_error, %{reason: :saturated}}` that `Nous.StreamNormalizer`
+  maps to `{:error, _}`, so nothing raises at a consumer. Nothing queues and
+  nothing raises.
+
+  **Public API changes:** `Nous.AgentServer.save_context/1` and
+  `load_context/2` can now return `{:error, :saturated}` (both were already
+  specced `{:error, term()}`), and `Nous.Transcript.compact_async/3` and
+  `maybe_compact_async/3` widen from `{:ok, pid()}` to
+  `{:ok, pid()} | {:error, :saturated}`. Raise the ceiling with
+  `config :nous, :task_supervisor_max_children`.
+
+  Two callsites deliberately do **not** degrade to sequential, because
+  `Nous.Tasks.stream/3` cannot honour a per-item `:timeout` (there is no process
+  to kill): the tool fan-out keeps its per-call timeout and its per-call error
+  results, and `file_grep`'s pure-Elixir fallback keeps the timeout that bounds
+  an LLM-supplied regex.
+
 ### Removed
 
 - **`:inets` dropped from `extra_applications`.** `:httpc` was replaced by Req;
   the entry only forced inets to boot in every downstream release.
+
+- **14 stale `deps/` directories and 2 stale `_build/test/lib` applications** not
+  present in `mix.lock`. CI now runs `mix deps.clean --unused` after
+  `mix deps.get` in every cached job: the cache only ever grew, so a dependency
+  dropped from `mix.exs` lingered, was recompiled, and stayed loadable.
+
+- **`Nous.AgentRunner.run_stream/3`'s duplicate request pipeline.** It
+  hand-maintained a second copy of `IterationLoop.prepare_tools/3` +
+  `prepare_request/4`; it now delegates. This was the root cause of the missing
+  hook registry above and would have kept generating fail-open siblings.
+  `Nous.LLM`'s private per-call tool executor is likewise gone — there is now
+  exactly one tool executor in the library — and `run/3`, which had become the
+  longest function in the repo, is split into named phases.
+
+- **Six duplication clusters** hidden by `Design.DuplicatedCode` being disabled,
+  including a third copy of the optimizer trial loop the report did not find, and
+  the fourth copy of `extract_text/1`. `Nous.Skill.Registry`'s hard-coded builtin
+  list is derived instead, which removes the failure mode where a misspelled
+  entry silently yielded no skill.
 
 ## [0.17.0] - 2026-07-18
 

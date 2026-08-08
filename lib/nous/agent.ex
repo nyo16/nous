@@ -161,6 +161,7 @@ defmodule Nous.Agent do
       skills:
         merge_skill_dirs(Keyword.get(opts, :skills, []), Keyword.get(opts, :skill_dirs, [])),
       end_strategy: Keyword.get(opts, :end_strategy, :early),
+      enable_todos: Keyword.get(opts, :enable_todos, false),
       behaviour_module: Keyword.get(opts, :behaviour_module),
       permissions: Keyword.get(opts, :permissions),
       parallel_tool_calls: Keyword.get(opts, :parallel_tool_calls, false)

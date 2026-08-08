@@ -351,6 +351,8 @@ defmodule Nous.Providers.VertexAI do
   # directly. The tests used to cover this by calling chat/2 with base_url: nil
   # and checking the error was not :no_base_url — which issued a real request
   # to aiplatform.googleapis.com and never actually verified which region won.
+  @spec build_default_base_url(String.t()) ::
+          {:ok, String.t()} | {:error, %{reason: atom(), message: String.t()}} | :not_configured
   def build_default_base_url(model) do
     project = System.get_env("GOOGLE_CLOUD_PROJECT") || System.get_env("GCLOUD_PROJECT")
 

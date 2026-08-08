@@ -82,12 +82,12 @@ defmodule Nous.Decisions do
 
   ## Examples
 
-      {:ok, node} = Nous.Decisions.get_node(Store.ETS, state, node_id)
+      {:ok, node} = Nous.Decisions.fetch_node(Store.ETS, state, node_id)
 
   """
-  @spec get_node(module(), term(), String.t()) :: {:ok, Node.t()} | {:error, :not_found}
-  def get_node(store_mod, state, id) do
-    store_mod.get_node(state, id)
+  @spec fetch_node(module(), term(), String.t()) :: {:ok, Node.t()} | {:error, :not_found}
+  def fetch_node(store_mod, state, id) do
+    store_mod.fetch_node(state, id)
   end
 
   @doc """

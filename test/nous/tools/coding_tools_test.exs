@@ -31,6 +31,15 @@ defmodule Nous.Tools.CodingToolsTest do
   # to the same tmp dir they create fixtures under.
   defp ctx, do: Nous.RunContext.new(%{workspace_root: @test_dir})
 
+  # Fixtures for the large-file reads live outside @test_dir so the FileGlob
+  # and FileGrep tests that walk it never have to scan them.
+  defp scratch_dir do
+    dir = Path.join(System.tmp_dir!(), "nous_file_read_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
+  end
+
   # -- Bash --
 
   describe "Bash" do
@@ -93,6 +102,48 @@ defmodule Nous.Tools.CodingToolsTest do
     test "rejects path outside workspace root" do
       assert {:error, msg} = FileRead.execute(ctx(), %{"file_path" => "/etc/passwd"})
       assert msg =~ "escapes the workspace"
+    end
+
+    # The whole-file `String.split(content, "\n")` this tool used to do treats
+    # every newline as a separator, so a file ending in one yields a final
+    # empty element that gets its own number. Streaming line-wise drops it
+    # unless the reader puts it back — and losing it silently renumbers
+    # nothing but quietly changes every read's last line.
+    test "keeps the trailing-newline line numbering exactly" do
+      path = Path.join(@test_dir, "hello.txt")
+
+      assert {:ok, output} = FileRead.execute(ctx(), %{"file_path" => path})
+      assert output == "1\tHello World\n2\tThis is line 2\n3\tGoodbye World\n4\t"
+    end
+
+    test "returns only the requested window of a large file" do
+      dir = scratch_dir()
+      path = Path.join(dir, "many_lines.txt")
+      File.write!(path, Enum.map_join(1..20_000, "", &"line #{&1}\n"))
+
+      assert {:ok, output} =
+               FileRead.execute(
+                 Nous.RunContext.new(%{workspace_root: dir}),
+                 %{"file_path" => path, "offset" => 19_998, "limit" => 2}
+               )
+
+      assert output == "19998\tline 19998\n19999\tline 19999"
+    end
+
+    # `limit` is a line count and the model picks it, so nothing bounded the
+    # result by size. Reverting to the whole-file read returns all ~40 KB.
+    test "caps the rendered output instead of returning the whole file" do
+      dir = scratch_dir()
+      path = Path.join(dir, "oversized.txt")
+      File.write!(path, String.duplicate(String.duplicate("x", 80) <> "\n", 500))
+
+      ctx = Nous.RunContext.new(%{workspace_root: dir, file_read_max_bytes: 1_000})
+
+      assert {:ok, output} = FileRead.execute(ctx, %{"file_path" => path})
+
+      assert String.ends_with?(output, "[truncated: output exceeded the 1000 byte limit]")
+      assert byte_size(output) < 1_200
+      refute output =~ "500\t"
     end
   end
 
@@ -391,13 +442,30 @@ defmodule Nous.Tools.CodingToolsTest do
       assert output =~ "No matches"
     end
 
-    test "rg --pre preprocessor injection is neutralized" do
-      result = FileGrep.execute(ctx(), %{"pattern" => "--pre=/bin/cat", "path" => @test_dir})
+    test "rg --pre preprocessor injection never executes the preprocessor" do
+      # This asserts an EFFECT, not a string. A leaked `--pre` also steals the
+      # pattern slot (the path positional becomes the pattern), so the search
+      # yields "no matches" either way and no output assertion can see it —
+      # that is precisely how the previous version of this test stayed green
+      # with the argv hardening removed. The script writes a marker instead:
+      # rg runs it once per candidate file, so the marker exists if and only if
+      # rg parsed the model-supplied pattern as a flag.
+      canary =
+        Path.join(System.tmp_dir!(), "nous_rg_pre_canary_#{System.unique_integer([:positive])}")
 
-      case result do
-        {:ok, output} -> refute output =~ "root:"
-        {:error, _} -> :ok
-      end
+      File.mkdir_p!(canary)
+      on_exit(fn -> File.rm_rf!(canary) end)
+
+      marker = Path.join(canary, "preprocessor_ran")
+      script = Path.join(canary, "leak.sh")
+      File.write!(script, ~s(#!/bin/sh\necho ran > "#{marker}"\n))
+      File.chmod!(script, 0o755)
+
+      assert {:ok, output} =
+               FileGrep.execute(ctx(), %{"pattern" => "--pre=#{script}", "path" => @test_dir})
+
+      refute File.exists?(marker)
+      assert output =~ "No matches"
     end
 
     test "glob flag injection is consumed as a value, not a flag" do

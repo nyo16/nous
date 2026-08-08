@@ -92,6 +92,28 @@ defmodule Nous.Eval do
         eval_config: %{evaluator: MyEvaluator}
       )
 
+  ## Why a sub-framework lives inside a general-purpose library
+
+  `lib/nous/eval/` is the largest directory in `lib/nous/`, and an evaluation
+  harness is not obviously the business of an LLM client. It stays in-repo
+  deliberately (2026-08 audit, arch F-13): the metric it computes is the metric
+  Nous's own suites are calibrated against, and the 2026-08 audit found a
+  scoring bug in `Nous.Eval.Evaluators.FuzzyMatch` that had silently
+  miscalibrated every `:fuzzy_match` case. Code that grades the library belongs
+  where the library's CI can watch it — extracting it to a sibling package would
+  put that grading outside the ratchet, which is precisely how the bug survived.
+
+  Consequently `Nous.Eval.Evaluators.*` is **not** in `test_coverage`'s
+  `:ignore_modules` even though the surrounding harness is; see `mix.exs`.
+
+  `mix xref graph --format cycles` reports a 12-node cycle rooted here
+  (arch F-14). It is an artifact, not a code dependency: `Nous.Eval.Config`
+  reads `Application.get_env(:nous, Nous.Eval, [])`, and xref counts the atom
+  `Nous.Eval` used as a *config key* as a reference to the module. There is no
+  compile-time or call dependency in that direction. Renaming the key would
+  break every downstream `config :nous, Nous.Eval, ...` silently, which is a
+  worse trade than a cosmetic xref edge.
+
   """
 
   alias Nous.Eval.{Suite, Runner, Result}
