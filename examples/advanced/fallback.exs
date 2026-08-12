@@ -34,24 +34,33 @@ that succeeds wins; if all fail, the last error is returned.
 # Runnable Demo
 # ============================================================================
 #
-# To keep this runnable offline-ish, the primary points at an unreachable
-# local server (port 1 never has anything listening), so its request fails
-# with a ProviderError. Nous then falls back to a local LM Studio model.
+# To keep this runnable offline-ish, the primary is pointed at an unreachable
+# local server via the :base_url option (port 1 never has anything listening),
+# so its request fails with a ProviderError. Nous then falls back to a local
+# LM Studio model.
+#
+# NOTE: the endpoint override MUST go through :base_url. There is no
+# "provider:model@http://host" model-string syntax - Model.parse/2 would treat
+# the whole "gpt-4o@http://localhost:1" tail as the model NAME and happily send
+# the request to the real api.openai.com.
 #
 # Run a model in LM Studio (http://localhost:1234) to see the fallback
 # actually succeed; otherwise both legs fail and you'll see the last error.
 
 IO.puts("--- Runnable Demo ---\n")
 
-primary = "openai:gpt-4o@http://localhost:1"
+primary = "openai:gpt-4o"
+primary_base_url = "http://localhost:1"
 fallback_model = "lmstudio:qwen3"
 
-IO.puts("Primary (intentionally unreachable): #{primary}")
+IO.puts("Primary (intentionally unreachable): #{primary} @ #{primary_base_url}")
 IO.puts("Fallback (local):                    #{fallback_model}\n")
 
 agent =
   Nous.new(primary,
     instructions: "Be concise.",
+    # Routes the primary at a dead endpoint without touching the model name.
+    base_url: primary_base_url,
     # api_key required so the unreachable primary is attempted at the
     # provider layer (a missing key surfaces as a terminal ConfigurationError,
     # which is NOT fallback-eligible).

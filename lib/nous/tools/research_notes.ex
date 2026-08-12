@@ -18,6 +18,7 @@ defmodule Nous.Tools.ResearchNotes do
   @doc """
   Returns all research note tools as a list.
   """
+  @spec all_tools() :: [Tool.t()]
   def all_tools do
     [
       add_finding_tool(),

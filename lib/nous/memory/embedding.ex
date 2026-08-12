@@ -17,6 +17,7 @@ defmodule Nous.Memory.Embedding do
   Embed a single text using the given provider module and options.
   Returns {:ok, embedding} or {:error, reason}.
   """
+  @spec embed(module(), String.t(), keyword()) :: {:ok, [float()]} | {:error, term()}
   def embed(provider, text, opts \\ []) when is_atom(provider) do
     provider.embed(text, opts)
   end
@@ -24,6 +25,7 @@ defmodule Nous.Memory.Embedding do
   @doc """
   Embed a batch of texts. Falls back to sequential embed/2 calls if embed_batch/2 is not implemented.
   """
+  @spec embed_batch(module(), [String.t()], keyword()) :: {:ok, [[float()]]} | {:error, term()}
   def embed_batch(provider, texts, opts \\ []) when is_atom(provider) do
     if function_exported?(provider, :embed_batch, 2) do
       provider.embed_batch(texts, opts)
@@ -43,6 +45,7 @@ defmodule Nous.Memory.Embedding do
   @doc """
   Get the embedding dimension for a provider.
   """
+  @spec dimension(module()) :: pos_integer()
   def dimension(provider) when is_atom(provider) do
     provider.dimension()
   end

@@ -12,7 +12,29 @@ db_path = Path.join(System.tmp_dir!(), "nous_memory_example.db")
 File.rm(db_path)
 
 IO.puts("Opening SQLite database at #{db_path}")
-{:ok, store} = Store.SQLite.init(path: db_path)
+
+store =
+  case Store.SQLite.init(path: db_path) do
+    {:ok, store} ->
+      store
+
+    {:error, reason} ->
+      IO.puts("""
+
+      Skipping: #{reason}
+
+      The exqlite dependency ships commented out in this repo. Uncomment this line
+      in mix.exs (under "Memory system store backends"):
+
+          {:exqlite, "~> 0.27", optional: true},
+
+      then run:
+
+          mix deps.get
+      """)
+
+      System.halt(0)
+  end
 
 # Store memories
 entries = [

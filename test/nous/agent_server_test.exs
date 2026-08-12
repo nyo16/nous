@@ -541,4 +541,59 @@ defmodule Nous.AgentServerTest do
       GenServer.stop(pid)
     end
   end
+
+  describe "pubsub self-amplification" do
+    @describetag :pubsub
+
+    setup do
+      name = :"AgentServerTest.PubSub#{System.unique_integer([:positive])}"
+      start_supervised!({Phoenix.PubSub, name: name})
+
+      previous = Application.get_env(:nous, :pubsub)
+      Application.put_env(:nous, :pubsub, name)
+      on_exit(fn -> Application.put_env(:nous, :pubsub, previous) end)
+
+      %{pubsub: name}
+    end
+
+    # Regression: `init/1` subscribes the server to the very topic it publishes
+    # on, and `Phoenix.PubSub.broadcast/3` does not exclude the sender. When the
+    # runner-notification `handle_info` clauses re-broadcast, the server received
+    # its own message and republished it forever — an idle agent pinned a core
+    # and every subscriber got unbounded duplicates. The clauses must drain, not
+    # publish.
+    test "a runner notification is not re-published to the agent topic", %{pubsub: pubsub} do
+      session_id = "test_no_amplify_#{System.unique_integer([:positive])}"
+      topic = Nous.PubSub.agent_topic(session_id)
+      :ok = Nous.PubSub.subscribe(pubsub, topic)
+
+      {:ok, pid} =
+        AgentServer.start_link(
+          session_id: session_id,
+          agent_config: @agent_config,
+          inactivity_timeout: :infinity
+        )
+
+      # Exactly what Nous.AgentRunner sends to `notify_pid`.
+      send(pid, {:agent_delta, "chunk"})
+      send(pid, {:agent_complete, %{output: "done"}})
+      send(pid, {:agent_error, "boom"})
+
+      # Serializes after the three casts above.
+      assert AgentServer.get_context(pid)
+
+      refute_receive {:agent_delta, _}, 100
+      refute_receive {:agent_complete, _}, 100
+      refute_receive {:agent_error, _}, 100
+
+      # And the server is not spinning on its own traffic.
+      assert {:message_queue_len, 0} = Process.info(pid, :message_queue_len)
+      {:reductions, before} = Process.info(pid, :reductions)
+      Process.sleep(100)
+      {:reductions, later} = Process.info(pid, :reductions)
+      assert later - before < 10_000
+
+      GenServer.stop(pid)
+    end
+  end
 end

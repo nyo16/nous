@@ -1,27 +1,47 @@
-# LiveView Multi-Agent Dashboard — Reference Example
-#
-# A dashboard that spawns multiple agents with different roles, tracks
-# their progress in real time, and aggregates results — all via PubSub.
-#
-# This is a REFERENCE implementation — integrate into your Phoenix app.
-# It is not runnable as a standalone script (LiveView requires Phoenix).
-#
-# Features:
-#   - Spawn multiple agents with distinct roles
-#   - Real-time progress updates via PubSub
-#   - Per-agent status tracking (pending / running / completed / failed)
-#   - Aggregated results display
-#
-# Prerequisites:
-#   - Phoenix ~> 1.7 with LiveView ~> 0.20
-#   - Nous added to your deps
-#   - PubSub configured:  config :nous, pubsub: MyApp.PubSub
-#
-# See also:
-#   - examples/advanced/liveview_chat.exs       (single-agent chat)
-#   - examples/13_sub_agents.exs                (sub-agent patterns)
-#   - docs/guides/liveview-integration.md       (full guide)
+#!/usr/bin/env elixir
 
+# Nous AI - LiveView Multi-Agent Dashboard
+# Running several Nous agents in parallel and streaming their progress
+
+IO.puts("=== Nous AI - LiveView Multi-Agent Dashboard ===\n")
+
+# ============================================================================
+# Overview
+# ============================================================================
+
+IO.puts("""
+This example prints a complete, copy-pasteable LiveView dashboard module.
+It is a REFERENCE implementation: the module needs Phoenix and LiveView,
+which Nous does not depend on, so it is printed rather than compiled.
+Paste it into your own Phoenix application.
+
+The dashboard spawns one agent per role, tracks their progress in real time,
+and aggregates the results — all over Nous.PubSub.
+
+Features:
+1. Spawn multiple agents with distinct roles
+2. Real-time progress updates via PubSub
+3. Per-agent status tracking (pending / running / completed / failed)
+4. Aggregated results display
+
+Prerequisites:
+  - Phoenix ~> 1.7 with LiveView ~> 0.20
+  - Nous added to your deps
+  - PubSub configured:  config :nous, pubsub: MyApp.PubSub
+
+See also:
+  - docs/guides/liveview-integration.md         (full guide)
+  - examples/advanced/liveview_chat.exs         (single-agent chat)
+  - examples/13_sub_agents.exs                  (sub-agent patterns)
+""")
+
+# ============================================================================
+# The Dashboard LiveView
+# ============================================================================
+
+IO.puts("--- MyAppWeb.MultiAgentDashboardLive ---")
+
+IO.puts(~S'''
 defmodule MyAppWeb.MultiAgentDashboardLive do
   @moduledoc """
   LiveView dashboard for running multiple Nous agents in parallel
@@ -119,10 +139,13 @@ defmodule MyAppWeb.MultiAgentDashboardLive do
         Task.start(fn ->
           agent = Nous.new(role.model, instructions: role.instructions)
 
-          # Broadcast streaming deltas so the LiveView can show per-agent progress
+          # Broadcast streaming deltas so the LiveView can show per-agent
+          # progress. `stream: true` is required — without it the LLM call is
+          # non-streaming and on_llm_new_delta never fires.
           try do
             {:ok, result} =
               Nous.run(agent, query,
+                stream: true,
                 callbacks: %{
                   on_llm_new_delta: fn _event, delta ->
                     Nous.PubSub.broadcast(
@@ -301,3 +324,4 @@ defmodule MyAppWeb.MultiAgentDashboardLive do
     :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
   end
 end
+''')

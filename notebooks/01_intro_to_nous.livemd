@@ -1,0 +1,296 @@
+# Intro to Nous
+
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnyo16%2Fnous%2Fmaster%2Fnotebooks%2F01_intro_to_nous.livemd)
+
+```elixir
+Mix.install([
+  {:nous, "~> 0.17"},
+  {:kino, "~> 0.14"}
+])
+```
+
+## What you will build
+
+Nous is an AI agent framework for Elixir. This notebook walks the four calls you
+need before anything else makes sense:
+
+* `Nous.generate_text/3` — one-shot text, no agent, no state.
+* `Nous.new/2` + `Nous.run/3` — an agent with instructions and a tool loop.
+* `Nous.stream_text/3` — token-by-token output.
+* `result.usage` and `result.iterations` — what the run actually cost.
+
+Nothing here writes to disk or shells out. Notebook 2 covers tools, permissions
+and approvals; notebook 3 covers the knowledge base.
+
+## Configure a provider
+
+Your API key goes into a `Kino.Input.password` cell. It is never written into
+the notebook source, and this notebook never reads a key out of the environment
+of whoever wrote it.
+
+If you are running a local model server (LM Studio on `localhost:1234`), pick
+`lmstudio` and leave the key blank.
+
+```elixir
+provider_input =
+  Kino.Input.select("Provider", [
+    {:openai, "OpenAI"},
+    {:anthropic, "Anthropic"},
+    {:groq, "Groq"},
+    {:lmstudio, "LM Studio (local, no key)"}
+  ])
+
+model_input = Kino.Input.text("Model name", default: "gpt-4o-mini")
+key_input = Kino.Input.password("API key")
+
+Kino.Layout.grid([provider_input, model_input, key_input], columns: 1)
+```
+
+Run the next cell every time you change one of the inputs above. It pushes the
+key into the application environment that `Nous.Model` reads per provider, and
+builds the `"provider:model"` string every Nous entry point takes.
+
+```elixir
+# Provider -> the :nous application env key Nous.Model.parse/2 falls back to.
+# lmstudio needs no credential at all.
+key_env = %{
+  openai: :openai_api_key,
+  anthropic: :anthropic_api_key,
+  groq: :groq_api_key,
+  lmstudio: nil
+}
+
+provider = Kino.Input.read(provider_input)
+model_name = model_input |> Kino.Input.read() |> String.trim()
+api_key = key_input |> Kino.Input.read() |> String.trim()
+
+case Map.fetch!(key_env, provider) do
+  nil -> :ok
+  env_key when api_key != "" -> Application.put_env(:nous, env_key, api_key)
+  _env_key -> :ok
+end
+
+model_string = "#{provider}:#{model_name}"
+ready = model_name != "" and (provider == :lmstudio or api_key != "")
+
+Kino.Markdown.new(
+  if ready do
+    "Configured: **`#{model_string}`**. Every cell below will make real calls."
+  else
+    "**Not configured yet.** Fill in the model name and the API key above, then " <>
+      "re-run this cell. The rest of the notebook will skip its network calls " <>
+      "until you do."
+  end
+)
+```
+
+## 1. One-shot text — `Nous.generate_text/3`
+
+The smallest thing Nous does. No agent struct, no message history, no tool
+loop — a model string, a prompt, and `{:ok, text}` back.
+
+```elixir
+one_shot =
+  if ready do
+    Nous.generate_text(model_string, "In one sentence: what is the BEAM?",
+      system: "You explain Elixir to working programmers. Be precise, not cute.",
+      max_tokens: 200
+    )
+  else
+    {:error, :not_configured}
+  end
+
+Kino.Markdown.new(
+  case one_shot do
+    {:ok, text} -> text
+    {:error, reason} -> "Skipped or failed: `#{inspect(reason)}`"
+  end
+)
+```
+
+`generate_text/3` takes `:system`, `:temperature`, `:max_tokens`, `:top_p`,
+`:base_url`, `:api_key`, `:tools`, `:deps` and `:fallback`. There is also
+`Nous.generate_text!/3` if you would rather have the exception.
+
+## 2. Your first agent — `Nous.new/2`
+
+An agent is a plain struct. Building one performs no I/O, so you can construct
+it once and keep it in module state, an ETS table, or a LiveView assign.
+
+```elixir
+agent =
+  Nous.new(model_string,
+    name: "intro_agent",
+    instructions: """
+    You are a concise Elixir tutor. Answer in at most three sentences.
+    Prefer OTP vocabulary over generic programming vocabulary.
+    """,
+    model_settings: %{temperature: 0.2, max_tokens: 400}
+  )
+
+Kino.Tree.new(%{
+  name: agent.name,
+  provider: agent.model.provider,
+  model: agent.model.model,
+  tools: length(agent.tools),
+  plugins: agent.plugins,
+  end_strategy: agent.end_strategy,
+  parallel_tool_calls: agent.parallel_tool_calls
+})
+```
+
+`Nous.run/2` (or `/3` with options) drives the agent to completion: it calls the
+model, executes any tools the model asked for, feeds the results back, and
+repeats until the model stops calling tools or `:max_iterations` is hit.
+
+```elixir
+run_result =
+  if ready do
+    Nous.run(agent, "Why does OTP prefer supervision over defensive error handling?")
+  else
+    {:error, :not_configured}
+  end
+
+Kino.Markdown.new(
+  case run_result do
+    {:ok, result} -> result.output
+    {:error, reason} -> "Skipped or failed: `#{inspect(reason)}`"
+  end
+)
+```
+
+The result is a map, not a struct. The keys you will actually use:
+
+* `:output` — the final answer.
+* `:usage` — a `%Nous.Usage{}`.
+* `:iterations` — how many model round-trips the tool loop took.
+* `:all_messages` / `:new_messages` — the conversation, for continuation.
+* `:deps` — dependencies as they stood at the end of the run.
+
+```elixir
+case run_result do
+  {:ok, result} ->
+    result
+    |> Map.take([:output, :iterations])
+    |> Map.put(:message_count, length(result.all_messages))
+    |> Map.put(:result_keys, result |> Map.keys() |> Enum.sort())
+    |> Kino.Tree.new()
+
+  {:error, _} ->
+    Kino.Markdown.new("Run the previous cell with a provider configured first.")
+end
+```
+
+## 3. Streaming — `Nous.stream_text/3`
+
+`stream_text/3` returns `{:ok, stream}` where the stream yields plain binaries.
+Rendering into a `Kino.Frame` gives you the usual typewriter effect.
+
+```elixir
+frame = Kino.Frame.new()
+Kino.render(frame)
+
+stream_outcome =
+  if ready do
+    Nous.stream_text(model_string, "Write a four-line poem about supervision trees.",
+      max_tokens: 200
+    )
+  else
+    {:error, :not_configured}
+  end
+
+case stream_outcome do
+  {:ok, stream} ->
+    final =
+      Enum.reduce(stream, "", fn chunk, acc ->
+        text = acc <> chunk
+        Kino.Frame.render(frame, Kino.Markdown.new(text))
+        text
+      end)
+
+    Kino.Markdown.new("Streamed **#{String.length(final)}** characters.")
+
+  {:error, reason} ->
+    Kino.Markdown.new("Skipped or failed: `#{inspect(reason)}`")
+end
+```
+
+For an *agent* — instructions, tools, plugins and all — the streaming
+equivalent is `Nous.run_stream/3`. It yields tagged tuples rather than
+binaries, so you can distinguish text from lifecycle events:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+{:ok, stream} = Nous.run_stream(agent, "Tell me a story")
+
+stream
+|> Stream.each(fn
+  {:text_delta, text} -> IO.write(text)
+  {:complete, _result} -> IO.puts("\ndone")
+  _other -> :ok
+end)
+|> Stream.run()
+```
+
+## 4. What did that cost? — `result.usage`
+
+`%Nous.Usage{}` accumulates across every model call in a run, including the
+extra round-trips a tool loop adds. The two cache fields matter on providers
+with prompt caching (Anthropic in particular): a cache *write* is billed
+differently from a cache *read*, so they are tracked separately from
+`:input_tokens` rather than folded into it.
+
+Note that `:iterations` lives on the **result**, not on the usage struct —
+usage counts tokens and calls, the result counts loop turns.
+
+```elixir
+usage_rows =
+  case run_result do
+    {:ok, result} ->
+      u = result.usage
+
+      [
+        %{field: "result.iterations", value: result.iterations},
+        %{field: "usage.requests", value: u.requests},
+        %{field: "usage.tool_calls", value: u.tool_calls},
+        %{field: "usage.input_tokens", value: u.input_tokens},
+        %{field: "usage.output_tokens", value: u.output_tokens},
+        %{field: "usage.total_tokens", value: u.total_tokens},
+        %{field: "usage.cache_creation_input_tokens", value: u.cache_creation_input_tokens},
+        %{field: "usage.cache_read_input_tokens", value: u.cache_read_input_tokens}
+      ]
+
+    {:error, _} ->
+      []
+  end
+
+if usage_rows == [] do
+  Kino.Markdown.new("No run to measure yet — configure a provider and re-run section 2.")
+else
+  Kino.DataTable.new(usage_rows, keys: [:field, :value])
+end
+```
+
+`Nous.Usage.add/2` folds two usage structs together, which is how you total a
+batch of runs:
+
+```elixir
+totals =
+  case run_result do
+    {:ok, result} -> Nous.Usage.add(Nous.Usage.new(), result.usage)
+    {:error, _} -> Nous.Usage.new()
+  end
+
+Kino.Tree.new(Map.from_struct(totals))
+```
+
+## Where to go next
+
+* **Notebook 2 — Tools and agents.** Write a tool with
+  `Nous.Tool.Behaviour`, gate it with `Nous.Permissions`, and approve a
+  `file_write` call by hand.
+* **Notebook 3 — RAG and the knowledge base.** Ingest documents, search them,
+  and hand the populated store to an agent.
+* `Nous.run_stream/3` for streaming agents, `Nous.Agent` for the full option
+  list, and `Nous.LLM` for the provider-level API underneath `generate_text/3`.

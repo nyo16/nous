@@ -192,6 +192,7 @@ defmodule Nous.Persistence.ETS do
   Remove all persisted sessions. Routed through the owner (the table is
   `:protected`, so only the owner may write). Useful for tests.
   """
+  @spec clear() :: :ok
   def clear do
     GenServer.call(owner(), :clear)
   end

@@ -43,6 +43,7 @@ defmodule Nous.Tools.TavilySearch do
 
   A map with results list and optional direct answer.
   """
+  @spec search(Nous.RunContext.t(), map()) :: map()
   def search(ctx, args) do
     query = Common.query(args)
     search_depth = Map.get(args, "search_depth", "basic")

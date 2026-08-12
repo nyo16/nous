@@ -215,27 +215,134 @@ inner = Graph.new("sub") |> Graph.add_node(:process, :transform, %{...})
 
 ## Observability
 
-### Tracing
-
-```elixir
-{:ok, state} = Workflow.run(graph, %{}, trace: true)
-
-for entry <- state.metadata.trace.entries do
-  IO.puts("#{entry.node_id}: #{entry.status} in #{entry.duration_ms}ms")
-end
-```
-
 ### Telemetry Events
 
 - `[:nous, :workflow, :run, :start]` / `:stop` / `:exception`
 - `[:nous, :workflow, :node, :start]` / `:stop` / `:exception`
 
-### Mermaid Diagrams
+## Visualization & tracing
+
+Three small modules answer the three questions a graph engine always raises: *what does this pipeline look like*, *what did that run actually do*, and *why is my state so big*.
+
+### Diagrams — `Nous.Workflow.Mermaid`
+
+`Workflow.to_mermaid/2` delegates to `Nous.Workflow.Mermaid.to_mermaid/2`, which turns a graph into a Mermaid `flowchart` string. It only reads the graph, so you can diagram a pipeline before it has ever executed. The one option is `:direction` — `"TD"` (default) or `"LR"`.
 
 ```elixir
-IO.puts(Workflow.to_mermaid(graph))
-# Generates a Mermaid flowchart with type-specific node shapes
+alias Nous.Workflow
+
+graph =
+  Workflow.new("triage")
+  |> Workflow.add_node(:classify, :agent_step, %{agent: classifier, prompt: "..."},
+    label: "Classify ticket"
+  )
+  |> Workflow.add_node(:route, :branch, %{}, label: "Urgent?")
+  |> Workflow.add_node(:page, :tool_step, %{tool: pager, args: %{}}, label: "Page on-call")
+  |> Workflow.add_node(:queue, :transform, %{transform_fn: &enqueue/1}, label: "Add to backlog")
+  |> Workflow.connect(:classify, :route)
+  |> Workflow.connect(:route, :page, condition: &urgent?/1, label: "urgent")
+  |> Workflow.connect(:route, :queue, default: true)
+
+IO.puts(Workflow.to_mermaid(graph, direction: "LR"))
 ```
+
+Output:
+
+```mermaid
+flowchart LR
+    classify["Classify ticket"]
+    page[/"Page on-call (tool_step)"/]
+    queue["Add to backlog"]
+    route{"Urgent? (branch)"}
+    classify --> route
+    route -->|default| queue
+    route -->|urgent| page
+```
+
+The rendering rules:
+
+- Nodes come first, sorted by node id; then edges, grouped by source node. Edges leaving one node appear in *reverse* declaration order — `connect/4` prepends to the adjacency list.
+- A node's text is its `:label`, falling back to the node id. Every type except `:agent_step` and `:transform` also gets a ` (type)` suffix, so a diagram reads without a legend.
+- Conditional edges are labelled with the edge's `:label` (or the word `condition` when you did not pass one); default edges are labelled `default`.
+- `:parallel` nodes additionally emit a dotted `-.->` line to every id in their `:branches` config, so fan-out targets appear even though no explicit edge connects them.
+
+Shapes are chosen per node type:
+
+| Node type | Shape |
+|-----------|-------|
+| `:agent_step`, `:transform` | `["..."]` rectangle |
+| `:tool_step` | `[/"..."/]` parallelogram |
+| `:branch` | `{"..."}` rhombus |
+| `:parallel`, `:parallel_map` | `{{"..."}}` hexagon |
+| `:human_checkpoint` | `(["..."])` stadium |
+| `:subworkflow` | `[["..."]]` subroutine |
+
+### Traces — `Nous.Workflow.Trace`
+
+Pass `trace: true` to `Workflow.run/3` and the engine records one entry per node execution. The resulting `%Nous.Workflow.Trace{}` is attached to `state.metadata.trace` when the run completes *or* suspends; without the option there is no `:trace` key at all.
+
+```elixir
+{:ok, state} = Workflow.run(graph, %{}, trace: true)
+trace = state.metadata.trace
+
+for entry <- trace.entries do
+  IO.puts("#{entry.node_id} (#{entry.node_type}): #{entry.status} in #{entry.duration_ms}ms")
+end
+
+IO.puts("#{Nous.Workflow.Trace.node_count(trace)} nodes in #{Nous.Workflow.Trace.total_duration_ms(trace)}ms")
+```
+
+The trace struct carries a random `:run_id`, the `:started_at` timestamp of the trace itself, and `:entries` appended in completion order. Each entry is a plain map:
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `:node_id` | `String.t()` | Node id as stored in the graph (a string, not the atom you passed to `add_node/5`). |
+| `:node_type` | `atom()` | `:agent_step`, `:transform`, … |
+| `:status` | `atom()` | `:completed`, `:failed`, or `:suspended`. |
+| `:duration_ms` | `non_neg_integer()` | Measured in native units, converted to milliseconds. |
+| `:started_at` | `DateTime.t()` | Derived — `completed_at` minus `duration_ms`, not a separately sampled clock read. |
+| `:completed_at` | `DateTime.t()` | When the entry was recorded. |
+| `:error` | `term()` | Failure reason for `:failed` entries, `nil` otherwise. |
+
+`Nous.Workflow.Trace.total_duration_ms/1` sums the per-node durations, so it is *not* wall-clock time when a `:parallel` or `:parallel_map` node ran branches concurrently. Use the `[:nous, :workflow, :run, :stop]` telemetry measurement for wall clock.
+
+### Large payloads — `Nous.Workflow.Scratch`
+
+If a step produces fetched HTML, an image, or a multi-megabyte CSV, keeping it in `state.data` makes every later step drag it along: `:parallel` and `:parallel_map` fan out through `Task.Supervisor.async_stream_nolink/4`, which copies the state into each task and the result back, and checkpoints persist whatever the state holds. `Nous.Workflow.Scratch` is the escape hatch — a public ETS table you write the bulk into, leaving only a key (or a size, or a summary) in the state itself.
+
+```elixir
+alias Nous.Workflow.Scratch
+
+# new/0 does not create the table; the first put/3 does — and only the struct it
+# returns holds the table id. Seed it once, then close over that struct.
+scratch = Scratch.put(Scratch.new(), :__init__, :ok)
+
+graph =
+  Workflow.new("scrape")
+  |> Workflow.add_node(:fetch, :transform, %{
+    transform_fn: fn data ->
+      body = fetch_page(data.url)
+      Scratch.put(scratch, :body, body)
+      Map.put(data, :body_bytes, byte_size(body))
+    end
+  })
+  |> Workflow.add_node(:extract, :transform, %{
+    transform_fn: fn data ->
+      Map.put(data, :title, extract_title(Scratch.get(scratch, :body, "")))
+    end
+  })
+  |> Workflow.chain([:fetch, :extract])
+
+{:ok, state} = Workflow.run(graph, %{url: "https://example.com"})
+Scratch.cleanup(scratch)
+```
+
+The API is five functions: `new/0`, `put/3`, `get/3` (with a default, returned when the key or the table is missing), `delete/2`, and `cleanup/1`. Two rules keep it safe:
+
+- **Seed the table in the process that owns the run.** ETS tables die with the process that created them, and the table is created by whichever process performs the first write — seed it inside a parallel branch task and it vanishes when that task exits.
+- **Always `cleanup/1`.** The table is `:public` and unnamed; nothing else will reclaim it.
+
+`Workflow.run/3` also accepts `scratch: true`, which allocates a scratch space for the run and deletes it when the run completes or fails (a suspended run keeps its table so a resume can reuse it). Node functions are not handed that engine-managed struct, so for step-to-step exchange create and close over your own as above.
 
 ## Checkpointing
 

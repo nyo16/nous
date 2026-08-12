@@ -16,24 +16,31 @@ defmodule Nous.Message do
   ## Examples
 
       # Simple text messages
-      iex> Message.system("You are a helpful assistant")
-      %Message{role: :system, content: "You are a helpful assistant"}
+      iex> msg = Message.system("You are a helpful assistant")
+      iex> {msg.role, msg.content}
+      {:system, "You are a helpful assistant"}
 
-      iex> Message.user("Hello!")
-      %Message{role: :user, content: "Hello!"}
+      iex> msg = Message.user("Hello!")
+      iex> {msg.role, msg.content}
+      {:user, "Hello!"}
 
-      # Multi-modal user message
-      iex> Message.user([
+      # Multi-modal user message: parts are flattened into `content` and the
+      # original ContentPart list is kept under `metadata.content_parts`.
+      iex> msg = Message.user([
       ...>   ContentPart.text("What's in this image?"),
       ...>   ContentPart.image_url("https://example.com/image.jpg")
       ...> ])
-      %Message{role: :user, content: [%ContentPart{}, %ContentPart{}]}
+      iex> msg.content
+      "What's in this image?[Image: https://example.com/image.jpg]"
+      iex> Enum.map(msg.metadata.content_parts, & &1.type)
+      [:text, :image_url]
 
       # Assistant message with tool calls
-      iex> Message.assistant("Let me search for that", tool_calls: [
+      iex> msg = Message.assistant("Let me search for that", tool_calls: [
       ...>   %{id: "call_123", name: "search", arguments: %{"query" => "elixir"}}
       ...> ])
-      %Message{role: :assistant, content: "Let me search for that", tool_calls: [...]}
+      iex> {msg.role, Message.has_tool_calls?(msg)}
+      {:assistant, true}
 
   """
 
@@ -76,11 +83,13 @@ defmodule Nous.Message do
 
   ## Examples
 
-      iex> Message.new(%{role: :user, content: "Hello"})
-      {:ok, %Message{role: :user, content: "Hello"}}
+      iex> {:ok, msg} = Message.new(%{role: :user, content: "Hello"})
+      iex> {msg.role, msg.content}
+      {:user, "Hello"}
 
-      iex> Message.new(%{role: :invalid})
-      {:error, %Ecto.Changeset{}}
+      iex> {:error, changeset} = Message.new(%{role: :invalid})
+      iex> changeset.valid?
+      false
 
   """
   @spec new(map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
@@ -101,8 +110,9 @@ defmodule Nous.Message do
 
   ## Examples
 
-      iex> Message.new!(%{role: :user, content: "Hello"})
-      %Message{role: :user, content: "Hello"}
+      iex> msg = Message.new!(%{role: :user, content: "Hello"})
+      iex> {msg.role, msg.content}
+      {:user, "Hello"}
 
   """
   @spec new!(map()) :: t()
@@ -122,8 +132,9 @@ defmodule Nous.Message do
 
   ## Examples
 
-      iex> Message.system("You are a helpful assistant")
-      %Message{role: :system, content: "You are a helpful assistant"}
+      iex> msg = Message.system("You are a helpful assistant")
+      iex> {msg.role, msg.content}
+      {:system, "You are a helpful assistant"}
 
   """
   @spec system(String.t() | [ContentPart.t()], keyword()) :: t()
@@ -142,11 +153,15 @@ defmodule Nous.Message do
 
   ## Examples
 
-      iex> Message.user("Hello!")
-      %Message{role: :user, content: "Hello!"}
+      iex> msg = Message.user("Hello!")
+      iex> {msg.role, msg.content}
+      {:user, "Hello!"}
 
-      iex> Message.user([ContentPart.text("Hi"), ContentPart.image_url("...")])
-      %Message{role: :user, content: [%ContentPart{}, %ContentPart{}]}
+      iex> msg = Message.user([ContentPart.text("Hi "), ContentPart.image_url("https://example.com/i.png")])
+      iex> msg.content
+      "Hi [Image: https://example.com/i.png]"
+      iex> Enum.map(msg.metadata.content_parts, & &1.type)
+      [:text, :image_url]
 
   """
   @spec user(String.t() | [ContentPart.t()], keyword()) :: t()
@@ -180,11 +195,15 @@ defmodule Nous.Message do
 
   ## Examples
 
-      iex> Message.assistant("Hello there!")
-      %Message{role: :assistant, content: "Hello there!"}
+      iex> msg = Message.assistant("Hello there!")
+      iex> {msg.role, msg.content}
+      {:assistant, "Hello there!"}
 
-      iex> Message.assistant("Let me search", tool_calls: [%{...}])
-      %Message{role: :assistant, content: "Let me search", tool_calls: [%{...}]}
+      iex> msg = Message.assistant("Let me search", tool_calls: [
+      ...>   %{id: "call_1", name: "search", arguments: %{"query" => "elixir"}}
+      ...> ])
+      iex> msg.tool_calls
+      [%{id: "call_1", name: "search", arguments: %{"query" => "elixir"}}]
 
   """
   @spec assistant(String.t() | [ContentPart.t()], keyword()) :: t()
@@ -203,8 +222,9 @@ defmodule Nous.Message do
 
   ## Examples
 
-      iex> Message.tool("call_123", "Search results: ...", name: "search")
-      %Message{role: :tool, content: "Search results: ...", tool_call_id: "call_123", name: "search"}
+      iex> msg = Message.tool("call_123", "Search results: 42", name: "search")
+      iex> {msg.role, msg.tool_call_id, msg.name, msg.content}
+      {:tool, "call_123", "search", "Search results: 42"}
 
   """
   @spec tool(String.t(), String.t() | map(), keyword()) :: t()
@@ -288,8 +308,8 @@ defmodule Nous.Message do
       iex> Message.extract_text(message)
       "Hello world"
 
-      iex> message = Message.user([ContentPart.text("Hi"), ContentPart.image_url("...")])
-      iex> Message.extract_text(message)
+      iex> parts = [ContentPart.text("Hi"), ContentPart.image_url("https://example.com/i.png")]
+      iex> Message.extract_text(%Message{role: :user, content: parts})
       "Hi"
 
   """
@@ -333,7 +353,7 @@ defmodule Nous.Message do
       iex> Message.has_tool_calls?(message)
       false
 
-      iex> message = Message.assistant("Search", tool_calls: [%{id: "call_1", ...}])
+      iex> message = Message.assistant("Search", tool_calls: [%{id: "call_1", name: "search"}])
       iex> Message.has_tool_calls?(message)
       true
 
@@ -419,8 +439,13 @@ defmodule Nous.Message do
 
   ## Examples
 
-      iex> Message.split_system([Message.system("Be helpful"), Message.user("Hi")])
-      {"Be helpful", [Message.user("Hi")]}
+      iex> {system, rest} = Message.split_system([Message.system("Be helpful"), Message.user("Hi")])
+      iex> {system, Enum.map(rest, & &1.content)}
+      {"Be helpful", ["Hi"]}
+
+      iex> {system, rest} = Message.split_system([Message.user("Hi")])
+      iex> {system, length(rest)}
+      {nil, 1}
 
   """
   @spec split_system([t()]) :: {String.t() | nil, [t()]}
@@ -462,8 +487,9 @@ defmodule Nous.Message do
   ## Examples
 
       iex> message = Message.user("hello")
-      iex> Message.put_metadata(message, :source, "web_ui")
-      %Message{metadata: %{source: "web_ui"}}
+      iex> message = Message.put_metadata(message, :source, "web_ui")
+      iex> message.metadata
+      %{source: "web_ui"}
 
   """
   @spec put_metadata(t(), atom() | String.t(), any()) :: t()
@@ -493,11 +519,17 @@ defmodule Nous.Message do
 
   ## Examples
 
-      iex> Message.from_legacy({:user_prompt, "Hello"})
-      %Message{role: :user, content: "Hello"}
+      iex> msg = Message.from_legacy({:user_prompt, "Hello"})
+      iex> {msg.role, msg.content}
+      {:user, "Hello"}
 
-      iex> Message.from_legacy({:system_prompt, "Instructions"})
-      %Message{role: :system, content: "Instructions"}
+      iex> msg = Message.from_legacy({:system_prompt, "Instructions"})
+      iex> {msg.role, msg.content}
+      {:system, "Instructions"}
+
+      iex> msg = Message.from_legacy({:tool_return, %{call_id: "call_1", result: "42"}})
+      iex> {msg.role, msg.tool_call_id, msg.content}
+      {:tool, "call_1", "42"}
 
   """
   @spec from_legacy(tuple() | map()) :: t()

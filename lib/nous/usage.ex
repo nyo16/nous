@@ -5,12 +5,20 @@ defmodule Nous.Usage do
   Usage tracking helps monitor costs and performance across agent executions.
   You can aggregate usage from multiple agent runs to track total consumption.
 
-  ## Example
+  ## Examples
 
-      usage = Usage.new()
-      usage = Usage.inc_requests(usage)
-      usage = Usage.add_tokens(usage, input: 100, output: 50)
-      IO.inspect(usage.total_tokens) # 150
+      iex> usage = Usage.new()
+      iex> usage = Usage.inc_requests(usage)
+      iex> usage = Usage.add_tokens(usage, input: 100, output: 50)
+      iex> {usage.requests, usage.total_tokens}
+      {1, 150}
+
+  Every counter is additive, so runs aggregate with `add/2`:
+
+      iex> a = Usage.add_tokens(Usage.new(), input: 100, output: 50)
+      iex> b = Usage.add_tokens(Usage.new(), input: 10, output: 5)
+      iex> Usage.add(a, b).total_tokens
+      165
 
   """
 
@@ -38,10 +46,10 @@ defmodule Nous.Usage do
   @doc """
   Create a new empty usage tracker.
 
-  ## Example
+  ## Examples
 
-      usage = Usage.new()
-      # %Usage{requests: 0, total_tokens: 0, ...}
+      iex> Usage.new()
+      %Usage{}
 
   """
   @spec new() :: t()
@@ -52,12 +60,13 @@ defmodule Nous.Usage do
 
   Useful for aggregating usage across multiple agent runs.
 
-  ## Example
+  ## Examples
 
-      usage1 = %Usage{requests: 1, total_tokens: 100}
-      usage2 = %Usage{requests: 2, total_tokens: 200}
-      total = Usage.add(usage1, usage2)
-      # %Usage{requests: 3, total_tokens: 300}
+      iex> usage1 = %Usage{requests: 1, total_tokens: 100}
+      iex> usage2 = %Usage{requests: 2, total_tokens: 200}
+      iex> total = Usage.add(usage1, usage2)
+      iex> {total.requests, total.total_tokens}
+      {3, 300}
 
   """
   @spec add(t(), t()) :: t()
@@ -77,10 +86,11 @@ defmodule Nous.Usage do
   @doc """
   Increment request count by 1.
 
-  ## Example
+  ## Examples
 
-      usage = Usage.new() |> Usage.inc_requests()
-      # %Usage{requests: 1, ...}
+      iex> usage = Usage.new() |> Usage.inc_requests()
+      iex> usage.requests
+      1
 
   """
   @spec inc_requests(t()) :: t()
@@ -91,10 +101,15 @@ defmodule Nous.Usage do
   @doc """
   Increment tool call count.
 
-  ## Example
+  ## Examples
 
-      usage = Usage.new() |> Usage.inc_tool_calls(3)
-      # %Usage{tool_calls: 3, ...}
+      iex> usage = Usage.new() |> Usage.inc_tool_calls(3)
+      iex> usage.tool_calls
+      3
+
+      iex> usage = Usage.new() |> Usage.inc_tool_calls()
+      iex> usage.tool_calls
+      1
 
   """
   @spec inc_tool_calls(t(), non_neg_integer()) :: t()
@@ -110,11 +125,17 @@ defmodule Nous.Usage do
     * `:input` - Number of input tokens (default: 0)
     * `:output` - Number of output tokens (default: 0)
 
-  ## Example
+  ## Examples
 
-      usage = Usage.new()
-      usage = Usage.add_tokens(usage, input: 50, output: 30)
-      # %Usage{input_tokens: 50, output_tokens: 30, total_tokens: 80}
+      iex> usage = Usage.add_tokens(Usage.new(), input: 50, output: 30)
+      iex> {usage.input_tokens, usage.output_tokens, usage.total_tokens}
+      {50, 30, 80}
+
+  Omitted counts default to zero, so partial updates are safe:
+
+      iex> usage = Usage.add_tokens(Usage.new(), output: 12)
+      iex> {usage.input_tokens, usage.total_tokens}
+      {0, 12}
 
   """
   @spec add_tokens(t(), keyword()) :: t()
@@ -135,15 +156,20 @@ defmodule Nous.Usage do
 
   Converts the usage object from OpenAI responses to our format.
 
-  ## Example
+  ## Examples
 
-      openai_usage = %{
-        prompt_tokens: 100,
-        completion_tokens: 50,
-        total_tokens: 150
-      }
-      usage = Usage.from_openai(openai_usage)
-      # %Usage{input_tokens: 100, output_tokens: 50, total_tokens: 150}
+  Keys are read as atoms. A JSON-decoded provider payload has string keys, so
+  convert it before calling this, or build the map yourself:
+
+      iex> usage = Usage.from_openai(%{prompt_tokens: 100, completion_tokens: 50, total_tokens: 150})
+      iex> {usage.requests, usage.input_tokens, usage.output_tokens, usage.total_tokens}
+      {1, 100, 50, 150}
+
+  Missing keys count as zero:
+
+      iex> usage = Usage.from_openai(%{})
+      iex> {usage.requests, usage.total_tokens}
+      {1, 0}
 
   """
   @spec from_openai(map()) :: t()

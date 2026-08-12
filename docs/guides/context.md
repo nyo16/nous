@@ -220,6 +220,16 @@ Each tool call sees the updated deps from the previous call, so state accumulate
 | `approval_handler` | `fun() \| nil` | `nil` | Human-in-the-loop approval |
 | `active_skills` | `[Skill.t()]` | `[]` | Currently active skills |
 
+The `messages` list is the run's transcript. See the [Transcripts](transcript.md)
+guide for measuring it and compacting it before it outgrows the model's context
+window.
+
+Type names such as `Message.t()`, `Usage.t()` and `Skill.t()` come from those
+modules. The cross-cutting typespecs the rest of the API is written against
+live in `Nous.Types` -- `message/0`, `tool_call/0`, `tool_return/0`,
+`output_type/0`, `content/0` and `stream_event/0`. It defines no functions, so
+it is a reference for reading specs rather than something you call.
+
 ### Creating a context
 
 ```elixir
@@ -339,3 +349,4 @@ end
 - [Tool Development Guide](tool_development.md) -- creating tools that use context
 - [Skills Guide](skills.md) -- reusable instruction packages
 - [Hooks Guide](hooks.md) -- lifecycle interceptors
+- [Transcripts](transcript.md) -- measuring and compacting conversation history

@@ -59,11 +59,18 @@ get_time = fn _ctx, _args ->
   %{time: DateTime.utc_now() |> DateTime.to_string()}
 end
 
+time_tool =
+  Nous.Tool.from_function(get_time,
+    name: "get_time",
+    description: "Get the current UTC time",
+    parameters: %{"type" => "object", "properties" => %{}, "required" => []}
+  )
+
 agent =
   Nous.new("lmstudio:qwen3",
     name: "demo-agent",
     instructions: "You have a time tool.",
-    tools: [get_time]
+    tools: [time_tool]
   )
 
 {:ok, result} = Nous.run(agent, "What time is it?")

@@ -20,7 +20,17 @@ defmodule Nous.Workflow.Scratch do
       # Read it later
       html = Nous.Workflow.Scratch.get(scratch, :raw_html)
 
-  The scratch reference is available in `state.metadata.scratch`.
+  > #### The engine does not hand you the scratch {: .warning}
+  >
+  > `scratch: true` makes `Nous.Workflow.Engine` allocate a scratch for the run
+  > and clean it up on completion, but it is NOT attached to the workflow state —
+  > there is no `state.metadata.scratch`. Node functions reach a scratch only if
+  > you create one yourself with `new/0` and close over it (or thread it through
+  > `state.data` yourself), in which case you also own `cleanup/1`.
+  >
+  > Note `new/0` does not create the ETS table; the first `put/3` does, and only
+  > the struct it RETURNS carries the table id. Seed the closure with that
+  > returned struct, not with the result of `new/0`.
   """
 
   alias __MODULE__

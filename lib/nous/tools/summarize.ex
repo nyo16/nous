@@ -26,6 +26,7 @@ defmodule Nous.Tools.Summarize do
 
   A map with summary, key_points list, and relevance_score.
   """
+  @spec summarize(Nous.RunContext.t(), map()) :: map()
   def summarize(ctx, args) do
     text = Map.get(args, "text", "")
     focus = Map.get(args, "focus", "")

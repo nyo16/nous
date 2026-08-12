@@ -5,7 +5,7 @@
 #
 # Run with: mix run examples/eval/03_optimization.exs
 
-alias Nous.Eval
+
 alias Nous.Eval.{TestCase, Suite}
 alias Nous.Eval.Optimizer
 alias Nous.Eval.Optimizer.Parameter

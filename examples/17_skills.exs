@@ -4,10 +4,13 @@
 # They can be defined as modules, markdown files, or loaded by group.
 #
 # Run with: mix run examples/17_skills.exs
-# Requires: OPENAI_API_KEY environment variable (for full agent run)
 
 alias Nous.{Agent, Skill}
 alias Nous.Skill.{Loader, Registry}
+
+# The .md skill files live next to this script. Resolve them relative to
+# __DIR__ so the example works from any working directory, not just repo root.
+skills_dir = Path.expand("skills", __DIR__)
 
 # =============================================================================
 # Example 1: Module-based skill
@@ -61,7 +64,7 @@ IO.puts("\n=== Example 2: File-Based Skill ===\n")
 # --- 2a: Load a single skill from a .md file ---
 IO.puts("--- 2a: Load a single file ---\n")
 
-{:ok, file_skill} = Loader.load_file("examples/skills/api_design.md")
+{:ok, file_skill} = Loader.load_file(Path.join(skills_dir, "api_design.md"))
 IO.puts("Loaded skill: #{file_skill.name}")
 IO.puts("Description: #{file_skill.description}")
 IO.puts("Tags: #{inspect(file_skill.tags)}")
@@ -74,8 +77,8 @@ IO.puts("Instructions preview: #{String.slice(file_skill.instructions, 0..60)}..
 # --- 2b: Load all skills from a directory ---
 IO.puts("\n--- 2b: Load a directory ---\n")
 
-dir_skills = Loader.load_directory("examples/skills/")
-IO.puts("Loaded #{length(dir_skills)} skills from examples/skills/:")
+dir_skills = Loader.load_directory(skills_dir)
+IO.puts("Loaded #{length(dir_skills)} skills from #{skills_dir}:")
 
 for s <- dir_skills do
   IO.puts("  #{s.name} (group: #{s.group}, activation: #{s.activation})")
@@ -208,7 +211,7 @@ agent =
       {:group, :testing}
     ],
     # Load .md skill files from directories (scanned recursively)
-    skill_dirs: ["examples/skills/"]
+    skill_dirs: [skills_dir]
   )
 
 IO.puts("Agent created with #{length(agent.skills)} skill spec(s)")

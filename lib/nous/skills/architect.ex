@@ -1,5 +1,17 @@
 defmodule Nous.Skills.Architect do
-  @moduledoc "Built-in skill for system architecture design."
+  @moduledoc """
+  Built-in skill — system architecture design.
+
+  Injects a system-prompt section that walks the model through requirements →
+  components → interfaces → data flow → trade-offs → scalability → failure
+  modes, and requires every architectural decision to be written up as
+  Decision / Context / Alternatives / Consequences.
+
+  Activates on prompts containing "architect", "design system", "system design",
+  "how should i structure" or "component design". Group `:planning`;
+  tags `:architecture`, `:design`, `:system`.
+  """
+
   use Nous.Skill,
     keywords: [
       "architect",

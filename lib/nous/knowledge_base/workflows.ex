@@ -34,6 +34,7 @@ defmodule Nous.KnowledgeBase.Workflows do
     * `:embedding` - Embedding provider module
     * `:embedding_opts` - Embedding options
   """
+  @spec build_ingest_pipeline(keyword()) :: Nous.Workflow.Graph.t()
   def build_ingest_pipeline(opts \\ []) do
     Workflow.new("kb_ingest", name: "Knowledge Base Ingest Pipeline")
     |> Workflow.add_node(:ingest_docs, :transform, %{
@@ -91,6 +92,7 @@ defmodule Nous.KnowledgeBase.Workflows do
         kb_config: %{store: ..., store_state: ..., kb_id: ...}
       }
   """
+  @spec build_incremental_pipeline(keyword()) :: Nous.Workflow.Graph.t()
   def build_incremental_pipeline(opts \\ []) do
     Workflow.new("kb_incremental", name: "KB Incremental Update")
     |> Workflow.add_node(:detect_changes, :transform, %{
@@ -120,6 +122,7 @@ defmodule Nous.KnowledgeBase.Workflows do
 
       %{kb_config: %{store: ..., store_state: ..., kb_id: ...}}
   """
+  @spec build_health_check_pipeline(keyword()) :: Nous.Workflow.Graph.t()
   def build_health_check_pipeline(opts \\ []) do
     Workflow.new("kb_health_check", name: "KB Health Check")
     |> Workflow.add_node(:gather_stats, :transform, %{
@@ -152,6 +155,7 @@ defmodule Nous.KnowledgeBase.Workflows do
         kb_config: %{store: ..., store_state: ..., kb_id: ...}
       }
   """
+  @spec build_output_pipeline(keyword()) :: Nous.Workflow.Graph.t()
   def build_output_pipeline(opts \\ []) do
     Workflow.new("kb_output", name: "KB Output Generation")
     |> Workflow.add_node(:select_entries, :transform, %{

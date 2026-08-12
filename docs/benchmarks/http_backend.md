@@ -126,45 +126,108 @@ Stay on Req if (most users):
 - You want the lowest p95 tails on cold connections.
 - You want the most idiomatic Elixir HTTP API.
 
-## Why streaming stays on Hackney regardless
+## When to switch streaming to Hackney
 
-The non-streaming bench is about **throughput**: how fast can you
-round-trip a request/response. Streaming is about **backpressure**:
-can the consumer pace the producer.
+Streaming has defaulted to `Nous.HTTP.StreamBackend.Req` since 0.15.4,
+matching the non-streaming default. Hackney is the opt-in alternative,
+not the incumbent.
 
-Hackney's `:async, :once` mode is the only Elixir HTTP API that gives
-true pull-based streaming. The consumer calls `:hackney.stream_next/1`
-to ask for ONE more chunk, the producer reads ONE chunk off the socket
-and delivers it — the consumer literally cannot fall behind. A slow
-LiveView assigns + diff + push pipeline can't OOM under a fast Groq
-endpoint, no matter how big the disparity.
+The non-streaming bench above is about **throughput**: how fast can you
+round-trip a request/response. Streaming is about **backpressure**: can
+the consumer pace the producer. Both backends bound the consumer, but
+they bound it differently.
 
-`Finch.stream/5`'s callback is push-based: the callback fires for
-every chunk that arrives, regardless of whether the consumer is keeping
-up. A fast LLM (Groq at 500 tok/s) feeding a slow consumer grows the
-consumer's mailbox unboundedly until the BEAM scheduler starves or the
-10 MiB SSE buffer cap trips. This was the M-12 finding from the 0.15.0
-review and the reason streaming moved to hackney in the first place.
+**Req (default) — bounded in-flight byte window.** Req's `:into`
+callback runs in a supervised `Task` that forwards each chunk to the
+consuming `Stream.resource` with `send/2`. Producer and consumer share
+an `:atomics` counter of in-flight bytes: the producer adds
+`byte_size(chunk)` before sending, the consumer subtracts it on receipt.
+Above the **8 MB** high-water mark the producer parks in a `receive`
+and resumes once the counter falls below the **1 MB** low-water mark.
+The parked producer *is* Req's `:into` callback, so parking it stops
+draining the socket — backpressure propagates all the way to the wire.
+Resident memory per stream is bounded in bytes rather than in chunk
+count. A consumer that stays stalled past `:backpressure_max_wait_ms`
+(default 30s) aborts the request and the stream yields
+`{:stream_error, %{reason: :backpressure_overflow, inflight_bytes: n}}`
+rather than wedging forever.
 
-The same per-connection `gen_server` that hurts hackney's parallel
-non-streaming throughput is the **feature** that makes streaming safe —
-that conn process can throttle. And the throughput cost doesn't bite
-in streaming because chunks arrive at token-rate (10–100/sec), so the
-mailbox-hop overhead per chunk has plenty of breathing room.
+**Hackney — strict pull.** `[{:async, :once}]` mode: the consumer calls
+`:hackney.stream_next/1` to ask for ONE more chunk, hackney reads ONE
+chunk off the socket and delivers it. There is no in-flight window
+because the mailbox never holds more than one chunk — the producer
+literally cannot run ahead, no matter how slow the consumer is. (Note
+the tuple form. The legacy `[:async, :once]` two-atom form silently
+puts hackney in push mode, because `proplists` resolves a bare `:async`
+as `{:async, true}`, forfeiting the guarantee.)
+
+Plain `Finch.stream/5` gives you neither: its callback is push-based
+with no window at all, so a fast LLM (Groq at 500 tok/s) feeding a slow
+consumer grows the mailbox unboundedly. That was the M-12 finding from
+the 0.15.0 review and the reason streaming ran on hackney before
+0.15.4; the Req backend's byte window is what closed the gap.
+
+Switch streaming to Hackney if:
+
+- Your consumer can block for an unbounded time per chunk (LiveView
+  assigns + diff + push under fan-out, persistence-on-every-chunk, slow
+  IO) and you want a hard one-chunk mailbox bound instead of an 8 MB
+  window.
+- You would rather see the stream slow down than see it fail with
+  `:backpressure_overflow` after 30s of a stalled consumer.
+- You are already on the Hackney non-streaming backend and want one
+  HTTP family across both paths.
+
+Stay on Req (most users):
+
+- Chunks arrive at token rate (10–100/sec) and are parsed immediately,
+  so the 8 MB window is never approached.
+- One HTTP stack across streaming and non-streaming, with hackney left
+  out of the dependency tree entirely.
 
 **Trade-off summary:**
 
 | | Non-streaming | Streaming |
 |---|---|---|
-| **Default** | Req | Hackney |
-| **Why** | Lower latency under parallel load, simpler API | Pull-based backpressure (no consumer OOM) |
-| **Mint/Finch alternative?** | — (default) | Push-based only — no equivalent today |
+| **Default** | Req | Req |
+| **Backpressure** | n/a — single response | 8 MB in-flight-byte window; the parked producer stops draining the socket |
+| **Opt-in alternative** | Hackney — HTTP/3 via Alt-Svc, large bodies | Hackney — strict `stream_next/1` pull, one-chunk mailbox, no window |
 
-If a future Mint version adds pull-based streaming, we'd revisit the
-streaming choice. Until then, Hackney for streaming is structural,
-not a preference.
+### Opting into the Hackney stream backend
 
-## Configuration
+`:hackney` is declared `optional: true`, so it is not in your build
+unless you ask for it. Add it to your app's deps:
+
+```elixir
+{:hackney, "~> 4.0"}
+```
+
+Then select the backend one of three ways, highest precedence first
+(the resolution chain lives in `Nous.Providers.HTTP.stream/4`):
+
+```elixir
+# 1. Per-call opt
+Nous.Providers.HTTP.stream(url, body, headers,
+  stream_backend: Nous.HTTP.StreamBackend.Hackney)
+```
+
+```bash
+# 2. Environment variable — also accepts "req" or a fully-qualified
+#    custom module name such as "MyApp.MyStreamBackend"
+export NOUS_HTTP_STREAM_BACKEND=hackney
+```
+
+```elixir
+# 3. App config
+config :nous, :http_stream_backend, Nous.HTTP.StreamBackend.Hackney
+```
+
+With none of the three set, the default is
+`Nous.HTTP.StreamBackend.Req`. If hackney is selected but the
+dependency is missing, Nous logs a warning and falls back to the app
+config / default instead of crashing on the first request.
+
+## Configuration (non-streaming)
 
 See `Nous.Providers.HTTP.post/4` for the resolution order. Quick recap:
 
@@ -176,3 +239,7 @@ The env var also accepts `req`, `hackney`, or any fully-qualified
 custom backend module (e.g. `MyApp.MyHTTPBackend`). Custom modules are
 resolved via `String.to_existing_atom/1` with rescue, so unknown values
 fall back to the app config / default rather than crash.
+
+These knobs cover the **non-streaming** path only; the streaming path
+has its own chain, documented in
+[Opting into the Hackney stream backend](#opting-into-the-hackney-stream-backend).

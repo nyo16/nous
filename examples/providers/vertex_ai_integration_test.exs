@@ -102,9 +102,6 @@ make_agent = fn model_name, extra_opts ->
   Nous.new("vertex_ai:#{model_name}", opts)
 end
 
-passed = 0
-failed = 0
-
 run_test = fn name, fun ->
   IO.write("  #{name}... ")
 

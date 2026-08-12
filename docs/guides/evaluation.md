@@ -103,6 +103,7 @@ Output must exactly match expected string:
 
 ```elixir
 TestCase.new(
+  id: "math",
   input: "What is 2+2?",
   expected: "4",
   eval_type: :exact_match
@@ -115,6 +116,7 @@ String similarity above threshold (uses Jaro-Winkler distance):
 
 ```elixir
 TestCase.new(
+  id: "spelling",
   input: "Spell color",
   expected: "colour",
   eval_type: :fuzzy_match,
@@ -129,25 +131,36 @@ Output must contain specified substrings or patterns:
 ```elixir
 # Simple contains
 TestCase.new(
+  id: "fruits",
   input: "List 3 fruits",
   expected: %{contains: ["apple", "banana"]},
   eval_type: :contains
 )
 
-# With regex patterns
+# Regex patterns. Exactly one mode applies per test case: the first of
+# :contains, :contains_any, :regex found in the map wins, so don't combine them.
 TestCase.new(
+  id: "email_format",
   input: "Write an email",
-  expected: %{
-    contains: ["Subject:", "Dear"],
-    patterns: ["\\d{4}"]  # Must contain 4-digit number
-  },
+  expected: %{regex: ["\\d{4}"]},  # Must contain a 4-digit number
   eval_type: :contains
 )
 
-# All must match (default) vs any
+# Any one match is enough
 TestCase.new(
-  expected: %{contains: ["hello", "hi"], match_all: false},
+  id: "greeting_any",
+  input: "Say hello",
+  expected: %{contains_any: ["hello", "hi"]},
   eval_type: :contains
+)
+
+# Matching is case-insensitive unless you say otherwise
+TestCase.new(
+  id: "constant_name",
+  input: "Name the retry constant",
+  expected: %{contains: ["MAX_RETRIES"]},
+  eval_type: :contains,
+  eval_config: %{case_insensitive: false}
 )
 ```
 
@@ -157,17 +170,20 @@ Verify correct tools were called:
 
 ```elixir
 TestCase.new(
+  id: "tip_calculation",
   input: "Calculate 15% tip on $50",
   expected: %{
     tools_called: ["calculate"],      # These tools must be called
     tools_not_called: ["search"],     # These must NOT be called
-    call_count: %{calculate: 1},      # Expected call counts
-    args_contain: %{                   # Arguments validation
-      calculate: %{amount: 50}
+    min_tool_calls: 1,                # Bounds on the total number of calls
+    max_tool_calls: 3,
+    output_contains: ["7.5"],         # Substrings the final output must contain
+    tool_args: %{                     # Arguments at least one call must carry
+      "calculate" => %{"amount" => 50}
     }
   },
   eval_type: :tool_usage,
-  agent_config: [tools: [CalculatorTool]]
+  agent_config: [tools: [&MyApp.Tools.calculate/2]]
 )
 ```
 
@@ -185,10 +201,11 @@ defmodule Person do
 end
 
 TestCase.new(
+  id: "extract_person",
   input: "Extract: John is 30 years old",
   expected: %{schema: Person},
   eval_type: :schema,
-  agent_config: [response_schema: Person]
+  agent_config: [output_type: Person]
 )
 ```
 
@@ -198,6 +215,7 @@ Use an LLM to judge quality:
 
 ```elixir
 TestCase.new(
+  id: "haiku",
   input: "Write a haiku about coding",
   expected: %{
     criteria: """
@@ -206,11 +224,12 @@ TestCase.new(
     2. Follows 5-7-5 syllable pattern
     3. Relates to coding/programming
     """,
-    min_score: 0.7
+    rubric: "5: valid haiku on topic, 3: right shape but off topic, 1: neither"
   },
   eval_type: :llm_judge,
   eval_config: %{
-    judge_model: "lmstudio:ministral-3-14b-reasoning"
+    judge_model: "lmstudio:ministral-3-14b-reasoning",
+    pass_threshold: 0.7    # Minimum normalized score to pass (default: 0.6)
   }
 )
 ```
@@ -250,6 +269,7 @@ end
 
 # Usage
 TestCase.new(
+  id: "sentiment",
   input: "Review: This product is amazing!",
   expected: %{sentiment: :positive},
   eval_type: :custom,
@@ -259,43 +279,107 @@ TestCase.new(
 
 ## YAML Test Definitions
 
-Define tests in YAML for easier management:
+Suites can live in YAML instead of Elixir. `Nous.Eval.Suite.from_yaml/1` loads one file (`from_yaml!/1` raises instead of returning a tuple); `Nous.Eval.Suite.from_directory/1` loads every `*.yaml` and `*.yml` file in a directory. Failures come back as `{:error, {:yaml_load_error, path, reason}}`.
+
+### Suite keys
+
+Every top-level key is optional, and unknown keys are ignored.
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `name` | string | the filename without its extension | Suite name. |
+| `description` | string | `nil` | Free text. |
+| `test_cases` | list of maps | `[]` | See below. An empty suite loads, but `Nous.Eval.Suite.validate/1` rejects it. |
+| `default_model` | string | `nil` | `"provider:model"`. Used when a case sets no `agent_config.model`. |
+| `default_instructions` | string | `nil` | Agent instructions, unless a case sets `agent_config.instructions`. |
+| `default_timeout` | integer (ms) | `30000` | Budget for a parallel run's task stream (plus a 5s margin). It is *not* a per-case fallback for YAML suites — the loader always gives a case a `timeout`. |
+| `parallelism` | integer | `1` | Concurrent test cases; anything above `1` runs them through `Task.Supervisor.async_stream_nolink/4`. |
+| `retry_failed` | integer | `0` | Retry attempts per failing case. |
+| `metadata` | map | `{}` | Carried through untouched; its keys stay strings. |
+
+The `setup` and `teardown` fields of `%Nous.Eval.Suite{}` hold functions, so they have no YAML representation — build the suite in Elixir when you need them.
+
+### Test case keys
+
+`id` and `input` are required; a case missing either aborts the whole load with `{:error, "Missing required field: :id"}`.
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `id` | string | — (**required**) | Unique within the suite; run through `to_string/1`. |
+| `input` | string | — (**required**) | The prompt sent to the agent. |
+| `name` | string | `nil` | Display name; the `id` is shown when absent. |
+| `description` | string | `nil` | Free text. |
+| `expected` | scalar, list, or map | `nil` | Shape depends on `eval_type` — see [Evaluators](#evaluators). Its keys stay strings, and every built-in evaluator accepts both string and atom keys. |
+| `eval_type` | string | `contains` | One of `exact_match`, `fuzzy_match`, `contains`, `tool_usage`, `schema`, `llm_judge`, `custom`. |
+| `eval_config` | map | `{}` | Evaluator options (`threshold`, `case_insensitive`, `judge_model`, `pass_threshold`, …). Keys are atomized recursively, but only when the atom already exists; anything else stays a string and the evaluator ignores it. |
+| `tags` | list of strings | `[]` | Drives `--tags` / `--exclude`. Each tag becomes an atom **only if that atom already exists** in the VM; unknown tags are dropped silently. |
+| `deps` | map | `{}` | Passed as `deps:` to the agent run. Keys are *not* atomized — they arrive as strings. |
+| `agent_config` | map | `{}` | Merged into the `Nous.new/2` options. Keys are atomized when the atom exists and dropped when it does not. `model` overrides `default_model`; `instructions` overrides `default_instructions`. |
+| `timeout` | integer (ms) | `30000` | Per-case timeout. Always set by the loader, so it wins over the suite's `default_timeout`. |
+| `metadata` | map | `{}` | Untouched. |
+
+Two `%Nous.Eval.TestCase{}` fields can never come from YAML. `tools` is always `nil` after a YAML load, and `agent_config.tools` is no substitute — YAML gives you strings, while `Nous.new/2` needs functions, `%Nous.Tool{}` structs, or tool modules, and anything else raises. A case that must exercise tools has to be defined in Elixir, or the tools attached to the loaded suite afterwards. `input` is likewise limited to a string; the message-list form needs `Nous.Message` structs.
+
+### A complete suite
 
 ```yaml
 # test/eval/suites/basic.yaml
 name: basic_agent_tests
+description: Smoke tests for the support agent
 default_model: lmstudio:ministral-3-14b-reasoning
 default_instructions: Be concise and helpful.
+default_timeout: 30000
+parallelism: 2
+retry_failed: 1
+metadata:
+  owner: platform-team
 
 test_cases:
   - id: greeting
     name: Basic Greeting
-    input: "Say hello to the user"
+    description: The agent should greet back.
+    input: Say hello to the user
     expected:
-      contains:
+      contains_any:
         - hello
         - hi
     eval_type: contains
+    eval_config:
+      case_insensitive: true
     tags:
       - basic
-      - greeting
+    timeout: 20000
 
   - id: math
-    input: "What is 15 + 27?"
+    input: What is 15 + 27?
     expected: "42"
     eval_type: fuzzy_match
     eval_config:
       threshold: 0.9
 
-  - id: tool_test
-    input: "Calculate 20% of 150"
+  # The tools themselves must be attached in Elixir — see the note above.
+  - id: tip_calculation
+    input: Calculate 15% tip on $50
     expected:
       tools_called:
-        - calculator
+        - calculate
+      output_contains:
+        - "7.5"
     eval_type: tool_usage
+
+  - id: explanation_quality
+    input: Explain recursion to a beginner
+    expected:
+      criteria: Is the explanation correct, concise, and free of jargon?
+    eval_type: llm_judge
+    eval_config:
+      judge_model: lmstudio:ministral-3-14b-reasoning
+      pass_threshold: 0.7
     agent_config:
-      tools:
-        - calculator
+      model: lmstudio:qwen3
+      instructions: Explain things simply.
+    deps:
+      account_id: acct_123
 ```
 
 Load and run:
@@ -304,6 +388,14 @@ Load and run:
 {:ok, suite} = Nous.Eval.Suite.from_yaml("test/eval/suites/basic.yaml")
 {:ok, result} = Nous.Eval.run(suite)
 ```
+
+`mix nous.eval --suite test/eval/suites/basic.yaml` does the same from the shell.
+
+### What YAML cannot express
+
+- **`eval_type: custom` does not work from a YAML file.** The evaluator is read from `eval_config.evaluator` and must be a module atom; YAML values are never converted, so you get the string `"MyApp.SentimentEvaluator"` and the run fails. Define custom-evaluator cases in Elixir.
+- **`eval_type: schema` has the same limitation** — `expected.schema` must be a real module.
+- An unrecognised `eval_type` falls back to `contains` instead of failing the load, so a typo quietly becomes a different assertion.
 
 ## Running Evaluations
 

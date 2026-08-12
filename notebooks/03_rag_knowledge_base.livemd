@@ -1,0 +1,415 @@
+# RAG with the Nous Knowledge Base
+
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnyo16%2Fnous%2Fmaster%2Fnotebooks%2F03_rag_knowledge_base.livemd)
+
+```elixir
+Mix.install([
+  {:nous, "~> 0.17"},
+  {:kino, "~> 0.14"}
+])
+```
+
+## What you will build
+
+`Nous.KnowledgeBase` is a *compiled* knowledge base rather than a raw vector
+dump: documents go in, an LLM compiles them into wiki-style entries with
+summaries, concepts, tags and `[[wiki-links]]`, and those entries are what gets
+searched and injected into later prompts.
+
+It has four layers, and this notebook uses three of them:
+
+1. **Store** — `Nous.KnowledgeBase.Store.ETS` here. `init/1` hands you a state
+   value that you thread through every subsequent call. There is no global
+   registry: possession of that value *is* the handle.
+2. **Direct access** — `Nous.KnowledgeBase.search/4`, `list_entries/3`,
+   `get_entry/3`, `backlinks/3`. No LLM involved; the ETS store scores with
+   `String.jaro_distance/2`.
+3. **Workflows** — `Nous.KnowledgeBase.ingest/2` runs the full compile
+   pipeline. Needs a model.
+4. **Plugin** — `Nous.Plugins.KnowledgeBase` gives any agent nine KB tools and
+   auto-injects relevant entries before each request.
+
+Sections 1–3 need no API key. Sections 4 and 5 do.
+
+## Configure a provider (needed for sections 4 and 5)
+
+```elixir
+provider_input =
+  Kino.Input.select("Provider", [
+    {:openai, "OpenAI"},
+    {:anthropic, "Anthropic"},
+    {:groq, "Groq"},
+    {:lmstudio, "LM Studio (local, no key)"}
+  ])
+
+model_input = Kino.Input.text("Model name", default: "gpt-4o-mini")
+key_input = Kino.Input.password("API key")
+
+Kino.Layout.grid([provider_input, model_input, key_input], columns: 1)
+```
+
+```elixir
+key_env = %{
+  openai: :openai_api_key,
+  anthropic: :anthropic_api_key,
+  groq: :groq_api_key,
+  lmstudio: nil
+}
+
+provider = Kino.Input.read(provider_input)
+model_name = model_input |> Kino.Input.read() |> String.trim()
+api_key = key_input |> Kino.Input.read() |> String.trim()
+
+case Map.fetch!(key_env, provider) do
+  nil -> :ok
+  env_key when api_key != "" -> Application.put_env(:nous, env_key, api_key)
+  _env_key -> :ok
+end
+
+model_string = "#{provider}:#{model_name}"
+ready = model_name != "" and (provider == :lmstudio or api_key != "")
+
+Kino.Markdown.new(
+  if ready do
+    "Configured: **`#{model_string}`**."
+  else
+    "No provider configured — sections 1 to 3 still run; ingest and the KB " <>
+      "agent will skip."
+  end
+)
+```
+
+## 1. Open a store and seed it
+
+`ETS.init/1` creates four unnamed tables (documents, entries, links, and a
+slug index) owned by the calling process. In Livebook that is the evaluator, so
+the store survives for the whole notebook session and disappears when the
+runtime is disconnected. That is the designed lifetime — for anything durable,
+implement `Nous.KnowledgeBase.Store` against a real database.
+
+`Entry.new/1` needs `:title` and `:content` and fills in id, slug, downcased
+search columns and timestamps. Normally the compile pipeline produces entries;
+writing a few by hand is how you get a searchable KB with zero model calls.
+
+```elixir
+alias Nous.KnowledgeBase
+alias Nous.KnowledgeBase.Entry
+alias Nous.KnowledgeBase.Store.ETS
+
+{:ok, initial_store} = ETS.init([])
+
+kb_id = "elixir-otp"
+
+seed_entries = [
+  Entry.new(%{
+    title: "GenServer",
+    content: """
+    GenServer is the OTP behaviour for stateful server processes. A client
+    process sends a synchronous `call` or an asynchronous `cast`; the server
+    handles it in its own process and returns a new state. Long work belongs in
+    a Task, not in handle_call, or the mailbox backs up. See [[supervisor]].
+    """,
+    summary: "OTP behaviour for stateful server processes driven by call/cast.",
+    entry_type: :concept,
+    concepts: ["genserver", "otp", "processes", "state"],
+    tags: ["elixir", "otp"],
+    confidence: 0.95,
+    kb_id: kb_id
+  }),
+  Entry.new(%{
+    title: "Supervisor",
+    content: """
+    A Supervisor monitors child processes and restarts them under a strategy —
+    :one_for_one, :one_for_all or :rest_for_one — when they crash. Supervision
+    is why "let it crash" is a design stance rather than negligence: the
+    restart puts the system back into a known-good state. See [[genserver]].
+    """,
+    summary: "Restarts crashed children under a strategy; the basis of let-it-crash.",
+    entry_type: :concept,
+    concepts: ["supervisor", "otp", "fault-tolerance", "restart"],
+    tags: ["elixir", "otp"],
+    confidence: 0.9,
+    kb_id: kb_id
+  }),
+  Entry.new(%{
+    title: "ETS",
+    content: """
+    ETS is in-memory term storage owned by a process. Tables are :set, :bag,
+    :duplicate_bag or :ordered_set, and :public, :protected or :private. A
+    table dies with its owner, so a long-lived table needs a long-lived owner —
+    usually a supervised GenServer that does nothing but hold it.
+    """,
+    summary: "Process-owned in-memory tables; the table dies with its owner.",
+    entry_type: :concept,
+    concepts: ["ets", "storage", "processes"],
+    tags: ["elixir", "otp", "storage"],
+    confidence: 0.85,
+    kb_id: kb_id
+  })
+]
+
+seeded_store =
+  Enum.reduce(seed_entries, initial_store, fn entry, store ->
+    {:ok, store} = ETS.store_entry(store, entry)
+    store
+  end)
+
+{:ok, all_entries} = KnowledgeBase.list_entries(ETS, seeded_store, kb_id: kb_id)
+
+Kino.DataTable.new(
+  Enum.map(all_entries, fn e ->
+    %{title: e.title, slug: e.slug, type: e.entry_type, tags: Enum.join(e.tags, ", ")}
+  end),
+  keys: [:title, :slug, :type, :tags]
+)
+```
+
+## 2. Search — `KnowledgeBase.search/4`
+
+`search/4` takes the store **module**, the store **state**, the query and
+options (`:kb_id`, `:limit`, `:min_score`). It delegates to the store's
+`search_entries/3` and returns `{:ok, [{entry, score}]}` sorted by descending
+score.
+
+The ETS backend scores with Jaro distance over the downcased title and content,
+so it is a lexical baseline, not semantics. Add `:embedding` to the KB config
+(any `Nous.Memory.Embedding.*` provider) when you want vectors.
+
+```elixir
+search_frame = Kino.Frame.new()
+
+search_form =
+  Kino.Control.form(
+    [query: Kino.Input.text("Query")],
+    submit: "Search",
+    reset_on_submit: [:query]
+  )
+
+Kino.listen(search_form, fn %{data: %{query: query}} ->
+  query = String.trim(query)
+
+  if query == "" do
+    Kino.Frame.render(search_frame, Kino.Markdown.new("Type something to search."))
+  else
+    {:ok, hits} =
+      KnowledgeBase.search(ETS, seeded_store, query, kb_id: kb_id, limit: 5, min_score: 0.0)
+
+    rows =
+      Enum.map(hits, fn {entry, score} ->
+        %{score: Float.round(score, 4), title: entry.title, summary: entry.summary}
+      end)
+
+    output =
+      if rows == [] do
+        Kino.Markdown.new("No entry scored above the threshold for **#{query}**.")
+      else
+        Kino.DataTable.new(rows, keys: [:score, :title, :summary])
+      end
+
+    Kino.Frame.render(search_frame, output)
+  end
+end)
+
+Kino.Layout.grid([search_form, search_frame], columns: 1)
+```
+
+Try `how do processes hold state`, `restart crashed children`, or
+`in memory tables`. Then run a batch non-interactively:
+
+```elixir
+batch_rows =
+  ["how do processes hold state", "restart crashed children", "in memory tables"]
+  |> Enum.flat_map(fn query ->
+    {:ok, hits} =
+      KnowledgeBase.search(ETS, seeded_store, query, kb_id: kb_id, limit: 2, min_score: 0.0)
+
+    Enum.map(hits, fn {entry, score} ->
+      %{query: query, score: Float.round(score, 4), match: entry.title}
+    end)
+  end)
+
+Kino.DataTable.new(batch_rows, keys: [:query, :score, :match])
+```
+
+Read those scores sceptically. Jaro distance compares character sequences, so
+`restart crashed children` ranks **ETS** above **Supervisor** on this corpus
+even though only one of them is about restarting. Lexical scoring is a fine
+default for a three-entry KB and a bad one for a real corpus — that is what
+the `:embedding` option in the KB config is for.
+
+## 3. Graph access
+
+Entries reference each other with `[[wiki-links]]`, which the compile pipeline
+turns into `Link` rows. `get_entry/3` resolves a slug or an id, and
+`backlinks/3` and `related_entries/4` walk the graph. Our hand-written entries
+have no `Link` rows yet, so backlinks come back empty — the API is the point.
+
+```elixir
+{:ok, genserver_entry} = KnowledgeBase.get_entry(ETS, seeded_store, "genserver")
+{:ok, incoming} = KnowledgeBase.backlinks(ETS, seeded_store, genserver_entry.id)
+{:ok, related} = KnowledgeBase.related_entries(ETS, seeded_store, genserver_entry.id)
+
+Kino.Tree.new(%{
+  entry: %{title: genserver_entry.title, slug: genserver_entry.slug},
+  backlinks: length(incoming),
+  related: length(related)
+})
+```
+
+## 4. Compiling raw documents — `KnowledgeBase.ingest/2`
+
+`ingest/2` runs a six-node workflow: parse the raw maps into `Document`
+structs, extract concepts, compile entries, generate links, embed (if an
+embedding provider is configured), and persist.
+
+Two things to get right:
+
+* The `kb_config` you pass **must already contain `:store_state`** — the
+  persist step writes into the store you own, it does not create one.
+* The updated store comes back inside the workflow state, at
+  `state.data.kb_config[:store_state]`. Keep it; the old value is stale for
+  anything the pipeline inserted.
+
+Documents are plain maps with `:title`, `:content` and an optional `:doc_type`.
+
+```elixir
+raw_documents = [
+  %{
+    title: "Task and Task.Supervisor",
+    doc_type: :markdown,
+    content: """
+    Task runs a function in a separate process. Task.async/await is for a
+    result you will wait for; Task.Supervisor.start_child is for fire and
+    forget work that must not take the caller down with it. Unlike a GenServer,
+    a Task holds no long-lived state and has no callback module.
+    """
+  },
+  %{
+    title: "Registry",
+    doc_type: :markdown,
+    content: """
+    Registry is a local, decentralised key-value process store. :unique keys
+    give you a name for a dynamically started process; :duplicate keys give you
+    a pubsub-shaped dispatch list. It replaces most hand-rolled name-to-pid ETS
+    tables, and entries are removed automatically when the process dies.
+    """
+  }
+]
+
+ingest_outcome =
+  if ready do
+    KnowledgeBase.ingest(raw_documents,
+      kb_config: %{store: ETS, store_state: seeded_store, kb_id: kb_id},
+      compiler_model: model_string
+    )
+  else
+    {:error, :not_configured}
+  end
+
+kb_store =
+  case ingest_outcome do
+    {:ok, state} -> state.data.kb_config[:store_state]
+    {:error, _} -> seeded_store
+  end
+
+{:ok, entries_now} = KnowledgeBase.list_entries(ETS, kb_store, kb_id: kb_id)
+
+Kino.Markdown.new("""
+Ingest: `#{inspect(elem(ingest_outcome, 0))}`
+
+Entries in `#{kb_id}`: **#{length(entries_now)}**
+
+#{entries_now |> Enum.map(&("* " <> &1.title)) |> Enum.join("\n")}
+""")
+```
+
+## 5. Giving an agent the populated store
+
+`Nous.Plugins.KnowledgeBase` adds nine tools (`kb_search`, `kb_read`,
+`kb_ingest`, `kb_add_entry`, `kb_link`, `kb_backlinks`, `kb_list`,
+`kb_health_check`, `kb_generate`) and injects the entries most relevant to the
+user's message into the prompt before the first request.
+
+Its config lives in `deps[:kb_config]`, which means it belongs on
+`Nous.run/3`, not on `Nous.new/2`.
+
+**Pass `:store_state`.** The plugin's `init/2` runs on *every* agent run. With
+no `:store_state` it calls `store.init/1` each time, which builds fresh empty
+ETS tables and quietly discards everything you ingested — the agent would then
+search an empty knowledge base and tell you it does not know. When
+`:store_state` is present the plugin reuses it verbatim and only refreshes the
+per-run defaults.
+
+```elixir
+kb_agent =
+  Nous.new(model_string,
+    name: "kb_agent",
+    plugins: [Nous.Plugins.KnowledgeBase],
+    instructions: """
+    Answer strictly from the knowledge base. Use kb_search before answering and
+    cite the entry titles you used. If the knowledge base does not cover it,
+    say so instead of guessing.
+    """,
+    model_settings: %{temperature: 0.0}
+  )
+
+kb_run_opts = [
+  deps: %{
+    kb_config: %{
+      store: ETS,
+      # Without this the plugin re-inits the store on every run and the agent
+      # searches an empty KB.
+      store_state: kb_store,
+      kb_id: kb_id,
+      inject_limit: 3
+    }
+  }
+]
+
+question_input =
+  Kino.Input.textarea("Question",
+    default: "How do GenServers and supervisors work together, and where does ETS fit in?"
+  )
+```
+
+```elixir
+question = question_input |> Kino.Input.read() |> String.trim()
+
+kb_result =
+  cond do
+    not ready -> {:error, :not_configured}
+    question == "" -> {:error, :empty_question}
+    true -> Nous.run(kb_agent, question, kb_run_opts)
+  end
+
+case kb_result do
+  {:ok, result} ->
+    Kino.Markdown.new("""
+    #{result.output}
+
+    ---
+
+    `#{result.usage.tool_calls}` KB tool call(s), `#{result.iterations}` iteration(s),
+    `#{result.usage.total_tokens}` total tokens.
+    """)
+
+  {:error, reason} ->
+    Kino.Markdown.new("Skipped or failed: `#{inspect(reason)}`")
+end
+```
+
+Edit the question above and re-run the cell — the store, the agent and the
+config are all still bound, so each question is one model call rather than a
+re-ingest.
+
+## Where to go next
+
+* `Nous.KnowledgeBase.health_check/1` audits the KB for orphans, low-confidence
+  entries and stale material; `generate/2` produces a `:report`, `:summary` or
+  `:slides` from it.
+* `Nous.KnowledgeBase.incremental_update/2` checksums documents and recompiles
+  only what changed.
+* `Nous.Plugins.Memory` composes with this plugin when you want conversational
+  memory alongside a curated KB.
+* Swap `Store.ETS` for a durable `Nous.KnowledgeBase.Store` implementation
+  before any of this outlives a single process.

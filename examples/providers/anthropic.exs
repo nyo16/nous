@@ -43,32 +43,24 @@ IO.puts("""
 """)
 
 # ============================================================================
-# Extended Thinking Mode
+# Thinking / Reasoning Configuration
 # ============================================================================
 
-IO.puts("--- Extended Thinking ---")
+IO.puts("--- Thinking Configuration ---")
 
-thinking_agent =
-  Nous.new("anthropic:claude-sonnet-4-5-20250929",
-    api_key: api_key,
-    instructions: "Think through problems carefully.",
-    model_settings: %{
-      extended_thinking: true,
-      thinking_budget_tokens: 1000
-    }
-  )
-
-{:ok, result} = Nous.run(thinking_agent, "What is 15 * 7 + 23? Show your work.")
-IO.puts("Response: #{result.output}")
-
-# Access thinking (if available). The :thinking key is only present when the
-# model returned reasoning content, so use Access (result[:thinking]) which
-# returns nil for an absent key instead of raising KeyError.
-if thinking = result[:thinking] do
-  IO.puts("Thinking: #{String.slice(thinking, 0..100)}...")
-end
-
-IO.puts("")
+# Nous does not expose an Anthropic-specific thinking setting. The only
+# thinking knob in the library is Gemini/Vertex AI's `:thinking_config`
+# model setting - see examples/providers/vertex_ai.exs and the
+# `Nous.Providers.Gemini` docs:
+#
+#     Nous.new("vertex_ai:gemini-2.5-pro",
+#       model_settings: %{thinking_config: %{thinking_budget: 1024, include_thoughts: true}}
+#     )
+IO.puts("""
+Thinking configuration is a Gemini/Vertex AI feature in Nous
+(model_settings: %{thinking_config: %{...}}).
+See examples/providers/vertex_ai.exs.
+""")
 
 # ============================================================================
 # Claude with Tools
@@ -131,10 +123,8 @@ IO.puts("""
    - claude-opus-4-5-20250929: Complex reasoning
    - claude-haiku-3-5-20241022: High volume, simple tasks
 
-2. Use extended thinking for:
-   - Math problems
-   - Complex reasoning
-   - Multi-step analysis
+2. Ask Claude to show its work in the prompt when you need step-by-step
+   reasoning - there is no separate thinking toggle for this provider.
 
 3. Claude excels at:
    - Following complex instructions

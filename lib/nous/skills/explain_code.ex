@@ -1,5 +1,18 @@
 defmodule Nous.Skills.ExplainCode do
-  @moduledoc "Built-in skill for code explanation."
+  @moduledoc """
+  Built-in skill — code explanation.
+
+  Injects a system-prompt section that structures an explanation as high-level
+  purpose → key concepts → step-by-step walkthrough → surrounding context →
+  trade-offs, and tells the model to pitch the depth at the audience: language
+  features for beginners, domain logic for experienced developers, edge cases
+  for domain experts.
+
+  Activates on prompts containing "explain", "what does this", "how does this",
+  "walk me through" or "understand this". Group `:coding`;
+  tags `:explain`, `:understand`, `:learn`.
+  """
+
   use Nous.Skill,
     keywords: ["explain", "what does this", "how does this", "walk me through", "understand this"],
     tags: [:explain, :understand, :learn],

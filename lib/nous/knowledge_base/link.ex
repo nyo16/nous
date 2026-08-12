@@ -37,6 +37,7 @@ defmodule Nous.KnowledgeBase.Link do
 
   Requires `:from_entry_id` and `:to_entry_id`.
   """
+  @spec new(map()) :: t()
   def new(attrs) when is_map(attrs) do
     %Link{
       id: Map.get(attrs, :id) || generate_id(),

@@ -4,6 +4,8 @@ defmodule Nous.TranscriptTest do
   alias Nous.Message
   alias Nous.Transcript
 
+  doctest Nous.Transcript
+
   describe "compact/2" do
     test "returns messages unchanged when under threshold" do
       messages = for i <- 1..5, do: Message.user("msg #{i}")

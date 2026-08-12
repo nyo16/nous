@@ -4,6 +4,8 @@ defmodule Nous.OutputSchemaTest do
   alias Nous.OutputSchema
   alias Nous.Errors.ValidationError
 
+  doctest Nous.OutputSchema
+
   # --- Test Schema Modules ---
 
   defmodule SimpleSchema do

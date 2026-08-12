@@ -83,6 +83,7 @@ Nous.new("openai:gpt-4o",
 
   # Tools (modules implementing Nous.Tool.Behaviour)
   tools: [Nous.Tools.Bash, MyApp.MyTool],
+  parallel_tool_calls: true,      # default false; fan out multi-call turns (side effects interleave)
 
   # Memory backend (optional)
   memory: %{store: Nous.Memory.Store.ETS, opts: []},
@@ -301,7 +302,9 @@ Nothing here is "internal by convention" — the code is the contract.
 
 Currently hidden, do not call:
 
-- `Nous.Application`, `Nous.Persistence.ETS.TableOwner` — internal supervision tree
+- `Nous.Application`, `Nous.Persistence.ETS.TableOwner`,
+  `Nous.Workflow.Checkpoint.ETS.TableOwner` — internal supervision tree and
+  ETS table owners
 - every `Nous.AgentRunner.*` submodule (prompt assembly, request dispatch,
   the iteration loop, streaming, tool execution) — internal to the runner;
   the entry point is `Nous.AgentRunner` itself
@@ -309,6 +312,14 @@ Currently hidden, do not call:
 - `Nous.Workflow.Engine.Executor`, `Nous.Workflow.Engine.ParallelExecutor`,
   `Nous.Workflow.Engine.StateMerger` — internal node dispatch; use
   `Nous.Workflow` to build and `Nous.Workflow.Engine.execute/1,2` to run
+- `Nous.JSON` — internal pretty-printing wrapper over the standard `JSON`
+  module
+- `Nous.Util` — small shared helpers (atom coercion, option splitting) used
+  across internals
+- `Nous.Memory.Embedding.Bumblebee.ServingSupervisor` and
+  `Nous.Memory.Embedding.Bumblebee.ServingHolder` — process plumbing behind the
+  public `Nous.Memory.Embedding.Bumblebee` provider, and only compiled when
+  Bumblebee is available
 
 Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
 `Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and

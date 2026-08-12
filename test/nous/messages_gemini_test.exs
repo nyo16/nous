@@ -587,6 +587,25 @@ defmodule Nous.MessagesGeminiTest do
              }
     end
 
+    # Regression: this is the shape `Nous.OutputSchema.to_provider_settings/2`
+    # emits, and `resolve_mode(:auto, :gemini)` is `:json_schema` — so it is what
+    # Gemini and Vertex actually receive from every `output_type:` agent. Only
+    # the flat shape was matched, so structured output silently contributed no
+    # responseMimeType and no responseSchema to the request.
+    test ":response_format OpenAI-nested json_schema shape maps through" do
+      schema = %{"type" => "object", "properties" => %{"name" => %{"type" => "string"}}}
+
+      nested = %{
+        "type" => "json_schema",
+        "json_schema" => %{"name" => "person", "schema" => schema, "strict" => true}
+      }
+
+      assert Gemini.json_config_for_settings(%{response_format: nested}) == %{
+               "responseMimeType" => "application/json",
+               "responseSchema" => schema
+             }
+    end
+
     test ":response_format json_object shape forces mime type only" do
       assert Gemini.json_config_for_settings(%{response_format: %{type: :json_object}}) == %{
                "responseMimeType" => "application/json"

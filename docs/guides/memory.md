@@ -147,7 +147,7 @@ Add to `mix.exs`:
 
 ```elixir
 {:muninn, "~> 0.4"},
-{:zvec, "~> 0.1"}
+{:zvec, "~> 0.2"}
 ```
 
 Initialize:
@@ -173,7 +173,7 @@ Best for: pure semantic search when you always have embeddings and don't need ke
 Add to `mix.exs`:
 
 ```elixir
-{:zvec, "~> 0.1"}
+{:zvec, "~> 0.2"}
 ```
 
 Initialize:
@@ -442,6 +442,28 @@ The `default_search_scope` config option controls how scopes are built automatic
 
 See `examples/memory/cross_agent.exs`.
 
+### Building Scopes Programmatically
+
+`Nous.Memory.Scope` is the module behind the table above. It turns a config map into the scope value that `Search.search/5` and the store callbacks expect:
+
+- `Nous.Memory.Scope.build/1` -- reads `:default_search_scope` from a config map and returns either `:global` or a map of scoping fields. `:session` yields `agent_id` + `session_id` + `user_id`, `:user` yields `user_id`, and `:agent` (or anything unrecognised) yields `agent_id` + `user_id`.
+- `Nous.Memory.Scope.from_fields/2` -- builds a scope from an explicit field list instead of a preset. Both functions return `:global` when none of the requested fields have a value in the config, so an unscoped config never silently produces an empty-map filter.
+
+`Nous.Plugins.Memory` and `Nous.Memory.Tools` call `build/1` for you, so you only reach for this module directly when you query a store outside the agent loop -- a background job, a LiveView, a custom tool -- and want exactly the scope the agent would have used:
+
+```elixir
+config = %{agent_id: "assistant", user_id: "alice", default_search_scope: :agent}
+
+scope = Nous.Memory.Scope.build(config)
+#=> %{agent_id: "assistant", user_id: "alice"}
+
+{:ok, results} = Search.search(Store.ETS, store, "preferences", nil, scope: scope)
+
+# Or pick the fields yourself:
+Nous.Memory.Scope.from_fields(config, [:user_id])
+#=> %{user_id: "alice"}
+```
+
 ## Walkthrough: Building a Remembering Agent
 
 A complete end-to-end example. This uses only ETS (no external deps).
@@ -536,30 +558,99 @@ Implement the `Nous.Memory.Store` behaviour:
 defmodule MyApp.Memory.Store.Redis do
   @behaviour Nous.Memory.Store
 
+  alias Nous.Memory.Entry
+
+  # `state` is opaque to Nous -- return whatever your backend needs and it is
+  # threaded back into every other callback.
   @impl true
-  def init(opts), do: # connect to Redis, return {:ok, state}
+  def init(opts) do
+    case Redix.start_link(Keyword.get(opts, :url, "redis://localhost:6379")) do
+      {:ok, conn} -> {:ok, %{conn: conn, prefix: Keyword.get(opts, :prefix, "nous:memory")}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @impl true
-  def store(state, %Entry{} = entry), do: # persist entry, return {:ok, state}
+  def store(state, %Entry{} = entry) do
+    case Redix.command(state.conn, ["SET", key(state, entry.id), :erlang.term_to_binary(entry)]) do
+      {:ok, _} -> {:ok, state}
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   @impl true
-  def fetch(state, id), do: # return {:ok, entry} | {:error, :not_found}
+  def fetch(state, id) do
+    case Redix.command(state.conn, ["GET", key(state, id)]) do
+      {:ok, nil} -> {:error, :not_found}
+      {:ok, binary} -> {:ok, :erlang.binary_to_term(binary)}
+      {:error, _reason} -> {:error, :not_found}
+    end
+  end
 
   @impl true
-  def delete(state, id), do: # return {:ok, state}
+  def delete(state, id) do
+    case Redix.command(state.conn, ["DEL", key(state, id)]) do
+      {:ok, _} -> {:ok, state}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Read-modify-write. Stamping :updated_at here is what makes the entry
+  # lifecycle fields (below) meaningful for your backend too.
+  @impl true
+  def update(state, id, updates) do
+    with {:ok, entry} <- fetch(state, id) do
+      store(state, struct(entry, Map.put(updates, :updated_at, DateTime.utc_now())))
+    end
+  end
+
+  # opts carry :scope, :limit and :min_score. Scoring is yours to define --
+  # this naive version mirrors Store.ETS and uses fuzzy string distance.
+  @impl true
+  def search_text(state, query, opts) do
+    {:ok, entries} = list(state, opts)
+    query_down = String.downcase(query)
+    min_score = Keyword.get(opts, :min_score, 0.0)
+
+    results =
+      entries
+      |> Enum.map(&{&1, String.jaro_distance(query_down, String.downcase(&1.content))})
+      |> Enum.filter(fn {_entry, score} -> score > min_score end)
+      |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
+      |> Enum.take(Keyword.get(opts, :limit, 10))
+
+    {:ok, results}
+  end
 
   @impl true
-  def update(state, id, updates), do: # return {:ok, state}
+  def list(state, opts) do
+    {:ok, keys} = Redix.command(state.conn, ["KEYS", key(state, "*")])
 
-  @impl true
-  def search_text(state, query, opts), do: # return {:ok, [{entry, score}]}
+    entries =
+      Enum.flat_map(keys, fn k ->
+        case Redix.command(state.conn, ["GET", k]) do
+          {:ok, binary} when is_binary(binary) -> [:erlang.binary_to_term(binary)]
+          _ -> []
+        end
+      end)
 
-  @impl true
-  def list(state, opts), do: # return {:ok, [entry]}
+    {:ok, filter_by_scope(entries, Keyword.get(opts, :scope, %{}))}
+  end
 
   # Optional -- implement for vector search support:
   # @impl true
-  # def search_vector(state, embedding, opts), do: # return {:ok, [{entry, score}]}
+  # def search_vector(state, embedding, opts), do: {:ok, [{entry, score}]}
+
+  defp key(state, id), do: "#{state.prefix}:#{id}"
+
+  defp filter_by_scope(entries, scope) when is_map(scope) and map_size(scope) > 0 do
+    Enum.filter(entries, fn entry ->
+      Enum.all?(scope, fn {field, value} -> Map.get(entry, field) == value end)
+    end)
+  end
+
+  # A non-map scope (:global) or an empty map means "no filtering".
+  defp filter_by_scope(entries, _scope), do: entries
 end
 ```
 

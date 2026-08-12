@@ -15,6 +15,8 @@ defmodule Nous.Hook do
   | `:post_response` | After LLM response received | No |
   | `:pre_tool_use` | Before each tool execution | Yes |
   | `:post_tool_use` | After each tool execution | No (can modify result) |
+  | `:pre_node` | Before each workflow node (`Nous.Workflow.Engine`) | Yes (`:deny` / `{:pause, reason}`) |
+  | `:post_node` | After each workflow node | No (can modify workflow state) |
   | `:session_end` | After run completes | No |
 
   ## Hook Types
@@ -44,12 +46,15 @@ defmodule Nous.Hook do
         end
       }
 
-      # External policy check via shell command
+      # External policy check via an external command. `:command` handlers are an
+      # argv list, never a shell string — there is no shell, so no word splitting
+      # and no expansion. `Nous.Hook.Runner` rejects a raw string with
+      # `{:error, :invalid_command_handler}`.
       %Nous.Hook{
         event: :pre_tool_use,
         matcher: ~r/^(write|delete)/,
         type: :command,
-        handler: "python3 scripts/policy_check.py",
+        handler: ["python3", "scripts/policy_check.py"],
         timeout: 5_000
       }
   """
@@ -61,6 +66,11 @@ defmodule Nous.Hook do
           | :post_tool_use
           | :pre_request
           | :post_response
+          # Dispatched by Nous.Workflow.Engine, not the agent runner.
+          | :workflow_start
+          | :workflow_end
+          | :pre_node
+          | :post_node
           | :session_start
           | :session_end
 

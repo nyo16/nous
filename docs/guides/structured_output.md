@@ -197,6 +197,17 @@ result.output.address.city
 
 When you use `:auto` (the default), Nous picks the best mode for each provider. Anthropic uses `:tool_call` because it has native support for returning structured data via tool use. All OpenAI-compatible providers use `:json_schema` for strict schema enforcement.
 
+**Gemini and Vertex AI: the raw request fields.** The `gemini:` and `vertex_ai:` prefixes
+share one request builder, and it exposes Gemini's JSON knobs as model settings you can set
+yourself: `:json_schema` (a map — sets `responseMimeType: "application/json"` plus
+`responseSchema`), `:json_response` (`true` — mime type only), and the cross-provider
+`:response_format` shape `%{type: :json_schema, schema: schema}` / `%{type: :json_object}`.
+Reach for these when you want to drive the provider directly instead of going through
+`output_type:`, or when you need them alongside thinking config, safety settings, or native
+tools. See [JSON output](vertex_ai_setup.md#json-output) and the full
+[Model settings](vertex_ai_setup.md#model-settings) reference in the Vertex AI guide —
+everything documented there applies to `gemini:` as well.
+
 ## Mode Configuration
 
 Set the mode explicitly with the `structured_output` option:

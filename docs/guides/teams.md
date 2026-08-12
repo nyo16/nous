@@ -34,7 +34,7 @@ alias Nous.Teams.{Coordinator, Role}
 )
 
 # 2. The Coordinator is registered under a derived name.
-coordinator = :"team_coordinator_team_1"
+coordinator = :team_coordinator_team_1
 
 # 3. Spawn agents. The agent config map is whatever AgentServer accepts;
 #    pass a Role via the opts to shape prompt and tool access.

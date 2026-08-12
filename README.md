@@ -119,6 +119,7 @@ One-line index of what's built in. Each item links to its deep dive below
 or out to a focused guide.
 
 - **[Tool calling](#tool-calling)** — Elixir functions or modules the LLM can invoke; concurrent execution, timeouts, validation
+- **[Parallel tool calls](#parallel-tool-calls)** — run several tool calls from one model response concurrently with `parallel_tool_calls: true` ([guide](docs/guides/tool_development.md))
 - **[Streaming](#streaming)** — token deltas with optional tool execution, cancellation-safe between chunks
 - **[Structured output](#structured-output)** — return validated Ecto schemas, schemaless types, JSON schema, or `{:one_of, [...]}` choices ([guide](docs/guides/structured_output.md))
 - **[Skills](#skills)** — reusable domain knowledge as modules or markdown files; 21 built-in skills across 7 groups ([guide](docs/guides/skills.md))
@@ -133,7 +134,7 @@ or out to a focused guide.
 - **[Workflow](#workflow-engine)** — executable DAGs of agents, tools, and control flow with branching, cycles, parallelism, pause/resume ([guide](docs/guides/workflows.md))
 - **[Knowledge base](#knowledge-base)** — LLM-compiled wiki with summaries, backlinks, ingestion pipelines ([guide](docs/guides/knowledge_base.md))
 - **[Deep research](#deep-research)** — autonomous multi-step research with citations ([guide](docs/guides/research.md))
-- **[Fallback chains](docs/guides/fallback.md)** — automatic provider/model failover on transport-layer errors
+- **[Fallback chains](#fallback-models)** — automatic provider/model failover on transport-layer errors ([guide](docs/guides/fallback.md))
 - **[Permissions & guardrails](docs/guides/permissions.md)** — tool permission policies, approval gates, session limits
 - **[Observability](docs/guides/observability.md)** — telemetry events plus Prometheus metrics via PromEx
 - **[Agent supervision](#agent-supervision--persistence)** — `AgentDynamicSupervisor`, persistence backends, crash recovery
@@ -207,18 +208,22 @@ service-account setup, Goth integration, and endpoint selection.
 
 ### Timeouts
 
-Each provider has sensible default timeouts (60s for cloud APIs, 120s
-for local models). Override per-model with `receive_timeout`:
+Each provider has a default receive timeout: 3 minutes for cloud APIs and
+`custom:` endpoints, 2 minutes for the named local servers, and 5 minutes for
+LlamaCpp (cold weights are slow to first token). Override per-model with
+`receive_timeout:` (milliseconds):
 
 ```elixir
 agent = Nous.new("lmstudio:qwen3", receive_timeout: 300_000)  # 5 minutes
-agent = Nous.new("openai:gpt-4o", receive_timeout: 180_000)   # 3 minutes
+agent = Nous.new("openai:gpt-4o", receive_timeout: 600_000)   # 10 minutes
 ```
 
 | Provider | Default |
 |----------|---------|
-| OpenAI, Anthropic, Gemini, Groq, Mistral, OpenRouter, Together | 60s |
-| LM Studio, Ollama, vLLM, SGLang, LlamaCpp, Custom | 120s |
+| OpenAI, Anthropic, Gemini, Vertex AI, Groq, Mistral, OpenRouter, Together | 180s |
+| `custom:` | 180s |
+| LM Studio, Ollama, vLLM, SGLang | 120s |
+| LlamaCpp | 300s |
 
 ## Feature deep dives
 
@@ -255,6 +260,25 @@ for declarative schemas, registries, and testing helpers.
 Tools can also update context state for subsequent calls via
 `Nous.Tool.ContextUpdate`. Continue conversations with full context by
 passing `context: result.context` to the next `Nous.run/3`.
+
+#### Parallel tool calls
+
+When the model returns several tool calls in a single response,
+`parallel_tool_calls: true` executes them concurrently instead of one at a
+time:
+
+```elixir
+agent =
+  Nous.new("openai:gpt-4o",
+    tools: [&MyTools.get_weather/2, &MyTools.get_forecast/2],
+    parallel_tool_calls: true
+  )
+```
+
+Defaults to `false`. Hooks, approval checks, and post-processing (callbacks,
+`merge_deps`) stay sequential in call order; only the tool executions fan out,
+and result messages keep their original order. See
+[docs/guides/tool_development.md](docs/guides/tool_development.md).
 
 ### Streaming
 
@@ -316,7 +340,9 @@ agent = Nous.new("openai:gpt-4",
 
 Fallback triggers on `ProviderError` and `ModelError` only. Application-level
 errors (validation, max iterations, tool errors) return immediately since a
-different model wouldn't help.
+different model wouldn't help. See
+[docs/guides/fallback.md](docs/guides/fallback.md) for the failover engine,
+telemetry events, and gotchas.
 
 ### Callbacks
 
@@ -663,7 +689,17 @@ hackney backpressure tuning.
 
 **[Full Examples Collection](examples/README.md)** — focused examples from basics to production.
 
-### Core Examples (01-19)
+### Run in Livebook
+
+No clone, no `mix` — these open straight from the hex page and install Nous via `Mix.install/2`:
+
+| Notebook | What it covers |
+|---|---|
+| [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnyo16%2Fnous%2Fmaster%2Fnotebooks%2F01_intro_to_nous.livemd) [Intro to Nous](notebooks/01_intro_to_nous.livemd) | First call, first agent, streaming, reading `result.usage` |
+| [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnyo16%2Fnous%2Fmaster%2Fnotebooks%2F02_tools_and_agents.livemd) [Tools & Agents](notebooks/02_tools_and_agents.livemd) | Custom tools, permissions, an interactive approval handler |
+| [![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnyo16%2Fnous%2Fmaster%2Fnotebooks%2F03_rag_knowledge_base.livemd) [RAG & Knowledge Base](notebooks/03_rag_knowledge_base.livemd) | Ingest, retrieve, and query a knowledge base with Kino inputs |
+
+### Core Examples
 
 | Example | Description |
 |---------|-------------|

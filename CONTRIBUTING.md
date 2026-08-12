@@ -99,44 +99,83 @@ open doc/index.html
 
 ```
 lib/nous/
-├── agent.ex              # Agent struct and builder
-├── agent_runner.ex       # Core execution loop
-├── agent_server.ex       # GenServer wrapper for supervised agents
-├── fallback.ex           # Fallback model chain support
-├── decisions/            # Decision graph (goals, decisions, outcomes)
-│   ├── store/            # Store backends (ETS, DuckDB)
-│   ├── node.ex           # Node struct
-│   ├── edge.ex           # Edge struct
-│   ├── tools.ex          # LLM-callable decision tools
-│   └── context_builder.ex
-├── knowledge_base/       # LLM-compiled wiki knowledge base
-│   ├── store/            # Store backends (ETS)
-│   ├── tools.ex          # 9 KB agent tools
-│   ├── workflows.ex      # DAG pipelines (ingest, update, health, generate)
-│   └── prompts.ex        # LLM prompt templates
-├── memory/               # Persistent memory with hybrid search
-│   ├── store/            # Store backends (ETS, SQLite, DuckDB, etc.)
-│   ├── embedding/        # Embedding providers
-│   └── tools.ex          # LLM-callable memory tools
-├── plugins/              # Agent plugins
-│   ├── decisions.ex      # Decision graph plugin
-│   ├── memory.ex         # Memory plugin
-│   ├── team_tools.ex     # Team communication plugin
-│   ├── sub_agent.ex      # Sub-agent delegation
-│   └── human_in_the_loop.ex
-├── providers/            # LLM provider adapters
-├── teams/                # Multi-agent team orchestration
-│   ├── coordinator.ex    # Team lifecycle management
-│   ├── shared_state.ex   # Per-team shared state (ETS)
-│   ├── rate_limiter.ex   # Budget and rate limiting
-│   ├── role.ex           # Role-based tool scoping
-│   └── comms.ex          # PubSub topic helpers
-├── tool/                 # Tool system
-│   ├── behaviour.ex      # Tool behaviour
-│   ├── schema.ex         # Declarative tool DSL
-│   └── registry.ex       # Tool collection and filtering
-├── research/             # Deep research system
-└── eval/                 # Evaluation framework
+├── agent.ex                  # Agent struct and builder
+├── agent_dynamic_supervisor.ex # DynamicSupervisor for AgentServer processes
+├── agent_registry.ex         # Registry for agent lookup by session ID
+├── agent_runner.ex           # Core execution loop
+├── agent_server.ex           # GenServer wrapper for supervised agents
+├── application.ex            # OTP application and supervision tree
+├── decisions.ex              # Decision graph top-level API
+├── errors.ex                 # Error types
+├── eval.ex                   # Evaluation framework entry point
+├── fallback.ex               # Fallback model chain support
+├── hook.ex                   # Lifecycle interceptor structs
+├── json.ex                   # Internal JSON helpers
+├── knowledge_base.ex         # Knowledge base top-level API
+├── llm.ex                    # Direct model calls without agents
+├── memory.ex                 # Memory system top-level API
+├── message.ex                # Conversation message struct
+├── messages.ex               # Conversation/message-list utilities
+├── model.ex                  # Provider + model configuration
+├── model_dispatcher.ex       # Routes requests to provider modules
+├── output_schema.ex          # Structured output
+├── permissions.ex            # Tool-level permission policy engine
+├── persistence.ex            # Context persistence API
+├── plugin.ex                 # Plugin behaviour
+├── prompt_template.ex        # Safe prompt templates
+├── provider.ex               # Provider behaviour
+├── pubsub.ex                 # PubSub abstraction and topic helpers
+├── react_agent.ex            # ReAct agent wrapper
+├── research.ex               # Deep research top-level API
+├── run_context.ex            # Context passed to tools and dynamic prompts
+├── skill.ex                  # Skill struct and API
+├── stream_normalizer.ex      # Stream chunk normalization behaviour
+├── teams.ex                  # Multi-agent team orchestration API
+├── telemetry.ex              # Telemetry events
+├── tool.ex                   # Tool struct
+├── tool_call.ex              # Tool-call field access helpers
+├── tool_executor.ex          # Tool execution with retries and timeouts
+├── tool_schema.ex            # Tool -> provider schema conversion
+├── transcript.ex             # Conversation history compaction
+├── types.ex                  # Core type definitions
+├── usage.ex                  # Token/cost usage tracking
+├── util.ex                   # Shared internal helpers
+├── workflow.ex               # Workflow DAG top-level API
+├── agent/                    # Context, callbacks, agent behaviour
+├── agent_runner/             # Runner internals (prompt assembly, dispatch,
+│                             #   iteration loop, streaming, tool execution)
+├── agents/                   # Built-in behaviours (basic, ReAct, KB)
+├── decisions/                # Decision graph (nodes, edges, store backends,
+│                             #   context builder)
+├── errors/                   # Error base and retry info
+├── eval/                     # Evaluators, metrics, optimizer, reporters,
+│                             #   suites, YAML loader
+├── hook/                     # Hook registry and runner
+├── http/                     # HTTP + streaming backend behaviours and impls
+├── knowledge_base/           # LLM-compiled wiki (entries, links, documents,
+│                             #   tools, workflows, prompts, store backends)
+├── memory/                   # Persistent memory (search, scoring, scopes,
+│                             #   tools, store and embedding backends)
+├── message/                  # Multimodal content parts
+├── messages/                 # Per-provider message marshalling
+├── output_schema/            # `use Nous.OutputSchema` macro and validator
+├── permissions/              # Permission policy struct
+├── persistence/              # Persistence backends (ETS)
+├── plugins/                  # Agent plugins (memory, decisions, KB, skills,
+│                             #   sub-agent, teams, HITL, guards, summarization)
+├── prom_ex/                  # PromEx plugin for Prometheus metrics
+├── providers/                # LLM provider adapters
+├── pubsub/                   # Approval request/response over PubSub
+├── research/                 # Deep research pipeline
+├── session/                  # Session config and guardrails
+├── skill/                    # Skill loader and registry
+├── skills/                   # Bundled skill modules
+├── stream_normalizer/        # Per-provider stream chunk normalizers
+├── teams/                    # Team coordinator, shared state, roles, limits
+├── tool/                     # Tool system (behaviour, schema DSL, registry,
+│                             #   validator, context updates, test helpers)
+├── tools/                    # Built-in tools (bash, files, search, web, todos)
+└── workflow/                 # Workflow graph, compiler, engine, checkpoints
 ```
 
 ## Submitting changes

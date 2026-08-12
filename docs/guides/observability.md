@@ -196,6 +196,117 @@ defmodule MyApp.CostTracker do
 end
 ```
 
+#### Prompt-cache tokens
+
+The measurements above are enough to count tokens, but **not** enough to
+price them once prompt caching is in play. Cached input is billed at a
+different rate from fresh input, and the `[:nous, :agent, :run, :stop]`
+measurement map carries only `total_tokens`, `input_tokens`,
+`output_tokens`, `tool_calls`, `requests`, and `iterations` — no cache
+counters. Those live on the `%Nous.Usage{}` struct itself (since 0.16.2):
+
+| Field | Populated from | Meaning |
+|-------|----------------|---------|
+| `:cache_creation_input_tokens` | Anthropic `usage.cache_creation_input_tokens` | Prompt tokens **written** to the cache by this request. Billed at a premium over the base input rate. |
+| `:cache_read_input_tokens` | Anthropic `usage.cache_read_input_tokens`, Gemini `usageMetadata.cachedContentTokenCount` | Prompt tokens **served** from the cache. Billed at a steep discount. |
+
+Both default to `0`, and `Nous.Usage.add/2` sums them like every other
+counter, so aggregating usage across runs keeps cache accounting intact.
+
+Two provider-shaped caveats decide the arithmetic:
+
+- **Anthropic reports the cache counters *outside* `input_tokens`**, and
+  Nous computes `total_tokens` as `input_tokens + output_tokens` for that
+  provider. So on a cache hit `total_tokens` **under**-counts what you are
+  billed for; the billed prompt total is
+  `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`.
+- **Gemini folds cached tokens *into* `promptTokenCount`**, so
+  `cache_read_input_tokens` is a subset of `input_tokens`. Charging the
+  full input rate on `input_tokens` **over**-counts; subtract the cached
+  portion first.
+- OpenAI-compatible providers go through `Nous.Messages.OpenAI.parse_usage/1`,
+  which does not map `prompt_tokens_details.cached_tokens` — both fields
+  stay `0` there, and OpenAI's cache discount is already folded into
+  `prompt_tokens`.
+
+That gives one corrected formula with disjoint buckets:
+
+```text
+cost = fresh_input_tokens          * input_rate
+     + cache_creation_input_tokens * cache_write_rate
+     + cache_read_input_tokens     * cache_read_rate
+     + output_tokens               * output_rate
+
+where fresh_input_tokens =
+  input_tokens                                 # Anthropic (disjoint)
+  input_tokens - cache_read_input_tokens       # Gemini (nested)
+```
+
+Cache rates are provider pricing, not derived constants — at time of
+writing Anthropic charges 1.25x the base input rate for a 5-minute cache
+write and 0.1x for a read, and Gemini prices cached input well below fresh
+input while billing cache *storage* per hour on the `CachedContent` object
+rather than per request. Look up the current numbers; the shape is stable.
+
+```elixir
+defmodule MyApp.Cost do
+  @moduledoc "Cache-aware cost math over %Nous.Usage{}."
+
+  # USD per 1M tokens. Replace with current provider pricing.
+  @rates %{
+    anthropic: %{input: 3.00, cache_write: 3.75, cache_read: 0.30, output: 15.00},
+    gemini: %{input: 1.25, cache_write: 0.00, cache_read: 0.3125, output: 10.00}
+  }
+
+  @doc "Cost in USD for a single `%Nous.Usage{}`."
+  def usd(%Nous.Usage{} = usage, provider) do
+    rates = Map.fetch!(@rates, provider)
+    {fresh_input, cache_write, cache_read} = prompt_buckets(usage, provider)
+
+    millions =
+      fresh_input * rates.input +
+        cache_write * rates.cache_write +
+        cache_read * rates.cache_read +
+        usage.output_tokens * rates.output
+
+    millions / 1_000_000
+  end
+
+  @doc "Fraction of prompt tokens served from cache, 0.0..1.0."
+  def cache_hit_ratio(%Nous.Usage{} = usage, provider) do
+    {fresh_input, cache_write, cache_read} = prompt_buckets(usage, provider)
+
+    case fresh_input + cache_write + cache_read do
+      0 -> 0.0
+      prompt_tokens -> cache_read / prompt_tokens
+    end
+  end
+
+  # Normalize every provider to three disjoint prompt buckets.
+  defp prompt_buckets(usage, :gemini) do
+    # Gemini's promptTokenCount already includes the cached tokens.
+    fresh = max(usage.input_tokens - usage.cache_read_input_tokens, 0)
+    {fresh, usage.cache_creation_input_tokens, usage.cache_read_input_tokens}
+  end
+
+  defp prompt_buckets(usage, _anthropic_shaped) do
+    # Anthropic reports the cache counters outside input_tokens.
+    {usage.input_tokens, usage.cache_creation_input_tokens,
+     usage.cache_read_input_tokens}
+  end
+end
+```
+
+Feed it the usage struct off the run result rather than the telemetry
+measurements:
+
+```elixir
+{:ok, result} = Nous.run(agent, "Summarize the attached contract")
+
+MyApp.Cost.usd(result.usage, :anthropic)
+MyApp.Cost.cache_hit_ratio(result.usage, :anthropic)
+```
+
 > Keep telemetry handlers fast and crash-free. A raising handler is detached by
 > `:telemetry` after one failure, silently dropping your metrics. Do heavy work
 > (DB writes, HTTP calls) off the calling process — hand off to a `Task` or a

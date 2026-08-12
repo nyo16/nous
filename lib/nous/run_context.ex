@@ -22,6 +22,15 @@ defmodule Nous.RunContext do
       deps = %{database: MyApp.Database}
       {:ok, result} = Agent.run(agent, "Search for users", deps: deps)
 
+  The struct itself is plain data — build one directly to call a tool
+  outside the agent loop, or to assert on what a tool would see:
+
+      iex> ctx = RunContext.new(%{database: MyApp.Database, api_key: "secret"})
+      iex> ctx.deps.api_key
+      "secret"
+      iex> {ctx.retry, ctx.approval_gated?, ctx.usage.total_tokens}
+      {0, false, 0}
+
   """
 
   alias __MODULE__
@@ -66,11 +75,19 @@ defmodule Nous.RunContext do
       approval pipeline (the agent runner does), so `Nous.ToolExecutor` does
       not prompt a second time. Defaults to `false` — i.e. ungated.
 
-  ## Example
+  ## Examples
 
-      deps = %{database: MyApp.Database, api_key: "secret"}
-      ctx = RunContext.new(deps)
-      # Access in tools: ctx.deps.database
+      iex> ctx = RunContext.new(%{database: MyApp.Database, api_key: "secret"})
+      iex> ctx.deps.database
+      MyApp.Database
+
+  An approval-gated context carries the handler the tool executor consults
+  before running a `requires_approval: true` tool:
+
+      iex> handler = fn %{name: name} -> if name == "delete_all", do: :reject, else: :approve end
+      iex> ctx = RunContext.new(%{}, retry: 2, approval_handler: handler)
+      iex> {ctx.retry, ctx.approval_handler.(%{name: "delete_all"}), ctx.approval_gated?}
+      {2, :reject, false}
 
   """
   @spec new(deps :: any(), opts :: keyword()) :: t(any())

@@ -1,5 +1,19 @@
 defmodule Nous.Skills.PythonFastAPI do
-  @moduledoc "Built-in skill for FastAPI and async Python web development."
+  @moduledoc """
+  Built-in skill — FastAPI and async Python web services.
+
+  Injects a system-prompt section on `async def` for I/O-bound work, the
+  receive-an-object/return-an-object Pydantic pattern, `Depends()` injection for
+  sessions and auth, lifespan context managers in place of the deprecated
+  `@app.on_event`, `httpx` instead of `requests` in async code,
+  `asyncio.TaskGroup` structured concurrency, `asyncio.Semaphore` rate limiting,
+  and guard clauses instead of nested branches.
+
+  Activates on prompts containing "fastapi", "fast api", "python api",
+  "pydantic", "async python", "asyncio" or "uvicorn". Group `:coding`;
+  tags `:python`, `:fastapi`, `:api`, `:async`, `:web`.
+  """
+
   use Nous.Skill,
     keywords: [
       "fastapi",

@@ -61,8 +61,9 @@ defmodule Nous.Message.ContentPart do
       iex> ContentPart.new(%{type: :text, content: "Hello"})
       {:ok, %ContentPart{type: :text, content: "Hello"}}
 
-      iex> ContentPart.new(%{type: :invalid})
-      {:error, %Ecto.Changeset{}}
+      iex> {:error, changeset} = ContentPart.new(%{type: :invalid})
+      iex> changeset.valid?
+      false
 
   """
   @spec new(map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
@@ -358,8 +359,14 @@ defmodule Nous.Message.ContentPart do
 
   ## Examples
 
-      iex> ContentPart.from_file("/path/to/image.jpg")
-      {:ok, %ContentPart{type: :image_url, content: "data:image/jpeg;base64,..."}}
+      iex> path = Path.join(System.tmp_dir!(), "nous_from_file_example.png")
+      iex> File.write!(path, <<137, 80, 78, 71, 13, 10, 26, 10>>)
+      :ok
+      iex> {:ok, part} = ContentPart.from_file(path)
+      iex> {part.type, String.starts_with?(part.content, "data:image/png;base64,")}
+      {:image_url, true}
+      iex> File.rm!(path)
+      :ok
 
       iex> ContentPart.from_file("/nonexistent.jpg")
       {:error, :enoent}
@@ -383,8 +390,14 @@ defmodule Nous.Message.ContentPart do
 
   ## Examples
 
-      iex> ContentPart.from_file!("/path/to/image.jpg")
-      %ContentPart{type: :image_url, content: "data:image/jpeg;base64,..."}
+      iex> path = Path.join(System.tmp_dir!(), "nous_from_file_bang_example.jpg")
+      iex> File.write!(path, <<255, 216, 255, 224>>)
+      :ok
+      iex> part = ContentPart.from_file!(path)
+      iex> String.starts_with?(part.content, "data:image/jpeg;base64,")
+      true
+      iex> File.rm!(path)
+      :ok
 
   """
   @spec from_file!(String.t()) :: t()
@@ -402,7 +415,7 @@ defmodule Nous.Message.ContentPart do
 
       iex> binary_data = <<137, 80, 78, 71, 13, 10, 26, 10>>
       iex> ContentPart.to_data_url(binary_data, "image/png")
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+      "data:image/png;base64,iVBORw0KGgo="
 
   """
   @spec to_data_url(binary(), String.t()) :: String.t()
@@ -487,9 +500,10 @@ defmodule Nous.Message.ContentPart do
 
   ## Examples
 
-      iex> {:ok, image_data} = File.read("photo.jpg")
-      iex> ContentPart.from_binary(image_data, "photo.jpg")
-      %ContentPart{type: :image_url, content: "data:image/jpeg;base64,..."}
+      iex> image_data = <<255, 216, 255, 224>>
+      iex> part = ContentPart.from_binary(image_data, "photo.jpg")
+      iex> {part.type, part.content}
+      {:image_url, "data:image/jpeg;base64,/9j/4A=="}
 
   """
   @spec from_binary(binary(), String.t()) :: t()

@@ -45,6 +45,9 @@ defmodule Nous.Plugins.KnowledgeBase do
 
   **Optional — store:**
     * `:store_opts` - Options passed to `store.init/1`
+    * `:store_state` - An already-initialised store. When present, the plugin
+      reuses it instead of calling `store.init/1`, so a pre-populated (or
+      previously-run) knowledge base survives plugin init.
     * `:kb_id` - Namespace for this knowledge base
 
   **Optional — embedding:**
@@ -73,36 +76,60 @@ defmodule Nous.Plugins.KnowledgeBase do
     config = ctx.deps[:kb_config] || %{}
     store_mod = config[:store]
 
-    unless store_mod do
-      Logger.warning(
-        "Nous.Plugins.KnowledgeBase: No :store configured in deps[:kb_config]. " <>
-          "Knowledge base tools will not function."
-      )
+    cond do
+      is_nil(store_mod) ->
+        Logger.warning(
+          "Nous.Plugins.KnowledgeBase: No :store configured in deps[:kb_config]. " <>
+            "Knowledge base tools will not function."
+        )
 
-      ctx
-    else
-      store_opts = Map.get(config, :store_opts, [])
-      store_opts = if is_map(store_opts), do: Map.to_list(store_opts), else: store_opts
+        ctx
 
-      case store_mod.init(store_opts) do
-        {:ok, store_state} ->
-          updated_config =
-            config
-            |> Map.put(:store_state, store_state)
-            |> Map.put_new(:auto_inject, true)
-            |> Map.put_new(:inject_strategy, :first_only)
-            |> Map.put_new(:inject_limit, 3)
-            |> Map.put_new(:inject_min_score, 0.3)
-            |> Map.put_new(:auto_compile, false)
-            |> Map.put(:_inject_done, false)
+      Map.has_key?(config, :store_state) ->
+        # Plugin.init/2 is called on every agent run; calling store_mod.init/1
+        # again would create a fresh ETS table (or DB handle) per run, silently
+        # discarding everything ingested on previous runs (or supplied by the
+        # caller) and leaking the prior table. Reuse the existing store_state
+        # and refresh per-run defaults.
+        updated_config =
+          config
+          |> apply_defaults()
+          |> Map.put(:_inject_done, false)
 
-          %{ctx | deps: Map.put(ctx.deps, :kb_config, updated_config)}
+        %{ctx | deps: Map.put(ctx.deps, :kb_config, updated_config)}
 
-        {:error, reason} ->
-          Logger.error("Nous.Plugins.KnowledgeBase: Store init failed: #{inspect(reason)}")
-          ctx
-      end
+      true ->
+        do_init_store(store_mod, config, ctx)
     end
+  end
+
+  defp do_init_store(store_mod, config, ctx) do
+    store_opts = Map.get(config, :store_opts, [])
+    store_opts = if is_map(store_opts), do: Map.to_list(store_opts), else: store_opts
+
+    case store_mod.init(store_opts) do
+      {:ok, store_state} ->
+        updated_config =
+          config
+          |> Map.put(:store_state, store_state)
+          |> apply_defaults()
+          |> Map.put(:_inject_done, false)
+
+        %{ctx | deps: Map.put(ctx.deps, :kb_config, updated_config)}
+
+      {:error, reason} ->
+        Logger.error("Nous.Plugins.KnowledgeBase: Store init failed: #{inspect(reason)}")
+        ctx
+    end
+  end
+
+  defp apply_defaults(config) do
+    config
+    |> Map.put_new(:auto_inject, true)
+    |> Map.put_new(:inject_strategy, :first_only)
+    |> Map.put_new(:inject_limit, 3)
+    |> Map.put_new(:inject_min_score, 0.3)
+    |> Map.put_new(:auto_compile, false)
   end
 
   @impl true

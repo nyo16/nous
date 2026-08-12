@@ -35,6 +35,52 @@ defmodule Nous.Plugins.KnowledgeBaseTest do
       assert config[:auto_compile] == false
     end
 
+    test "reuses a caller-supplied store_state instead of re-initializing" do
+      agent = build_agent()
+
+      {:ok, store} = Store.ETS.init([])
+
+      entry =
+        Entry.new(%{
+          title: "Deploy runbook",
+          content: "Run mix release before deploying.",
+          kb_id: "test-kb"
+        })
+
+      {:ok, store} = Store.ETS.store_entry(store, entry)
+
+      ctx = build_ctx(%{kb_config: %{store: Store.ETS, store_state: store, kb_id: "test-kb"}})
+
+      config = KBPlugin.init(agent, ctx).deps[:kb_config]
+
+      # The pre-populated store must survive init/2 — re-initializing would
+      # hand back an empty set of ETS tables and silently lose the entry.
+      assert config[:store_state] == store
+      assert {:ok, fetched} = Store.ETS.fetch_entry(config[:store_state], entry.id)
+      assert fetched.title == "Deploy runbook"
+
+      # Per-run defaults are still applied on the reuse path.
+      assert config[:auto_inject] == true
+      assert config[:inject_limit] == 3
+      assert config[:_inject_done] == false
+    end
+
+    test "second init/2 keeps entries ingested during the first run" do
+      agent = build_agent()
+      ctx = build_ctx(%{kb_config: %{store: Store.ETS, kb_id: "test-kb"}})
+
+      ctx = KBPlugin.init(agent, ctx)
+      store = ctx.deps[:kb_config][:store_state]
+
+      entry = Entry.new(%{title: "Learned fact", content: "Nous runs on the BEAM."})
+      {:ok, _store} = Store.ETS.store_entry(store, entry)
+
+      config = KBPlugin.init(agent, ctx).deps[:kb_config]
+
+      assert config[:store_state] == store
+      assert {:ok, _} = Store.ETS.fetch_entry(config[:store_state], entry.id)
+    end
+
     test "warns and returns ctx unchanged when no store configured" do
       agent = build_agent()
       ctx = build_ctx(%{kb_config: %{}})

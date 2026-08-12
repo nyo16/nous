@@ -1,5 +1,18 @@
 defmodule Nous.Skills.PythonTyping do
-  @moduledoc "Built-in skill for modern Python type hints, Pydantic, and dataclasses."
+  @moduledoc """
+  Built-in skill — modern Python typing and data containers (3.10+).
+
+  Injects a system-prompt section on `mypy --strict`-compatible annotations,
+  choosing between Pydantic `BaseModel`, `@dataclass`, `TypedDict` and
+  `Protocol`, structural subtyping with `Protocol` rather than ABCs, structural
+  `match` statements, the `X | None` union syntax, Pydantic v2 `ConfigDict`,
+  naming conventions, and Google-style docstrings.
+
+  Activates on prompts containing "python type", "type hint", "pydantic",
+  "dataclass", "protocol class", "pattern matching python" or "mypy".
+  Group `:coding`; tags `:python`, `:typing`, `:pydantic`, `:modern`.
+  """
+
   use Nous.Skill,
     keywords: [
       "python type",

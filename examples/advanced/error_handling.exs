@@ -20,17 +20,19 @@ case Nous.run(agent, "Hello!") do
   {:ok, result} ->
     IO.puts("Success: #{result.output}")
 
-  {:error, :connection_refused} ->
+  # Model/transport failures arrive wrapped in a ProviderError; the raw
+  # HTTP-layer payload stays in :details.
+  {:error, %Nous.Errors.ProviderError{details: %Req.TransportError{reason: :econnrefused}}} ->
     IO.puts("Connection failed - is LM Studio running?")
 
-  {:error, :timeout} ->
-    IO.puts("Request timed out")
+  {:error, %Nous.Errors.ProviderError{details: %Req.TransportError{reason: :timeout}}} ->
+    IO.puts("Request timed out - raise :receive_timeout on the model")
 
-  {:error, {:http_error, 401}} ->
+  {:error, %Nous.Errors.ProviderError{status_code: 401}} ->
     IO.puts("Authentication failed - check your API key")
 
-  {:error, {:http_error, 429}} ->
-    IO.puts("Rate limit exceeded - wait before retrying")
+  {:error, %Nous.Errors.ProviderError{status_code: 429, retry_after_ms: retry_after}} ->
+    IO.puts("Rate limit exceeded - retry after #{inspect(retry_after)}ms")
 
   {:error, reason} ->
     IO.puts("Unexpected error: #{inspect(reason)}")
@@ -216,26 +218,63 @@ When exceeded:
 IO.puts("--- Timeouts ---")
 
 IO.puts("""
-Configure timeouts at multiple levels:
+There is no agent-level timeout: %Nous.Agent{} has no :timeout and no
+:tool_timeout field, so those two options are silently dropped by Nous.new/2.
+Three real knobs exist, at three different layers.
 
-  # Agent-level timeout (entire run)
-  agent = Nous.new("openai:gpt-4",
-    timeout: 30_000  # 30 seconds
-  )
+1. :receive_timeout - HTTP receive timeout for one model request (ms).
+   It lives on the model. Nous.new/2 forwards its options to
+   Nous.Model.parse/2, so either form works:
 
-  # Tool-level timeout
-  slow_tool = fn _ctx, _args ->
-    Process.sleep(5000)
-    %{result: "done"}
-  end
+     agent = Nous.new("openai:gpt-4", receive_timeout: 60_000)
 
-  agent = Nous.new("openai:gpt-4",
-    tools: [slow_tool],
-    tool_timeout: 10_000  # 10 seconds per tool
-  )
+     model = Nous.Model.new(:openai, "gpt-4", receive_timeout: 60_000)
 
-When timeout occurs:
-  {:error, :timeout}
+   Defaults per provider (Nous.Model.new/3):
+     - cloud providers and custom:  180_000 (3 min)
+     - lmstudio, ollama, vllm, sglang: 120_000 (2 min)
+     - llamacpp:                       300_000 (5 min, cold weights)
+
+   On expiry the provider wraps the transport failure, so Nous.run/3 returns:
+     {:error, %Nous.Errors.ProviderError{status_code: nil,
+                details: %Req.TransportError{reason: :timeout}}}
+
+2. :timeout - per-tool execution timeout (ms, default 30_000).
+   It lives on the Nous.Tool struct, not on the agent:
+
+     flakey =
+       Nous.Tool.from_function(&FlakeyTools.unreliable_api/2,
+         description: "Search an unreliable API",
+         timeout: 5_000,
+         retries: 2
+       )
+
+     agent = Nous.new("openai:gpt-4", tools: [flakey])
+
+   When the tool overruns, ToolExecutor kills the tool process and the
+   call fails (after :retries attempts) with:
+     %Nous.Errors.ToolTimeout{tool_name: "unreliable_api", timeout: 5_000}
+
+3. :cancellation_check - a 0-arity function passed to Nous.run/3. The
+   runner calls it before every iteration (and between streamed chunks
+   when stream: true). Throw {:cancelled, reason} to abort the run:
+
+     deadline = System.monotonic_time(:millisecond) + 30_000
+
+     Nous.run(agent, "Long task...",
+       cancellation_check: fn ->
+         if System.monotonic_time(:millisecond) > deadline do
+           throw({:cancelled, "wall-clock deadline exceeded"})
+         end
+       end
+     )
+
+     #=> {:error, %Nous.Errors.ExecutionCancelled{reason: "wall-clock deadline exceeded"}}
+
+   This is the closest thing to a whole-run timeout: it bounds the loop by
+   wall clock but cannot interrupt an in-flight HTTP request - that is what
+   :receive_timeout is for. See examples/advanced/cancellation.exs for a
+   runnable demo.
 """)
 
 # ============================================================================
@@ -343,7 +382,8 @@ IO.puts("""
 
 5. Prevent infinite loops:
    - Set max_iterations
-   - Set timeouts
+   - Bound the wall clock with a :cancellation_check
+   - Set :receive_timeout on the model and :timeout on slow tools
    - Use circuit breakers for external services
 
 6. Log and monitor:

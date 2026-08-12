@@ -3,6 +3,8 @@ defmodule Nous.ToolCallTest do
 
   alias Nous.ToolCall
 
+  doctest Nous.ToolCall
+
   describe "field/3" do
     test "reads atom keys" do
       assert ToolCall.field(%{name: "search"}, :name) == "search"

@@ -58,12 +58,13 @@ test_cases = [
 ]
 
 # Create suite
-suite = Suite.new(
-  name: "basic_eval_example",
-  default_model: model,
-  default_instructions: "Be concise. Give short, direct answers.",
-  test_cases: test_cases
-)
+suite =
+  Suite.new(
+    name: "basic_eval_example",
+    default_model: model,
+    default_instructions: "Be concise. Give short, direct answers.",
+    test_cases: test_cases
+  )
 
 IO.puts("Suite: #{suite.name}")
 IO.puts("Test cases: #{length(test_cases)}\n")
@@ -78,14 +79,15 @@ case Eval.run(suite, timeout: 60_000) do
     IO.puts("\nDetailed Results:")
     IO.puts(String.duplicate("-", 60))
 
-    Enum.each(result.test_results, fn test_result ->
+    Enum.each(result.results, fn test_result ->
       status = if test_result.passed, do: "PASS", else: "FAIL"
       score = Float.round(test_result.score * 100, 1)
 
-      IO.puts("#{status} | #{test_result.test_case.id} | Score: #{score}%")
+      IO.puts("#{status} | #{test_result.test_case_id} | Score: #{score}%")
 
       unless test_result.passed do
-        IO.puts("     Reason: #{test_result.reason}")
+        reason = test_result.evaluation_details[:reason] || test_result.error
+        IO.puts("     Reason: #{if is_binary(reason), do: reason, else: inspect(reason)}")
       end
     end)
 

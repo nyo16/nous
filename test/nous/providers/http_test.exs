@@ -3,6 +3,8 @@ defmodule Nous.Providers.HTTPTest do
 
   alias Nous.Providers.HTTP
 
+  doctest Nous.Providers.HTTP
+
   # ============================================================================
   # SSE Buffer Parsing Tests
   # ============================================================================

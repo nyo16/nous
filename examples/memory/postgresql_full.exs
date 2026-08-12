@@ -120,9 +120,9 @@ defmodule PostgresStore do
     Postgrex.query!(conn, @create_table, [])
     Postgrex.query!(conn, @create_gin_index, [])
 
-    # IVFFlat index requires rows to exist; create it only if table has data.
-    # For a fresh table, skip or use HNSW instead.
-    # Postgrex.query!(conn, @create_ivfflat_index, [])
+    # IVFFlat needs rows to exist before it can pick centroids, so a fresh
+    # table cannot build it. Run `PostgresStore.ivfflat_index_sql/0` yourself
+    # once the table is populated (or use HNSW, which has no such requirement).
 
     for sql <- @create_scope_indexes do
       Postgrex.query!(conn, sql, [])
@@ -130,6 +130,15 @@ defmodule PostgresStore do
 
     :ok
   end
+
+  @doc """
+  SQL for the IVFFlat vector index.
+
+  Not created by `setup_schema/1`: IVFFlat derives its centroids from existing
+  rows, so building it on an empty table produces a useless index. Run it after
+  the first bulk load.
+  """
+  def ivfflat_index_sql, do: @create_ivfflat_index
 
   # ------------------------------------------------------------------
   # store/2 — insert a memory entry
@@ -496,12 +505,46 @@ conn_opts = [
   password: System.get_env("PGPASSWORD", "postgres")
 ]
 
+# Postgrex is not a Nous dependency — this example implements a Store against
+# it to show what a real backend looks like, so the reader supplies the driver.
+unless Code.ensure_loaded?(Postgrex) do
+  IO.puts("""
+  Skipping: Postgrex is not available.
+
+  Add it to your mix.exs deps and run `mix deps.get`:
+
+      {:postgrex, "~> 0.19"}
+
+  You also need a running PostgreSQL with the `vector` extension available.
+  """)
+
+  System.halt(0)
+end
+
 IO.puts(
   "Connecting to PostgreSQL at #{conn_opts[:hostname]}:#{conn_opts[:port]}/#{conn_opts[:database]}"
 )
 
-{:ok, conn} = PostgresStore.init(conn_opts)
-IO.puts("Connected and schema created.\n")
+conn =
+  case PostgresStore.init(conn_opts) do
+    {:ok, conn} ->
+      IO.puts("Connected and schema created.\n")
+      conn
+
+    {:error, reason} ->
+      IO.puts("""
+
+      Skipping: could not connect to PostgreSQL (#{inspect(reason)}).
+
+      Start one and re-run, e.g.:
+
+          docker run --rm -p 5432:5432 -e POSTGRES_PASSWORD=postgres pgvector/pgvector:pg16
+
+      Override the connection with PGHOST / PGPORT / PGDATABASE / PGUSER / PGPASSWORD.
+      """)
+
+      System.halt(0)
+  end
 
 # ------------------------------------------------------------------
 # Store memories
@@ -667,27 +710,30 @@ IO.puts("--- Agent integration ---\n")
 IO.puts("""
   # To use PostgresStore with a Nous agent:
 
-  agent = Nous.new("lmstudio:qwen3",
-    plugins: [Nous.Plugins.Memory],
-    deps: %{
-      memory_config: %{
-        store: PostgresStore,
-        store_opts: [
-          hostname: "localhost",
-          database: "nous_memory",
-          username: "postgres",
-          password: "postgres"
-        ],
-        agent_id: "my-agent",
-        auto_inject: true,
-        inject_limit: 5,
+  agent = Nous.new("lmstudio:qwen3", plugins: [Nous.Plugins.Memory])
 
-        # Optional: add an embedding provider for semantic search
-        # embedding: Nous.Memory.Embedding.OpenAI,
-        # embedding_opts: %{api_key: System.get_env("OPENAI_API_KEY")}
-      }
+  # :deps is a Nous.run/3 option — %Nous.Agent{} has no :deps field, so
+  # passing it to Nous.new/2 silently drops it.
+  deps = %{
+    memory_config: %{
+      store: PostgresStore,
+      store_opts: [
+        hostname: "localhost",
+        database: "nous_memory",
+        username: "postgres",
+        password: "postgres"
+      ],
+      agent_id: "my-agent",
+      auto_inject: true,
+      inject_limit: 5,
+
+      # Optional: add an embedding provider for semantic search
+      # embedding: Nous.Memory.Embedding.OpenAI,
+      # embedding_opts: %{api_key: System.get_env("OPENAI_API_KEY")}
     }
-  )
+  }
+
+  {:ok, result} = Nous.run(agent, "What do you remember about me?", deps: deps)
 
   # The agent now has remember/recall/forget tools and will
   # automatically inject relevant memories into each conversation.

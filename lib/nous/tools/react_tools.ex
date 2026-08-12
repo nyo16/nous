@@ -23,6 +23,18 @@ defmodule Nous.Tools.ReActTools do
   The agent will automatically have access to all ReAct tools.
   """
 
+  @typedoc """
+  Tool arguments exactly as the model produced them: JSON object keys stay
+  strings, values are unvalidated.
+  """
+  @type args :: %{optional(String.t()) => term()}
+
+  @typedoc """
+  Tool result: an atom-keyed map. A `:__update_context__` key, when present,
+  is merged back into `ctx.deps` by the runner.
+  """
+  @type result :: %{required(atom()) => term()}
+
   require Logger
 
   @doc """
@@ -43,6 +55,7 @@ defmodule Nous.Tools.ReActTools do
 
   A confirmation message. The plan is stored in context for reference.
   """
+  @spec plan(Nous.RunContext.t(), args()) :: result()
   def plan(ctx, args) do
     # Support multiple parameter formats
     task =
@@ -96,6 +109,7 @@ defmodule Nous.Tools.ReActTools do
 
   Confirmation message.
   """
+  @spec note(Nous.RunContext.t(), args()) :: result()
   def note(ctx, %{"content" => content}) do
     timestamp = DateTime.utc_now() |> DateTime.to_string()
 
@@ -130,6 +144,7 @@ defmodule Nous.Tools.ReActTools do
 
   Confirmation with current todo count.
   """
+  @spec add_todo(Nous.RunContext.t(), args()) :: result()
   def add_todo(ctx, args) do
     item = Map.get(args, "item") || Map.get(args, "task", "")
     priority = Map.get(args, "priority", "medium")
@@ -174,6 +189,7 @@ defmodule Nous.Tools.ReActTools do
 
   Confirmation message.
   """
+  @spec complete_todo(Nous.RunContext.t(), args()) :: result()
   def complete_todo(ctx, args) do
     todos = ctx.deps[:todos] || []
 
@@ -225,6 +241,7 @@ defmodule Nous.Tools.ReActTools do
 
   Formatted list of todos.
   """
+  @spec list_todos(Nous.RunContext.t(), args()) :: result()
   def list_todos(ctx, _args \\ %{}) do
     todos = ctx.deps[:todos] || []
 
@@ -277,6 +294,7 @@ defmodule Nous.Tools.ReActTools do
 
   The final answer wrapped with completion metadata.
   """
+  @spec final_answer(Nous.RunContext.t(), args()) :: result()
   def final_answer(ctx, %{"answer" => answer}) do
     todos = ctx.deps[:todos] || []
     plans = ctx.deps[:plans] || []

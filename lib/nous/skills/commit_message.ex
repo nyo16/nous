@@ -1,5 +1,16 @@
 defmodule Nous.Skills.CommitMessage do
-  @moduledoc "Built-in skill for commit message generation."
+  @moduledoc """
+  Built-in skill — conventional commit messages from diffs.
+
+  Injects a system-prompt section specifying the `type(scope): description`
+  conventional-commit format, an imperative subject of at most 72 characters, a
+  body that explains *why* rather than *what*, and `BREAKING CHANGE:` footers.
+
+  Declares no keywords, so it never self-activates: name it explicitly with
+  `skills: [Nous.Skills.CommitMessage]` or pull in `skills: [{:group, :git}]`.
+  Group `:git`; tags `:git`, `:commit`, `:vcs`.
+  """
+
   use Nous.Skill, tags: [:git, :commit, :vcs], group: :git
 
   @impl true

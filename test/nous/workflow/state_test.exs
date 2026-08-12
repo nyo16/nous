@@ -3,6 +3,8 @@ defmodule Nous.Workflow.StateTest do
 
   alias Nous.Workflow.State
 
+  doctest Nous.Workflow.State
+
   describe "new/0,1" do
     test "creates empty state" do
       state = State.new()

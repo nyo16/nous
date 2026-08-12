@@ -20,12 +20,12 @@ Highlights:
 - **[LiveView Integration](guides/liveview-integration.md)** · **[Best Practices](guides/best_practices.md)** · **[Troubleshooting](guides/troubleshooting.md)** · **[Migration](guides/migration_guide.md)**
 
 ## 📚 Examples
-- **[Examples directory](../examples/README.md)** — numbered walkthroughs (01–19) plus
+- **[Examples directory](../examples/README.md)** — the numbered walkthroughs plus
   `providers/`, `memory/`, `advanced/`, `workflow/`, and `eval/`.
 
 ## 🔧 Architecture & Design
-- **[Design Documents](design/)** — architecture decisions and patterns.
-- **[Benchmarks](benchmarks/)** — performance notes (e.g. HTTP backends).
+- **[LLM Council Design](design/llm_council_design.md)** — architecture decisions and patterns.
+- **[Benchmarks](benchmarks/http_backend.md)** — performance notes (e.g. HTTP backends).
 
 ---
 

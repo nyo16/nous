@@ -331,13 +331,30 @@ defmodule Nous.Agent.Behaviour do
 
   ## Examples
 
-      iex> Behaviour.call(MyAgent, :init_context, [agent, ctx], ctx)
-      # Returns result of MyAgent.init_context(agent, ctx) or ctx if not implemented
+  When the module exports the callback, it is invoked with `args`:
+
+      iex> agent = Agent.new("openai:gpt-4", tools: [%Nous.Tool{name: "search", function: &Function.identity/1}])
+      iex> [tool] = Behaviour.call(Nous.Agents.BasicAgent, :get_tools, [agent], [])
+      iex> tool.name
+      "search"
+
+  When it does not, `default` is returned untouched — this is how the
+  optional callbacks (`c:init_context/2`, `c:handle_error/3`,
+  `c:before_request/3`, `c:after_tool/4`) degrade to no-ops:
+
+      iex> ctx = Nous.Agent.Context.new()
+      iex> agent = Agent.new("openai:gpt-4")
+      iex> Behaviour.call(Nous.Agents.BasicAgent, :init_context, [agent, ctx], ctx) === ctx
+      true
 
   """
   @spec call(module(), atom(), list(), any()) :: any()
   def call(module, callback, args, default) do
-    if function_exported?(module, callback, length(args)) do
+    # Code.ensure_loaded?/1 FIRST: under interactive code loading (dev, test,
+    # iex) a module that has never been called yet is not loaded, and
+    # function_exported?/3 answers false for it — which would silently skip an
+    # optional callback the behaviour module really does implement.
+    if Code.ensure_loaded?(module) and function_exported?(module, callback, length(args)) do
       apply(module, callback, args)
     else
       default

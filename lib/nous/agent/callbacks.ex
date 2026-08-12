@@ -100,7 +100,9 @@ defmodule Nous.Agent.Callbacks do
   ## Examples
 
       iex> Callbacks.events()
-      [:on_agent_start, :on_llm_new_delta, :on_llm_new_message, ...]
+      [:on_agent_start, :on_llm_new_delta, :on_llm_new_thinking_delta,
+       :on_llm_new_message, :on_tool_call, :on_tool_response,
+       :on_agent_complete, :on_error]
 
   """
   @spec events() :: [event()]
@@ -123,9 +125,12 @@ defmodule Nous.Agent.Callbacks do
 
   ## Examples
 
-      iex> ctx = Context.new(callbacks: %{on_llm_new_delta: fn _, d -> IO.write(d) end})
+      iex> parent = self()
+      iex> ctx = Context.new(callbacks: %{on_llm_new_delta: fn _event, delta -> send(parent, {:delta, delta}) end})
       iex> Callbacks.execute(ctx, :on_llm_new_delta, "Hello")
       :ok
+      iex> receive do {:delta, text} -> text end
+      "Hello"
 
       iex> ctx = Context.new(notify_pid: self())
       iex> Callbacks.execute(ctx, :on_llm_new_delta, "Hello")
@@ -160,11 +165,14 @@ defmodule Nous.Agent.Callbacks do
 
   ## Examples
 
+      iex> ctx = Context.new(notify_pid: self())
       iex> Callbacks.execute_many(ctx, [
       ...>   {:on_tool_call, %{id: "1", name: "search"}},
       ...>   {:on_tool_response, %{id: "1", result: "found"}}
       ...> ])
       :ok
+      iex> receive do {:tool_call, call} -> call.name end
+      "search"
 
   """
   @spec execute_many(Context.t(), [{event(), payload()}]) :: :ok

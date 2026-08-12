@@ -1,0 +1,431 @@
+# Tools, Permissions and Approvals
+
+[![Run in Livebook](https://livebook.dev/badge/v1/blue.svg)](https://livebook.dev/run?url=https%3A%2F%2Fraw.githubusercontent.com%2Fnyo16%2Fnous%2Fmaster%2Fnotebooks%2F02_tools_and_agents.livemd)
+
+```elixir
+Mix.install([
+  {:nous, "~> 0.17"},
+  {:kino, "~> 0.14"}
+])
+```
+
+## What you will build
+
+A tool is the only way an agent touches anything outside the model. This
+notebook covers the three layers that stand between a model's `tool_call` and
+your filesystem:
+
+1. **`Nous.Tool.Behaviour`** — a tool as a module, with dependencies injected
+   through the run context.
+2. **`Nous.Permissions`** — a policy that removes tools from the model's list
+   entirely, or marks them approval-required.
+3. **`:approval_handler`** — the callback that decides, per call. `Bash`,
+   `FileWrite` and `FileEdit` are declared `requires_approval: true` and are
+   **rejected outright** when no handler is wired. That is default-deny, not a
+   warning.
+
+Sections 1, 3 and 4 need no API key at all — they exercise the tool machinery
+directly. Only sections 2 and 5 call a model.
+
+## Configure a provider (optional)
+
+```elixir
+provider_input =
+  Kino.Input.select("Provider", [
+    {:openai, "OpenAI"},
+    {:anthropic, "Anthropic"},
+    {:groq, "Groq"},
+    {:lmstudio, "LM Studio (local, no key)"}
+  ])
+
+model_input = Kino.Input.text("Model name", default: "gpt-4o-mini")
+key_input = Kino.Input.password("API key")
+
+Kino.Layout.grid([provider_input, model_input, key_input], columns: 1)
+```
+
+```elixir
+key_env = %{
+  openai: :openai_api_key,
+  anthropic: :anthropic_api_key,
+  groq: :groq_api_key,
+  lmstudio: nil
+}
+
+provider = Kino.Input.read(provider_input)
+model_name = model_input |> Kino.Input.read() |> String.trim()
+api_key = key_input |> Kino.Input.read() |> String.trim()
+
+case Map.fetch!(key_env, provider) do
+  nil -> :ok
+  env_key when api_key != "" -> Application.put_env(:nous, env_key, api_key)
+  _env_key -> :ok
+end
+
+model_string = "#{provider}:#{model_name}"
+ready = model_name != "" and (provider == :lmstudio or api_key != "")
+
+Kino.Markdown.new(
+  if ready do
+    "Configured: **`#{model_string}`**."
+  else
+    "No provider configured — sections 1, 3 and 4 still run; the two " <>
+      "model-backed cells will skip."
+  end
+)
+```
+
+## 1. A tool as a module
+
+`Nous.Tool.Behaviour` has one required callback, `execute/2`, and two optional
+ones, `metadata/0` and `schema/0`.
+
+The argument order is **context first, arguments second**. The context is a
+`%Nous.RunContext{}`; `ctx.deps` is whatever you passed as `deps:` to
+`Nous.run/3`. Injecting collaborators through `ctx.deps` instead of reaching
+for a hardcoded module is what makes a tool testable — a unit test builds a
+context with `Nous.RunContext.new/1` and calls `execute/2` directly, no model
+involved.
+
+`execute/2` returns `{:ok, result}`, `{:ok, result, %Nous.Tool.ContextUpdate{}}`
+or `{:error, reason}`.
+
+```elixir
+defmodule Notebook.Tools.Inventory do
+  @behaviour Nous.Tool.Behaviour
+
+  @impl true
+  def metadata do
+    %{
+      name: "check_inventory",
+      description: "Look up how many units of a product are currently in stock.",
+      parameters: %{
+        "type" => "object",
+        "properties" => %{
+          "sku" => %{
+            "type" => "string",
+            "description" => "Product SKU, for example \"ELX-001\""
+          }
+        },
+        "required" => ["sku"]
+      }
+    }
+  end
+
+  # ctx FIRST, args SECOND. args keys are strings — they came off the wire.
+  @impl true
+  def execute(ctx, %{"sku" => sku}) do
+    inventory = ctx.deps[:inventory] || %{}
+
+    case Map.fetch(inventory, sku) do
+      {:ok, count} -> {:ok, %{sku: sku, in_stock: count, available: count > 0}}
+      :error -> {:error, "unknown sku: #{sku}"}
+    end
+  end
+end
+
+inventory_tool = Nous.Tool.from_module(Notebook.Tools.Inventory)
+
+Kino.Tree.new(%{
+  name: inventory_tool.name,
+  description: inventory_tool.description,
+  takes_ctx: inventory_tool.takes_ctx,
+  requires_approval: inventory_tool.requires_approval,
+  module: inventory_tool.module
+})
+```
+
+Because the tool is just a module, testing it is a function call. No model, no
+HTTP, no mocking library:
+
+```elixir
+test_ctx = Nous.RunContext.new(%{inventory: %{"ELX-001" => 7}})
+
+Kino.Tree.new(%{
+  hit: Notebook.Tools.Inventory.execute(test_ctx, %{"sku" => "ELX-001"}),
+  miss: Notebook.Tools.Inventory.execute(test_ctx, %{"sku" => "NOPE"})
+})
+```
+
+## 2. Handing the tool to an agent
+
+Tools go in `tools:` on `Nous.new/2`. Dependencies go in `deps:` on
+`Nous.run/3` — `deps` is a *run* option, not an agent field, precisely so one
+agent struct can serve many callers with different data.
+
+```elixir
+shop_agent =
+  Nous.new(model_string,
+    name: "shop_agent",
+    instructions: """
+    You answer stock questions for an online store. Always call check_inventory
+    before answering; never guess a number.
+    """,
+    tools: [Notebook.Tools.Inventory],
+    model_settings: %{temperature: 0.0}
+  )
+
+shop_result =
+  if ready do
+    Nous.run(shop_agent, "Do we have any ELX-001 left, and how many?",
+      deps: %{inventory: %{"ELX-001" => 7, "ELX-002" => 0}}
+    )
+  else
+    {:error, :not_configured}
+  end
+
+case shop_result do
+  {:ok, result} ->
+    Kino.Markdown.new("""
+    #{result.output}
+
+    ---
+
+    `#{result.usage.tool_calls}` tool call(s) over `#{result.iterations}` iteration(s).
+    """)
+
+  {:error, reason} ->
+    Kino.Markdown.new("Skipped or failed: `#{inspect(reason)}`")
+end
+```
+
+Note the `tools:` list holds the **module**, not `Nous.Tool.from_module/1`'s
+output — `Nous.new/2` accepts modules, captured 2-arity functions and
+`%Nous.Tool{}` structs and normalises all three.
+
+## 3. Permissions — deciding what the model may even see
+
+`Nous.Permissions` operates on tool *names*. Three preset modes:
+
+* `default_policy/0` — read and search tools open, write and execute tools
+  require approval.
+* `permissive_policy/0` — everything open.
+* `strict_policy/0` — everything requires approval.
+
+`build_policy/1` composes a custom one with `:deny`, `:deny_prefixes`,
+`:allow`, `:allow_prefixes` and `:approval_required`. A *blocked* tool is
+stripped from the tool list before the request is built, so the model never
+learns it exists. An *approval-required* tool is still offered, but every call
+goes through the handler.
+
+```elixir
+alias Nous.Permissions
+alias Nous.Tools.{Bash, FileEdit, FileGlob, FileRead, FileWrite}
+
+builtin_tools =
+  Enum.map([Bash, FileRead, FileWrite, FileEdit, FileGlob], &Nous.Tool.from_module/1)
+
+policy = Permissions.default_policy()
+
+rows =
+  Enum.map(builtin_tools, fn tool ->
+    %{
+      tool: tool.name,
+      category: inspect(tool.category),
+      declared_requires_approval: tool.requires_approval,
+      blocked_by_policy: Permissions.blocked?(policy, tool.name),
+      needs_approval: Permissions.requires_approval?(policy, tool.name)
+    }
+  end)
+
+Kino.DataTable.new(rows,
+  keys: [:tool, :category, :declared_requires_approval, :blocked_by_policy, :needs_approval]
+)
+```
+
+A custom policy that bans the shell outright and gates edits:
+
+```elixir
+locked_down =
+  Permissions.build_policy(
+    mode: :default,
+    deny: ["bash"],
+    approval_required: ["file_write", "file_edit"]
+  )
+
+{allowed, blocked} = Permissions.partition_tools(locked_down, builtin_tools)
+
+Kino.Tree.new(%{
+  allowed: Enum.map(allowed, & &1.name),
+  blocked: Enum.map(blocked, & &1.name)
+})
+```
+
+You attach a policy with `permissions:` on `Nous.new/2`:
+
+<!-- livebook:{"force_markdown":true} -->
+
+```elixir
+Nous.new("openai:gpt-4o-mini",
+  tools: [Nous.Tools.FileRead, Nous.Tools.FileWrite],
+  permissions: locked_down
+)
+```
+
+## 4. Approvals — `Bash`, `FileWrite` and `FileEdit` refuse without a handler
+
+This is worth being blunt about. `Nous.Tools.Bash`, `Nous.Tools.FileWrite` and
+`Nous.Tools.FileEdit` all declare `requires_approval: true`. If the run context
+carries no `:approval_handler` and was not explicitly flagged as already-gated,
+the call is **rejected with an error**, not silently approved. One
+prompt-injected document is otherwise one step from arbitrary code execution.
+
+First, a sandbox. `Nous.Tools.PathGuard` resolves every file path against
+`deps[:workspace_root]` (defaulting to the current working directory) and
+rejects anything that escapes it, symlinks included.
+
+```elixir
+workspace = Path.join(System.tmp_dir!(), "nous_notebook_#{System.unique_integer([:positive])}")
+File.mkdir_p!(workspace)
+
+write_tool = Nous.Tool.from_module(Nous.Tools.FileWrite)
+
+write_args = %{
+  "file_path" => Path.join(workspace, "notes.md"),
+  "content" => "# Written by an agent\n"
+}
+
+workspace
+```
+
+Now the same call, twice, through `Nous.ToolExecutor.execute/3` — no model
+needed. The only difference is the third argument.
+
+```elixir
+ungated = Nous.RunContext.new(%{workspace_root: workspace})
+
+refused = Nous.ToolExecutor.execute(write_tool, write_args, ungated)
+
+Kino.Markdown.new("""
+Without an approval handler:
+
+    #{inspect(refused, pretty: true, limit: :infinity) |> String.replace("\n", "\n    ")}
+
+File exists on disk? **#{File.exists?(write_args["file_path"])}**
+""")
+```
+
+### Approving interactively
+
+The handler is a 1-arity function. It receives
+`%{name: ..., id: ..., arguments: ..., tool: ...}` and must return `:approve`,
+`:reject`, or `{:edit, new_args}` to run the tool with different arguments.
+
+Because Livebook evaluates cells in a single process and streams output as the
+cell runs, a handler can render buttons and then simply *block* on `receive`
+until you click one. Run the cell, look at the buttons it renders, and decide.
+
+```elixir
+approve_button = Kino.Control.button("Approve")
+reject_button = Kino.Control.button("Reject")
+
+Kino.Control.subscribe(approve_button, :approval_granted)
+Kino.Control.subscribe(reject_button, :approval_denied)
+
+Kino.render(Kino.Layout.grid([approve_button, reject_button], columns: 2))
+
+interactive_handler = fn call ->
+  Kino.render(
+    Kino.Markdown.new("""
+    **Approval requested:** `#{call.name}`
+
+        #{inspect(call.arguments, pretty: true) |> String.replace("\n", "\n    ")}
+
+    Click **Approve** or **Reject** above. Auto-rejects after 60 seconds.
+    """)
+  )
+
+  receive do
+    {:approval_granted, _event} -> :approve
+    {:approval_denied, _event} -> :reject
+  after
+    60_000 -> :reject
+  end
+end
+
+gated = Nous.RunContext.new(%{workspace_root: workspace}, approval_handler: interactive_handler)
+
+decision = Nous.ToolExecutor.execute(write_tool, write_args, gated)
+
+Kino.Markdown.new("""
+Result: `#{inspect(decision)}`
+
+File exists on disk? **#{File.exists?(write_args["file_path"])}**
+""")
+```
+
+## 5. An agent with an approval handler
+
+The same handler shape plugs into `Nous.run/3` as `approval_handler:`. The
+agent runner calls it before every approval-required tool call, sequentially,
+in call order — even when `parallel_tool_calls: true` fans the executions out
+afterwards.
+
+For the notebook we auto-approve writes that stay inside the sandbox and reject
+everything else, which is a reasonable production shape too: a policy function,
+not a human, for the calls whose safety you can actually decide programmatically.
+
+```elixir
+auditing_handler = fn call ->
+  path = call.arguments["file_path"] || call.arguments["path"] || ""
+  inside? = String.starts_with?(Path.expand(path), Path.expand(workspace))
+
+  IO.puts(
+    "[approval] #{call.name} #{inspect(call.arguments)} -> #{if inside?, do: "approve", else: "reject"}"
+  )
+
+  if inside?, do: :approve, else: :reject
+end
+
+writer_agent =
+  Nous.new(model_string,
+    name: "writer_agent",
+    instructions: """
+    You write short files on request. Always use the exact path the user gives
+    you. Confirm what you wrote in one sentence.
+    """,
+    tools: [Nous.Tools.FileWrite],
+    permissions: Permissions.default_policy()
+  )
+
+writer_result =
+  if ready do
+    Nous.run(
+      writer_agent,
+      "Write the text 'hello from nous' to #{Path.join(workspace, "greeting.txt")}",
+      deps: %{workspace_root: workspace},
+      approval_handler: auditing_handler
+    )
+  else
+    {:error, :not_configured}
+  end
+
+case writer_result do
+  {:ok, result} ->
+    Kino.Markdown.new("""
+    #{result.output}
+
+    Files now in the sandbox: `#{inspect(File.ls!(workspace))}`
+    """)
+
+  {:error, reason} ->
+    Kino.Markdown.new("Skipped or failed: `#{inspect(reason)}`")
+end
+```
+
+```elixir
+File.rm_rf!(workspace)
+Kino.Markdown.new("Sandbox `#{workspace}` removed.")
+```
+
+## Where to go next
+
+* **Notebook 3 — RAG and the knowledge base.** Ingest documents, search them,
+  and give an agent a pre-populated store.
+* `Nous.Tool.from_function/2` if a captured 2-arity function is a better fit
+  than a module, and `Nous.Tool.Schema` for the `tool "name" do ... end` macro
+  the built-in tools use.
+* `Nous.Plugins.HumanInTheLoop` to declare approval-required tool names in
+  `deps` instead of wiring the handler by hand.
+* `Nous.Tools.PathGuard` and `Nous.Tools.UrlGuard` — read these before
+  shipping any agent that touches the filesystem or the network.

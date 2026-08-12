@@ -8,12 +8,13 @@ Comprehensive guide for integrating Nous AI agents with Phoenix LiveView, coveri
 2. [Basic LiveView Integration](#basic-liveview-integration)
 3. [Streaming Patterns](#streaming-patterns)
 4. [GenServer Agent Management](#genserver-agent-management)
-5. [PubSub Multi-User Coordination](#pubsub-multi-user-coordination)
-6. [Production Patterns](#production-patterns)
-7. [Error Handling & Recovery](#error-handling--recovery)
-8. [Testing Strategies](#testing-strategies)
-9. [Performance Optimization](#performance-optimization)
+5. [Nous.PubSub Integration](#nouspubsub-integration)
+6. [PubSub Multi-User Coordination](#pubsub-multi-user-coordination)
+7. [Production Patterns](#production-patterns)
+8. [Error Handling & Recovery](#error-handling--recovery)
+9. [Testing Strategies](#testing-strategies)
 10. [Complete Examples](#complete-examples)
+11. [More Examples](#more-examples)
 
 ---
 
@@ -66,13 +67,26 @@ defmodule MyAppWeb.ChatLive do
   end
 
   defp stream_response(parent, agent, prompt) do
-    # Use the agent passed as parameter instead of creating a new one
-    Nous.run_stream(agent, prompt)
-    |> Stream.each(fn
-      {:text_delta, text} -> send(parent, {:stream_chunk, text})
-      {:finish, result} -> send(parent, {:stream_complete, %{role: :assistant, content: result.output}})
-    end)
-    |> Stream.run()
+    # Use the agent passed as parameter instead of creating a new one.
+    # Nous.run_stream/3 returns {:ok, stream} — it is not a bare stream.
+    case Nous.run_stream(agent, prompt) do
+      {:ok, stream} ->
+        stream
+        |> Stream.each(fn
+          {:text_delta, text} ->
+            send(parent, {:stream_chunk, text})
+
+          {:complete, result} ->
+            send(parent, {:stream_complete, %{role: :assistant, content: result.output}})
+
+          _other ->
+            :ok
+        end)
+        |> Stream.run()
+
+      {:error, reason} ->
+        send(parent, {:stream_complete, %{role: :error, content: inspect(reason)}})
+    end
   end
 
   def render(assigns) do
@@ -310,12 +324,14 @@ defmodule MyAppWeb.ChatLive do
 
   def mount(_params, _session, socket) do
     agent = Nous.new("openai:gpt-4o", tools: [&MyTools.search/2])
-    {:ok, assign(socket, agent: agent, messages: [], stream: nil, cancel: false)}
+    {:ok, assign(socket, agent: agent, messages: [], stream: nil, current: "")}
   end
 
   def handle_event("send", %{"prompt" => prompt}, socket) do
     parent = self()
-    cancel_ref = make_ref()
+    # Shared cancellation flag. The process dictionary would not work here:
+    # the LiveView and the Task are different processes.
+    cancel = :atomics.new(1, signed: false)
 
     {:ok, task} =
       Task.start_link(fn ->
@@ -323,17 +339,17 @@ defmodule MyAppWeb.ChatLive do
           stream: true,
           notify_pid: parent,
           cancellation_check: fn ->
-            if Process.get({:cancel, cancel_ref}), do: throw({:cancelled, :user})
+            if :atomics.get(cancel, 1) == 1, do: throw({:cancelled, :user})
           end
         )
       end)
 
-    {:noreply, assign(socket, stream: {task, cancel_ref}, current: "")}
+    {:noreply, assign(socket, stream: {task, cancel}, current: "")}
   end
 
-  def handle_event("stop", _, socket) do
-    {_task, ref} = socket.assigns.stream
-    Process.put({:cancel, ref}, true)
+  def handle_event("stop", _params, socket) do
+    {_task, cancel} = socket.assigns.stream
+    :atomics.put(cancel, 1, 1)
     {:noreply, socket}
   end
 
@@ -455,12 +471,12 @@ defmodule MyAppWeb.StreamingChatLive do
   end
 
   # Stream completed
-  def handle_info({:stream_complete, usage}, socket) do
+  def handle_info({:stream_complete, meta}, socket) do
     final_msg = %{
       role: :assistant,
       content: socket.assigns.current_response,
       id: generate_id(),
-      usage: usage
+      finish_reason: meta.finish_reason
     }
 
     messages = socket.assigns.messages ++ [final_msg]
@@ -528,25 +544,33 @@ defmodule MyAppWeb.StreamingChatLive do
   defp stream_ai_response(parent, prompt) do
     agent = Nous.new("anthropic:claude-3-5-sonnet")
 
-    try do
-      Nous.run_stream(agent, prompt)
-      |> Stream.each(fn
-        {:text_delta, text} ->
-          send(parent, {:stream_chunk, text})
+    # Nous.run_stream/3 returns {:ok, stream} | {:error, reason}. The
+    # terminal {:complete, result} event carries %{output: ..., finish_reason: ...}.
+    case Nous.run_stream(agent, prompt) do
+      {:ok, stream} ->
+        try do
+          stream
+          |> Stream.each(fn
+            {:text_delta, text} ->
+              send(parent, {:stream_chunk, text})
 
-        {:finish, result} ->
-          usage = if result, do: Map.from_struct(result.usage), else: %{}
-          send(parent, {:stream_complete, usage})
+            {:complete, result} ->
+              send(parent, {:stream_complete, %{finish_reason: result.finish_reason}})
 
-        {:error, error} ->
-          send(parent, {:stream_error, error})
+            {:error, error} ->
+              send(parent, {:stream_error, error})
 
-        _ -> :ok
-      end)
-      |> Stream.run()
-    rescue
-      error ->
-        send(parent, {:stream_error, error})
+            _other ->
+              :ok
+          end)
+          |> Stream.run()
+        rescue
+          error ->
+            send(parent, {:stream_error, error})
+        end
+
+      {:error, reason} ->
+        send(parent, {:stream_error, reason})
     end
   end
 
@@ -766,8 +790,9 @@ defmodule MyApp.AgentServer do
 
     messages = state.messages ++ [user_msg]
 
-    # Get AI response
-    case Nous.run(state.agent, messages) do
+    # Get AI response. The new message is the prompt; earlier turns are
+    # replayed via :message_history as %Nous.Message{} structs.
+    case Nous.run(state.agent, message, message_history: to_nous_messages(state.messages)) do
       {:ok, result} ->
         ai_msg = %{
           role: :assistant,
@@ -813,7 +838,7 @@ defmodule MyApp.AgentServer do
     stream_id = generate_id()
 
     spawn_link(fn ->
-      stream_response(parent, stream_to, state.agent, messages, stream_id)
+      stream_response(parent, stream_to, state.agent, message, state.messages, stream_id)
     end)
 
     # Return immediately with stream ID
@@ -848,17 +873,16 @@ defmodule MyApp.AgentServer do
     {:reply, {:ok, conversation}, state}
   end
 
-  def handle_info({:stream_complete, stream_id, ai_message, usage}, state) do
-    # Add completed message to history
+  def handle_info({:stream_complete, _stream_id, ai_message}, state) do
+    # Add completed message to history. Streamed results carry no usage
+    # totals — only run/3 returns a %Nous.Usage{}.
     new_messages = state.messages ++ [ai_message]
-    new_total = state.total_tokens + (usage.total_tokens || 0)
 
     # Persist updated conversation
     save_conversation(state.user_id, state.conversation_id, new_messages)
 
     new_state = %{state |
       messages: new_messages,
-      total_tokens: new_total,
       last_activity: DateTime.utc_now()
     }
 
@@ -919,38 +943,52 @@ defmodule MyApp.AgentServer do
     )
   end
 
-  defp stream_response(parent, stream_to, agent, messages, stream_id) do
-    accumulated = ""
+  defp stream_response(parent, stream_to, agent, prompt, history, stream_id) do
+    # run_stream/3 returns {:ok, stream}; the stream is consumed with Enum
+    # (there is no Stream.reduce/3). {:complete, result} is the terminal event.
+    case Nous.run_stream(agent, prompt, message_history: to_nous_messages(history)) do
+      {:ok, stream} ->
+        try do
+          Enum.reduce(stream, "", fn
+            {:text_delta, text}, acc ->
+              send(stream_to, {:stream_chunk, stream_id, text})
+              acc <> text
 
-    try do
-      Nous.run_stream(agent, messages)
-      |> Stream.reduce("", fn
-        {:text_delta, text}, acc ->
-          new_acc = acc <> text
-          send(stream_to, {:stream_chunk, stream_id, text})
-          new_acc
+            {:complete, result}, acc ->
+              ai_message = %{
+                role: :assistant,
+                content: result.output,
+                timestamp: DateTime.utc_now(),
+                id: generate_id()
+              }
 
-        {:finish, result}, acc ->
-          ai_message = %{
-            role: :assistant,
-            content: acc,
-            timestamp: DateTime.utc_now(),
-            id: generate_id(),
-            usage: result.usage
-          }
+              send(stream_to, {:stream_complete, stream_id, ai_message})
+              send(parent, {:stream_complete, stream_id, ai_message})
+              acc
 
-          send(stream_to, {:stream_complete, stream_id, ai_message})
-          send(parent, {:stream_complete, stream_id, ai_message, result.usage})
-          acc
+            {:error, error}, acc ->
+              send(stream_to, {:stream_error, stream_id, error})
+              acc
 
-        {:error, error}, acc ->
-          send(stream_to, {:stream_error, stream_id, error})
-          acc
-      end)
-    rescue
-      error ->
-        send(stream_to, {:stream_error, stream_id, error})
+            _other, acc ->
+              acc
+          end)
+        rescue
+          error ->
+            send(stream_to, {:stream_error, stream_id, error})
+        end
+
+      {:error, reason} ->
+        send(stream_to, {:stream_error, stream_id, reason})
     end
+  end
+
+  # The GenServer keeps UI-friendly maps; Nous wants %Nous.Message{} structs.
+  defp to_nous_messages(messages) do
+    Enum.map(messages, fn
+      %{role: :assistant, content: content} -> Nous.Message.assistant(content)
+      %{content: content} -> Nous.Message.user(content)
+    end)
   end
 
   # Configuration
@@ -1039,18 +1077,33 @@ defmodule MyAppWeb.ChatLive do
   use Phoenix.LiveView
 
   def mount(%{"session_id" => session_id}, _session, socket) do
-    if connected?(socket) do
-      # Subscribe to agent events (topic: "agent:{session_id}")
-      Nous.PubSub.subscribe(MyApp.PubSub, "agent:#{session_id}")
-    end
+    socket =
+      if connected?(socket) do
+        # Subscribe to agent events. Always build the topic with
+        # Nous.PubSub.agent_topic/1 — it is what AgentServer publishes to.
+        Nous.PubSub.subscribe(MyApp.PubSub, Nous.PubSub.agent_topic(session_id))
 
-    # pubsub defaults to Nous.PubSub.configured_pubsub()
-    {:ok, pid} = Nous.AgentServer.start_link(
-      session_id: session_id,
-      agent_config: %{model: "openai:gpt-4", instructions: "Be helpful."}
-    )
+        # Started only on the connected mount, so the dead render does not
+        # spawn a second server. `:pubsub` defaults to
+        # `Nous.PubSub.configured_pubsub()`.
+        {:ok, pid} =
+          Nous.AgentServer.start_link(
+            session_id: session_id,
+            agent_config: %{model: "openai:gpt-4", instructions: "Be helpful."}
+          )
 
-    {:ok, assign(socket, agent: pid, session_id: session_id)}
+        assign(socket, agent: pid)
+      else
+        assign(socket, agent: nil)
+      end
+
+    {:ok, assign(socket, session_id: session_id)}
+  end
+
+  def handle_event("send", %{"message" => message}, socket) do
+    # Returns immediately; results arrive as PubSub events below.
+    Nous.AgentServer.send_message(socket.assigns.agent, message)
+    {:noreply, socket}
   end
 
   # Events arrive automatically via PubSub
@@ -1075,6 +1128,13 @@ deps = %{
     )
   }
 }
+
+# `:deps` is a run option, not an agent field — pass it on each call:
+agent = Nous.new("openai:gpt-4o", plugins: [Nous.Plugins.HumanInTheLoop])
+Nous.run(agent, prompt, deps: deps)
+
+# `{:approval_required, info}` is broadcast on the *agent* topic, so the
+# LiveView must be subscribed to Nous.PubSub.agent_topic(session_id).
 
 # In your LiveView:
 def handle_info({:approval_required, info}, socket) do
@@ -1105,7 +1165,9 @@ Nous provides standardized topic builders:
 | `Nous.PubSub.research_topic(id)` | `"nous:research:{id}"` | Research progress |
 | `Nous.PubSub.approval_topic(id)` | `"nous:approval:{id}"` | HITL responses |
 
-Note: `AgentServer` uses the topic `"agent:{session_id}"` (without the `nous:` prefix) for backward compatibility.
+`AgentServer` subscribes and publishes on `Nous.PubSub.agent_topic(session_id)`.
+Always build the topic with the helper rather than hardcoding it — a topic
+string without the `nous:` prefix receives nothing.
 
 ---
 
@@ -1368,7 +1430,7 @@ defmodule MyApp.RoomManager do
     {:noreply, state}
   end
 
-  def handle_info({:ai_stream_complete, message, usage}, state) do
+  def handle_info({:ai_stream_complete, message}, state) do
     # Add AI message to history
     new_messages = state.messages ++ [message]
 
@@ -1381,6 +1443,16 @@ defmodule MyApp.RoomManager do
     }
 
     {:noreply, new_state}
+  end
+
+  def handle_info({:ai_stream_error, chunk_id, reason}, state) do
+    PubSub.broadcast(MyApp.PubSub, "room:#{state.room_id}", {
+      :ai_stream_error,
+      chunk_id,
+      reason
+    })
+
+    {:noreply, state}
   end
 
   ## Private Functions
@@ -1462,30 +1534,34 @@ defmodule MyApp.RoomManager do
   end
 
   defp stream_ai_response(parent, agent, context, chunk_id) do
-    accumulated = ""
+    # run_stream/3 returns {:ok, stream}; consume it with Enum (there is no
+    # Stream.reduce/3) and finish on the terminal {:complete, result} event.
+    case Nous.run_stream(agent, context) do
+      {:ok, stream} ->
+        Enum.reduce(stream, "", fn
+          {:text_delta, text}, acc ->
+            send(parent, {:ai_stream_chunk, chunk_id, text})
+            acc <> text
 
-    Nous.run_stream(agent, context)
-    |> Stream.reduce("", fn
-      {:text_delta, text}, acc ->
-        new_acc = acc <> text
-        send(parent, {:ai_stream_chunk, chunk_id, text})
-        new_acc
+          {:complete, result}, acc ->
+            ai_message = %{
+              id: generate_id(),
+              user_id: "AI Assistant",
+              content: result.output,
+              timestamp: DateTime.utc_now(),
+              type: :ai
+            }
 
-      {:finish, result}, acc ->
-        ai_message = %{
-          id: generate_id(),
-          user_id: "AI Assistant",
-          content: acc,
-          timestamp: DateTime.utc_now(),
-          type: :ai,
-          usage: result.usage
-        }
+            send(parent, {:ai_stream_complete, ai_message})
+            acc
 
-        send(parent, {:ai_stream_complete, ai_message, result.usage})
-        acc
+          _other, acc ->
+            acc
+        end)
 
-      _, acc -> acc
-    end)
+      {:error, reason} ->
+        send(parent, {:ai_stream_error, chunk_id, reason})
+    end
   end
 
   defp broadcast_message(room_id, message) do
@@ -1751,7 +1827,7 @@ defmodule MyApp.ResourceManager do
     {:reply, stats, state}
   end
 
-  def handle_cast({:release_agent, user_id}, state) do
+  def handle_cast({:release_agent, _user_id}, state) do
     new_state = %{state | active_agents: max(0, state.active_agents - 1)}
 
     # Process queue if space available
@@ -1818,7 +1894,7 @@ defmodule MyApp.ResourceManager do
           total: total,
           used: used,
           free: free,
-          usage_percent: if total > 0, do: Float.round(used / total * 100, 2), else: 0
+          usage_percent: if(total > 0, do: Float.round(used / total * 100, 2), else: 0)
         }
 
       _ ->

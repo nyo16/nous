@@ -97,7 +97,7 @@ case Nous.run(local_agent, "Hello from the custom provider!") do
   {:ok, result} ->
     IO.puts("Response: #{result.output}")
 
-  {:error, error} ->
+  {:error, _error} ->
     IO.puts("Could not connect to local server (expected if none running)")
     IO.puts("To test: Start LM Studio and load a model")
 end
@@ -129,7 +129,7 @@ System.put_env("CUSTOM_BASE_URL", "http://localhost:1234/v1")
 System.put_env("CUSTOM_API_KEY", "not-needed")
 
 # Now create agent without base_url - it reads from env
-env_agent = Nous.new("custom:qwen3")
+_env_agent = Nous.new("custom:qwen3")
 IO.puts("Created agent with base_url from CUSTOM_BASE_URL env var")
 
 # Restore original values

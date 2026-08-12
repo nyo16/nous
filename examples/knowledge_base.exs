@@ -129,6 +129,9 @@ run_opts = [
   deps: %{
     kb_config: %{
       store: ETS,
+      # Reuse the store we just populated. Without :store_state the plugin
+      # calls ETS.init/1 on every run and the agent would search an empty KB.
+      store_state: store,
       kb_id: kb_id
     }
   }

@@ -5,9 +5,10 @@
 
 IO.puts("=== Nous AI - Callbacks Demo ===\n")
 
-agent = Nous.new("lmstudio:qwen3",
-  instructions: "You are helpful. Keep responses brief."
-)
+agent =
+  Nous.new("lmstudio:qwen3",
+    instructions: "You are helpful. Keep responses brief."
+  )
 
 # ============================================================================
 # Method 1: Map-based callbacks
@@ -16,16 +17,21 @@ agent = Nous.new("lmstudio:qwen3",
 IO.puts("--- Method 1: Map Callbacks ---")
 IO.puts("Streaming response with callbacks:\n")
 
-{:ok, _result} = Nous.run(agent, "Count from 1 to 5",
-  callbacks: %{
-    on_llm_new_delta: fn _event, delta ->
-      IO.write(delta)
-    end,
-    on_llm_new_message: fn _event, message ->
-      IO.puts("\n[Message complete: #{String.length(message.content)} chars]")
-    end
-  }
-)
+# `stream: true` is required for delta callbacks: it is what routes the run
+# through Nous.AgentRunner.Streaming, the only thing that emits
+# `on_llm_new_delta`. Without it the callback is registered and never called.
+{:ok, _result} =
+  Nous.run(agent, "Count from 1 to 5",
+    stream: true,
+    callbacks: %{
+      on_llm_new_delta: fn _event, delta ->
+        IO.write(delta)
+      end,
+      on_llm_new_message: fn _event, message ->
+        IO.puts("\n[Message complete: #{String.length(message.content)} chars]")
+      end
+    }
+  )
 
 IO.puts("")
 
@@ -40,9 +46,11 @@ IO.puts("Receiving events as process messages:\n")
 parent = self()
 
 Task.start(fn ->
-  {:ok, _result} = Nous.run(agent, "Say hello in 3 languages",
-    notify_pid: parent
-  )
+  {:ok, _result} =
+    Nous.run(agent, "Say hello in 3 languages",
+      stream: true,
+      notify_pid: parent
+    )
 end)
 
 # Receive and handle messages
@@ -68,7 +76,6 @@ defmodule MessageHandler do
       {:agent_error, error} ->
         IO.puts("\n[Error: #{inspect(error)}]")
         :done
-
     after
       30_000 ->
         IO.puts("\n[Timeout]")
@@ -86,28 +93,48 @@ MessageHandler.loop()
 IO.puts("\n--- Method 3: Callbacks with Tools ---")
 
 search = fn _ctx, %{"query" => query} ->
-  Process.sleep(100)  # Simulate API call
+  # Simulate API call
+  Process.sleep(100)
   %{results: ["Result for: #{query}"]}
 end
 
-agent_with_tools = Nous.new("lmstudio:qwen3",
-  instructions: "Use the search tool when asked to look something up.",
-  tools: [search]
-)
+# Always name a function tool. A bare anonymous function is given a
+# compiler-mangled name from `Function.info/1` and an EMPTY parameter schema,
+# so the model sees something like `-fun.0-/2` and cannot pass arguments.
+search_tool =
+  Nous.Tool.from_function(search,
+    name: "search",
+    description: "Search for information about a topic",
+    parameters: %{
+      "type" => "object",
+      "properties" => %{
+        "query" => %{"type" => "string", "description" => "What to search for"}
+      },
+      "required" => ["query"]
+    }
+  )
 
-{:ok, _result} = Nous.run(agent_with_tools, "Search for Elixir programming",
-  callbacks: %{
-    on_tool_call: fn _event, call ->
-      IO.puts("[Calling tool: #{call.name}(#{inspect(call.arguments)})]")
-    end,
-    on_tool_response: fn _event, response ->
-      IO.puts("[Tool response: #{inspect(response.result)}]")
-    end,
-    on_llm_new_delta: fn _event, delta ->
-      IO.write(delta)
-    end
-  }
-)
+agent_with_tools =
+  Nous.new("lmstudio:qwen3",
+    instructions: "Use the search tool when asked to look something up.",
+    tools: [search_tool]
+  )
+
+{:ok, _result} =
+  Nous.run(agent_with_tools, "Search for Elixir programming",
+    stream: true,
+    callbacks: %{
+      on_tool_call: fn _event, call ->
+        IO.puts("[Calling tool: #{call.name}(#{inspect(call.arguments)})]")
+      end,
+      on_tool_response: fn _event, response ->
+        IO.puts("[Tool response: #{inspect(response.result)}]")
+      end,
+      on_llm_new_delta: fn _event, delta ->
+        IO.write(delta)
+      end
+    }
+  )
 
 IO.puts("\n")
 
@@ -118,11 +145,12 @@ IO.puts("\n")
 IO.puts("""
 --- LiveView Integration Pattern ---
 
-In a Phoenix LiveView, use notify_pid: self() to receive events:
+In a Phoenix LiveView, use notify_pid: self() to receive events. Delta
+messages only arrive when the run is streaming, so pass stream: true too:
 
   def handle_event("send_message", %{"text" => text}, socket) do
     Task.start(fn ->
-      Nous.run(agent, text, notify_pid: socket.root_pid)
+      Nous.run(agent, text, stream: true, notify_pid: socket.root_pid)
     end)
     {:noreply, socket}
   end

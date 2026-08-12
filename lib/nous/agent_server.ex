@@ -33,8 +33,9 @@ defmodule Nous.AgentServer do
             }
           )
 
-          # Subscribe to responses
-          Phoenix.PubSub.subscribe(MyApp.PubSub, "agent:\#{socket.assigns.session_id}")
+          # Subscribe to responses. Always build the topic with
+          # Nous.PubSub.agent_topic/1 — it is what this server publishes to.
+          Phoenix.PubSub.subscribe(MyApp.PubSub, Nous.PubSub.agent_topic(socket.assigns.session_id))
 
           {:ok, assign(socket, agent_pid: agent_pid, messages: [])}
         end
@@ -74,8 +75,8 @@ defmodule Nous.AgentServer do
 
   ## PubSub Events
 
-  Subscribers on the `"agent:<session_id>"` topic receive the following
-  messages:
+  Subscribers on the `Nous.PubSub.agent_topic(session_id)` topic (currently
+  `"nous:agent:<session_id>"`) receive the following messages:
 
   | Message                          | Description                             |
   |----------------------------------|-----------------------------------------|
@@ -616,41 +617,34 @@ defmodule Nous.AgentServer do
     handle_cast({:user_message, message}, state)
   end
 
-  # Handle events from agent runner via notify_pid
+  # Runner notifications arriving via `notify_pid` (set to this server at
+  # `run_opts/2`). These are DRAINS, not publishers.
+  #
+  # The run context already carries `pubsub`/`pubsub_topic`
+  # (see `run_opts/2`), so `Nous.Agent.Callbacks.execute/3` broadcasts every
+  # one of these events to the very same topic. Re-broadcasting here did two
+  # bad things: it delivered every event to subscribers twice, and — because
+  # `init/1` subscribes this server to its OWN topic and
+  # `Phoenix.PubSub.broadcast/3` does not exclude the sender — the broadcast
+  # came straight back into this mailbox and was broadcast again, forever.
+  # An idle agent burned a full core (~1.2e8 reductions/s, measured).
+  #
+  # Keep the clauses: without them these messages fall through to the
+  # catch-all, which is fine but hides typos in the runner's event names.
   @impl true
-  def handle_info({:agent_delta, text}, state) do
-    # Forward streaming delta to PubSub subscribers
-    broadcast(state, {:agent_delta, text})
-    {:noreply, state}
-  end
+  def handle_info({:agent_delta, _text}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info({:tool_call, call}, state) do
-    # Forward tool call to PubSub subscribers
-    broadcast(state, {:tool_call, call})
-    {:noreply, state}
-  end
+  def handle_info({:tool_call, _call}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info({:tool_result, result}, state) do
-    # Forward tool result to PubSub subscribers
-    broadcast(state, {:tool_result, result})
-    {:noreply, state}
-  end
+  def handle_info({:tool_result, _result}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info({:agent_complete, result}, state) do
-    # Forward completion to PubSub subscribers
-    broadcast(state, {:agent_complete, result})
-    {:noreply, state}
-  end
+  def handle_info({:agent_complete, _result}, state), do: {:noreply, state}
 
   @impl true
-  def handle_info({:agent_error, error}, state) do
-    # Forward error to PubSub subscribers
-    broadcast(state, {:agent_error, error})
-    {:noreply, state}
-  end
+  def handle_info({:agent_error, _error}, state), do: {:noreply, state}
 
   @impl true
   def handle_info({:agent_start, _payload}, state) do

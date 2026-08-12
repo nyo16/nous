@@ -12,60 +12,46 @@
 #
 # Run: mix run examples/12_pubsub_agent.exs
 #
-# NOTE: This example requires phoenix_pubsub:
+# Requires phoenix_pubsub (an optional dep of Nous):
 #   {:phoenix_pubsub, "~> 2.1"}
 #
-# Configuration (in config/config.exs):
-#   config :nous, pubsub: MyApp.PubSub
+# Nous.PubSub is a thin wrapper over Phoenix.PubSub. It reads the pubsub name
+# from `config :nous, pubsub: MyApp.PubSub`; when that is unset,
+# `Nous.PubSub.configured_pubsub/0` returns nil and every subscribe/broadcast
+# is a silent no-op — agents run fine but you never see an event. This script
+# therefore starts a real Phoenix.PubSub and sets the config BEFORE any agent
+# starts, which is exactly what a Phoenix app does in its supervision tree.
 #
-# With this config, all AgentServers and Callbacks automatically
-# broadcast events via PubSub without passing pubsub: to each call.
-#
-# For demonstration, we simulate PubSub with a simple process-based approach
-# that mirrors the real Phoenix.PubSub API.
+# Model: the agent runs need a local LM Studio on http://localhost:1234/v1.
+# Without one you still see the full event flow — the events are just
+# {:agent_error, ...} instead of {:agent_delta, ...}.
 
 IO.puts("=== Nous AI - PubSub Agent Communication ===\n")
 
 # ============================================================================
-# Simulated PubSub (replace with Phoenix.PubSub in real Phoenix apps)
+# Real PubSub, wired the way a Phoenix app wires it
 # ============================================================================
 
-defmodule DemoPubSub do
-  @moduledoc """
-  Minimal PubSub simulation for this example.
-  In a real Phoenix app, use Phoenix.PubSub instead.
-  """
-  use GenServer
+unless Code.ensure_loaded?(Phoenix.PubSub) do
+  IO.puts("""
+  Skipping: phoenix_pubsub is not available.
 
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+  Add it to your mix.exs deps and run `mix deps.get`:
 
-  def subscribe(topic) do
-    GenServer.call(__MODULE__, {:subscribe, topic, self()})
-  end
+      {:phoenix_pubsub, "~> 2.1"}
+  """)
 
-  def broadcast(topic, message) do
-    GenServer.call(__MODULE__, {:broadcast, topic, message})
-  end
-
-  @impl true
-  def init(_), do: {:ok, %{subscriptions: %{}}}
-
-  @impl true
-  def handle_call({:subscribe, topic, pid}, _from, state) do
-    subs = Map.update(state.subscriptions, topic, [pid], &[pid | &1])
-    {:reply, :ok, %{state | subscriptions: subs}}
-  end
-
-  @impl true
-  def handle_call({:broadcast, topic, message}, _from, state) do
-    pids = Map.get(state.subscriptions, topic, [])
-    Enum.each(pids, fn pid -> send(pid, message) end)
-    {:reply, :ok, state}
-  end
+  System.halt(0)
 end
 
-# Start our demo PubSub
-{:ok, _} = DemoPubSub.start_link([])
+{:ok, _pubsub} = Phoenix.PubSub.Supervisor.start_link(name: Demo.PubSub)
+
+# Must happen before any AgentServer starts: the server reads the configured
+# pubsub when it builds its callbacks.
+Application.put_env(:nous, :pubsub, Demo.PubSub)
+
+pubsub = Nous.PubSub.configured_pubsub()
+IO.puts("Configured pubsub: #{inspect(pubsub)}\n")
 
 # ============================================================================
 # Example 1: Basic PubSub Agent Lifecycle
@@ -74,10 +60,10 @@ end
 IO.puts("--- Example 1: Basic PubSub Agent ---\n")
 
 session_id = "user-session-#{:rand.uniform(10000)}"
-topic = "agent:#{session_id}"
+topic = Nous.PubSub.agent_topic(session_id)
 
-# Subscribe to the agent's topic BEFORE starting it
-DemoPubSub.subscribe(topic)
+# Subscribe to the agent's topic BEFORE starting it.
+:ok = Nous.PubSub.subscribe(pubsub, topic)
 IO.puts("Subscribed to topic: #{topic}")
 
 # Start a supervised agent registered in the AgentRegistry
@@ -89,8 +75,9 @@ IO.puts("Subscribed to topic: #{topic}")
       instructions: "You are a helpful assistant. Be concise.",
       tools: []
     },
-    # In a real Phoenix app, set pubsub: MyApp.PubSub
-    # The AgentServer broadcasts all events to "agent:{session_id}"
+    # No `pubsub:` option needed here: the AgentServer picks up
+    # `config :nous, pubsub:` and broadcasts every event to
+    # `Nous.PubSub.agent_topic(session_id)`.
     name: Nous.AgentRegistry.via_tuple(session_id)
   )
 
@@ -104,10 +91,30 @@ IO.puts("Found agent via registry: #{inspect(found_pid)}\n")
 IO.puts("Sending message via PubSub pattern...")
 Nous.AgentServer.send_message(found_pid, "Hello! What is Elixir?")
 
-# Receive PubSub events
+# Receive PubSub events.
+#
+# These clauses mirror exactly what is published on the agent topic:
+# `Nous.Agent.Callbacks.to_message/2` maps every callback event to a tuple
+# ({:agent_start, %{agent: agent}}, {:agent_delta, text}, {:agent_thinking, text},
+# {:agent_message, msg}, {:tool_call, call}, {:tool_result, result},
+# {:agent_complete, result}, {:agent_error, error}), and AgentServer adds
+# {:agent_status, :started | :thinking}, {:agent_response, output} and
+# {:agent_cancelled, reason}.
+#
+# Note on {:agent_delta, _}: deltas only exist for a streaming run. AgentServer
+# does not enable streaming, so the answer arrives whole in {:agent_response,
+# output}. The delta clause is here because the same handler works verbatim for
+# a `Nous.run(agent, prompt, stream: true, ...)` run on the same topic.
 defmodule EventHandler do
   def collect_response(acc \\ "") do
     receive do
+      {:agent_start, %{agent: agent}} ->
+        IO.puts("[Started: #{agent.model.provider}:#{agent.model.model}]")
+        collect_response(acc)
+
+      {:agent_status, :started} ->
+        collect_response(acc)
+
       {:agent_status, :thinking} ->
         IO.puts("[Status: thinking...]")
         collect_response(acc)
@@ -116,35 +123,60 @@ defmodule EventHandler do
         IO.write(text)
         collect_response(acc <> text)
 
-      {:agent_response, _output} ->
+      {:agent_thinking, _text} ->
+        collect_response(acc)
+
+      {:agent_message, _message} ->
+        collect_response(acc)
+
+      {:agent_response, output} ->
+        IO.puts("Response: #{output}")
         collect_response(acc)
 
       {:agent_complete, result} ->
-        IO.puts("\n[Complete - #{result.usage.total_tokens} tokens]")
+        IO.puts(
+          "[Complete - #{result.usage.total_tokens} tokens, #{result.iterations} iterations]"
+        )
+
         {:ok, result}
 
       {:agent_error, error} ->
-        IO.puts("\n[Error: #{inspect(error)}]")
+        IO.puts("[Error: #{inspect(error)}]")
         {:error, error}
 
       {:tool_call, call} ->
-        IO.puts("\n[Tool call: #{call.name}]")
+        IO.puts("[Tool call: #{call.name}]")
         collect_response(acc)
 
       {:tool_result, _result} ->
         collect_response(acc)
 
       {:agent_cancelled, reason} ->
-        IO.puts("\n[Cancelled: #{reason}]")
+        IO.puts("[Cancelled: #{reason}]")
         {:error, :cancelled}
 
       other ->
-        IO.puts("[Unknown event: #{inspect(other)}]")
+        IO.puts("[Unhandled event: #{inspect(other)}]")
         collect_response(acc)
     after
-      30_000 ->
-        IO.puts("\n[Timeout]")
+      # Safety net only. The normal exits are {:agent_complete, _} (model
+      # answered) or {:agent_error, _} (e.g. connection refused because no
+      # LM Studio is running) — both arrive in well under a second, so this
+      # script finishes promptly either way.
+      10_000 ->
+        IO.puts("[Timeout waiting for agent events]")
         {:error, :timeout}
+    end
+  end
+
+  # Drop any events still queued from a previous turn. A script (unlike a
+  # LiveView) collects one turn at a time, so leftover post-completion events
+  # would otherwise be read as the *next* turn's events.
+  def drain do
+    receive do
+      _event -> drain()
+    after
+      0 -> :ok
     end
   end
 end
@@ -158,6 +190,7 @@ EventHandler.collect_response()
 IO.puts("\n--- Example 2: Multi-turn Conversation ---\n")
 
 IO.puts("Sending follow-up...")
+EventHandler.drain()
 Nous.AgentServer.send_message(found_pid, "What are its best features?")
 EventHandler.collect_response()
 
@@ -172,8 +205,8 @@ IO.puts("\nConversation has #{length(history)} messages")
 IO.puts("\n--- Example 3: Tools + PubSub ---\n")
 
 session_id2 = "tools-session-#{:rand.uniform(10000)}"
-topic2 = "agent:#{session_id2}"
-DemoPubSub.subscribe(topic2)
+topic2 = Nous.PubSub.agent_topic(session_id2)
+:ok = Nous.PubSub.subscribe(pubsub, topic2)
 
 get_time = fn _ctx, _args ->
   %{time: DateTime.utc_now() |> Calendar.strftime("%H:%M:%S"), timezone: "UTC"}
@@ -213,6 +246,7 @@ end
 
 # Send message to agent by looking it up from registry
 {:ok, pid2} = Nous.AgentRegistry.lookup(session_id2)
+EventHandler.drain()
 Nous.AgentServer.send_message(pid2, "What time is it and what's the weather in Tokyo?")
 EventHandler.collect_response()
 
@@ -223,8 +257,8 @@ EventHandler.collect_response()
 IO.puts("\n--- Example 4: Session Persistence ---\n")
 
 session_id3 = "persist-session-#{:rand.uniform(10000)}"
-topic3 = "agent:#{session_id3}"
-DemoPubSub.subscribe(topic3)
+topic3 = Nous.PubSub.agent_topic(session_id3)
+:ok = Nous.PubSub.subscribe(pubsub, topic3)
 
 {:ok, _pid3} =
   Nous.AgentServer.start_link(
@@ -240,6 +274,7 @@ DemoPubSub.subscribe(topic3)
 {:ok, pid3} = Nous.AgentRegistry.lookup(session_id3)
 
 IO.puts("Sending message with persistence enabled...")
+EventHandler.drain()
 Nous.AgentServer.send_message(pid3, "My favorite color is blue. Remember that.")
 EventHandler.collect_response()
 
@@ -268,7 +303,7 @@ defmodule MyAppWeb.ChatLive do
 
   def mount(%{"session_id" => session_id}, _session, socket) do
     # Subscribe to agent events via PubSub
-    Phoenix.PubSub.subscribe(MyApp.PubSub, "agent:\#{session_id}")
+    Nous.PubSub.subscribe(Nous.PubSub.configured_pubsub(), Nous.PubSub.agent_topic(session_id))
 
     # Start or find existing agent
     pid = case Nous.AgentRegistry.lookup(session_id) do
@@ -348,7 +383,8 @@ deps = %{hitl_config: %{
 
 Key points:
   - Configure PubSub once: `config :nous, pubsub: MyApp.PubSub`
-  - All communication goes through PubSub topics ("agent:{session_id}")
+  - All communication goes through PubSub topics (Nous.PubSub.agent_topic/1,
+    i.e. "nous:agent:{session_id}")
   - No direct PID references in the LiveView
   - AgentRegistry handles lookup by session_id
   - Persistence auto-saves after each response

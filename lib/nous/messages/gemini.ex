@@ -35,8 +35,9 @@ defmodule Nous.Messages.Gemini do
   ## Examples
 
       iex> response = %{"candidates" => [%{"content" => %{"parts" => [%{"text" => "Hello"}]}}]}
-      iex> Messages.Gemini.from_response(response)
-      %Message{role: :assistant, content: "Hello"}
+      iex> message = Messages.Gemini.from_response(response)
+      iex> {message.role, message.content}
+      {:assistant, "Hello"}
 
   """
   @spec from_response(map()) :: Message.t()
@@ -447,8 +448,22 @@ defmodule Nous.Messages.Gemini do
   defp get_setting(settings, key) when is_list(settings), do: Keyword.get(settings, key)
   defp get_setting(_, _), do: nil
 
+  # Flat shape — a hand-written `response_format`.
   defp response_format_schema(%{type: :json_schema, schema: %{} = schema}), do: schema
   defp response_format_schema(%{"type" => "json_schema", "schema" => %{} = schema}), do: schema
+
+  # OpenAI-nested shape. This is what `Nous.OutputSchema.to_provider_settings/2`
+  # emits (output_schema.ex `mode_settings(:json_schema, ...)`), and since
+  # `resolve_mode(:auto, :gemini)` is `:json_schema`, it is the shape Gemini and
+  # Vertex actually receive. Without this clause structured output silently
+  # contributed no `responseMimeType` and no `responseSchema` to the request.
+  defp response_format_schema(%{type: :json_schema, json_schema: %{schema: %{} = schema}}),
+    do: schema
+
+  defp response_format_schema(%{"type" => "json_schema", "json_schema" => %{"schema" => schema}})
+       when is_map(schema),
+       do: schema
+
   defp response_format_schema(_), do: nil
 
   defp json_object_response_format?(%{type: :json_object}), do: true

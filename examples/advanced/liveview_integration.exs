@@ -103,7 +103,7 @@ end
 
 IO.puts("--- Pattern 2: Streaming (Recommended) ---")
 
-IO.puts("""
+IO.puts(~S'''
 # Real-time streaming using notify_pid - provides the best UX
 
 defmodule MyAppWeb.ChatLive.Streaming do
@@ -185,7 +185,7 @@ defmodule MyAppWeb.ChatLive.Streaming do
 
   # Render shows current_response while streaming
   def render(assigns) do
-    ~H\"\"\"
+    ~H"""
     <div class="chat-container">
       <%= for msg <- @messages do %>
         <div class={"message " <> to_string(msg.role)}>
@@ -210,10 +210,10 @@ defmodule MyAppWeb.ChatLive.Streaming do
         <button type="submit" disabled={@streaming}>Send</button>
       </form>
     </div>
-    \"\"\"
+    """
   end
 end
-""")
+''')
 
 # ============================================================================
 # Pattern 3: With Tool Visualization
@@ -221,7 +221,7 @@ end
 
 IO.puts("--- Pattern 3: Tool Call Visualization ---")
 
-IO.puts("""
+IO.puts(~S'''
 # Show tool calls and results in the chat UI
 
 defmodule MyAppWeb.ChatLive.WithTools do
@@ -310,7 +310,7 @@ defmodule MyAppWeb.ChatLive.WithTools do
   #   </div>
   # <% end %>
 end
-""")
+''')
 
 # ============================================================================
 # Pattern 4: Cancellation Support
@@ -395,8 +395,12 @@ defmodule MyAppWeb.ChatLive.Production do
     # Start or connect to existing AgentServer
     {:ok, agent_pid} = ensure_agent_server(session_id)
 
-    # Subscribe to agent events via Nous.PubSub
-    Nous.PubSub.subscribe(MyApp.PubSub, "agent:#{session_id}")
+    # Subscribe to agent events via Nous.PubSub.
+    # AgentServer publishes on Nous.PubSub.agent_topic/1 ("nous:agent:<id>").
+    Nous.PubSub.subscribe(
+      Nous.PubSub.configured_pubsub(),
+      Nous.PubSub.agent_topic(session_id)
+    )
 
     {:ok, assign(socket,
       session_id: session_id,

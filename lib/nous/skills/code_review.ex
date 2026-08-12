@@ -1,5 +1,16 @@
 defmodule Nous.Skills.CodeReview do
-  @moduledoc "Built-in skill for code review."
+  @moduledoc """
+  Built-in skill — code review.
+
+  Injects a system-prompt section covering five review passes — bug detection,
+  style and readability, performance (N+1 queries, allocations, missing
+  indexes), security, and best practices — and requires every finding to carry a
+  location, a severity (critical / warning / suggestion) and a concrete fix.
+
+  Activates on prompts containing "review", "code review", "check this code" or
+  "review my". Group `:review`; tags `:code`, `:quality`, `:review`.
+  """
+
   use Nous.Skill,
     keywords: ["review", "code review", "check this code", "review my"],
     tags: [:code, :quality, :review],

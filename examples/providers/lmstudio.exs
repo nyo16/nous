@@ -18,8 +18,11 @@ IO.puts("""
 4. Run this example
 """)
 
-# Check if LM Studio is running
-base_url = System.get_env("LMSTUDIO_BASE_URL") || "http://localhost:1234"
+# Check if LM Studio is running. Note the "/v1" suffix: LM Studio exposes an
+# OpenAI-compatible API rooted at http://localhost:1234/v1, and that is the
+# provider default. Overriding :base_url replaces the default wholesale, so a
+# bare "http://localhost:1234" would drop the path segment and 404.
+base_url = System.get_env("LMSTUDIO_BASE_URL") || "http://localhost:1234/v1"
 
 IO.puts("Checking LM Studio at #{base_url}...")
 
@@ -29,10 +32,11 @@ IO.puts("Checking LM Studio at #{base_url}...")
 
 IO.puts("\n--- Basic Usage ---")
 
-agent = Nous.new("lmstudio:qwen3",
-  base_url: base_url,
-  instructions: "You are helpful and concise."
-)
+agent =
+  Nous.new("lmstudio:qwen3",
+    base_url: base_url,
+    instructions: "You are helpful and concise."
+  )
 
 IO.puts("Created agent with local model")
 
@@ -53,6 +57,7 @@ IO.puts("")
 # ============================================================================
 
 IO.puts("--- Model Selection ---")
+
 IO.puts("""
 LM Studio model names map to loaded models:
 
@@ -70,29 +75,55 @@ The actual model used depends on what's loaded in LM Studio.
 
 IO.puts("--- Tools with Local Models ---")
 
-get_time = fn _ctx, _args ->
-  %{time: DateTime.utc_now() |> DateTime.to_string()}
-end
+# Bare anonymous functions carry no usable metadata: the model would see a
+# compiler-mangled closure name and an empty parameter schema. Wrap them with
+# Nous.Tool.from_function/2 to supply a real name, description and schema.
+get_time =
+  Nous.Tool.from_function(
+    fn _ctx, _args ->
+      %{time: DateTime.utc_now() |> DateTime.to_string()}
+    end,
+    name: "get_time",
+    description: "Get the current UTC time as a string.",
+    parameters: %{"type" => "object", "properties" => %{}, "required" => []}
+  )
 
-calculate = fn _ctx, %{"expression" => expr} ->
-  try do
-    {result, _} = Code.eval_string(expr)
-    %{result: result}
-  rescue
-    _ -> %{error: "Could not evaluate"}
-  end
-end
+calculate =
+  Nous.Tool.from_function(
+    fn _ctx, %{"expression" => expr} ->
+      try do
+        {result, _} = Code.eval_string(expr)
+        %{result: result}
+      rescue
+        _ -> %{error: "Could not evaluate"}
+      end
+    end,
+    name: "calculate",
+    description: "Evaluate a simple arithmetic expression and return the result.",
+    parameters: %{
+      "type" => "object",
+      "properties" => %{
+        "expression" => %{
+          "type" => "string",
+          "description" => "Arithmetic expression to evaluate, e.g. \"2 + 2\""
+        }
+      },
+      "required" => ["expression"]
+    }
+  )
 
-tool_agent = Nous.new("lmstudio:qwen3",
-  base_url: base_url,
-  instructions: "Use tools when asked about time or math.",
-  tools: [get_time, calculate]
-)
+tool_agent =
+  Nous.new("lmstudio:qwen3",
+    base_url: base_url,
+    instructions: "Use tools when asked about time or math.",
+    tools: [get_time, calculate]
+  )
 
 case Nous.run(tool_agent, "What time is it?") do
   {:ok, result} ->
     IO.puts("Response: #{result.output}")
     IO.puts("Tool calls: #{result.usage.tool_calls}")
+
   {:error, _} ->
     IO.puts("(Skipped - LM Studio not running)")
 end
@@ -105,15 +136,17 @@ IO.puts("")
 
 IO.puts("--- Model Settings ---")
 
-configured_agent = Nous.new("lmstudio:qwen3",
-  base_url: base_url,
-  instructions: "Be concise.",
-  model_settings: %{
-    temperature: 0.3,    # Lower = more focused
-    max_tokens: 500,
-    top_p: 0.9
-  }
-)
+_configured_agent =
+  Nous.new("lmstudio:qwen3",
+    base_url: base_url,
+    instructions: "Be concise.",
+    model_settings: %{
+      # Lower = more focused
+      temperature: 0.3,
+      max_tokens: 500,
+      top_p: 0.9
+    }
+  )
 
 IO.puts("Agent configured with custom settings")
 IO.puts("")
@@ -126,7 +159,8 @@ IO.puts("--- Streaming ---")
 
 case Nous.run_stream(agent, "Count from 1 to 5.") do
   {:ok, stream} ->
-    stream |> Enum.each(fn
+    stream
+    |> Enum.each(fn
       {:text_delta, text} -> IO.write(text)
       {:finish, _} -> IO.puts("")
       _ -> :ok

@@ -1,5 +1,18 @@
 defmodule Nous.Skills.ElixirTesting do
-  @moduledoc "Built-in skill for Elixir testing with ExUnit, Mox, and property-based testing."
+  @moduledoc """
+  Built-in skill — ExUnit, Mox and property-based testing.
+
+  Injects a system-prompt section with examples for mirroring `lib/` in `test/`
+  with `async: true`, `setup` blocks that return maps for pattern matching,
+  mocking only external boundaries through Mox behaviours plus
+  `verify_on_exit!`, StreamData properties, `@tag :integration`, and test names
+  that describe behaviour rather than implementation.
+
+  Activates on prompts containing "exunit", "elixir test", "mix test", "mox",
+  "test elixir", "property test" or "stream_data". Group `:testing`;
+  tags `:elixir`, `:testing`, `:exunit`, `:mox`.
+  """
+
   use Nous.Skill,
     keywords: [
       "exunit",

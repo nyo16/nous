@@ -6,6 +6,8 @@ defmodule Nous.PubSubTest do
 
   alias Nous.PubSub
 
+  doctest Nous.PubSub
+
   describe "topic builders" do
     test "agent_topic/1 builds correct topic" do
       assert PubSub.agent_topic("abc123") == "nous:agent:abc123"

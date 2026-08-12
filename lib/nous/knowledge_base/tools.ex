@@ -18,6 +18,7 @@ defmodule Nous.KnowledgeBase.Tools do
   @doc """
   Returns all knowledge base tools as a list.
   """
+  @spec all_tools() :: [Tool.t()]
   def all_tools do
     [
       kb_search_tool(),

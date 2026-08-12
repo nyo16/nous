@@ -5,9 +5,9 @@ Complete guide for creating powerful, production-ready tools for Nous AI agents.
 ## Quick Start
 
 **New to tool development?** Start with:
-1. [custom_tools_guide.exs](https://github.com/nyo16/nous/blob/master/examples/custom_tools_guide.exs) - Interactive tutorial
-2. [templates/tool_agent.exs](https://github.com/nyo16/nous/blob/master/examples/templates/tool_agent.exs) - Copy-paste starter
-3. [by_feature/tools/](https://github.com/nyo16/nous/tree/master/examples/by_feature#-tools-function-calling--actions) - Working examples
+1. [02_with_tools.exs](https://github.com/nyo16/nous/blob/master/examples/02_with_tools.exs) - A first tool in ~30 lines
+2. [07_module_tools.exs](https://github.com/nyo16/nous/blob/master/examples/07_module_tools.exs) - Module tools with `Nous.Tool.Behaviour`
+3. [08_tool_testing.exs](https://github.com/nyo16/nous/blob/master/examples/08_tool_testing.exs) - Mock and spy tools with `Nous.Tool.Testing`
 
 ## Table of Contents
 
@@ -17,6 +17,8 @@ Complete guide for creating powerful, production-ready tools for Nous AI agents.
 - [Error Handling](#error-handling)
 - [Security Considerations](#security-considerations)
 - [Performance Guidelines](#performance-guidelines)
+- [Parallel Tool Calls](#parallel-tool-calls)
+- [Built-in Todo Tools](#built-in-todo-tools)
 - [Testing Tools](#testing-tools)
 - [Advanced Patterns](#advanced-patterns)
 - [Production Deployment](#production-deployment)
@@ -332,6 +334,145 @@ defmodule ToolCache do
 end
 ```
 
+## Parallel Tool Calls
+
+When a single model response contains several tool calls, Nous executes them one
+at a time by default: each call finishes its whole pipeline before the next one
+starts. Setting `parallel_tool_calls: true` on the agent fans the executions out
+instead.
+
+```elixir
+agent =
+  Nous.new("openai:gpt-4o",
+    tools: [&MyTools.fetch_user/2, &MyTools.fetch_orders/2, &MyTools.fetch_invoices/2],
+    parallel_tool_calls: true
+  )
+```
+
+- **Default: `false`.** `%Nous.Agent{}` is built with `parallel_tool_calls: false`
+  and only flips when you pass the option to `Nous.new/2` (`Nous.Agent.new/2`).
+- **Applies when** one response carries **two or more** real tool calls. A single
+  call — or a response whose only calls are the synthetic ones used for
+  structured output — takes the sequential path unchanged.
+
+### What runs concurrently, and what does not
+
+Only the tool executions fan out. Every ordering-sensitive stage stays sequential,
+in the model's call order:
+
+1. **Before the fan-out**, per call: the `:on_tool_call` callback, the
+   invalid-arguments short-circuit, the `:pre_tool_use` hook, and the
+   permission/approval check.
+2. **Concurrently**: the approved tool functions, supervised by
+   `Nous.TaskSupervisor`.
+3. **After the fan-out**, in the original call order: the `:post_tool_use` hook,
+   the `:on_tool_response` callback, the agent behaviour's `:after_tool`, and the
+   dependency merge.
+
+Tool result messages are appended in the original call order, because providers
+require results to line up with the calls they answer.
+
+### When to enable it
+
+Enable it when a turn's tools are independent and I/O-bound: separate HTTP APIs,
+separate database reads, unrelated file reads. A turn that issues three 900 ms
+lookups then costs about one lookup instead of three.
+
+Leave it off for cheap, CPU-bound tools. Fanning out three map lookups buys
+nothing and adds process churn.
+
+### The footgun: interleaved side effects
+
+Tools cannot observe each other's context updates within a turn in *either* mode
+— the run context is snapshotted before the tool loop — so `ctx` is not what
+changes. What changes is **external** side effects: HTTP requests, database
+writes, file writes and shell commands issued by different calls in the same turn
+now interleave. `:pre_tool_use` hooks also see the pre-turn context rather than
+the post-processing effects of earlier calls in the same batch.
+
+So if a turn's tools depend on sequential side effects — `write_file` then
+`run_tests`, `create_order` then `charge_card` — keep the default. That
+dependency is precisely why the feature is opt-in.
+
+### Timeouts and crashes
+
+A parallel batch is bounded by a single per-call ceiling, taken as the largest
+budget in the batch:
+
+- a tool declaring a positive `timeout:` contributes `timeout * (retries + 1)`
+  plus five seconds of headroom — a timeout raised inside `Nous.ToolExecutor`
+  goes through the retry path, so every attempt may spend the full budget;
+- a tool that declares no positive timeout contributes the module default of five
+  minutes, which you can override globally:
+
+```elixir
+config :nous, parallel_tool_call_timeout_ms: :timer.minutes(2)
+```
+
+A call that blows the ceiling is killed and answered with a timeout tool result
+for that call alone; a crashing call becomes a per-call tool error. Neither sinks
+the rest of the batch or the turn.
+
+## Built-in Todo Tools
+
+`Nous.Tools.TodoTools` is the built-in task-tracking tool set. It lets an agent
+break a multi-step job into todos, record progress, and keep the list in front of
+itself instead of losing the plan halfway through a long run.
+
+> **Not to be confused with** the `TodoTools` module defined inline in
+> `examples/advanced/context_updates.exs` — that is a user-land, three-function
+> demo of `Nous.Tool.ContextUpdate` that happens to share the name. The built-in
+> module is `Nous.Tools.TodoTools`.
+
+It is a plain function module (no `Nous.Tool.Behaviour`), so register the captures
+you want:
+
+```elixir
+alias Nous.Tools.TodoTools
+
+agent =
+  Nous.new("openai:gpt-4o",
+    instructions: "Plan before you act, and keep the todo list current.",
+    enable_todos: true,
+    tools: [
+      &TodoTools.add_todo/2,
+      &TodoTools.update_todo/2,
+      &TodoTools.complete_todo/2,
+      &TodoTools.list_todos/2
+    ]
+  )
+
+{:ok, result} = Nous.run(agent, "Analyze this codebase and write a report", deps: %{todos: []})
+```
+
+### The five tools
+
+| Function | Arguments | Notes |
+|---|---|---|
+| `add_todo/2` | `"text"` (also accepts `"title"` or `"description"`), optional `"status"`, `"priority"` | Defaults to `"pending"` / `"medium"`; errors if the text is missing or empty |
+| `update_todo/2` | `"id"`, plus any of `"text"`, `"status"`, `"priority"` | Omitted fields are left alone |
+| `complete_todo/2` | `"id"` | Sets `status` to `"completed"` and stamps `completed_at` |
+| `delete_todo/2` | `"id"` | Removes the entry |
+| `list_todos/2` | optional `"status"`, `"priority"` filters | Also returns `total` and `by_status` counts |
+
+Statuses are `"pending"`, `"in_progress"` and `"completed"`; priorities are
+`"low"`, `"medium"` and `"high"`. Each stored todo is a map with `:id` (a
+process-unique positive integer), `:text`, `:status`, `:priority`, `:created_at`
+and `:updated_at` ISO-8601 timestamps.
+
+### Where the state lives
+
+The list lives in `ctx.deps[:todos]`. Every mutating tool returns the full updated
+list under `__update_context__`, which the runner merges back into the run's
+dependencies after the tool call — so the next model iteration sees it (tools in
+the *same* response still see the pre-turn snapshot, as above).
+
+Passing `enable_todos: true` additionally renders the todos from `deps` into the
+system prompt when the run context is built, grouped by status and followed by a
+short usage note for the four tools above. Continuing a previous run from its
+returned context keeps that run's original prompt, so pass `deps: %{todos: [...]}`
+on the run that creates the context.
+
 ## Testing Tools
 
 ### Unit Testing
@@ -640,9 +781,9 @@ end
 
 ## Next Steps
 
-1. **Start with examples**: Try [custom_tools_guide.exs](https://github.com/nyo16/nous/blob/master/examples/custom_tools_guide.exs)
-2. **Use templates**: Copy [templates/tool_agent.exs](https://github.com/nyo16/nous/blob/master/examples/templates/tool_agent.exs)
-3. **Study production tools**: Check [trading_desk/](https://github.com/nyo16/nous/tree/master/examples/trading_desk)
+1. **Start with examples**: Try [02_with_tools.exs](https://github.com/nyo16/nous/blob/master/examples/02_with_tools.exs)
+2. **Move to module tools**: Copy [07_module_tools.exs](https://github.com/nyo16/nous/blob/master/examples/07_module_tools.exs)
+3. **Study a production-shaped agent**: Read [19_coding_agent.exs](https://github.com/nyo16/nous/blob/master/examples/19_coding_agent.exs), which wires the built-in file and shell tools to permissions and session guardrails, or browse the [examples index](https://github.com/nyo16/nous/blob/master/examples/README.md)
 4. **Read related guides**:
    - [best_practices.md](best_practices.md) - Production deployment
    - [troubleshooting.md](troubleshooting.md) - Common issues

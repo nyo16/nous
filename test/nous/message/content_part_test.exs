@@ -3,6 +3,10 @@ defmodule Nous.Message.ContentPartTest do
 
   alias Nous.Message.ContentPart
 
+  # The examples use a bare `ContentPart`, which resolves only through the
+  # alias above.
+  doctest ContentPart
+
   @fixtures_path "test/support/fixtures/images"
   @parthenon_path "#{@fixtures_path}/parthenon.jpg"
 

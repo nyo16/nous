@@ -6,7 +6,7 @@ if Code.ensure_loaded?(Zvec) do
     Uses Zvec for vector indexing/search and ETS for full entry storage.
     Does not implement `search_text/3` (vector-only backend).
 
-    Requires optional dep: `{:zvec, "~> 0.1"}`
+    Requires optional dep: `{:zvec, "~> 0.2"}`
 
     ## Options
 
@@ -196,7 +196,7 @@ else
     @moduledoc """
     Zvec-backed memory store with HNSW/IVF vector similarity search.
 
-    **Not available** - add `{:zvec, "~> 0.1"}` to your deps.
+    **Not available** - add `{:zvec, "~> 0.2"}` to your deps.
     """
 
     @behaviour Nous.Memory.Store
@@ -206,37 +206,37 @@ else
 
     @impl true
     def init(_opts) do
-      {:error, "Zvec is not available. Add {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+      {:error, "Zvec is not available. Add {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def store(_state, _entry) do
-      {:error, "Zvec is not available. Add {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+      {:error, "Zvec is not available. Add {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def fetch(_state, _id) do
-      {:error, "Zvec is not available. Add {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+      {:error, "Zvec is not available. Add {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def delete(_state, _id) do
-      {:error, "Zvec is not available. Add {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+      {:error, "Zvec is not available. Add {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def update(_state, _id, _updates) do
-      {:error, "Zvec is not available. Add {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+      {:error, "Zvec is not available. Add {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def search_text(_state, _query, _opts) do
-      {:error, "Zvec is not available. Add {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+      {:error, "Zvec is not available. Add {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def list(_state, _opts) do
-      {:error, "Zvec is not available. Add {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+      {:error, "Zvec is not available. Add {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
   end
 end

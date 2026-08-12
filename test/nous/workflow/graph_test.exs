@@ -3,6 +3,8 @@ defmodule Nous.Workflow.GraphTest do
 
   alias Nous.Workflow.Graph
 
+  doctest Nous.Workflow.Graph
+
   describe "new/1,2" do
     test "creates empty graph with id" do
       graph = Graph.new("pipeline")
