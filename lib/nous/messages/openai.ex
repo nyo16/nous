@@ -34,8 +34,9 @@ defmodule Nous.Messages.OpenAI do
   ## Examples
 
       iex> response = %{"choices" => [%{"message" => %{"role" => "assistant", "content" => "Hello"}}]}
-      iex> Messages.OpenAI.from_response(response)
-      %Message{role: :assistant, content: "Hello"}
+      iex> message = Messages.OpenAI.from_response(response)
+      iex> {message.role, message.content}
+      {:assistant, "Hello"}
 
   """
   @spec from_response(map()) :: Message.t()

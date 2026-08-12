@@ -1,5 +1,19 @@
 defmodule Nous.Skills.ElixirIdioms do
-  @moduledoc "Built-in skill for idiomatic Elixir patterns and anti-patterns."
+  @moduledoc """
+  Built-in skill — idiomatic Elixir patterns and anti-patterns.
+
+  Injects a ten-point system-prompt section: pattern matching in function heads
+  over `if`/`else` chains, pipelines for data transformation, tagged tuples
+  instead of exceptions, `with` for happy-path chaining, no dynamic atom
+  creation, assertive matching over defensive nil checks, `and`/`or`/`not` for
+  booleans versus `&&`/`||`/`!` for truthy values, structs for domain entities,
+  the 32-field struct limit, and a closing list of things to avoid.
+
+  Activates on prompts containing "elixir", "pipe operator", "pattern match",
+  "idiomatic", "with statement" or "functional". Group `:coding`;
+  tags `:elixir`, `:idioms`, `:functional`, `:patterns`.
+  """
+
   use Nous.Skill,
     keywords: [
       "elixir",

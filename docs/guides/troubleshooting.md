@@ -28,7 +28,7 @@ Common issues and solutions for Nous AI development and deployment.
 **Symptoms:**
 ```
 ** (MatchError) no match of right hand side value:
-   {:error, %HTTPoison.Error{reason: :econnrefused}}
+   {:error, %Req.TransportError{reason: :econnrefused}}
 ```
 
 **Solutions:**
@@ -53,9 +53,9 @@ curl http://localhost:1234/v1/completions \
 #### For Cloud Providers
 ```elixir
 # Test API connectivity
-case HTTPoison.get("https://api.anthropic.com/v1/messages",
-                   [{"Authorization", "Bearer #{api_key}"}]) do
-  {:ok, response} -> IO.inspect(response.status_code)
+case Req.get("https://api.anthropic.com/v1/messages",
+             headers: [{"authorization", "Bearer #{api_key}"}]) do
+  {:ok, response} -> IO.inspect(response.status)
   {:error, reason} -> IO.inspect(reason)
 end
 ```
@@ -65,17 +65,16 @@ end
 **Symptoms:**
 - Requests never return
 - Process hangs indefinitely
-- Timeout errors after 30+ seconds
+- Timeout errors after the model's receive timeout elapses
 
 **Solutions:**
 
 ```elixir
-# 1. Set explicit timeouts
+# 1. Set an explicit receive timeout. Defaults come from the provider:
+#    120s for lmstudio/ollama/vllm/sglang, 300s for llamacpp,
+#    180s for cloud providers and `custom:` endpoints.
 agent = Nous.new("lmstudio:qwen3-vl-4b-thinking-mlx",
-  http_options: [
-    timeout: 30_000,      # 30 seconds
-    recv_timeout: 30_000
-  ]
+  receive_timeout: 30_000  # 30 seconds
 )
 
 # 2. For long-running operations, use streaming
@@ -98,27 +97,27 @@ end
 
 **Symptoms:**
 ```
-{:error, %HTTPoison.Error{reason: {:tls_alert, {:certificate_verify_failed, ...}}}}
+{:error, %Req.TransportError{reason: {:tls_alert, {:certificate_verify_failed, _}}}}
 ```
 
 **Solutions:**
 
-```elixir
-# For development only - DO NOT use in production
-agent = Nous.new("openai:gpt-4",
-  http_options: [
-    ssl: [{:verify, :verify_none}]  # DEVELOPMENT ONLY
-  ]
-)
+Nous always verifies the peer certificate against the operating system's
+trust store, and there is no option to turn verification off — a TLS alert
+means the trust store is stale or incomplete, not that Nous is misconfigured.
+Update the CA certificate bundle on the host:
 
-# For production - update certificates
+```bash
 # On Ubuntu/Debian:
 sudo apt-get update && sudo apt-get install ca-certificates
 
 # On macOS:
 brew install ca-certificates
+```
 
-# In Docker:
+In a Docker image:
+
+```dockerfile
 RUN apk add --no-cache ca-certificates
 ```
 
@@ -156,12 +155,14 @@ curl -X POST https://api.anthropic.com/v1/messages \
 
 **Solutions:**
 
-```elixir
+```bash
 # 1. Proper environment variable setup
 # In your shell startup file (.bashrc, .zshrc):
 export ANTHROPIC_API_KEY="sk-ant-your-actual-key"
 export OPENAI_API_KEY="sk-your-actual-key"
+```
 
+```elixir
 # 2. Runtime configuration in Elixir
 config :nous,
   anthropic_api_key: System.get_env("ANTHROPIC_API_KEY") ||
@@ -193,7 +194,7 @@ end
 
 **Symptoms:**
 ```
-{:error, %HTTPoison.Error{status_code: 429}}
+{:error, %{status: 429, body: %{"error" => %{"message" => "rate limit exceeded"}}}}
 ```
 
 **Solutions:**
@@ -209,7 +210,7 @@ defmodule RateLimitHandler do
       {:ok, result} ->
         {:ok, result}
 
-      {:error, %{status_code: 429}} when attempt <= max_retries ->
+      {:error, %{status: 429}} when attempt <= max_retries ->
         delay = min(1000 * :math.pow(2, attempt), 30_000)
         IO.puts("Rate limited, waiting #{round(delay)}ms...")
         Process.sleep(round(delay))
@@ -278,9 +279,11 @@ defmodule ToolValidator do
       end
 
       # Test with empty args
-      case apply(module, function, [%{}, %{}]) do
-        {:error, _} -> :ok  # Expected for empty args
-        _ -> :ok
+      try do
+        case apply(module, function, [%{}, %{}]) do
+          {:error, _} -> :ok  # Expected for empty args
+          _ -> :ok
+        end
       rescue
         error -> raise "Tool #{module}.#{function} validation failed: #{inspect(error)}"
       end
@@ -373,8 +376,14 @@ def timed_run(agent, prompt) do
   end_time = System.monotonic_time(:millisecond)
   duration = end_time - start_time
 
+  total_tokens =
+    case result do
+      %{usage: %{total_tokens: tokens}} -> tokens
+      _ -> "N/A"
+    end
+
   IO.puts("Request took #{duration}ms")
-  IO.puts("Tokens used: #{result.usage.total_tokens rescue 'N/A'}")
+  IO.puts("Tokens used: #{total_tokens}")
 
   result
 end
@@ -432,6 +441,8 @@ defmodule ResponseCache do
   end
 end
 ```
+
+## Memory & Resource Issues
 
 ### Issue: High Memory Usage
 
@@ -496,9 +507,8 @@ def check_model_availability(model_string) do
   case String.split(model_string, ":") do
     ["lmstudio", model_name] ->
       # Check if LM Studio has the model loaded
-      case HTTPoison.get("http://localhost:1234/v1/models") do
-        {:ok, %{body: body}} ->
-          models = JSON.decode!(body)["data"]
+      case Req.get("http://localhost:1234/v1/models") do
+        {:ok, %Req.Response{status: 200, body: %{"data" => models}}} ->
           if Enum.any?(models, &String.contains?(&1["id"], model_name)) do
             :ok
           else
@@ -809,9 +819,8 @@ defmodule HealthCheck do
   end
 
   defp check_lm_studio do
-    case HTTPoison.get("http://localhost:1234/v1/models") do
-      {:ok, %{status_code: 200, body: body}} ->
-        models = JSON.decode!(body)["data"]
+    case Req.get("http://localhost:1234/v1/models") do
+      {:ok, %Req.Response{status: 200, body: %{"data" => models}}} ->
         IO.puts("  ✅ LM Studio running with #{length(models)} models")
 
       {:error, %{reason: :econnrefused}} ->
@@ -822,7 +831,7 @@ defmodule HealthCheck do
         IO.puts("  ❌ LM Studio error: #{inspect(reason)}")
     end
   rescue
-    _ -> IO.puts("  ❌ HTTPoison not available")
+    _ -> IO.puts("  ❌ LM Studio check failed")
   end
 
   defp check_ai_providers do
@@ -833,8 +842,8 @@ defmodule HealthCheck do
 
     Enum.each(providers, fn {name, url, api_key} ->
       if api_key do
-        case HTTPoison.get(url, [{"Authorization", "Bearer #{api_key}"}]) do
-          {:ok, %{status_code: status}} when status < 500 ->
+        case Req.get(url, headers: [{"authorization", "Bearer #{api_key}"}]) do
+          {:ok, %Req.Response{status: status}} when status < 500 ->
             IO.puts("  ✅ #{name} API reachable")
           {:error, reason} ->
             IO.puts("  ❌ #{name} API error: #{inspect(reason)}")
@@ -848,7 +857,7 @@ defmodule HealthCheck do
   end
 
   defp check_network do
-    case :inet.gethostbyname('google.com') do
+    case :inet.gethostbyname(~c"google.com") do
       {:ok, _} -> IO.puts("  ✅ Internet connectivity OK")
       {:error, _} -> IO.puts("  ❌ No internet connectivity")
     end

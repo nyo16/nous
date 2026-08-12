@@ -20,7 +20,7 @@ defmodule Nous.Workflow.Mermaid do
       ```mermaid
       flowchart TD
           a["Plan"]
-          b{{"Search"}}
+          b{{"Search (parallel)"}}
           c["Web"]
           d["Papers"]
           e["Report"]

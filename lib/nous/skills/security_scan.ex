@@ -1,5 +1,19 @@
 defmodule Nous.Skills.SecurityScan do
-  @moduledoc "Built-in skill for security scanning."
+  @moduledoc """
+  Built-in skill — OWASP-oriented security scanning.
+
+  Injects a system-prompt section enumerating eight audit categories —
+  injection, authentication, authorization, data exposure, configuration,
+  dependencies, cryptography and input validation — and requires every finding
+  to carry a severity from Critical to Informational, a concrete remediation
+  with code, and a CWE or OWASP reference.
+
+  Declares no keywords, so it never self-activates: name it explicitly with
+  `skills: [Nous.Skills.SecurityScan]` or pull in
+  `skills: [{:group, :review}]`. Group `:review`;
+  tags `:security`, `:vulnerability`, `:audit`.
+  """
+
   use Nous.Skill, tags: [:security, :vulnerability, :audit], group: :review
 
   @impl true

@@ -22,6 +22,25 @@ defmodule Nous.Tools.StringTools do
       {:ok, result} = Nous.run(agent, "How many characters in 'Hello World'?")
   """
 
+  @typedoc """
+  Tool arguments exactly as the model produced them: JSON object keys stay
+  strings, values are unvalidated. Every function below reads what it needs
+  and falls back to a default for anything missing or of the wrong type.
+  """
+  @type args :: %{optional(String.t()) => term()}
+
+  @typedoc """
+  Tool result: an atom-keyed map that echoes the inputs it used alongside the
+  computed fields, so the model can see what it actually asked for.
+  """
+  @type result :: %{required(atom()) => term()}
+
+  @typedoc """
+  Run context. These tools are pure and ignore it, but they are registered
+  with `takes_ctx: true`, so it is always the first argument.
+  """
+  @type ctx :: Nous.RunContext.t() | nil
+
   # Extract a string arg, accepting any of the given keys. Returns the
   # first value present whose type matches `expected`, or `default`
   # otherwise. Replaces nil-pun chains like
@@ -44,6 +63,7 @@ defmodule Nous.Tools.StringTools do
 
   - text: The string to measure
   """
+  @spec string_length(ctx(), args()) :: result()
   def string_length(_ctx, args) do
     text = fetch_arg(args, ["text"], "")
 
@@ -65,6 +85,7 @@ defmodule Nous.Tools.StringTools do
   - replacement: The text to replace with
   - case_sensitive: Whether to match case (default: true)
   """
+  @spec replace_text(ctx(), args()) :: result()
   def replace_text(_ctx, args) do
     text = fetch_arg(args, ["text"], "")
     pattern = fetch_arg(args, ["pattern", "old"], "")
@@ -109,6 +130,7 @@ defmodule Nous.Tools.StringTools do
   - trim: Whether to trim whitespace from parts (default: false)
   - remove_empty: Whether to remove empty strings (default: false)
   """
+  @spec split_text(ctx(), args()) :: result()
   def split_text(_ctx, args) do
     text = fetch_arg(args, ["text"], "")
     delimiter = fetch_arg(args, ["delimiter", "separator"], " ")
@@ -149,6 +171,7 @@ defmodule Nous.Tools.StringTools do
   - parts: List of strings to join (comma-separated string)
   - delimiter: The delimiter to use (default: " ")
   """
+  @spec join_text(ctx(), args()) :: result()
   def join_text(_ctx, args) do
     # Support both array and comma-separated string
     parts =
@@ -179,6 +202,7 @@ defmodule Nous.Tools.StringTools do
   - pattern: The pattern to count
   - case_sensitive: Whether to match case (default: true)
   """
+  @spec count_occurrences(ctx(), args()) :: result()
   def count_occurrences(_ctx, args) do
     text = fetch_arg(args, ["text"], "")
     pattern = fetch_arg(args, ["pattern", "substring"], "")
@@ -216,6 +240,7 @@ defmodule Nous.Tools.StringTools do
 
   - text: The text to convert
   """
+  @spec to_uppercase(ctx(), args()) :: result()
   def to_uppercase(_ctx, args) do
     text = Map.get(args, "text", "")
 
@@ -232,6 +257,7 @@ defmodule Nous.Tools.StringTools do
 
   - text: The text to convert
   """
+  @spec to_lowercase(ctx(), args()) :: result()
   def to_lowercase(_ctx, args) do
     text = Map.get(args, "text", "")
 
@@ -249,6 +275,7 @@ defmodule Nous.Tools.StringTools do
   - text: The text to capitalize
   - mode: "first" (first letter only), "words" (each word), "sentences" (each sentence)
   """
+  @spec capitalize_text(ctx(), args()) :: result()
   def capitalize_text(_ctx, args) do
     text = Map.get(args, "text", "")
     mode = Map.get(args, "mode", "words")
@@ -289,6 +316,7 @@ defmodule Nous.Tools.StringTools do
   - text: The text to trim
   - side: "both" (default), "left", "right"
   """
+  @spec trim_text(ctx(), args()) :: result()
   def trim_text(_ctx, args) do
     text = Map.get(args, "text", "")
     side = Map.get(args, "side", "both")
@@ -317,6 +345,7 @@ defmodule Nous.Tools.StringTools do
   - start: Starting position (0-indexed)
   - length: Number of characters to extract (optional, extracts to end if not provided)
   """
+  @spec substring(ctx(), args()) :: result()
   def substring(_ctx, args) do
     text = Map.get(args, "text", "")
     start = Map.get(args, "start", 0)
@@ -349,6 +378,7 @@ defmodule Nous.Tools.StringTools do
   - pattern: The pattern to search for
   - case_sensitive: Whether to match case (default: true)
   """
+  @spec contains(ctx(), args()) :: result()
   def contains(_ctx, args) do
     text = fetch_arg(args, ["text"], "")
     pattern = fetch_arg(args, ["pattern", "substring"], "")
@@ -378,6 +408,7 @@ defmodule Nous.Tools.StringTools do
   - prefix: The prefix to check for
   - case_sensitive: Whether to match case (default: true)
   """
+  @spec starts_with(ctx(), args()) :: result()
   def starts_with(_ctx, args) do
     text = Map.get(args, "text", "")
     prefix = Map.get(args, "prefix", "")
@@ -407,6 +438,7 @@ defmodule Nous.Tools.StringTools do
   - suffix: The suffix to check for
   - case_sensitive: Whether to match case (default: true)
   """
+  @spec ends_with(ctx(), args()) :: result()
   def ends_with(_ctx, args) do
     text = Map.get(args, "text", "")
     suffix = Map.get(args, "suffix", "")
@@ -434,6 +466,7 @@ defmodule Nous.Tools.StringTools do
 
   - text: The text to reverse
   """
+  @spec reverse_text(ctx(), args()) :: result()
   def reverse_text(_ctx, args) do
     text = Map.get(args, "text", "")
 
@@ -457,6 +490,7 @@ defmodule Nous.Tools.StringTools do
   - text: The text to repeat
   - times: Number of times to repeat (max 100)
   """
+  @spec repeat_text(ctx(), args()) :: result()
   def repeat_text(_ctx, args) do
     text = Map.get(args, "text", "")
     # Limit to prevent abuse
@@ -480,6 +514,7 @@ defmodule Nous.Tools.StringTools do
   - text: The text to extract words from
   - min_length: Minimum word length (default: 1)
   """
+  @spec extract_words(ctx(), args()) :: result()
   def extract_words(_ctx, args) do
     text = Map.get(args, "text", "")
     min_length = Map.get(args, "min_length", 1)
@@ -508,6 +543,7 @@ defmodule Nous.Tools.StringTools do
   - padding: Character to pad with (default: " ")
   - side: "left", "right", or "both" (default: "right")
   """
+  @spec pad_text(ctx(), args()) :: result()
   def pad_text(_ctx, args) do
     text = Map.get(args, "text", "")
     target_length = Map.get(args, "length", String.length(text))
@@ -551,6 +587,7 @@ defmodule Nous.Tools.StringTools do
   - ignore_case: Whether to ignore case (default: true)
   - ignore_spaces: Whether to ignore spaces (default: true)
   """
+  @spec is_palindrome(ctx(), args()) :: result()
   def is_palindrome(_ctx, args) do
     text = Map.get(args, "text", "")
     ignore_case = Map.get(args, "ignore_case", true)
@@ -584,6 +621,7 @@ defmodule Nous.Tools.StringTools do
 
   - text: The text to extract numbers from
   """
+  @spec extract_numbers(ctx(), args()) :: result()
   def extract_numbers(_ctx, args) do
     text = Map.get(args, "text", "")
 

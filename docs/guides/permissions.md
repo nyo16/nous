@@ -12,6 +12,11 @@ Two complementary safety subsystems for Nous agents:
 The two are independent. Permissions stop a single tool call from doing
 something dangerous; guardrails stop a session from running away. Use both.
 
+Two adjacent hardening mechanisms are documented at the end of this guide,
+because both bite operators in production: how `Nous.Plugins.InputGuard` fails
+closed when a detection strategy dies, and the scrubbed environment
+`Nous.Tools.Env` hands to tool subprocesses.
+
 ## Table of Contents
 
 - [The Permissions Engine](#the-permissions-engine)
@@ -22,6 +27,8 @@ something dangerous; guardrails stop a session from running away. Use both.
 - [Wiring Permissions into an Agent](#wiring-permissions-into-an-agent)
 - [Session Guardrails](#session-guardrails)
 - [Guardrails vs. the Agent Loop](#guardrails-vs-the-agent-loop)
+- [Input Guard Fail-Closed](#input-guard-fail-closed)
+- [Scrubbed Tool Subprocess Environments](#scrubbed-tool-subprocess-environments)
 - [Worked Examples](#worked-examples)
 - [Gotchas](#gotchas)
 - [Related guides](#related-guides)
@@ -265,8 +272,12 @@ summarize history.
 ```elixir
 def handle_call({:send, msg}, _from, state) do
   case Guardrails.check_limits(state.config, state.turns, state.in_tokens, state.out_tokens) do
-    :ok            -> # proceed with the agent call
-    {:error, why}  -> {:reply, {:error, why}, state}
+    :ok ->
+      {reply, new_state} = run_turn(msg, state)
+      {:reply, reply, new_state}
+
+    {:error, why} ->
+      {:reply, {:error, why}, state}
   end
 end
 ```
@@ -284,6 +295,174 @@ These limits are **distinct** from the agent loop's `max_iterations`.
 One session turn can consume up to `max_iterations` loop steps. Setting
 `max_turns: 10` does **not** cap iterations, and a small `max_iterations` does
 not bound a long-lived session. Configure both deliberately.
+
+## Input Guard Fail-Closed
+
+`Nous.Plugins.InputGuard` guards a third surface: the *user input*, before the
+model ever sees it. It runs in the `before_request` plugin hook and reads its
+configuration from `ctx.deps[:input_guard_config]`. Each configured
+`{strategy_module, opts}` pair returns a verdict, the verdicts are aggregated
+(`:any` — the default — `:majority`, or `:all`), and the resulting severity is
+mapped to an action by `Nous.Plugins.InputGuard.Policy` (default
+`%{suspicious: :warn, blocked: :block}`: `:warn` injects a system-message
+warning and continues, `:block` halts the loop).
+
+What matters for guardrails is what happens when a strategy *fails to* vote. A
+strategy that raises, throws, or exits is **dropped**; on the parallel path, a
+strategy that outruns `:strategy_timeout` is killed and dropped too. A drop is
+not a `:safe` verdict — it is *no* verdict, and counting it as `:safe` is
+fail-open: one flaky LLM-judge call and your only substantive detector is gone.
+
+### `:fail_closed`
+
+| Aggregation          | `:fail_closed` default |
+| -------------------- | ---------------------- |
+| `:any` (the default) | `true`                 |
+| `:majority`          | `false`                |
+| `:all`               | `false`                |
+
+When `fail_closed` is in effect **and** at least one strategy was dropped, an
+otherwise-`:safe` aggregate is upgraded to `:suspicious`, carrying a reason of
+"N input-guard strategies did not complete (error or timeout); failing closed"
+and `metadata: %{dropped_strategies: n, fail_closed: true}`. Only `:safe` is
+upgraded — a `:suspicious` or `:blocked` aggregate passes through untouched, and
+with zero drops the aggregate is returned as-is.
+
+`:majority` and `:all` default to `false` because they already count drops
+against the *configured* strategy count rather than the number of survivors:
+a drop shrinks the numerator, never the denominator, so it can only make those
+modes stricter. (That denominator choice is itself deliberate — otherwise an
+attacker who makes benign strategies error could shrink the vote and flip the
+outcome.)
+
+Every drop — regardless of `fail_closed` — emits a `Logger` warning and the
+`[:nous, :input_guard, :strategy_dropped]` telemetry event, with measurement
+`%{count: dropped}` and metadata `%{aggregation: mode, fail_closed: boolean}`.
+Attach a handler to that event before tuning anything: it tells you whether your
+detectors are actually flaky, instead of guessing.
+
+### `:strategy_timeout`
+
+Per-strategy timeout in milliseconds; default `30_000`. It bounds the **parallel
+path only** — the default `short_circuit: false`, which runs strategies through
+`Task.Supervisor.async_stream_nolink/4` with `on_timeout: :kill_task`. With
+`short_circuit: true` strategies run sequentially so the first `:blocked` verdict
+can skip the rest, and the timeout is not applied: a strategy that hangs there
+hangs the request. If any strategy does network I/O, stay on the parallel path
+and set a timeout comfortably below your request budget.
+
+Strategies that never ran because short-circuiting stopped after a `:blocked`
+verdict are **not** drops — only errors and timeouts are.
+
+```elixir
+{:ok, result} =
+  Nous.run(agent, "summarize this ticket",
+    deps: %{
+      input_guard_config: %{
+        strategies: [
+          {Nous.Plugins.InputGuard.Strategies.Pattern, []},
+          {Nous.Plugins.InputGuard.Strategies.LLMJudge, model: "openai:gpt-4o-mini"}
+        ],
+        aggregation: :any,
+        fail_closed: true,
+        strategy_timeout: 5_000,
+        policy: %{suspicious: :warn, blocked: :block}
+      }
+    }
+  )
+```
+
+> **Upgrading from before 0.16.5: your guard just got stricter.** This is a
+> behavior change, not a new opt-in. Previously a dropped strategy was silently
+> ignored, so an `:any` guard whose only real detector errored or timed out
+> returned `:safe` and the input passed. The same run now yields `:suspicious`,
+> which under the default policy injects a system warning into the request — and
+> if you mapped `suspicious: :block`, halts the agent loop instead. A flaky
+> strategy (network-dependent judges are the usual suspect) will therefore start
+> producing warnings or blocks on input that used to pass. Fix the flaky
+> strategy, raise `:strategy_timeout`, or set `fail_closed: false` to restore the
+> old fail-open behavior — and watch
+> `[:nous, :input_guard, :strategy_dropped]` to know which you need.
+
+## Scrubbed Tool Subprocess Environments
+
+Tools that spawn OS processes must not hand the BEAM's environment to a child
+whose arguments the LLM controls: that environment routinely holds
+`OPENAI_API_KEY`, OAuth tokens, and vault credentials, and the model is one
+`printenv` away from exfiltrating them. `Nous.Tools.Env` is the single
+definition of what may cross that line:
+
+```elixir
+Nous.Tools.Env.scrubbed()
+#=> [{"PATH", "/usr/bin:/bin"}, {"HOME", "/Users/me"}, {"LANG", "en_US.UTF-8"}, ...]
+```
+
+`scrubbed/0` returns `{name, value}` tuples for exactly these variables —
+`PATH`, `HOME`, `LANG`, `LC_ALL`, `TZ`, `USER`, `SHELL`, `TERM` — and only for
+those currently set; an unset variable is omitted rather than forwarded as
+`nil`.
+
+The allowlist *is* the filter: every `*_API_KEY`, `*_TOKEN`, and `*_SECRET`, plus
+the shared-library loader hooks `LD_PRELOAD` and `DYLD_INSERT_LIBRARIES` (a
+code-injection vector into any binary the tool runs), are simply not on it.
+
+### Where it is applied for you
+
+- `Nous.Tools.Bash` — passes `env: Nous.Tools.Env.scrubbed()` to its
+  `NetRunner.run/2` call, alongside an absolute `/bin/sh` so the shell itself
+  isn't resolved through `PATH`.
+- `Nous.Tools.FileGrep` — passes it to the `System.cmd/3` call that runs `rg`,
+  which is located with `System.find_executable/1` rather than a `which`
+  subprocess.
+
+No other built-in tool spawns a subprocess, and nothing intercepts process
+spawning globally.
+
+### Tool authors must call it explicitly
+
+If your own tool shells out, pass the scrubbed environment yourself. This is the
+one line that keeps your tool from becoming the leak:
+
+```elixir
+defmodule MyApp.Tools.GitStatus do
+  # ...Nous.Tool.Schema boilerplate...
+
+  def execute(_ctx, _args) do
+    case System.cmd("git", ["status", "--short"], env: Nous.Tools.Env.scrubbed()) do
+      {output, 0} -> {:ok, output}
+      {output, _} -> {:error, output}
+    end
+  end
+end
+```
+
+### Extending the allowlist
+
+The allowlist is a compile-time module attribute inside `Nous.Tools.Env` with no
+runtime configuration hook — deliberately, so there is exactly one auditable
+definition. A variable your tool needs (say `GIT_CONFIG_GLOBAL` or
+`RIPGREP_CONFIG_PATH`) is therefore dropped unless it is added there upstream.
+Until then, extend it at the call site rather than reaching for the raw
+environment:
+
+```elixir
+env = Nous.Tools.Env.scrubbed() ++ [{"GIT_CONFIG_GLOBAL", "/etc/myapp/gitconfig"}]
+System.cmd("git", ["status", "--short"], env: env)
+```
+
+Never add a credential-bearing variable back. If a tool genuinely needs a
+secret, read it in Elixir and pass it as an argument or on stdin, where you
+control the blast radius, instead of exporting it to every child process.
+
+> **`scrubbed/0` decides what Nous forwards; it is not a sandbox boundary.**
+> `System.cmd/3`'s `:env` merges over the inherited environment rather than
+> replacing it, so a variable the BEAM already exports can still reach the child
+> unless you unset it explicitly by passing `{"VAR", nil}`. Size your trust
+> accordingly: gate execute-class tools with `Nous.Permissions`, and on nodes
+> that run them prefer loading provider keys into application config in
+> `runtime.exs` (`config :nous, openai_api_key: fetch_from_vault()`, which is
+> where `Nous.Model` reads them from) over exporting them into the OS
+> environment.
 
 ## Worked Examples
 
@@ -333,6 +512,16 @@ Run either with `mix run examples/<path>.exs`.
 
 - **`max_turns` ≠ `max_iterations`.** See the section above — they cap different
   loops and neither bounds the other.
+
+- **InputGuard fails closed on dropped strategies since 0.16.5.** Under the
+  default `aggregation: :any`, a strategy that errors or times out upgrades a
+  `:safe` verdict to `:suspicious` — input that used to pass may now warn or
+  block. `fail_closed: false` restores the old behavior.
+
+- **A scrubbed env is not a sandbox.** `Nous.Tools.Env.scrubbed/0` controls what
+  Nous forwards to a subprocess; it does not unset what the OS child already
+  inherits. Custom tools that shell out must pass it themselves — nothing does
+  it for them.
 
 ## Related guides
 

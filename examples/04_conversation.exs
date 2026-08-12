@@ -5,9 +5,10 @@
 
 IO.puts("=== Nous AI - Conversation Demo ===\n")
 
-agent = Nous.new("lmstudio:qwen3",
-  instructions: "You are a friendly assistant. Remember our conversation."
-)
+agent =
+  Nous.new("lmstudio:qwen3",
+    instructions: "You are a friendly assistant. Remember our conversation."
+  )
 
 # ============================================================================
 # Method 1: Context Continuation (v0.8.0 - Recommended)
@@ -86,10 +87,13 @@ alias Nous.Message.ContentPart
 # Note: LMStudio/local models may not support images
 
 # Image from URL
-image_message = Message.user([
-  ContentPart.text("What do you see in this image?"),
-  ContentPart.image_url("https://upload.wikimedia.org/wikipedia/commons/thumb/4/04/Elixir_logo.png/180px-Elixir_logo.png")
-])
+image_message =
+  Message.user([
+    ContentPart.text("What do you see in this image?"),
+    ContentPart.image_url(
+      "https://upload.wikimedia.org/wikipedia/commons/thumb/4/04/Elixir_logo.png/180px-Elixir_logo.png"
+    )
+  ])
 
 IO.puts("Created message with image URL:")
 IO.puts("  Text: #{Message.extract_text(image_message)}")
@@ -100,12 +104,16 @@ IO.puts("  Has image: yes\n")
 # Message.user([ContentPart.text("Describe this:"), local_image])
 
 # Image from base64 data
-base64_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+base64_png =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
 data_url = ContentPart.base64_to_data_url(base64_png, "image/png")
-base64_message = Message.user([
-  ContentPart.text("What color is this pixel?"),
-  ContentPart.image_url(data_url)
-])
+
+base64_message =
+  Message.user([
+    ContentPart.text("What color is this pixel?"),
+    ContentPart.image_url(data_url)
+  ])
 
 IO.puts("Created message with base64 image:")
 IO.puts("  Text: #{Message.extract_text(base64_message)}\n")
@@ -117,7 +125,9 @@ multimodal_conversation = [
   Message.assistant("Great! I'm ready to analyze any images you share."),
   Message.user([
     ContentPart.text("What's in this logo?"),
-    ContentPart.image_url("https://upload.wikimedia.org/wikipedia/commons/thumb/4/04/Elixir_logo.png/180px-Elixir_logo.png")
+    ContentPart.image_url(
+      "https://upload.wikimedia.org/wikipedia/commons/thumb/4/04/Elixir_logo.png/180px-Elixir_logo.png"
+    )
   ])
 ]
 
@@ -135,22 +145,36 @@ notes = fn ctx, %{"text" => text} ->
   %{saved: text, total_notes: length(existing) + 1}
 end
 
-agent_with_notes = Nous.new("lmstudio:qwen3",
-  instructions: "You have a notes tool. Use it to save important info.",
-  tools: [notes]
-)
+notes_tool =
+  Nous.Tool.from_function(notes,
+    name: "save_note",
+    description: "Save a short note for the user",
+    parameters: %{
+      "type" => "object",
+      "properties" => %{
+        "text" => %{"type" => "string", "description" => "The note text to save"}
+      },
+      "required" => ["text"]
+    }
+  )
 
-{:ok, r1} = Nous.run(agent_with_notes, "Save a note: Buy groceries",
-  deps: %{notes: []}
-)
+agent_with_notes =
+  Nous.new("lmstudio:qwen3",
+    instructions: "You have a notes tool. Use it to save important info.",
+    tools: [notes_tool]
+  )
+
+{:ok, r1} = Nous.run(agent_with_notes, "Save a note: Buy groceries", deps: %{notes: []})
 IO.puts("User: Save a note: Buy groceries")
 IO.puts("Assistant: #{r1.output}\n")
 
 # Continue with context
-{:ok, r2} = Nous.run(agent_with_notes, "Save another: Call mom",
-  context: r1.context,
-  deps: %{notes: ["Buy groceries"]}
-)
+{:ok, r2} =
+  Nous.run(agent_with_notes, "Save another: Call mom",
+    context: r1.context,
+    deps: %{notes: ["Buy groceries"]}
+  )
+
 IO.puts("User: Save another: Call mom")
 IO.puts("Assistant: #{r2.output}\n")
 

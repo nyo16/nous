@@ -1,5 +1,18 @@
 defmodule Nous.Skills.TestGen do
-  @moduledoc "Built-in skill for test generation."
+  @moduledoc """
+  Built-in skill — test generation from implementation code.
+
+  Injects a system-prompt section covering happy paths first, then edge cases
+  (empty input, boundary values, nil, maximum sizes), error cases (invalid
+  input, network failure, timeout, permissions), integration points and
+  candidate properties — while telling the model to follow the project's
+  existing test conventions and keep every test independent.
+
+  Activates on prompts containing "write test", "generate test", "add test",
+  "test case", "test for" or "create test". Group `:testing`;
+  tags `:test`, `:testing`, `:quality`.
+  """
+
   use Nous.Skill,
     keywords: ["write test", "generate test", "add test", "test case", "test for", "create test"],
     tags: [:test, :testing, :quality],

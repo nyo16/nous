@@ -26,30 +26,40 @@ Raw Documents  →  LLM Compiler  →  Wiki Entries  →  Search / Q&A / Generat
 The simplest way to add knowledge base capabilities to an agent:
 
 ```elixir
-agent = Nous.Agent.new("openai:gpt-4",
-  plugins: [Nous.Plugins.KnowledgeBase],
-  deps: %{
-    kb_config: %{
-      store: Nous.KnowledgeBase.Store.ETS,
-      kb_id: "my_kb"
-    }
+agent = Nous.Agent.new("openai:gpt-4", plugins: [Nous.Plugins.KnowledgeBase])
+
+# Configuration lives in the run dependencies, not on the agent struct
+deps = %{
+  kb_config: %{
+    store: Nous.KnowledgeBase.Store.ETS,
+    kb_id: "my_kb"
   }
-)
+}
 
 # Ingest a document
-{:ok, r1} = Nous.run(agent, """
-Ingest this article:
+{:ok, r1} =
+  Nous.run(
+    agent,
+    """
+    Ingest this article:
 
-# Understanding GenServers
-GenServers are the workhorse of OTP. They provide a client-server abstraction
-where the server runs as a separate process...
-""")
+    # Understanding GenServers
+    GenServers are the workhorse of OTP. They provide a client-server abstraction
+    where the server runs as a separate process...
+    """,
+    deps: deps
+  )
 
 # Query the knowledge base
-{:ok, r2} = Nous.run(agent, "What do we know about GenServers?", context: r1.context)
+{:ok, r2} =
+  Nous.run(agent, "What do we know about GenServers?", deps: deps, context: r1.context)
 
 # Generate a report
-{:ok, r3} = Nous.run(agent, "Generate a summary report of all OTP concepts", context: r2.context)
+{:ok, r3} =
+  Nous.run(agent, "Generate a summary report of all OTP concepts",
+    deps: deps,
+    context: r2.context
+  )
 ```
 
 ### With Semantic Search
@@ -57,17 +67,16 @@ where the server runs as a separate process...
 Add an embedding provider for vector-based search:
 
 ```elixir
-agent = Nous.Agent.new("openai:gpt-4",
-  plugins: [Nous.Plugins.KnowledgeBase],
-  deps: %{
-    kb_config: %{
-      store: Nous.KnowledgeBase.Store.ETS,
-      kb_id: "my_kb",
-      embedding: Nous.Memory.Embedding.OpenAI,
-      embedding_opts: %{api_key: System.get_env("OPENAI_API_KEY")}
-    }
+agent = Nous.Agent.new("openai:gpt-4", plugins: [Nous.Plugins.KnowledgeBase])
+
+deps = %{
+  kb_config: %{
+    store: Nous.KnowledgeBase.Store.ETS,
+    kb_id: "my_kb",
+    embedding: Nous.Memory.Embedding.OpenAI,
+    embedding_opts: %{api_key: System.get_env("OPENAI_API_KEY")}
   }
-)
+}
 ```
 
 ### Composing with Memory
@@ -75,13 +84,15 @@ agent = Nous.Agent.new("openai:gpt-4",
 The KB plugin works alongside `Nous.Plugins.Memory`:
 
 ```elixir
-agent = Nous.Agent.new("openai:gpt-4",
-  plugins: [Nous.Plugins.Memory, Nous.Plugins.KnowledgeBase],
-  deps: %{
-    memory_config: %{store: Nous.Memory.Store.ETS},
-    kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}
-  }
-)
+agent =
+  Nous.Agent.new("openai:gpt-4",
+    plugins: [Nous.Plugins.Memory, Nous.Plugins.KnowledgeBase]
+  )
+
+deps = %{
+  memory_config: %{store: Nous.Memory.Store.ETS},
+  kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}
+}
 ```
 
 Memory stores personal/episodic information; the knowledge base stores compiled reference material.
@@ -91,11 +102,13 @@ Memory stores personal/episodic information; the knowledge base stores compiled 
 For a KB-specialized agent with additional reasoning tools:
 
 ```elixir
-agent = Nous.Agent.new("openai:gpt-4",
-  behaviour_module: Nous.Agents.KnowledgeBaseAgent,
-  plugins: [Nous.Plugins.KnowledgeBase],
-  deps: %{kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}}
-)
+agent =
+  Nous.Agent.new("openai:gpt-4",
+    behaviour_module: Nous.Agents.KnowledgeBaseAgent,
+    plugins: [Nous.Plugins.KnowledgeBase]
+  )
+
+deps = %{kb_config: %{store: Nous.KnowledgeBase.Store.ETS, kb_id: "my_kb"}}
 ```
 
 The `KnowledgeBaseAgent` adds 4 reasoning tools on top of the 9 standard KB tools:
@@ -147,11 +160,17 @@ report = state.data.health_report
 
 ### Output Generation
 
+`generate/2` requires both a `:kb_config` and a `:topic`; the output type is
+`:report`, `:summary`, or `:slides`:
+
 ```elixir
-{:ok, state} = Nous.KnowledgeBase.generate_output(
-  "executive_summary",
-  kb_config: config
+{:ok, state} = Nous.KnowledgeBase.generate(
+  :summary,
+  kb_config: config,
+  topic: "OTP concepts"
 )
+
+summary = state.node_results["generate_output"]
 ```
 
 ## Data Model
@@ -195,14 +214,17 @@ Compiled wiki articles — the core unit of the knowledge base:
 
 ### Links
 
-Typed directional connections between entries:
+Typed directional connections between entries, from `from_entry_id` to `to_entry_id`:
 
 ```elixir
 %Nous.KnowledgeBase.Link{
-  source_id: "entry_1",
-  target_id: "entry_2",
-  link_type: :related,        # :related | :subtopic | :prerequisite | :contradicts | :extends | :references
-  label: "GenServer implements OTP behaviour"
+  id: "link_1",
+  from_entry_id: "entry_1",
+  to_entry_id: "entry_2",
+  link_type: :cross_reference,  # :backlink | :cross_reference | :concept | :see_also | :parent_child
+  label: "GenServer implements OTP behaviour",
+  weight: 1.0,
+  kb_id: "my_kb"
 }
 ```
 
@@ -255,7 +277,9 @@ Features: Jaro-distance text search, optional vector search with embeddings, sco
 
 ### Custom Backends
 
-Implement the `Nous.KnowledgeBase.Store` behaviour (15 callbacks) for custom backends:
+Implement the `Nous.KnowledgeBase.Store` behaviour (19 callbacks, of which
+`search_entries/3`, `related_entries/3` and `link_counts_by_source/1` are optional)
+for custom backends:
 
 ```elixir
 defmodule MyApp.KBStore.Postgres do
@@ -267,13 +291,14 @@ defmodule MyApp.KBStore.Postgres do
   @impl true
   def store_entry(state, entry), do: ...
 
-  # ... 13 more callbacks
+  # ... the remaining callbacks
 end
 ```
 
 ## Configuration Reference
 
-All configuration is passed via `deps[:kb_config]`:
+Store configuration is passed via `deps[:kb_config]` (plugin mode) or the `:kb_config`
+option (workflow mode):
 
 | Key | Required | Description |
 |-----|----------|-------------|
@@ -282,4 +307,11 @@ All configuration is passed via `deps[:kb_config]`:
 | `:store_opts` | No | Options passed to `store.init/1` |
 | `:embedding` | No | Embedding provider module |
 | `:embedding_opts` | No | Embedding provider options |
-| `:compiler_model` | No | Model for workflow LLM steps (default: `"openai:gpt-4o-mini"`) |
+
+`:compiler_model` is not part of `kb_config` — it is a top-level option on the
+`Nous.KnowledgeBase` workflow functions (`ingest/2`, `incremental_update/2`,
+`health_check/1`, `generate/2`) and defaults to `"openai:gpt-4o-mini"`:
+
+```elixir
+Nous.KnowledgeBase.ingest(documents, kb_config: config, compiler_model: "openai:gpt-4o")
+```

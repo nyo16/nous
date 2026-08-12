@@ -29,13 +29,13 @@ defmodule Nous.Providers.HTTP.JSONArrayParser do
 
   ## Examples
 
-      iex> parse_buffer(~s|[{"text":"hi"},{"text":"there"}]|)
+      iex> JSONArrayParser.parse_buffer(~s|[{"text":"hi"},{"text":"there"}]|)
       {[%{"text" => "hi"}, %{"text" => "there"}], ""}
 
-      iex> parse_buffer(~s|[{"text":"hi"},{"tex|)
+      iex> JSONArrayParser.parse_buffer(~s|[{"text":"hi"},{"tex|)
       {[%{"text" => "hi"}], ~s|{"tex|}
 
-      iex> parse_buffer("")
+      iex> JSONArrayParser.parse_buffer("")
       {[], ""}
   """
   @spec parse_buffer(String.t()) :: {list(), String.t()}
@@ -67,10 +67,10 @@ defmodule Nous.Providers.HTTP.JSONArrayParser do
 
   ## Examples
 
-      iex> parse_buffer(~s|[{"a":1|, nil)
+      iex> JSONArrayParser.parse_buffer(~s|[{"a":1|, nil)
       {[], ~s|{"a":1|, {6, 1, false}}
 
-      iex> parse_buffer(~s|{"a":1}]|, {6, 1, false})
+      iex> JSONArrayParser.parse_buffer(~s|{"a":1}]|, {6, 1, false})
       {[%{"a" => 1}], "", nil}
   """
   @spec parse_buffer(String.t(), Nous.HTTP.Buffer.scan_state()) ::

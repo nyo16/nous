@@ -98,10 +98,26 @@ get_weather = fn _ctx, %{"city" => city} ->
   %{city: city, temp: 72, conditions: "sunny"}
 end
 
+# Name the tool explicitly: a bare anonymous function is registered under a
+# compiler-mangled name from `Function.info/1` with an EMPTY parameter schema,
+# so the model can neither call it nor learn that it needs a "city" argument.
+weather_tool =
+  Nous.Tool.from_function(get_weather,
+    name: "get_weather",
+    description: "Get the current weather for a city",
+    parameters: %{
+      "type" => "object",
+      "properties" => %{
+        "city" => %{"type" => "string", "description" => "City name, e.g. Tokyo"}
+      },
+      "required" => ["city"]
+    }
+  )
+
 agent_with_tools =
   Nous.new("lmstudio:qwen3",
     instructions: "You have a weather tool. Use it when asked about weather.",
-    tools: [get_weather]
+    tools: [weather_tool]
   )
 
 IO.puts("Question: What's the weather in Tokyo?\n")
@@ -126,8 +142,12 @@ end)
 IO.puts("\n--- Alternative: Callbacks ---")
 IO.puts("Same result using callbacks option:\n")
 
+# `stream: true` is what makes `on_llm_new_delta` fire at all. Without it the
+# runner performs a single non-streaming request and the only delta emitter
+# (Nous.AgentRunner.Streaming) never runs, so the callback is silently dead.
 {:ok, _result} =
   Nous.run(agent, "What is 2+2?",
+    stream: true,
     callbacks: %{
       on_llm_new_delta: fn _event, delta -> IO.write(delta) end,
       on_llm_new_message: fn _event, _msg -> IO.puts("\n[Complete]") end

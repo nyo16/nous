@@ -10,8 +10,31 @@ alias Nous.Memory.{Entry, Store, Search, Embedding}
 
 IO.puts("Initializing Bumblebee embedding model (first run downloads ~1.2GB)...")
 
-# Test embedding generation
-{:ok, embedding} = Embedding.Bumblebee.embed("test query")
+# Test embedding generation — this doubles as the dependency probe.
+embedding =
+  case Embedding.Bumblebee.embed("test query") do
+    {:ok, embedding} ->
+      embedding
+
+    {:error, reason} ->
+      IO.puts("""
+
+      Skipping: #{reason}
+
+      The bumblebee and exla dependencies ship commented out in this repo. Uncomment
+      both of these lines in mix.exs (under "Memory system embedding providers"):
+
+          {:bumblebee, "~> 0.6", optional: true},
+          {:exla, "~> 0.9", optional: true},
+
+      then run:
+
+          mix deps.get
+      """)
+
+      System.halt(0)
+  end
+
 IO.puts("Embedding dimension: #{length(embedding)}")
 
 # Initialize store

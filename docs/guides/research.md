@@ -227,4 +227,10 @@ Each `Nous.Research.Finding` is a single recorded fact:
 ## Related Guides
 
 - [Workflow Engine Guide](workflows.md) — the graph-based engine behind `research_pipeline.exs`, for when you want explicit, deterministic orchestration instead of an autonomous loop.
-- The built-in search tools live in `Nous.Tools.TavilySearch`, `Nous.Tools.BraveSearch`, `Nous.Tools.WebFetch`, `Nous.Tools.SearchScrape`, and `Nous.Tools.ResearchNotes`.
+- The built-in research tools live under `Nous.Tools`:
+  - `Nous.Tools.TavilySearch` — `search/2`, AI-oriented web search that returns pre-extracted content.
+  - `Nous.Tools.BraveSearch` — `web_search/2` and `news_search/2` against the Brave Search API.
+  - `Nous.Tools.WebFetch` — `fetch_page/2`, readable content from a single URL (requires `floki`).
+  - `Nous.Tools.SearchScrape` — `scrape_results/2`, fetches and summarizes many URLs in parallel (requires `floki`).
+  - `Nous.Tools.Summarize` — `summarize/2`, condenses a long `text` argument into a summary, up to `max_points` key points (default 5), and a 0.0–1.0 relevance score against an optional `focus` query. It runs its own agent on `ctx.deps[:summary_model]` (defaulting to `"openai:gpt-4o-mini"`), truncates input beyond 15,000 characters, and degrades to plain truncation if that call fails.
+  - `Nous.Tools.ResearchNotes` — `all_tools/0` returns the five note-taking tools (`add_finding`, `list_findings`, `add_gap`, `list_gaps`, `add_contradiction`) the searcher hands to every search agent.

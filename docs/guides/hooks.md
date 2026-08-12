@@ -29,7 +29,20 @@ agent = Nous.new("openai:gpt-4",
 | `:post_response` | After LLM response | No | `%{agent_name, iteration}` |
 | `:pre_tool_use` | Before each tool call | Yes | `%{tool_name, tool_id, arguments}` |
 | `:post_tool_use` | After each tool call | No (modify) | `%{tool_name, tool_id, arguments, result}` |
+| `:pre_node` | Before each workflow node | Yes | `%{node_id, node_type, state}` |
+| `:post_node` | After each workflow node succeeds | No (modify) | `%{node_id, result, state}` |
 | `:session_end` | After run completes | No | `%{agent_name, output}` |
+
+`:pre_node` and `:post_node` are dispatched by `Nous.Workflow.Engine` for graphs run with
+`hooks: [...]`, not by the agent loop. The engine calls the hook's `handler` function
+directly, so only `:function` hooks fire there: `matcher`, `timeout` and `fail_closed` are
+ignored, and a raised exception is logged and treated as `:allow`.
+
+`:pre_node` runs before the node executes and understands three non-`:allow` verdicts:
+`{:pause, reason}` suspends the workflow with a resumable checkpoint, `:deny` aborts the run
+with `{:error, {:hook_denied, hook_name, node_id}}`, and `{:modify, new_state}` replaces the
+state handed to the node. `:post_node` runs only after the node completes successfully and
+can return `{:modify, new_state}` to rewrite the workflow state before the next node.
 
 ## Handler Types
 
@@ -81,15 +94,22 @@ Execute external shell commands via NetRunner (zero-zombie-process guarantee):
   event: :pre_tool_use,
   matcher: ~r/^(write|delete)/,
   type: :command,
-  handler: "python3 scripts/policy_check.py",
+  handler: ["python3", "scripts/policy_check.py"],
   timeout: 5_000
 }
 ```
 
+The handler must be an argv list — `["python3", "scripts/policy_check.py"]`, not a shell
+string. Command hooks never go through a shell, so nothing in the handler is expanded; a raw
+string handler is rejected with `{:error, :invalid_command_handler}`.
+
 Command hooks receive JSON on stdin and use exit codes:
 - **Exit 0**: Allow (stdout parsed as JSON for `{:modify, ...}`)
 - **Exit 2**: Deny
-- **Other**: Allow with warning (fail-open)
+- **Other exit codes**: Allow with a logged warning (fail-open), unless the hook sets
+  [`fail_closed: true`](#fail-closed-hooks)
+- **Timeout** (the `:timeout` field, default `10_000` ms): treated as a hook error — same
+  fail-open default, same `fail_closed` override
 
 JSON stdout format:
 ```json
@@ -124,7 +144,49 @@ matcher: fn %{tool_name: name} -> String.starts_with?(name, "dangerous_") end
 | `:deny` | Block the action (blocking events only) |
 | `{:deny, reason}` | Block with reason message |
 | `{:modify, changes}` | Modify payload and continue |
-| `{:error, reason}` | Log warning, fail-open (proceed) |
+| `{:error, reason}` | Log warning; fail-open by default, deny when the hook sets `fail_closed: true` (see [Fail-Closed Hooks](#fail-closed-hooks)) |
+
+### Fail-Closed Hooks
+
+`%Nous.Hook{}` carries a `fail_closed` field that defaults to `false`. It does not change what
+a hook *decides* — it changes what happens when a hook *fails*: raises, returns
+`{:error, reason}`, or (for command hooks) times out or exits with a code other than 0 or 2.
+
+| `fail_closed` | A hook error on a blocking event means |
+|---------------|----------------------------------------|
+| `false` (default) | Warning logged, error ignored, remaining hooks run — a broken hook **allows** the action |
+| `true` | Error becomes `{:deny, "hook errored (fail_closed): ..."}` — a broken hook **blocks** the action |
+
+The field only has an effect on the blocking events (`:pre_tool_use`, `:pre_request`). On
+non-blocking events a hook error is always logged and skipped, because there is nothing left
+to block.
+
+Set it on any hook that gates a security-sensitive operation. Without it, crashing the policy
+hook is enough to bypass the policy:
+
+```elixir
+%Nous.Hook{
+  event: :pre_tool_use,
+  matcher: ~r/^(write|delete|execute)/,
+  type: :function,
+  name: "filesystem_policy",
+  fail_closed: true,
+  handler: fn _event, %{tool_name: tool, arguments: args} ->
+    # Raises if the policy service is unreachable — fail_closed turns that into a deny
+    # instead of an unchecked write.
+    if MyApp.Policy.allow?(tool, args), do: :allow, else: {:deny, "blocked by policy"}
+  end
+}
+```
+
+The tradeoff is availability. With `fail_closed: true`, a bug in the hook — or an unreachable
+service behind it — blocks tool execution rather than silently permitting it. That is the
+correct posture for security gates and the wrong one for audit, metrics or notification hooks;
+leave those at `fail_closed: false` so a logging failure never stalls the agent.
+
+A denial produced this way still emits `[:nous, :hook, :denied]`, with
+`reason: {:fail_closed, reason}` in the metadata, so it is distinguishable from a deliberate
+`:deny`.
 
 ### Modifying Tool Arguments (pre_tool_use)
 
@@ -157,11 +219,16 @@ matcher: fn %{tool_name: name} -> String.starts_with?(name, "dangerous_") end
 Hooks execute in priority order (lower number = earlier):
 
 ```elixir
-hooks: [
-  %Nous.Hook{event: :pre_tool_use, priority: 10, ...},   # Runs first
-  %Nous.Hook{event: :pre_tool_use, priority: 100, ...},  # Runs second
-  %Nous.Hook{event: :pre_tool_use, priority: 200, ...}   # Runs third
+hooks = [
+  # Runs first
+  %Nous.Hook{event: :pre_tool_use, type: :function, priority: 10, handler: &MyApp.Hooks.rate_limit/2},
+  # Runs second
+  %Nous.Hook{event: :pre_tool_use, type: :function, priority: 100, handler: &MyApp.Hooks.policy/2},
+  # Runs third
+  %Nous.Hook{event: :pre_tool_use, type: :function, priority: 200, handler: &MyApp.Hooks.audit/2}
 ]
+
+agent = Nous.new("openai:gpt-4", tools: [&MyTools.write_file/2], hooks: hooks)
 ```
 
 For blocking events, execution short-circuits on the first `:deny`.

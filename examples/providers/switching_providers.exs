@@ -10,6 +10,7 @@ IO.puts("=== Nous AI - Provider Comparison ===\n")
 # ============================================================================
 
 IO.puts("--- Provider-Agnostic Design ---")
+
 IO.puts("""
 Nous uses a unified API across all providers:
 
@@ -24,13 +25,20 @@ Provider string format: "provider:model-name"
 # ============================================================================
 
 IO.puts("--- Supported Providers ---")
+
 IO.puts("""
-Provider          | Model Format                    | Env Variable
-------------------|----------------------------------|-------------------
+Provider          | Model Format                            | Env Variable
+------------------|-----------------------------------------|-------------------
 Anthropic         | anthropic:claude-sonnet-4-5-20250929    | ANTHROPIC_API_KEY
-OpenAI            | openai:gpt-4                    | OPENAI_API_KEY
-LM Studio (local) | lmstudio:model-name             | (none - local)
-OpenAI-compatible | openai:model@base_url           | OPENAI_API_KEY
+OpenAI            | openai:gpt-4                            | OPENAI_API_KEY
+LM Studio (local) | lmstudio:model-name                     | (none - local)
+OpenAI-compatible | custom:model-name                       | CUSTOM_API_KEY
+
+OpenAI-compatible endpoints need an explicit base URL - there is no
+"provider:model@url" syntax. Use either:
+
+  Nous.new("custom:my-model", base_url: "https://api.groq.com/openai/v1")
+  Nous.new("openai:gpt-4", base_url: "https://my-proxy.internal/v1")
 """)
 
 # ============================================================================
@@ -43,13 +51,19 @@ prompt = "What is Elixir? Answer in one sentence."
 instructions = "Be concise and accurate."
 
 # Define available providers based on env vars
-providers = [
-  if(System.get_env("ANTHROPIC_API_KEY"),
-    do: {"Anthropic Claude", "anthropic:claude-sonnet-4-5-20250929", System.get_env("ANTHROPIC_API_KEY")}),
-  if(System.get_env("OPENAI_API_KEY"),
-    do: {"OpenAI GPT-4", "openai:gpt-4", System.get_env("OPENAI_API_KEY")}),
-  {"LM Studio (local)", "lmstudio:qwen3", nil}
-] |> Enum.filter(& &1)
+providers =
+  [
+    if(System.get_env("ANTHROPIC_API_KEY"),
+      do:
+        {"Anthropic Claude", "anthropic:claude-sonnet-4-5-20250929",
+         System.get_env("ANTHROPIC_API_KEY")}
+    ),
+    if(System.get_env("OPENAI_API_KEY"),
+      do: {"OpenAI GPT-4", "openai:gpt-4", System.get_env("OPENAI_API_KEY")}
+    ),
+    {"LM Studio (local)", "lmstudio:qwen3", nil}
+  ]
+  |> Enum.filter(& &1)
 
 if Enum.empty?(providers) do
   IO.puts("No API keys found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY to compare.")
@@ -86,6 +100,7 @@ end)
 # ============================================================================
 
 IO.puts("--- Environment-Based Selection ---")
+
 IO.puts("""
 defmodule MyApp.AI do
   def get_agent do
@@ -112,6 +127,7 @@ end
 # ============================================================================
 
 IO.puts("--- Config-Based Selection ---")
+
 IO.puts("""
 # config/config.exs
 config :my_app, :ai_provider,
@@ -131,12 +147,13 @@ end
 # ============================================================================
 
 IO.puts("--- Provider Capabilities ---")
+
 IO.puts("""
 Feature           | Anthropic | OpenAI | LM Studio
 ------------------|-----------|--------|----------
 Streaming         | Yes       | Yes    | Yes
 Tools/Functions   | Yes       | Yes    | Varies
-Extended Thinking | Yes       | No     | No
+Thinking config   | No        | No     | No   (Gemini/Vertex only)
 Vision/Images     | Yes       | Yes    | Varies
 Max Context       | 200K      | 128K   | Varies
 Local/Private     | No        | No     | Yes

@@ -1,5 +1,18 @@
 defmodule Nous.Skills.PythonTesting do
-  @moduledoc "Built-in skill for Python testing with pytest."
+  @moduledoc """
+  Built-in skill — pytest patterns.
+
+  Injects a system-prompt section with examples for `yield` fixtures that clean
+  up, factory fixtures for complex objects, `@pytest.mark.parametrize` case
+  tables, patching only at external boundaries, `pytest-asyncio` async tests,
+  fixture scoping from function to session, and test names that spell out the
+  behaviour under test.
+
+  Activates on prompts containing "pytest", "python test", "test python",
+  "fixture" or "parametrize". Group `:testing`;
+  tags `:python`, `:testing`, `:pytest`.
+  """
+
   use Nous.Skill,
     keywords: ["pytest", "python test", "test python", "fixture", "parametrize"],
     tags: [:python, :testing, :pytest],

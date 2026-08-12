@@ -1,7 +1,9 @@
 defmodule Nous.Util do
-  @moduledoc """
-  Small shared helpers used across Nous internals.
-  """
+  # Internal. Small shared helpers used across Nous internals; not part of the
+  # public, semver-covered surface (see the mechanical rule in AGENTS.md:
+  # `@moduledoc false` == private). Its doctests still run via
+  # `test/nous/util_test.exs`.
+  @moduledoc false
 
   @doc """
   Convert a binary to an already-existing atom, returning `fallback` when no

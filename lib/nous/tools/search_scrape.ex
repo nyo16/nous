@@ -41,6 +41,7 @@ if Code.ensure_loaded?(Floki) do
 
     A list of results with url, title, summary, key_facts, and relevance.
     """
+    @spec scrape_results(Nous.RunContext.t(), map()) :: map()
     def scrape_results(ctx, args) do
       all_urls = Map.get(args, "urls", [])
       query = Map.get(args, "query", "")

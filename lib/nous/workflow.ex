@@ -102,17 +102,33 @@ defmodule Nous.Workflow do
 
   ## Options
 
+  Forwarded verbatim to `Nous.Workflow.Engine.execute/3`:
+
   - `:deps` — dependencies passed to agents/tools
   - `:callbacks` — callback functions for agent steps
   - `:notify_pid` — PID to receive progress notifications
   - `:max_iterations` — max cycle iterations (default: 10)
+  - `:hooks` — `Nous.Hook` structs; the engine dispatches `:workflow_start`,
+    `:workflow_end`, `:pre_node` and `:post_node` (default: `[]`)
+  - `:trace` — when `true`, record a `Nous.Workflow.Trace` and attach it to
+    `state.metadata.trace` on completion or suspension (default: `false`)
+  - `:scratch` — when `true`, allocate a run-scoped `Nous.Workflow.Scratch` and
+    clean it up on completion. It is NOT attached to the state; see that
+    module's docs (default: `false`)
+  - `:pause_ref` — reference used to resume a suspended run
+  - `:on_node_complete` — 1-arity function invoked after each node finishes
 
   ## Returns
 
   - `{:ok, final_state}` — workflow completed successfully
+  - `{:suspended, state, info}` — a node paused the run (e.g. a `{:pause, _}`
+    hook or a human-review node)
   - `{:error, reason}` — compilation or execution failed
   """
-  @spec run(Graph.t(), map(), keyword()) :: {:ok, Nous.Workflow.State.t()} | {:error, term()}
+  @spec run(Graph.t(), map(), keyword()) ::
+          {:ok, Nous.Workflow.State.t()}
+          | {:suspended, Nous.Workflow.State.t(), map()}
+          | {:error, term()}
   def run(%Graph{} = graph, initial_data \\ %{}, opts \\ []) do
     case compile(graph) do
       {:ok, compiled} -> Engine.execute(compiled, initial_data, opts)

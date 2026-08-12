@@ -3,6 +3,8 @@ defmodule Nous.Teams.CommsTest do
 
   alias Nous.Teams.Comms
 
+  doctest Nous.Teams.Comms
+
   describe "topic builders" do
     test "team_topic/1 builds correct string" do
       assert Comms.team_topic("team_1") == "nous:team:team_1"

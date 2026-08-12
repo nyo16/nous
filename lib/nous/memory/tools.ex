@@ -13,6 +13,7 @@ defmodule Nous.Memory.Tools do
   @doc """
   Returns all memory tools as a list.
   """
+  @spec all_tools() :: [Tool.t()]
   def all_tools do
     [remember_tool(), recall_tool(), forget_tool()]
   end

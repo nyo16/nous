@@ -3,6 +3,8 @@ defmodule Nous.Errors.RetryInfoTest do
 
   alias Nous.Errors.RetryInfo
 
+  doctest Nous.Errors.RetryInfo
+
   describe "parse/1 — Google body shape" do
     test "extracts retryDelay from RetryInfo detail" do
       error = %{

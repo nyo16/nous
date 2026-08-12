@@ -59,7 +59,7 @@ There are 13 named providers plus the `custom:` prefix. The list below is the au
 
 **OpenAI-compatible cloud aggregators** — `groq`, `together`, and `openrouter` are hosted services that speak the OpenAI Chat Completions API. They are convenience aliases: each ships a sensible default base URL and reads its own env var, but routes through `Nous.Providers.OpenAICompatible`. You could reach the exact same endpoint with a `custom:` string and an explicit `base_url`.
 
-**Local servers** — `ollama`, `lmstudio`, `vllm`, and `sglang` point at a server running on your own machine. They need no API key (Nous supplies a placeholder where one is required). `vllm` has no default base URL, so `"vllm:..."` **requires** a `base_url` option and raises `ArgumentError` without one. `sglang` defaults to `http://localhost:30000/v1`; the others default to their standard local ports.
+**Local servers** — `ollama`, `lmstudio`, `vllm`, and `sglang` point at a server running on your own machine. They need no API key (Nous supplies a placeholder where one is required). `ollama` defaults to `http://localhost:11434/v1`, `lmstudio` to `http://localhost:1234/v1`, and `sglang` to `http://localhost:30000/v1`. `vllm` is the exception: `Nous.Model.parse/2` has a dedicated `"vllm:"` clause that raises `ArgumentError` when you do not pass `base_url:`. The layering here is subtle enough to deserve its own section — see [vLLM and SGLang base URLs](#vllm-and-sglang-base-urls).
 
 **In-process** — `llamacpp` runs the model inside the BEAM via NIFs (no HTTP server, no API key). Its base URL is the sentinel string `"local"`. Pass the model file with the `:llamacpp_model` option, which `parse/2` folds into `default_settings`:
 
@@ -67,9 +67,41 @@ There are 13 named providers plus the `custom:` prefix. The list below is the au
 Nous.new("llamacpp:local", llamacpp_model: "/path/to/model.gguf")
 ```
 
-**Enterprise** — `vertex_ai` is Google Cloud's enterprise Gemini platform (VPC-SC, IAM, regional/global endpoints). It uses GCP OAuth tokens rather than a static API key, and its base URL is built per-request by the provider. See [Vertex AI setup](vertex_ai_setup.md).
+**Enterprise** — `vertex_ai` is Google Cloud's enterprise Gemini platform (VPC-SC, IAM, regional/global endpoints). It uses GCP OAuth tokens rather than a static API key, and its base URL is built per-request by the provider. See [Vertex AI setup](vertex_ai_setup.md) for auth, and [Model settings](vertex_ai_setup.md#model-settings) for the Gemini request surface shared by `vertex_ai:` and `gemini:` — thinking config, native tools, safety settings, tool choice, JSON output, and context caching.
 
 **Custom** — `custom:` is the catch-all for any OpenAI-compatible endpoint not covered above. It always requires a `base_url` (from option, `CUSTOM_BASE_URL`, or `config :nous, :custom`). See [custom providers](custom_providers.md).
+
+### vLLM and SGLang base URLs
+
+`Nous.Model` and the provider modules each carry a base-URL default, and for `vllm:` they disagree: `Nous.Model` has none, while `Nous.Providers.VLLM` declares `http://localhost:8000/v1`. Two distinct failure modes fall out of that, and conflating them is the usual source of confusion.
+
+**1. A missing `base_url` raises — at construction time.** `Nous.Model.parse/2` (which `Nous.new/2` calls) matches `"vllm:" <> model_name` in its own clause and raises before a model struct ever exists:
+
+```elixir
+# ** (ArgumentError) vllm provider requires :base_url option.
+#    Example: parse("vllm:my-model", base_url: "http://localhost:8000/v1")
+Nous.new("vllm:meta-llama/Llama-3-8B-Instruct")
+
+# Correct — on this path the option is mandatory:
+Nous.new("vllm:meta-llama/Llama-3-8B-Instruct", base_url: "http://localhost:8000/v1")
+```
+
+The guard is a literal check for the `:base_url` key in the options. Setting `VLLM_BASE_URL` or `config :nous, :vllm, base_url: ...` does **not** satisfy it — those are only read later, at request time.
+
+**2. A `base_url` that is present but invalid returns an error tuple.** `vllm`, `sglang`, and `lmstudio` resolve their URL through the `:local` strategy in `Nous.Provider`, which validates via `Nous.Tools.UrlGuard.validate/2` with `allow_private_hosts: true`. Loopback and private addresses are therefore fine; a URL with no host, no scheme, or a blocked scheme (`file`, `gopher`, `ftp`, `ldap`, `dict`, `ssh`) is not. Nothing raises here — the request returns an error tuple:
+
+```elixir
+# base_url: "localhost:8000/v1" — no scheme, so URI parsing finds no host
+{:error, {:invalid_config, "vLLM base_url failed validation: URL has no host. Got: \"localhost:8000/v1\""}}
+```
+
+**Which default wins.** At request time the `:local` strategy resolves in this order: the model's `base_url` (what you passed to `Nous.new/2`), then `VLLM_BASE_URL`, then `config :nous, :vllm, base_url:`, then the provider module's `http://localhost:8000/v1`. Because `parse/2` raises first, the last three are unreachable through a `"vllm:..."` model string — a parsed vLLM model always carries an explicit URL. The provider default only applies when the model is built another way (`Nous.Model.new(:vllm, "my-model")` leaves `base_url` nil) or when the `chat/2` entry point on `Nous.Providers.VLLM` is called directly. Practical rule: on the `vllm:` path, always pass `base_url:`.
+
+`sglang:` behaves differently. `parse/2` has no special clause for it and `Nous.Model` supplies `http://localhost:30000/v1`, so `Nous.new("sglang:my-model")` works with no options at all. By the same layering, though, `SGLANG_BASE_URL` is only consulted when a model's `base_url` is nil — which the `sglang:` model string never produces. To point at a non-default SGLang server, pass `base_url:` explicitly:
+
+```elixir
+Nous.new("sglang:my-model", base_url: "http://gpu-box.internal:30000/v1")
+```
 
 ## Switching providers
 

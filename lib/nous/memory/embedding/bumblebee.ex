@@ -126,6 +126,7 @@ if Code.ensure_loaded?(Bumblebee) do
     end
 
     @doc "Run the serving on a single text input."
+    @spec run(pid(), String.t(), timeout()) :: {:ok, [float()]} | {:error, term()}
     def run(pid, text, timeout) do
       # Fetch the serving struct via a cheap GenServer.call (returns the
       # already-loaded reference, no inference inside the GenServer), then
@@ -143,6 +144,7 @@ if Code.ensure_loaded?(Bumblebee) do
     end
 
     @doc "Run the serving on a batch of text inputs."
+    @spec run_batch(pid(), [String.t()], timeout()) :: {:ok, [[float()]]} | {:error, term()}
     def run_batch(pid, texts, timeout) do
       with {:ok, serving} <- get_serving(pid, timeout) do
         try do

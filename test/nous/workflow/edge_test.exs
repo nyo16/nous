@@ -3,6 +3,8 @@ defmodule Nous.Workflow.EdgeTest do
 
   alias Nous.Workflow.Edge
 
+  doctest Nous.Workflow.Edge
+
   describe "new/1" do
     test "creates a sequential edge by default" do
       edge = Edge.new(%{from_id: "a", to_id: "b"})

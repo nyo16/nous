@@ -52,6 +52,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining advisories reach the build through `bypass`
   (`only: [:dev, :test]`) and never ship to consumers.
 
+- **`Nous.AgentServer` no longer amplifies its own PubSub traffic.** `init/1`
+  subscribes the server to the topic it publishes on, and
+  `Phoenix.PubSub.broadcast/3` does not exclude the sender — so the
+  `handle_info` clauses that re-broadcast runner notifications received their
+  own message and republished it, forever. Any app that actually set
+  `config :nous, pubsub:` had one busy-looping process per agent (measured:
+  ~1.2e8 reductions/s on an *idle* server) and unbounded duplicate events on
+  every subscriber. `Nous.Agent.Callbacks.execute/3` already broadcasts every
+  one of those events via the run context, so the five clauses
+  (`:agent_delta`, `:tool_call`, `:tool_result`, `:agent_complete`,
+  `:agent_error`) are now drains rather than publishers. No test configured a
+  real PubSub with an `AgentServer`, which is why this never fired in CI; one
+  does now.
+
 ### Performance
 
 - **Gemini/Vertex JSON-array streaming is no longer O(n²).** The
@@ -146,6 +160,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Nous.Workflow.Engine.{Executor,ParallelExecutor,StateMerger}` were genuinely
   internal; they gain `@moduledoc false` and leave the docs groups.
 
+- **`Nous.Plugins.KnowledgeBase` honours a caller-supplied `:store_state`.**
+  `init/2` called `store_mod.init/1` unconditionally, discarding any store
+  passed in config, so an agent configured against a pre-populated knowledge
+  base searched an empty one. It now mirrors the `:store_state` reuse guard
+  `Nous.Plugins.Memory` has always had. **Behaviour change:** a
+  `kb_config[:store_state]` that used to be ignored is now used.
+
+- **`Nous.Util` is `@moduledoc false`.** The module described itself as
+  "internal" while carrying a visible `@moduledoc`, which under this project's
+  own mechanical rule (`@moduledoc false` == private, everything else is
+  semver-covered API) made it public. It is now hidden, matching both its own
+  description and `AGENTS.md`. Its doctests still run.
+
+- **`Nous.Hook`'s `@type event` union was incomplete.** It omitted
+  `:workflow_start`, `:workflow_end`, `:pre_node` and `:post_node`, all four of
+  which `Nous.Workflow.Engine` dispatches. Type-only change.
+
+- **`Nous.AgentRegistry.via_tuple/1` and `lookup/1` accept any registry key.**
+  The specs said `String.t()`, but `Nous.Teams.Coordinator` has always
+  registered members under a `{:team, team_id, member}` tuple. Spec-only
+  change, now expressed as `t:Nous.AgentRegistry.key/0`.
+
 ### Tests
 
 - **Provider request shaping is now asserted.** `Nous.Providers.Gemini` sat at
@@ -211,6 +247,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Structured output silently did nothing on Gemini and Vertex AI.**
+  `Nous.OutputSchema.to_provider_settings/2` emits the OpenAI-nested
+  `response_format: %{"type" => "json_schema", "json_schema" => %{"schema" => …}}`
+  and `resolve_mode(:auto, :gemini)` is `:json_schema`, but
+  `Nous.Messages.Gemini` only matched the *flat* `%{"type" => …, "schema" => …}`
+  shape. Every `output_type:` agent on `gemini:` / `vertex_ai:` therefore sent
+  no `responseMimeType` and no `responseSchema` at all, and relied entirely on
+  the model guessing JSON. Both shapes are now accepted.
+
+- **Every `Nous.Eval.Optimizer` objective except `:score` and `:pass_rate`
+  raised.** `extract_metric/2` and `extract_all_metrics/1` used
+  `get_in(suite_result, [:metrics_summary, :latency, :p50])`; `%SuiteResult{}`
+  and `%Metrics.Summary{}` are plain structs with no `Access` implementation,
+  so that raised `UndefinedFunctionError` rather than returning nil — and the
+  nested `:latency` / `:tokens` / `:cost` keys never existed on the summary
+  anyway. They now read the real summary fields, and a suite with no metrics
+  summary (every case errored) yields `0.0` instead of crashing the search.
+
+- **`Nous.Agent.Context` dropped the prompt-cache token counters.**
+  `add_usage/2`'s map branch, `serialize_usage/1` and `deserialize_usage/1` all
+  omitted `cache_creation_input_tokens` and `cache_read_input_tokens`, so
+  persisting and resuming a context zeroed them and any cache-aware cost
+  calculation under-reported after a restore.
+
+- **`Nous.Agent.Behaviour.call/4` skipped optional callbacks on unloaded
+  modules.** It used a bare `function_exported?/3`, which answers false for a
+  module that has not been loaded yet — routine under interactive code loading.
+  A behaviour module that really did implement `init_context/2` or
+  `after_tool/4` silently got the default instead. Now guarded with
+  `Code.ensure_loaded?/1`.
+
+- **`Nous.Memory.Store.Hybrid` raised instead of erroring when its optional
+  deps are absent.** The deps-unavailable branch defined `init/1` and
+  `search/3` but not `search_vector/3`, so the friendly `{:error, _}` path was
+  an `UndefinedFunctionError`.
+
+- `Nous.Workflow.run/3`'s `@spec` omitted the `{:suspended, state, info}`
+  return the engine can produce, and its `@doc` omitted the `:hooks`, `:trace`,
+  `:scratch`, `:pause_ref` and `:on_node_complete` options it forwards.
+
 - **Gemini and Vertex AI tool calls from the agent path shipped a malformed
   payload.** `Nous.AgentRunner` fell through to the OpenAI tool schema for
   `:gemini` / `:vertex_ai`, so the request carried
@@ -247,6 +323,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Nous.HTTP.Backend.Req` matched only `%Mint.TransportError{}`; Req 0.6
   surfaces `%Req.TransportError{}`, so the clause went dead and transport
   failures fell through to the generic handler. Both structs are handled.
+
+### Documentation
+
+A full pass over `docs/`, `examples/`, `README.md`, `AGENTS.md` and
+`CONTRIBUTING.md`. The rot was semantic, not structural: `mix docs` built with
+zero warnings the whole time, because nothing in CI read `examples/` or the
+code fences in the guides.
+
+- **New: a regression guard.** `test/docs/api_reference_test.exs` parses every
+  `examples/**/*.exs` and every Elixir code fence in the docs, resolves each
+  `Nous.*` remote call and struct literal against the loaded beam
+  (alias-aware, including `alias Nous.{A, B}`, pipes, captures and default
+  arities), and fails on an unknown module, function, arity or struct field.
+  It also asserts every fence parses — deliberate fragments are allowlisted by
+  `{file, line, reason}` in `test/docs/fixtures/doc_snippet_allowlist.exs`,
+  and an allowlist entry that has started parsing fails too — and that every
+  relative markdown link and `#anchor` resolves. A `docs` CI job runs
+  `mix docs --warnings-as-errors`.
+
+- **14 broken examples fixed** — calls to functions that do not exist
+  (`AgentServer.subscribe/1`), fields that do not exist (`usage.iterations`,
+  `SuiteResult.test_results`, `Result.test_case.id`), an unsupported
+  `"provider:model@base_url"` model string, an EEx block `PromptTemplate`
+  deliberately rejects, two LiveView scripts that could not compile, and four
+  memory examples that raised `MatchError` instead of naming the optional dep
+  to uncomment. `12_pubsub_agent.exs` ran on a hand-rolled stub that delivered
+  nothing and cost four 30-second timeouts; it now runs on a real
+  `Phoenix.PubSub`.
+
+- **15 misleading examples corrected** — most notably the streaming and
+  callback examples, which registered `on_llm_new_delta` without `stream: true`
+  and therefore never streamed, and every bare anonymous function passed as a
+  tool (which the model sees under a compiler-mangled name with an empty
+  parameter schema).
+
+- **Wrong facts corrected across the guides** — README receive-timeouts (60s/
+  120s claimed; 180s cloud, 120s local, 300s llamacpp actual), the vLLM
+  base_url contract, the `nous:`-prefixed AgentServer topic, `generate/2` vs a
+  nonexistent `generate_output/2`, and several snippets that were outright
+  syntax errors — including *the* custom-memory-store template, whose five
+  callbacks each had a comment where their body should be.
+
+- **Features that shipped undocumented are now documented** —
+  `parallel_tool_calls`, `Nous.Hook`'s `fail_closed`, InputGuard's
+  `fail_closed` / `strategy_timeout`, the twelve Gemini/Vertex model settings
+  from 0.16.0, and the `Nous.Usage` prompt-cache token fields.
+  `docs/guides/migration_guide.md` was a rewrite: it described 0.1.x–0.4.x of a
+  different library and was ~40% Kubernetes boilerplate.
+
+- **New:** `docs/guides/transcript.md`, three Livebook notebooks under
+  `notebooks/` (linked from the README with "Run in Livebook" badges and
+  published to hexdocs), and five examples —
+  `advanced/distributed_agents.exs` (agents across two nodes, one killed
+  mid-run, supervisor restart, persisted context recovered),
+  `20_sql_generation.exs`, `advanced/cost_aware_routing.exs`,
+  `advanced/rag_documents.exs` and `advanced/streaming_backpressure.exs`.
+  All five run offline and exit 0 with no API key.
+
+- **Doctests went from 3 wired modules to 32.** 210 doctests now execute; they
+  previously read well and ran never. Several were pseudo-code that could not
+  evaluate (whole-struct literals compared against a `created_at` stamped at
+  build time, `[...]` placeholders, `File.read` of a path that does not exist)
+  and were rewritten to actually run.
 
 ### Removed
 

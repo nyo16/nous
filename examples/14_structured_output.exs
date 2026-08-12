@@ -15,6 +15,33 @@
 IO.puts("=== Nous AI - Structured Output Demo ===\n")
 
 # ============================================================================
+# Model selection + credential guard
+# ============================================================================
+#
+# Every example below performs a real LLM call. Pick the provider once here;
+# override it with NOUS_MODEL to run against something other than OpenAI.
+
+model_override = System.get_env("NOUS_MODEL")
+model = model_override || "openai:gpt-4o-mini"
+openai_key = System.get_env("OPENAI_API_KEY") || Application.get_env(:nous, :openai_api_key)
+
+if is_nil(model_override) and is_nil(openai_key) do
+  IO.puts("""
+  Skipping: no credentials for the default model (#{model}).
+
+  Set an OpenAI key, or point NOUS_MODEL at another provider:
+
+      export OPENAI_API_KEY="sk-..."
+      # or
+      NOUS_MODEL=lmstudio:qwen3 mix run examples/14_structured_output.exs
+  """)
+
+  System.halt(0)
+end
+
+IO.puts("Model: #{model}\n")
+
+# ============================================================================
 # Example 1: Basic Ecto schema output
 # ============================================================================
 #
@@ -43,7 +70,7 @@ defmodule SpamPrediction do
 end
 
 agent =
-  Nous.new("openai:gpt-4o-mini",
+  Nous.new(model,
     output_type: SpamPrediction,
     instructions: "You are an email spam classifier."
   )
@@ -72,7 +99,7 @@ IO.puts("")
 IO.puts("--- Example 2: Schemaless types ---")
 
 agent =
-  Nous.new("openai:gpt-4o-mini",
+  Nous.new(model,
     output_type: %{name: :string, age: :integer, hobbies: {:array, :string}},
     instructions: "Generate realistic user profiles."
   )
@@ -123,7 +150,7 @@ defmodule MovieReview do
 end
 
 agent =
-  Nous.new("openai:gpt-4o-mini",
+  Nous.new(model,
     output_type: MovieReview,
     structured_output: [max_retries: 3],
     instructions: "You are a movie critic. Write concise reviews."
@@ -146,10 +173,11 @@ IO.puts("")
 
 IO.puts("--- Example 4: Choice mode ---")
 
-# Note: Replace "vllm:meta-llama/Llama-3-8b" with your actual vLLM model,
-# or use any provider for demonstration (choices are validated client-side).
+# Note: set NOUS_MODEL to a vLLM/SGLang model (e.g. vllm:meta-llama/Llama-3-8b)
+# for token-level guided decoding; on other providers the choices are validated
+# client-side, which is enough for this demonstration.
 agent =
-  Nous.new("openai:gpt-4o-mini",
+  Nous.new(model,
     output_type: {:choice, ["positive", "negative", "neutral"]},
     instructions: "You are a sentiment classifier. Respond with only the sentiment label."
   )
@@ -170,7 +198,7 @@ IO.puts("--- Example 5: Error handling ---")
 alias Nous.Errors.ValidationError
 
 agent =
-  Nous.new("openai:gpt-4o-mini",
+  Nous.new(model,
     output_type: SpamPrediction,
     structured_output: [max_retries: 0],
     instructions: "You are an email classifier."
@@ -202,7 +230,7 @@ IO.puts("--- Example 6: Per-run output override ---")
 
 # Agent defaults to plain text
 versatile_agent =
-  Nous.new("openai:gpt-4o-mini",
+  Nous.new(model,
     instructions: "You are a helpful assistant that can extract data or chat freely."
   )
 
@@ -254,7 +282,7 @@ defmodule EntityExtraction do
 end
 
 agent =
-  Nous.new("openai:gpt-4o-mini",
+  Nous.new(model,
     output_type: {:one_of, [SentimentAnalysis, EntityExtraction]},
     instructions:
       "Analyze text. Choose the appropriate output format based on what the user asks.",

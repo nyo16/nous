@@ -14,7 +14,7 @@ IO.puts("=== Nous AI - Human-in-the-Loop Demo ===\n")
 IO.puts("--- Example 1: Direct Approval Handler ---\n")
 
 # Define a "dangerous" tool that requires approval
-send_email = fn _ctx, %{"to" => to, "subject" => subject, "body" => body} ->
+send_email = fn _ctx, %{"to" => to, "subject" => subject, "body" => _body} ->
   # In production, this would actually send an email
   IO.puts("  [EMAIL SENT] To: #{to}, Subject: #{subject}")
   %{sent: true, to: to, subject: subject}

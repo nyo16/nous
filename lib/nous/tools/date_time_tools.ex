@@ -22,6 +22,25 @@ defmodule Nous.Tools.DateTimeTools do
       {:ok, result} = Nous.run(agent, "What day is today?")
   """
 
+  @typedoc """
+  Tool arguments exactly as the model produced them: JSON object keys stay
+  strings, values are unvalidated. Every function below reads what it needs
+  and falls back to a default for anything missing or of the wrong type.
+  """
+  @type args :: %{optional(String.t()) => term()}
+
+  @typedoc """
+  Tool result: an atom-keyed map that echoes the inputs it used alongside the
+  computed fields, so the model can see what it actually asked for.
+  """
+  @type result :: %{required(atom()) => term()}
+
+  @typedoc """
+  Run context. These tools are pure and ignore it, but they are registered
+  with `takes_ctx: true`, so it is always the first argument.
+  """
+  @type ctx :: Nous.RunContext.t() | nil
+
   @doc """
   Get the current date in the specified format.
 
@@ -30,6 +49,7 @@ defmodule Nous.Tools.DateTimeTools do
   - format: "iso8601" (default), "us" (MM/DD/YYYY), "eu" (DD/MM/YYYY), "full" (Monday, January 1, 2025)
   - timezone: Optional timezone (e.g., "America/New_York", "Europe/London", "UTC")
   """
+  @spec current_date(ctx(), args()) :: result()
   def current_date(_ctx, args) do
     format = Map.get(args, "format", "iso8601")
     timezone = Map.get(args, "timezone", "Etc/UTC")
@@ -63,6 +83,7 @@ defmodule Nous.Tools.DateTimeTools do
   - format: "24h" (default, HH:MM:SS), "12h" (hh:MM:SS AM/PM), "short" (HH:MM)
   - timezone: Optional timezone
   """
+  @spec current_time(ctx(), args()) :: result()
   def current_time(_ctx, args) do
     format = Map.get(args, "format", "24h")
     timezone = Map.get(args, "timezone", "Etc/UTC")
@@ -95,6 +116,7 @@ defmodule Nous.Tools.DateTimeTools do
   - format: "iso8601" (default), "rfc3339", "unix", "human"
   - timezone: Optional timezone
   """
+  @spec current_datetime(ctx(), args()) :: result()
   def current_datetime(_ctx, args) do
     format = Map.get(args, "format", "iso8601")
     timezone = Map.get(args, "timezone", "Etc/UTC")
@@ -129,6 +151,7 @@ defmodule Nous.Tools.DateTimeTools do
   - date2: Second date in ISO8601 format (YYYY-MM-DD)
   - unit: "days" (default), "weeks", "months", "years"
   """
+  @spec date_difference(ctx(), args()) :: result()
   def date_difference(_ctx, args) do
     # Support both date1/date2 and start_date/end_date parameter names
     date1_str = Map.get(args, "date1") || Map.get(args, "start_date")
@@ -172,6 +195,7 @@ defmodule Nous.Tools.DateTimeTools do
   - date: Date in ISO8601 format (YYYY-MM-DD), defaults to today
   - days: Number of days to add (positive) or subtract (negative)
   """
+  @spec add_days(ctx(), args()) :: result()
   def add_days(_ctx, args) do
     date_str = Map.get(args, "date")
     days = Map.get(args, "days", 0)
@@ -204,6 +228,7 @@ defmodule Nous.Tools.DateTimeTools do
 
   - date: Date in ISO8601 format (YYYY-MM-DD), defaults to today
   """
+  @spec is_weekend(ctx(), args()) :: result()
   def is_weekend(_ctx, args) do
     date_str = Map.get(args, "date")
 
@@ -236,6 +261,7 @@ defmodule Nous.Tools.DateTimeTools do
 
   - date: Date in ISO8601 format (YYYY-MM-DD), defaults to today
   """
+  @spec day_of_week(ctx(), args()) :: result()
   def day_of_week(_ctx, args) do
     date_str = Map.get(args, "date")
 
@@ -266,6 +292,7 @@ defmodule Nous.Tools.DateTimeTools do
   - date_string: Date in various formats (ISO8601, MM/DD/YYYY, DD/MM/YYYY, etc.)
   - format: Expected format hint ("iso8601", "us", "eu")
   """
+  @spec parse_date(ctx(), args()) :: result()
   def parse_date(_ctx, args) do
     # Support both "date_string" and "date" parameter names
     date_string = Map.get(args, "date_string") || Map.get(args, "date")
@@ -314,6 +341,7 @@ defmodule Nous.Tools.DateTimeTools do
   - timezone: Optional timezone
   - week_start: Day to consider start of week (1=Monday default, 7=Sunday)
   """
+  @spec current_week(ctx(), args()) :: result()
   def current_week(_ctx, args) do
     timezone = Map.get(args, "timezone", "Etc/UTC")
     # Monday
@@ -342,6 +370,7 @@ defmodule Nous.Tools.DateTimeTools do
 
   - timezone: Optional timezone
   """
+  @spec current_month(ctx(), args()) :: result()
   def current_month(_ctx, args) do
     timezone = Map.get(args, "timezone", "Etc/UTC")
 

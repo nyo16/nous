@@ -2,11 +2,33 @@ defmodule Nous.KnowledgeBase.Prompts do
   @moduledoc """
   LLM prompt templates for knowledge base compilation, linking, auditing,
   and output generation.
+
+  Every function here is pure: it takes already-loaded structs and returns the
+  prompt string the workflow node sends to the compiler model.
   """
+
+  alias Nous.KnowledgeBase.{Document, Entry}
+
+  @typedoc "Aggregate counts gathered by the health-check pipeline."
+  @type stats :: %{
+          total_entries: non_neg_integer(),
+          total_links: non_neg_integer(),
+          total_documents: non_neg_integer()
+        }
+
+  @typedoc "One row of the compact entry listing handed to `audit_prompt/2`."
+  @type entry_summary :: %{
+          slug: String.t(),
+          title: String.t(),
+          entry_type: Entry.entry_type(),
+          confidence: float(),
+          link_count: non_neg_integer()
+        }
 
   @doc """
   Builds a prompt for extracting concepts from raw documents.
   """
+  @spec extraction_prompt([Document.t()]) :: String.t()
   def extraction_prompt(documents) do
     doc_texts =
       documents
@@ -38,6 +60,7 @@ defmodule Nous.KnowledgeBase.Prompts do
   @doc """
   Builds a prompt for compiling raw documents into wiki entries.
   """
+  @spec compilation_prompt([Document.t()], [map()]) :: String.t()
   def compilation_prompt(documents, concepts) do
     doc_texts =
       documents
@@ -91,6 +114,7 @@ defmodule Nous.KnowledgeBase.Prompts do
   @doc """
   Builds a prompt for generating links between wiki entries.
   """
+  @spec linking_prompt([Entry.t()]) :: String.t()
   def linking_prompt(entries) do
     entry_texts =
       entries
@@ -125,6 +149,7 @@ defmodule Nous.KnowledgeBase.Prompts do
   @doc """
   Builds a prompt for auditing the knowledge base.
   """
+  @spec audit_prompt(stats(), [entry_summary()]) :: String.t()
   def audit_prompt(stats, entry_summaries) do
     entries_text =
       entry_summaries
@@ -167,6 +192,7 @@ defmodule Nous.KnowledgeBase.Prompts do
   @doc """
   Builds a prompt for generating an output (report/summary/slides) from entries.
   """
+  @spec output_prompt(String.t(), [Entry.t()], :report | :summary | :slides) :: String.t()
   def output_prompt(topic, entries, output_type) do
     entry_texts =
       entries

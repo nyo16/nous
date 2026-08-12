@@ -6,7 +6,6 @@
 IO.puts("=== Nous AI - Prompt Templates Demo ===\n")
 
 alias Nous.PromptTemplate
-alias Nous.Message
 
 # ============================================================================
 # Basic Template Usage
@@ -14,10 +13,11 @@ alias Nous.Message
 
 IO.puts("--- Basic Template ---")
 
-template = PromptTemplate.from_template(
-  "You are a <%= @role %> assistant that speaks <%= @language %>.",
-  role: :system
-)
+template =
+  PromptTemplate.from_template(
+    "You are a <%= @role %> assistant that speaks <%= @language %>.",
+    role: :system
+  )
 
 message = PromptTemplate.to_message(template, %{role: "helpful", language: "Spanish"})
 IO.puts("Generated message: #{message.content}")
@@ -29,14 +29,19 @@ IO.puts("")
 
 IO.puts("--- Message List from Templates ---")
 
-messages = PromptTemplate.to_messages([
-  PromptTemplate.from_template("You are <%= @persona %>", role: :system),
-  PromptTemplate.from_template("Tell me about <%= @topic %>", role: :user)
-], %{persona: "a historian", topic: "ancient Rome"})
+messages =
+  PromptTemplate.to_messages(
+    [
+      PromptTemplate.from_template("You are <%= @persona %>", role: :system),
+      PromptTemplate.from_template("Tell me about <%= @topic %>", role: :user)
+    ],
+    %{persona: "a historian", topic: "ancient Rome"}
+  )
 
 Enum.each(messages, fn msg ->
   IO.puts("[#{msg.role}] #{msg.content}")
 end)
+
 IO.puts("")
 
 # ============================================================================
@@ -51,10 +56,11 @@ agent = Nous.new("lmstudio:qwen3")
 system_template = PromptTemplate.system("You are a <%= @expert_type %> expert. Be concise.")
 user_template = PromptTemplate.user("Explain <%= @concept %> simply.")
 
-messages = PromptTemplate.to_messages(
-  [system_template, user_template],
-  %{expert_type: "programming", concept: "recursion"}
-)
+messages =
+  PromptTemplate.to_messages(
+    [system_template, user_template],
+    %{expert_type: "programming", concept: "recursion"}
+  )
 
 {:ok, result} = Nous.run(agent, messages: messages)
 IO.puts("Response: #{result.output}")
@@ -81,10 +87,12 @@ IO.puts("")
 
 IO.puts("--- Default Values ---")
 
-template_with_defaults = PromptTemplate.from_template(
-  "Search for <%= @query %> with limit <%= @limit %>",
-  inputs: %{limit: 10}  # Default value
-)
+template_with_defaults =
+  PromptTemplate.from_template(
+    "Search for <%= @query %> with limit <%= @limit %>",
+    # Default value
+    inputs: %{limit: 10}
+  )
 
 # Only need to provide query, limit uses default
 formatted = PromptTemplate.format(template_with_defaults, %{query: "elixir"})
@@ -95,31 +103,43 @@ IO.puts("Override limit: #{formatted2}")
 IO.puts("")
 
 # ============================================================================
-# Conditional Content
+# Optional / Conditional Content (no EEx)
 # ============================================================================
 
-IO.puts("--- Conditional Content (EEx) ---")
+IO.puts("--- Optional Content via compose/2 ---")
 
-conditional_template = PromptTemplate.from_template("""
-You are a helpful assistant.
-<%= if @include_tools do %>
-You have access to these tools: <%= @tools %>
-<% end %>
-""")
+# There is deliberately no `<% if ... do %>` support: `from_template/2` rejects
+# ANY `<% ... %>` block and only substitutes `<%= @var %>`. Full EEx would
+# evaluate arbitrary Elixir inside a string that routinely carries model output
+# or user input — an RCE vector. Conditional content is composed in Elixir
+# instead, where the branch is visible and the template stays inert data.
+base = PromptTemplate.from_template("You are a helpful assistant.")
+tools_section = PromptTemplate.from_template("You have access to these tools: <%= @tools %>")
 
-# With tools
-with_tools = PromptTemplate.format(conditional_template, %{
-  include_tools: true,
-  tools: "search, calculator"
-})
+# With tools: compose the optional section in.
+with_tools =
+  [base, tools_section]
+  |> PromptTemplate.compose("\n")
+  |> PromptTemplate.format(%{tools: "search, calculator"})
+
 IO.puts("With tools:")
 IO.puts(String.trim(with_tools))
 IO.puts("")
 
-# Without tools
-without_tools = PromptTemplate.format(conditional_template, %{include_tools: false})
+# Without tools: just do not compose it.
+without_tools = PromptTemplate.format(base, %{})
 IO.puts("Without tools:")
 IO.puts(String.trim(without_tools))
+IO.puts("")
+
+# Proof that the guard is real, not advisory:
+try do
+  PromptTemplate.from_template("<%= if @x do %>nope<% end %>")
+  IO.puts("UNEXPECTED: EEx block was accepted")
+rescue
+  e in ArgumentError -> IO.puts("Rejected as expected: #{Exception.message(e)}")
+end
+
 IO.puts("")
 
 # ============================================================================
@@ -128,9 +148,10 @@ IO.puts("")
 
 IO.puts("--- Extract Variables ---")
 
-template = PromptTemplate.from_template(
-  "Hello <%= @name %>, you are <%= @age %> years old from <%= @city %>"
-)
+template =
+  PromptTemplate.from_template(
+    "Hello <%= @name %>, you are <%= @age %> years old from <%= @city %>"
+  )
 
 variables = PromptTemplate.variables(template)
 IO.puts("Variables in template: #{inspect(variables)}")
@@ -140,6 +161,7 @@ case PromptTemplate.validate_bindings(template, %{name: "Alice"}) do
   {:ok, _} -> IO.puts("All variables provided")
   {:error, missing} -> IO.puts("Missing variables: #{inspect(missing)}")
 end
+
 IO.puts("")
 
 # ============================================================================
@@ -148,12 +170,16 @@ IO.puts("")
 
 IO.puts("--- Quick Message Building ---")
 
-messages = PromptTemplate.build_messages([
-  {:system, "You are a <%= @role %> assistant"},
-  {:user, "Hello, my name is <%= @name %>"},
-  {:assistant, "Nice to meet you, <%= @name %>!"},
-  {:user, "What can you help me with?"}
-], %{role: "helpful", name: "Alice"})
+messages =
+  PromptTemplate.build_messages(
+    [
+      {:system, "You are a <%= @role %> assistant"},
+      {:user, "Hello, my name is <%= @name %>"},
+      {:assistant, "Nice to meet you, <%= @name %>!"},
+      {:user, "What can you help me with?"}
+    ],
+    %{role: "helpful", name: "Alice"}
+  )
 
 Enum.each(messages, fn msg ->
   IO.puts("[#{msg.role}] #{String.slice(msg.content, 0..50)}...")

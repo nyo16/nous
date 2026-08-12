@@ -11,7 +11,29 @@ db_path = Path.join(System.tmp_dir!(), "nous_memory_example.duckdb")
 File.rm(db_path)
 
 IO.puts("Opening DuckDB database at #{db_path}")
-{:ok, store} = Store.DuckDB.init(path: db_path)
+
+store =
+  case Store.DuckDB.init(path: db_path) do
+    {:ok, store} ->
+      store
+
+    {:error, reason} ->
+      IO.puts("""
+
+      Skipping: #{reason}
+
+      The duckdbex dependency ships commented out in this repo. Uncomment this line
+      in mix.exs (under "Memory system store backends"):
+
+          {:duckdbex, "~> 0.3", optional: true},
+
+      then run:
+
+          mix deps.get
+      """)
+
+      System.halt(0)
+  end
 
 # Store memories
 entries = [

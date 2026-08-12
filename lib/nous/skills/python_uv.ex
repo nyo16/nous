@@ -1,5 +1,19 @@
 defmodule Nous.Skills.PythonUv do
-  @moduledoc "Built-in skill for Python's uv package manager and project tooling."
+  @moduledoc """
+  Built-in skill — the `uv` Python package and project manager.
+
+  Injects a system-prompt section of `uv` command recipes: `uv init` project and
+  script scaffolding, `uv add`/`uv remove`/`uv lock`/`uv sync` in place of
+  pip and poetry, `uv run` for auto-synced execution, `uv python` version
+  pinning instead of pyenv, `uv tool` and `uvx` instead of pipx, PEP 723 inline
+  script dependencies, `pyproject.toml` as the single source of truth, when to
+  commit `uv.lock`, and workspaces for monorepos.
+
+  Activates on prompts containing " uv ", "uv add", "uv run", "uv init",
+  "uv sync", "uv pip", "uv tool", "uvx " or "pyproject.toml". Group `:coding`;
+  tags `:python`, `:uv`, `:packaging`, `:dependencies`.
+  """
+
   use Nous.Skill,
     keywords: [
       " uv ",

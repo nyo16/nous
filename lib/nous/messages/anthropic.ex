@@ -33,8 +33,9 @@ defmodule Nous.Messages.Anthropic do
   ## Examples
 
       iex> response = %{"content" => [%{"type" => "text", "text" => "Hello"}], "model" => "claude-3"}
-      iex> Messages.Anthropic.from_response(response)
-      %Message{role: :assistant, content: "Hello"}
+      iex> message = Messages.Anthropic.from_response(response)
+      iex> {message.role, message.content}
+      {:assistant, "Hello"}
 
   """
   @spec from_response(map()) :: Message.t()

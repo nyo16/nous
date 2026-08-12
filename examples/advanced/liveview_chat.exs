@@ -1,27 +1,49 @@
-# LiveView Chat Interface — Complete Reference Example
-#
-# A full-featured chat UI built with Nous + Phoenix LiveView.
-# This is a REFERENCE implementation — integrate these modules into
-# your Phoenix application. It is not runnable as a standalone script.
-#
-# Features:
-#   - Real-time streaming responses via notify_pid
-#   - Message history with auto-scroll (JS hook)
-#   - Tool call / result visualization inline in the chat
-#   - Session persistence across reconnects (LiveView double-mount)
-#   - Typing indicator while the agent is generating
-#   - Error handling with user-friendly retry
-#
-# Prerequisites:
-#   - Phoenix ~> 1.7 with LiveView ~> 0.20
-#   - Nous added to your deps
-#   - PubSub configured:  config :nous, pubsub: MyApp.PubSub
-#
-# See also:
-#   - docs/guides/liveview-integration.md      (full guide)
-#   - examples/advanced/liveview_integration.exs (quick patterns)
-#   - examples/advanced/liveview_multi_agent.exs (multi-agent dashboard)
+#!/usr/bin/env elixir
 
+# Nous AI - LiveView Chat Interface
+# A full-featured chat UI built with Nous + Phoenix LiveView
+
+IO.puts("=== Nous AI - LiveView Chat Interface ===\n")
+
+# ============================================================================
+# Overview
+# ============================================================================
+
+IO.puts("""
+This example prints a complete, copy-pasteable LiveView chat module.
+It is a REFERENCE implementation: the module needs Phoenix and LiveView,
+which Nous does not depend on, so it is printed rather than compiled.
+Paste it into your own Phoenix application.
+
+It covers the full lifecycle: mount -> user input -> streaming response ->
+tool calls -> completion -> multi-turn continuation.
+
+Features:
+1. Real-time streaming responses via notify_pid
+2. Message history with auto-scroll (JS hook)
+3. Tool call / result visualization inline in the chat
+4. Session persistence across reconnects (LiveView double-mount)
+5. Typing indicator while the agent is generating
+6. Error handling with user-friendly retry
+
+Prerequisites:
+  - Phoenix ~> 1.7 with LiveView ~> 0.20
+  - Nous added to your deps
+  - PubSub configured:  config :nous, pubsub: MyApp.PubSub
+
+See also:
+  - docs/guides/liveview-integration.md         (full guide)
+  - examples/advanced/liveview_integration.exs  (quick patterns)
+  - examples/advanced/liveview_multi_agent.exs  (multi-agent dashboard)
+""")
+
+# ============================================================================
+# The Chat LiveView
+# ============================================================================
+
+IO.puts("--- MyAppWeb.ChatLive ---")
+
+IO.puts(~S'''
 defmodule MyAppWeb.ChatLive do
   @moduledoc """
   LiveView chat interface backed by a Nous agent.
@@ -71,7 +93,7 @@ defmodule MyAppWeb.ChatLive do
         You are a helpful assistant. Be concise and clear.
         When you use tools, explain what you are doing.
         """,
-        tools: [&weather_tool/2, &search_tool/2]
+        tools: chat_tools()
       )
 
     # If you persist conversation history (e.g. in a database), load it here.
@@ -113,6 +135,9 @@ defmodule MyAppWeb.ChatLive do
         Task.async(fn ->
           Nous.run(socket.assigns.agent, message,
             context: socket.assigns.context,
+            # `stream: true` is what makes on_llm_new_delta / {:agent_delta, _}
+            # fire. Without it the run only reports the final message.
+            stream: true,
             notify_pid: socket.root_pid
           )
         end)
@@ -402,6 +427,36 @@ defmodule MyAppWeb.ChatLive do
   # Example tools
   # ------------------------------------------------------------------
 
+  # Always wrap tool functions with Nous.Tool.from_function/2. A bare
+  # function capture carries no parameter schema, so the model never
+  # learns which arguments the tool expects.
+  defp chat_tools do
+    [
+      Nous.Tool.from_function(&weather_tool/2,
+        name: "get_weather",
+        description: "Get the current weather for a city",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "city" => %{"type" => "string", "description" => "City name"}
+          },
+          "required" => ["city"]
+        }
+      ),
+      Nous.Tool.from_function(&search_tool/2,
+        name: "search",
+        description: "Search for information",
+        parameters: %{
+          "type" => "object",
+          "properties" => %{
+            "query" => %{"type" => "string", "description" => "Search query"}
+          },
+          "required" => ["query"]
+        }
+      )
+    ]
+  end
+
   defp weather_tool(_ctx, %{"city" => city}) do
     # Replace with a real API call
     Process.sleep(300)
@@ -426,3 +481,4 @@ defmodule MyAppWeb.ChatLive do
   defp format_error(error) when is_binary(error), do: error
   defp format_error(error), do: "Something went wrong: #{inspect(error)}"
 end
+''')

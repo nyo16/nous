@@ -3,6 +3,8 @@ defmodule Nous.KnowledgeBase.EntryTest do
 
   alias Nous.KnowledgeBase.Entry
 
+  doctest Nous.KnowledgeBase.Entry
+
   describe "new/1" do
     test "creates entry with required title and content" do
       entry = Entry.new(%{title: "GenServer Patterns", content: "# GenServer\n..."})

@@ -24,6 +24,55 @@ defmodule Nous.AgentRunner do
 
   Different agent types can customize behavior by implementing
   `Nous.Agent.Behaviour` and setting `behaviour_module` on the agent.
+
+  ## Examples
+
+  Most callers reach the runner through `Nous.run/3`, but calling it directly
+  is the same thing minus the convenience wrapper. `run/3` drives the whole
+  tool-calling loop and returns a plain map:
+
+      agent =
+        Nous.Agent.new("openai:gpt-4o-mini",
+          tools: [&Nous.Tools.DateTimeTools.current_date/2]
+        )
+
+      {:ok, result} = Nous.AgentRunner.run(agent, "What day is it in Athens?")
+
+      result.output          #=> "It's Tuesday, 12 August 2026 in Athens."
+      result.iterations      #=> 2
+      result.usage.total_tokens
+      result.new_messages    #=> the assistant/tool messages this run appended
+
+  To continue a conversation, hand the previous run's messages back in — or
+  reuse `result.context` directly with `run_with_context/3`, which also
+  preserves any `deps` a tool mutated:
+
+      {:ok, first} = Nous.AgentRunner.run(agent, "My name is Ada.")
+      {:ok, second} = Nous.AgentRunner.run(agent, "What is my name?",
+        message_history: first.all_messages
+      )
+
+      {:ok, third} = Nous.AgentRunner.run_with_context(agent, second.context)
+
+  Streaming is a flag on the same loop, not a separate code path. With
+  `stream: true` the tool loop still runs; deltas arrive through callbacks:
+
+      {:ok, result} =
+        Nous.AgentRunner.run(agent, "Write a haiku about BEAM schedulers",
+          stream: true,
+          callbacks: %{on_llm_new_delta: fn _event, delta -> IO.write(delta) end}
+        )
+
+  `run_stream/3` instead returns an enumerable of `Nous.Types.stream_event()`
+  tuples, for when you want to own the consumption:
+
+      {:ok, stream} = Nous.AgentRunner.run_stream(agent, "Explain OTP in one line")
+
+      Enum.each(stream, fn
+        {:text_delta, text} -> IO.write(text)
+        {:complete, _result} -> IO.puts("")
+        _other -> :ok
+      end)
   """
 
   alias Nous.{

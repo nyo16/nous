@@ -3,6 +3,8 @@ defmodule Nous.Workflow.NodeTest do
 
   alias Nous.Workflow.Node
 
+  doctest Nous.Workflow.Node
+
   describe "new/1" do
     test "creates a node with required fields" do
       node = Node.new(%{id: "step1", type: :transform, label: "Clean data"})

@@ -57,7 +57,7 @@ defmodule Nous.Eval.Optimizer do
 
   """
 
-  alias Nous.Eval.{Suite, Runner}
+  alias Nous.Eval.{Suite, Runner, SuiteResult}
   alias Nous.Eval.Optimizer.{Parameter, SearchSpace}
 
   @type optimization_result :: %{
@@ -208,33 +208,32 @@ defmodule Nous.Eval.Optimizer do
   end
 
   @doc """
-  Extract a specific metric from evaluation result.
+  Extract a specific metric from an evaluation result.
+
+  Returns `0.0` when the suite produced no metrics summary — which is what
+  happens when every case errored, so an objective never crashes a search.
   """
-  @spec extract_metric(map(), metric()) :: float()
+  @spec extract_metric(SuiteResult.t(), metric()) :: float()
   def extract_metric(result, :score), do: result.aggregate_score || 0.0
   def extract_metric(result, :pass_rate), do: result.pass_rate || 0.0
-
-  def extract_metric(result, :latency_p50) do
-    get_in(result, [:metrics_summary, :latency, :p50]) || 0.0
-  end
-
-  def extract_metric(result, :latency_p95) do
-    get_in(result, [:metrics_summary, :latency, :p95]) || 0.0
-  end
-
-  def extract_metric(result, :latency_p99) do
-    get_in(result, [:metrics_summary, :latency, :p99]) || 0.0
-  end
-
-  def extract_metric(result, :total_tokens) do
-    get_in(result, [:metrics_summary, :tokens, :total]) || 0.0
-  end
-
-  def extract_metric(result, :cost) do
-    get_in(result, [:metrics_summary, :cost, :total]) || 0.0
-  end
-
+  def extract_metric(result, :latency_p50), do: summary_value(result, :p50_latency_ms)
+  def extract_metric(result, :latency_p95), do: summary_value(result, :p95_latency_ms)
+  def extract_metric(result, :latency_p99), do: summary_value(result, :p99_latency_ms)
+  def extract_metric(result, :total_tokens), do: summary_value(result, :total_tokens)
+  def extract_metric(result, :cost), do: summary_value(result, :total_estimated_cost)
   def extract_metric(_result, _), do: 0.0
+
+  # `%Nous.Eval.SuiteResult{}` and `%Nous.Eval.Metrics.Summary{}` are plain
+  # structs and implement no Access behaviour, so `get_in/2` on them raises
+  # UndefinedFunctionError rather than returning nil. Read the fields.
+  defp summary_value(%{metrics_summary: nil}, _field), do: 0.0
+
+  defp summary_value(%{metrics_summary: summary}, field) do
+    case Map.get(summary, field) do
+      nil -> 0.0
+      value -> value / 1
+    end
+  end
 
   # Private helpers
 
@@ -311,10 +310,39 @@ defmodule Nous.Eval.Optimizer do
       pass_rate: result.pass_rate,
       pass_count: result.pass_count,
       fail_count: result.fail_count,
-      latency: get_in(result, [:metrics_summary, :latency]) || %{},
-      tokens: get_in(result, [:metrics_summary, :tokens]) || %{},
-      cost: get_in(result, [:metrics_summary, :cost]) || %{}
+      latency: latency_metrics(result.metrics_summary),
+      tokens: token_metrics(result.metrics_summary),
+      cost: cost_metrics(result.metrics_summary)
     }
+  end
+
+  defp latency_metrics(nil), do: %{}
+
+  defp latency_metrics(summary) do
+    %{
+      mean: summary.mean_latency_ms,
+      p50: summary.p50_latency_ms,
+      p95: summary.p95_latency_ms,
+      p99: summary.p99_latency_ms
+    }
+  end
+
+  defp token_metrics(nil), do: %{}
+
+  defp token_metrics(summary) do
+    %{
+      total: summary.total_tokens,
+      mean: summary.mean_tokens,
+      p50: summary.p50_tokens,
+      p95: summary.p95_tokens,
+      p99: summary.p99_tokens
+    }
+  end
+
+  defp cost_metrics(nil), do: %{}
+
+  defp cost_metrics(summary) do
+    %{total: summary.total_estimated_cost, mean_per_run: summary.mean_cost_per_run}
   end
 
   defp calculate_stats([]), do: {0.0, 0.0}

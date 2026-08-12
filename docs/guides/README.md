@@ -7,6 +7,7 @@ the same way as the [HexDocs sidebar](https://hexdocs.pm/nous).
 
 - **[Getting Started](../getting-started.md)** — install, first agent, tools, streaming, persistence.
 - **[Context & Dependencies](context.md)** — passing `deps` to tools/prompts and the run context.
+- **[Transcripts](transcript.md)** — conversation history: measuring, compacting, rendering, and exporting message lists.
 - **[Tool Development](tool_development.md)** — building robust, validated, secure tools.
 - **[Structured Output](structured_output.md)** — typed/validated results via Ecto schemas, schemaless types, or raw JSON schema.
 - **[Skills](skills.md)** — reusable instruction/capability packages (module- and file-based) and the built-in catalog.

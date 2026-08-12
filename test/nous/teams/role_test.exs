@@ -4,6 +4,8 @@ defmodule Nous.Teams.RoleTest do
   alias Nous.Teams.Role
   alias Nous.Tool
 
+  doctest Nous.Teams.Role
+
   describe "new/1" do
     test "creates role with required attributes" do
       role = Role.new(name: :researcher, system_prompt: "Research well")

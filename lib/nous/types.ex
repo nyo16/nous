@@ -4,6 +4,70 @@ defmodule Nous.Types do
 
   This module defines all the types used throughout the library.
   No functions, just type specifications for documentation and Dialyzer.
+
+  Every type here is public, so your own `@spec`s can refer to them by name
+  instead of restating a shape that Nous may widen later.
+
+  ## Examples
+
+  `t:output_type/0` is what you pass as `:output_type` when building an agent.
+  All eight variants are values you write literally:
+
+      # raw text (the default)
+      Nous.Agent.new("openai:gpt-4o-mini", output_type: :string)
+
+      # schemaless Ecto types
+      Nous.Agent.new("openai:gpt-4o-mini", output_type: %{city: :string, population: :integer})
+
+      # an Ecto schema module
+      Nous.Agent.new("openai:gpt-4o-mini", output_type: MyApp.WeatherReport)
+
+      # constrained decoding (vLLM/SGLang)
+      Nous.Agent.new("vllm:qwen3", output_type: {:choice, ["positive", "negative"]})
+
+  `t:content/0` describes the parts of the legacy tuple message format. You
+  build one with `{:user_prompt, [content()]}` and convert it with
+  `Nous.Message.from_legacy/1`:
+
+      Nous.Message.from_legacy(
+        {:user_prompt,
+         [
+           {:text, "What is in this picture?"},
+           {:image_url, "https://example.com/cat.png"}
+         ]}
+      )
+
+  New code should build the message directly instead — same result, no
+  conversion step:
+
+      alias Nous.Message
+      alias Nous.Message.ContentPart
+
+      Message.user([
+        ContentPart.text("What is in this picture?"),
+        ContentPart.image_url("https://example.com/cat.png")
+      ])
+
+  `t:stream_event/0` is the tuple set emitted by `Nous.AgentRunner.run_stream/3`.
+  Matching on it exhaustively is the point of the type:
+
+      Enum.reduce(stream, "", fn
+        {:text_delta, text}, acc ->
+          IO.write(text)
+          acc <> text
+
+        {:error, reason}, _acc ->
+          raise "stream failed: \#{inspect(reason)}"
+
+        event, acc
+        when elem(event, 0) in [:thinking_delta, :tool_call_delta, :usage, :finish, :complete] ->
+          acc
+      end)
+
+  When you write your own helpers, reference the types rather than copying them:
+
+      @spec summarise([Nous.Types.message()]) :: String.t()
+      def summarise(messages), do: Enum.map_join(messages, "\\n", &render/1)
   """
 
   @typedoc "Model identifier - provider:model string"

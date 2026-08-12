@@ -1,5 +1,18 @@
 defmodule Nous.Skills.Refactor do
-  @moduledoc "Built-in skill for safe code refactoring."
+  @moduledoc """
+  Built-in skill — behaviour-preserving refactoring.
+
+  Injects a system-prompt section requiring the model to understand existing
+  behaviour first, keep the external API and observable effects identical, work
+  in independently verifiable steps drawn from a named catalogue (extract
+  function, rename, simplify conditionals, remove dead code, reduce coupling,
+  improve data structures), and re-run tests after each one — with an explicit
+  ban on mixing in features or bug fixes.
+
+  Activates on prompts containing "refactor", "clean up", "simplify" or
+  "restructure". Group `:coding`; tags `:refactor`, `:cleanup`, `:improvement`.
+  """
+
   use Nous.Skill,
     keywords: ["refactor", "clean up", "simplify", "restructure"],
     tags: [:refactor, :cleanup, :improvement],

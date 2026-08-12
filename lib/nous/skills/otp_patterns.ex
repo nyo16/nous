@@ -1,5 +1,20 @@
 defmodule Nous.Skills.OtpPatterns do
-  @moduledoc "Built-in skill for OTP supervision, GenServer, and concurrency patterns."
+  @moduledoc """
+  Built-in skill — OTP supervision, GenServer and concurrency design.
+
+  Injects a system-prompt section on when a GenServer is actually warranted
+  (never for code organisation), "let it crash" instead of defensive try/catch,
+  the three supervision strategies, wrapping a server behind a client API,
+  `Task.Supervisor` over bare `Task.async/1`, the GenServer serialisation
+  bottleneck and its ETS alternatives, restart policies, and why domain entities
+  do not belong in processes.
+
+  Activates on prompts containing "genserver", "supervisor", "otp",
+  "supervision tree", "task.async", "process", "gen_server",
+  "dynamic_supervisor" or "let it crash". Group `:coding`;
+  tags `:elixir`, `:otp`, `:genserver`, `:supervisor`, `:concurrency`.
+  """
+
   use Nous.Skill,
     keywords: [
       "genserver",

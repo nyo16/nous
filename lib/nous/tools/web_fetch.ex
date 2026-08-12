@@ -52,6 +52,7 @@ if Code.ensure_loaded?(Floki) do
 
     A map with url, title, content, word_count, and fetched_at.
     """
+    @spec fetch_page(Nous.RunContext.t(), map()) :: map()
     def fetch_page(ctx, args) do
       url = Map.get(args, "url") || ""
       selector = Map.get(args, "selector")

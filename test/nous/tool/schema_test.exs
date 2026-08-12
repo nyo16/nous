@@ -3,6 +3,8 @@ defmodule Nous.Tool.SchemaTest do
 
   alias Nous.Tool
 
+  doctest Nous.Tool.Schema
+
   # Test tool with all features
   defmodule FileReadTool do
     use Nous.Tool.Schema

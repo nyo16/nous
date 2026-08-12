@@ -3,6 +3,8 @@ defmodule Nous.Session.GuardrailsTest do
 
   alias Nous.Session.{Config, Guardrails}
 
+  doctest Nous.Session.Guardrails
+
   describe "check_limits/4" do
     test "returns :ok when within limits" do
       config = %Config{max_turns: 10, max_budget_tokens: 100_000}

@@ -3,6 +3,8 @@ defmodule Nous.Providers.VertexAITest do
 
   alias Nous.Providers.VertexAI
 
+  doctest Nous.Providers.VertexAI
+
   describe "provider configuration" do
     test "has correct provider ID" do
       assert VertexAI.provider_id() == :vertex_ai

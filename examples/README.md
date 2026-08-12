@@ -23,7 +23,7 @@ Top-level entry points that don't need the full agent loop:
 | [llm_oneshot.exs](llm_oneshot.exs) | Bare `Nous.LLM` one-shot API: `generate_text/3`, `generate_text!/3`, `stream_text/3` (no agent) |
 | [knowledge_base.exs](knowledge_base.exs) | Knowledge Base store: add entries, `search/4`, and the KB agent plugin |
 
-## Core Examples (01-10)
+## Core Examples
 
 Progressive learning path from basics to advanced features:
 
@@ -48,6 +48,7 @@ Progressive learning path from basics to advanced features:
 | [17_skills.exs](17_skills.exs) | Skills: modules, file-based (load from .md files/dirs), groups, matching, built-in catalog |
 | [18_workflow.exs](18_workflow.exs) | DAG workflow engine: pipelines, branching, parallel, cycles, HITL, hooks, LLM agents |
 | [19_coding_agent.exs](19_coding_agent.exs) | Coding agent: file/shell tools, permissions, session guardrails, transcript compaction |
+| [20_sql_generation.exs](20_sql_generation.exs) | Text-to-SQL: `OutputSchema`-constrained queries with a SELECT-only validation tool |
 
 ## Workflow Examples
 
@@ -66,7 +67,7 @@ Provider-specific configuration and features:
 
 | File | Description |
 |------|-------------|
-| [providers/anthropic.exs](providers/anthropic.exs) | Claude models, extended thinking, tools |
+| [providers/anthropic.exs](providers/anthropic.exs) | Claude models, model settings, tools |
 | [providers/openai.exs](providers/openai.exs) | GPT models, function calling, settings |
 | [providers/lmstudio.exs](providers/lmstudio.exs) | Local AI with LM Studio |
 | [providers/vllm_sglang.exs](providers/vllm_sglang.exs) | vLLM & SGLang high-performance local inference |
@@ -127,6 +128,10 @@ Production patterns and advanced features:
 | [advanced/liveview_chat.exs](advanced/liveview_chat.exs) | A **complete chat app** — one ChatLive module: streaming, tools, sessions, auto-scroll |
 | [advanced/liveview_multi_agent.exs](advanced/liveview_multi_agent.exs) | A **multi-agent dashboard** — real-time PubSub status across agents |
 | [advanced/tool_permissions.exs](advanced/tool_permissions.exs) | Permission policies: presets, custom deny/approve, tool filtering |
+| [advanced/distributed_agents.exs](advanced/distributed_agents.exs) | **BEAM differentiator** — agents across two nodes, one killed mid-run, supervisor restart, persisted context recovered |
+| [advanced/rag_documents.exs](advanced/rag_documents.exs) | End-to-end RAG over this repo's own `docs/`: glob → chunk → KnowledgeBase → cited answers |
+| [advanced/cost_aware_routing.exs](advanced/cost_aware_routing.exs) | Per-request model routing from live `Nous.Usage` cost data and telemetry, with `fallback:` |
+| [advanced/streaming_backpressure.exs](advanced/streaming_backpressure.exs) | Hackney `:async, :once` pull-mode vs the Req 8 MB in-flight window, measured under a slow consumer |
 
 ## Running Examples
 
@@ -142,8 +147,3 @@ For cloud providers, set the appropriate API key:
 ANTHROPIC_API_KEY="..." mix run examples/providers/anthropic.exs
 OPENAI_API_KEY="..." mix run examples/providers/openai.exs
 ```
-
-## Project Examples
-
-For larger project examples (multi-agent systems, trading bots, etc.), see:
-- [projects/README.md](projects/README.md)

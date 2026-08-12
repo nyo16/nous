@@ -260,13 +260,13 @@ defmodule Nous.Providers.HTTP do
 
   ## Examples
 
-      iex> parse_sse_buffer("data: {\\"text\\": \\"hi\\"}\\n\\n")
+      iex> HTTP.parse_sse_buffer("data: {\\"text\\": \\"hi\\"}\\n\\n")
       {[%{"text" => "hi"}], ""}
 
-      iex> parse_sse_buffer("data: partial")
+      iex> HTTP.parse_sse_buffer("data: partial")
       {[], "data: partial"}
 
-      iex> parse_sse_buffer("data: [DONE]\\n\\n")
+      iex> HTTP.parse_sse_buffer("data: [DONE]\\n\\n")
       {[{:stream_done, "stop"}], ""}
   """
   @spec parse_sse_buffer(String.t() | nil | any()) ::
@@ -287,16 +287,16 @@ defmodule Nous.Providers.HTTP do
 
   ## Examples
 
-      iex> parse_sse_event("data: {\\"key\\": \\"value\\"}")
+      iex> HTTP.parse_sse_event("data: {\\"key\\": \\"value\\"}")
       %{"key" => "value"}
 
-      iex> parse_sse_event("data: [DONE]")
+      iex> HTTP.parse_sse_event("data: [DONE]")
       {:stream_done, "stop"}
 
-      iex> parse_sse_event(": this is a comment")
+      iex> HTTP.parse_sse_event(": this is a comment")
       nil
 
-      iex> parse_sse_event("")
+      iex> HTTP.parse_sse_event("")
       nil
   """
   @spec parse_sse_event(String.t()) ::

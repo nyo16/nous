@@ -1,5 +1,18 @@
 defmodule Nous.Skills.TaskBreakdown do
-  @moduledoc "Built-in skill for task decomposition."
+  @moduledoc """
+  Built-in skill — task decomposition.
+
+  Injects a system-prompt section requiring "done" to be defined before
+  decomposing, then vertical end-to-end slices that are independently
+  completable and testable, ordered by dependency, sized at roughly one to four
+  hours, each with acceptance criteria — emitted as a numbered list with S/M/L
+  complexity, parallelisable tasks marked and the critical path called out.
+
+  Activates on prompts containing "break down", "decompose", "task list",
+  "implementation plan", "steps to" or "plan this". Group `:planning`;
+  tags `:planning`, `:tasks`, `:decomposition`.
+  """
+
   use Nous.Skill,
     keywords: [
       "break down",

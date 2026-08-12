@@ -173,6 +173,45 @@ defmodule Nous.Telemetry do
         end
       end
 
+  ## Examples
+
+  Every event above is a plain `:telemetry` event, so attaching to one is just
+  `:telemetry.attach/4`. This handler forwards tool timeouts to the calling
+  process — the same shape you would use in a test to assert an event fired:
+
+      iex> :telemetry.attach(
+      ...>   "nous-doc-example",
+      ...>   [:nous, :tool, :timeout],
+      ...>   fn _event, measurements, metadata, pid ->
+      ...>     send(pid, {:tool_timeout, metadata.tool_name, measurements.timeout})
+      ...>   end,
+      ...>   self()
+      ...> )
+      :ok
+      iex> :telemetry.execute([:nous, :tool, :timeout], %{timeout: 5000}, %{tool_name: "bash"})
+      :ok
+      iex> receive do
+      ...>   {:tool_timeout, tool_name, timeout} -> {tool_name, timeout}
+      ...> after
+      ...>   0 -> :no_event
+      ...> end
+      {"bash", 5000}
+      iex> :telemetry.detach("nous-doc-example")
+      :ok
+
+  Durations are in `:native` units, so convert before reporting them:
+
+      iex> System.convert_time_unit(System.convert_time_unit(120, :millisecond, :native), :native, :millisecond)
+      120
+
+  For local development, skip the wiring entirely and let Nous log everything
+  it emits:
+
+      Nous.Telemetry.attach_default_handler()
+      {:ok, result} = Nous.run(agent, "Summarise this file")
+      # [Nous] Agent assistant completed in 1832ms (947 tokens, 1 tool calls, 2 iterations)
+      Nous.Telemetry.detach_default_handler()
+
   """
 
   require Logger
@@ -186,11 +225,14 @@ defmodule Nous.Telemetry do
   - Tool executions (debug level)
   - Exceptions (error level)
 
+  Returns `{:error, :already_exists}` if it is already attached.
+
   ## Example
 
       Nous.Telemetry.attach_default_handler()
 
   """
+  @spec attach_default_handler() :: :ok | {:error, :already_exists}
   def attach_default_handler do
     events = [
       # Agent events
@@ -227,7 +269,10 @@ defmodule Nous.Telemetry do
 
   @doc """
   Detaches the default handler.
+
+  Returns `{:error, :not_found}` if it was never attached.
   """
+  @spec detach_default_handler() :: :ok | {:error, :not_found}
   def detach_default_handler do
     :telemetry.detach("nous-default-handler")
   end

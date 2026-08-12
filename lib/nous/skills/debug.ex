@@ -1,5 +1,17 @@
 defmodule Nous.Skills.Debug do
-  @moduledoc "Built-in skill for systematic debugging."
+  @moduledoc """
+  Built-in skill — systematic debugging.
+
+  Injects a system-prompt section imposing the reproduce → isolate →
+  hypothesise → fix → verify loop, and explicitly bans shotgun debugging,
+  fixing symptoms instead of root causes, and changing more than one thing at a
+  time.
+
+  Activates on prompts containing "debug", "fix bug", "not working", "broken",
+  "error", "failing", "crash" or "troubleshoot". Group `:debug`;
+  tags `:debug`, `:fix`, `:troubleshoot`.
+  """
+
   use Nous.Skill,
     keywords: [
       "debug",

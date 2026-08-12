@@ -3,6 +3,8 @@ defmodule Nous.Providers.HTTP.JSONArrayParserTest do
 
   alias Nous.Providers.HTTP.JSONArrayParser
 
+  doctest Nous.Providers.HTTP.JSONArrayParser
+
   describe "parse_buffer/1" do
     test "parses a complete JSON array" do
       buffer = ~s|[{"text":"hello"},{"text":"world"}]|

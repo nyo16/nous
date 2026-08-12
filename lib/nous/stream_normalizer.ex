@@ -79,6 +79,7 @@ defmodule Nous.StreamNormalizer do
 
   Applies normalization and filters out `{:unknown, _}` events.
   """
+  @spec normalize(Enumerable.t(), module()) :: Enumerable.t()
   def normalize(stream, normalizer_mod \\ __MODULE__.OpenAI) do
     require Logger
 

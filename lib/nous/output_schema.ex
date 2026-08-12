@@ -27,6 +27,38 @@ defmodule Nous.OutputSchema do
   | `:json_schema` | `response_format: {type: "json_schema", ...}` | OpenAI, vLLM, SGLang |
   | `:json` | `response_format: {type: "json_object"}` | OpenAI-compatible |
   | `:md_json` | Prompt + markdown fence + stop token | All (fallback) |
+
+  ## Examples
+
+  Describe the shape you want with schemaless Ecto types, turn it into a JSON
+  Schema, and validate a raw model response against it:
+
+      iex> shape = %{sentiment: :string, score: :float}
+      iex> json_schema = Nous.OutputSchema.to_json_schema(shape)
+      iex> json_schema["type"]
+      "object"
+      iex> Enum.sort(json_schema["required"])
+      ["score", "sentiment"]
+      iex> {:ok, parsed} = Nous.OutputSchema.parse_and_validate(~s({"sentiment": "positive", "score": 0.92}), shape)
+      iex> {parsed.sentiment, parsed.score}
+      {"positive", 0.92}
+
+  Constrained decoding needs no schema at all — the constraint is handed to
+  the provider as model settings, and the response is checked on the way back:
+
+      iex> Nous.OutputSchema.to_provider_settings({:choice, ["positive", "negative"]}, :vllm)
+      %{guided_choice: ["positive", "negative"]}
+      iex> Nous.OutputSchema.parse_and_validate("  positive  ", {:choice, ["positive", "negative"]})
+      {:ok, "positive"}
+
+  In practice you rarely call this module directly — pass `output_type:` to
+  `Nous.Agent.new/2` and the runner wires the schema, the provider settings
+  and the validation for you:
+
+      agent = Nous.Agent.new("openai:gpt-4o-mini", output_type: %{sentiment: :string, score: :float})
+      {:ok, result} = Nous.run(agent, "Rate the sentiment of: 'I love this library'")
+      result.output.sentiment
+      #=> "positive"
   """
 
   alias Nous.Errors

@@ -56,6 +56,18 @@ defmodule Nous.Tools.TodoTools do
       # 📝 Pending (2): Analyze dependencies, Write report
   """
 
+  @typedoc """
+  Tool arguments exactly as the model produced them: JSON object keys stay
+  strings, values are unvalidated.
+  """
+  @type args :: %{optional(String.t()) => term()}
+
+  @typedoc """
+  Tool result: an atom-keyed map. A `:__update_context__` key, when present,
+  is merged back into `ctx.deps` by the runner.
+  """
+  @type result :: %{required(atom()) => term()}
+
   @doc """
   Add a new todo item.
 
@@ -72,6 +84,7 @@ defmodule Nous.Tools.TodoTools do
   - todos: Updated full todo list
   - __update_context__: Context updates for AgentRunner
   """
+  @spec add_todo(Nous.RunContext.t(), args()) :: result()
   def add_todo(ctx, args) do
     # Support multiple parameter names (AI might use different names)
     text = Map.get(args, "text") || Map.get(args, "title") || Map.get(args, "description")
@@ -124,6 +137,7 @@ defmodule Nous.Tools.TodoTools do
   - todos: Updated full todo list
   - __update_context__: Context updates for AgentRunner
   """
+  @spec update_todo(Nous.RunContext.t(), args()) :: result()
   def update_todo(ctx, args) do
     id = Map.get(args, "id")
     new_text = Map.get(args, "text")
@@ -174,6 +188,7 @@ defmodule Nous.Tools.TodoTools do
   - todos: Updated full todo list
   - __update_context__: Context updates for AgentRunner
   """
+  @spec complete_todo(Nous.RunContext.t(), args()) :: result()
   def complete_todo(ctx, args) do
     id = Map.get(args, "id")
 
@@ -219,6 +234,7 @@ defmodule Nous.Tools.TodoTools do
   - todos: Updated full todo list
   - __update_context__: Context updates for AgentRunner
   """
+  @spec delete_todo(Nous.RunContext.t(), args()) :: result()
   def delete_todo(ctx, args) do
     id = Map.get(args, "id")
 
@@ -258,6 +274,7 @@ defmodule Nous.Tools.TodoTools do
   - total: Total number of todos
   - by_status: Count by status
   """
+  @spec list_todos(Nous.RunContext.t(), args()) :: result()
   def list_todos(ctx, args) do
     status_filter = Map.get(args, "status")
     priority_filter = Map.get(args, "priority")

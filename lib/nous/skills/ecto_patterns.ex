@@ -1,5 +1,18 @@
 defmodule Nous.Skills.EctoPatterns do
-  @moduledoc "Built-in skill for Ecto query composition, changesets, and data patterns."
+  @moduledoc """
+  Built-in skill — Ecto query composition, changesets and data patterns.
+
+  Injects a system-prompt section with worked Elixir examples for composable
+  query pipelines, N+1 prevention (JOIN-preload `belongs_to`, separate-query
+  preload `has_many`, never JOIN-preload `has_many`), per-context changesets
+  against mass assignment, context modules that hide `Repo`, `Ecto.Multi`
+  transactions, schema-free migrations, and parameterised queries.
+
+  Activates on prompts containing "ecto", "query", "changeset", "repo",
+  "preload", "migration", "schema", "n+1" or "context module". Group `:coding`;
+  tags `:elixir`, `:ecto`, `:database`, `:query`.
+  """
+
   use Nous.Skill,
     keywords: [
       "ecto",

@@ -1,7 +1,7 @@
 # Getting Started with Nous
 
 This guide picks up where the [README Quick Start](../README.md#quick-start)
-leaves off. It assumes you already have Nous installed (`{:nous, "~> 0.16.1"}`)
+leaves off. It assumes you already have Nous installed (`{:nous, "~> 0.17"}`)
 and a provider configured (API key set, or a local LM Studio / Ollama / vLLM
 server running).
 
@@ -117,21 +117,10 @@ For agents that live longer than a single request — chatbots, long-running
 research jobs, anything user-facing — wire them through
 `Nous.AgentDynamicSupervisor` with a persistence backend.
 
-```elixir
-# start_agent/3 takes the session_id, an agent_config MAP, then options. The
-# supervisor registers the via-tuple for you (no :name option needed).
-{:ok, _pid} =
-  Nous.AgentDynamicSupervisor.start_agent(
-    "user-123",
-    %{model: "openai:gpt-4o", instructions: "Be helpful"},
-    persistence: Nous.Persistence.ETS
-  )
-
-# Context auto-saves as a serialized map; deserialize it to restore on a later run:
-{:ok, data} = Nous.Persistence.ETS.load("user-123")
-{:ok, context} = Nous.Agent.Context.deserialize(data)
-{:ok, result} = Nous.run(agent, "Continue our conversation", context: context)
-```
+The canonical snippet lives in the README —
+see [Agent Supervision & Persistence](../README.md#agent-supervision--persistence)
+for `Nous.AgentDynamicSupervisor.start_agent/3` plus restoring a saved context
+with `Nous.Agent.Context.deserialize/1`.
 
 ETS is built in. For SQLite/DuckDB persistence and crash recovery patterns,
 see [`examples/09_agent_server.exs`](../examples/09_agent_server.exs) and the
@@ -222,8 +211,8 @@ For supervised, crash-recoverable versions of this pattern, see
 
 ## What's Next?
 
-- **More examples** → [`examples/`](../examples/README.md) (numbered 01–19, plus
-  `providers/`, `memory/`, `advanced/`, `workflow/`, `eval/`)
+- **More examples** → [`examples/`](../examples/README.md) (the numbered
+  walkthroughs, plus `providers/`, `memory/`, `advanced/`, `workflow/`, `eval/`)
 - **Specific features** → [the guides index](guides/README.md) — tool development,
   structured output, hooks, skills, memory, workflows, knowledge base,
   LiveView integration, evaluation

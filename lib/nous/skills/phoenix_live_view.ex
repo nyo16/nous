@@ -1,5 +1,19 @@
 defmodule Nous.Skills.PhoenixLiveView do
-  @moduledoc "Built-in skill for Phoenix LiveView development."
+  @moduledoc """
+  Built-in skill — Phoenix LiveView lifecycle, components and anti-patterns.
+
+  Injects a system-prompt section on the double `mount/3` and the
+  `connected?/1` side-effect guard, never passing the socket into business
+  logic, LiveComponent isolation via `@myself`, the `preload/1` batch callback,
+  map lookups instead of `Enum.find/3`, the
+  `handle_event`/`handle_info`/`handle_params` split, and the usual traps —
+  fat LiveView modules, unguarded queries in `mount/3`, and `raw/1` XSS.
+
+  Activates on prompts containing "liveview", "live_view", "live view", "mount",
+  "handle_event", "handle_info", "live_component" or "phoenix component".
+  Group `:coding`; tags `:elixir`, `:phoenix`, `:liveview`, `:web`.
+  """
+
   use Nous.Skill,
     keywords: [
       "liveview",

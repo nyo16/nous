@@ -264,7 +264,9 @@ defmodule Nous.Agent.Context do
       tool_calls: Map.get(usage, :tool_calls, 0),
       input_tokens: Map.get(usage, :input_tokens, 0),
       output_tokens: Map.get(usage, :output_tokens, 0),
-      total_tokens: Map.get(usage, :total_tokens, 0)
+      total_tokens: Map.get(usage, :total_tokens, 0),
+      cache_creation_input_tokens: Map.get(usage, :cache_creation_input_tokens, 0),
+      cache_read_input_tokens: Map.get(usage, :cache_read_input_tokens, 0)
     }
 
     new_usage = Usage.add(ctx.usage, usage_struct)
@@ -682,13 +684,18 @@ defmodule Nous.Agent.Context do
     end)
   end
 
+  # Every %Usage{} counter is persisted. Dropping a field here silently zeroes it
+  # across a save/restore, which is how the 0.16.2 prompt-cache counters would
+  # quietly break the cost math documented in docs/guides/observability.md.
   defp serialize_usage(%Usage{} = usage) do
     %{
       requests: usage.requests,
       tool_calls: usage.tool_calls,
       input_tokens: usage.input_tokens,
       output_tokens: usage.output_tokens,
-      total_tokens: usage.total_tokens
+      total_tokens: usage.total_tokens,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens,
+      cache_read_input_tokens: usage.cache_read_input_tokens
     }
   end
 
@@ -723,7 +730,9 @@ defmodule Nous.Agent.Context do
       tool_calls: data[:tool_calls] || 0,
       input_tokens: data[:input_tokens] || 0,
       output_tokens: data[:output_tokens] || 0,
-      total_tokens: data[:total_tokens] || 0
+      total_tokens: data[:total_tokens] || 0,
+      cache_creation_input_tokens: data[:cache_creation_input_tokens] || 0,
+      cache_read_input_tokens: data[:cache_read_input_tokens] || 0
     }
   end
 

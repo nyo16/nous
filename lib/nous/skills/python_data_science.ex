@@ -1,5 +1,19 @@
 defmodule Nous.Skills.PythonDataScience do
-  @moduledoc "Built-in skill for Python data science with pandas, NumPy, and scikit-learn."
+  @moduledoc """
+  Built-in skill — pandas, NumPy and scikit-learn data pipelines.
+
+  Injects a system-prompt section on pandas method chaining, vectorised
+  operations instead of Python loops, categorical dtypes for low-cardinality
+  columns, scikit-learn `Pipeline` to prevent data leakage, splitting before
+  preprocessing, explicit `loc`/`iloc` indexing, NumPy broadcasting,
+  dtype-level memory tuning, and reproducibility through seeds, versioned data
+  and logged hyperparameters.
+
+  Activates on prompts containing "pandas", "numpy", "dataframe", "scikit",
+  "sklearn", "data science", "machine learning" or "ml pipeline".
+  Group `:coding`; tags `:python`, `:data_science`, `:pandas`, `:numpy`, `:ml`.
+  """
+
   use Nous.Skill,
     keywords: [
       "pandas",

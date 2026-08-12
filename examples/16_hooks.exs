@@ -4,7 +4,6 @@
 # events. They can block actions, modify inputs/outputs, and enforce policies.
 #
 # Run with: mix run examples/16_hooks.exs
-# Requires: OPENAI_API_KEY environment variable
 
 alias Nous.{Agent, Hook}
 

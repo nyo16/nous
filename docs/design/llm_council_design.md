@@ -1,8 +1,20 @@
-# LLM Council Design Document for Nous
+# LLM Council Design Proposal (Not Implemented)
+
+> **Status: unimplemented design proposal.**
+>
+> The `Council` API described in this document — `Council.new/2`, `Council.deliberate/2`,
+> `Council.Types`, `Council.Prompts` and friends — **does not exist in Nous as of v0.17.0**.
+> Nothing in `lib/` implements it, and no runnable council example ships with the package.
+> Every code block below is illustrative pseudo-code for a possible future design: it will
+> **not** compile or run against the current release, and the file paths it mentions are
+> proposed layouts, not files you can open.
+>
+> This document is published for design discussion only. For code you can actually run
+> today, see the [examples directory](https://github.com/nyo16/nous/tree/main/examples).
 
 ## Overview
 
-This document captures the analysis of the [nyo16/llm-council](https://github.com/nyo16/llm-council) repository and outlines the design for implementing an LLM Council example in the Nous Elixir framework.
+This document captures the analysis of the [nyo16/llm-council](https://github.com/nyo16/llm-council) repository and sketches a design for how an LLM Council example *could* be built on the Nous Elixir framework. It is a proposal only; see the status banner above.
 
 ---
 
@@ -528,7 +540,9 @@ graph LR
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.2 Module Structure
+### 4.2 Proposed Module Structure
+
+None of the files below exist in the repository; this is the layout the proposal would create.
 
 ```
 examples/
@@ -746,11 +760,12 @@ defmodule Council.Prompts do
 end
 ```
 
-### 4.7 Example Usage
+### 4.7 Proposed Example Usage
+
+Illustrative only — `Council` is not part of Nous, so this script does not exist and will
+not run:
 
 ```elixir
-# examples/council/council_demo.exs
-
 # Define council members (using local LM Studio)
 council_models = [
   "lmstudio:qwen/qwen3-4b-2507",

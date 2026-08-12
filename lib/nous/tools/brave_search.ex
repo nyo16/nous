@@ -58,6 +58,7 @@ defmodule Nous.Tools.BraveSearch do
   - result_count: Number of results returned
   - success: Whether the search succeeded
   """
+  @spec web_search(Nous.RunContext.t(), map()) :: map()
   def web_search(ctx, args) do
     query = Common.query(args)
     # Max 20 results
@@ -92,6 +93,7 @@ defmodule Nous.Tools.BraveSearch do
   - country: Country code for localized results
   - search_lang: Language of search
   """
+  @spec news_search(Nous.RunContext.t(), map()) :: map()
   def news_search(ctx, args) do
     query = Common.query(args)
     count = Map.get(args, "count", 5) |> min(20)

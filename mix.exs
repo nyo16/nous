@@ -113,7 +113,8 @@ defmodule Nous.MixProject do
       # to their deps. The Nous.PromEx.Plugin will automatically be available.
 
       # Dev/Test
-      {:ex_doc, "~> 0.31", only: :dev, runtime: false},
+      # >= 0.34 for `mix docs --warnings-as-errors`, which the `docs` CI job runs.
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       # optional (not only: :test) so the `~> 2.1` constraint reaches downstream
@@ -146,11 +147,20 @@ defmodule Nous.MixProject do
         {"CONTRIBUTING.md", title: "Contributing"},
 
         # Getting Started
+        {"docs/README.md", filename: "docs_index", title: "Documentation Hub"},
         {"docs/getting-started.md", filename: "getting_started", title: "Getting Started Guide"},
 
         # Examples Overview
         {"examples/README.md", filename: "examples_overview", title: "Examples Overview"},
         {"docs/guides/README.md", filename: "guides_index", title: "All Guides"},
+
+        # Livebook notebooks (ex_doc renders .livemd natively)
+        {"notebooks/01_intro_to_nous.livemd",
+         filename: "notebook_intro", title: "Livebook: Intro to Nous"},
+        {"notebooks/02_tools_and_agents.livemd",
+         filename: "notebook_tools", title: "Livebook: Tools & Agents"},
+        {"notebooks/03_rag_knowledge_base.livemd",
+         filename: "notebook_rag", title: "Livebook: RAG & Knowledge Base"},
 
         # Production Guides
         {"docs/guides/skills.md", filename: "skills", title: "Skills Guide"},
@@ -171,6 +181,7 @@ defmodule Nous.MixProject do
         {"docs/guides/workflows.md", filename: "workflows", title: "Workflow Engine Guide"},
         {"docs/guides/memory.md", filename: "memory", title: "Memory System Guide"},
         {"docs/guides/context.md", filename: "context", title: "Context & Dependencies Guide"},
+        {"docs/guides/transcript.md", filename: "transcript", title: "Transcripts & Compaction"},
         {"docs/guides/knowledge_base.md",
          filename: "knowledge_base", title: "Knowledge Base Guide"},
         {"docs/guides/permissions.md",
@@ -194,7 +205,7 @@ defmodule Nous.MixProject do
 
         # Design Documents
         {"docs/design/llm_council_design.md",
-         filename: "council_design", title: "LLM Council Design"},
+         filename: "council_design", title: "LLM Council Design (Proposal)"},
         {"docs/benchmarks/http_backend.md",
          filename: "http_backend_benchmark", title: "HTTP Backend Benchmark"}
       ],
@@ -208,9 +219,19 @@ defmodule Nous.MixProject do
       # here; if you un-hide one, remove it and the warning tells you where
       # the stale reference is.
       skip_code_autolink_to: [
+        "Nous.AgentRunner.IterationLoop",
+        "Nous.AgentRunner.PromptAssembly",
+        "Nous.AgentRunner.RequestDispatch",
+        "Nous.AgentRunner.Streaming",
+        "Nous.AgentRunner.ToolExecution",
         "Nous.Application",
+        "Nous.JSON",
+        "Nous.Memory.Embedding.Bumblebee.ServingHolder",
+        "Nous.Memory.Embedding.Bumblebee.ServingSupervisor",
         "Nous.OutputSchema.UseMacro",
         "Nous.Persistence.ETS.TableOwner",
+        "Nous.Util",
+        "Nous.Workflow.Checkpoint.ETS.TableOwner",
         "Nous.Workflow.Engine.Executor",
         "Nous.Workflow.Engine.ParallelExecutor",
         "Nous.Workflow.Engine.StateMerger"
@@ -218,9 +239,13 @@ defmodule Nous.MixProject do
       groups_for_extras: [
         "Getting Started": [
           "readme.html",
+          "docs_index.html",
           "getting_started.html",
           "examples_overview.html",
-          "guides_index.html"
+          "guides_index.html",
+          "notebook_intro.html",
+          "notebook_tools.html",
+          "notebook_rag.html"
         ],
         "Production Guides": [
           "skills.html",
@@ -234,6 +259,7 @@ defmodule Nous.MixProject do
           "structured_output.html",
           "memory.html",
           "context.html",
+          "transcript.html",
           "knowledge_base.html",
           "permissions.html",
           "observability.html"
@@ -333,7 +359,8 @@ defmodule Nous.MixProject do
           Nous.Tool.Registry,
           Nous.Tool.Schema,
           Nous.ToolSchema,
-          Nous.ToolExecutor
+          Nous.ToolExecutor,
+          Nous.ToolCall
         ],
         "Structured Output": [
           Nous.OutputSchema,
@@ -345,7 +372,8 @@ defmodule Nous.MixProject do
           Nous.Tools.SearchScrape,
           Nous.Tools.TavilySearch,
           Nous.Tools.BraveSearch,
-          Nous.Tools.ResearchNotes
+          Nous.Tools.ResearchNotes,
+          Nous.Tools.Search.Common
         ],
         "Coding Tools": [
           Nous.Tools.Bash,
@@ -356,7 +384,8 @@ defmodule Nous.MixProject do
           Nous.Tools.FileGrep,
           Nous.Tools.TodoTools,
           Nous.Tools.PathGuard,
-          Nous.Tools.UrlGuard
+          Nous.Tools.UrlGuard,
+          Nous.Tools.Env
         ],
         "Utility Tools": [
           Nous.Tools.DateTimeTools,
@@ -377,6 +406,7 @@ defmodule Nous.MixProject do
           Nous.Telemetry,
           Nous.PromEx.Plugin,
           Nous.Errors,
+          Nous.Errors.Base,
           Nous.Errors.RetryInfo,
           Nous.Errors.ConfigurationError,
           Nous.Errors.ModelError,
@@ -507,7 +537,8 @@ defmodule Nous.MixProject do
           Nous.PubSub.Approval
         ],
         Persistence: [
-          Nous.Persistence
+          Nous.Persistence,
+          Nous.Persistence.ETS
         ],
         Supervision: [
           Nous.AgentRegistry,

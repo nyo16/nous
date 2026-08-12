@@ -1,5 +1,20 @@
 defmodule Nous.Skills.PythonSecurity do
-  @moduledoc "Built-in skill for Python security best practices."
+  @moduledoc """
+  Built-in skill — Python security review.
+
+  Injects a ten-rule system-prompt section: safe deserialisation
+  (`json.loads`, Pydantic, `yaml.safe_load`), parameterised SQL, allowlist input
+  validation at boundaries, bcrypt/argon2/scrypt password hashing, no hardcoded
+  credentials, `subprocess.run` with `shell=False`, dependency CVE auditing,
+  HTTPS with certificate validation, no dynamic evaluation of user strings, and
+  least privilege.
+
+  Declares no keywords, so it never self-activates: name it explicitly with
+  `skills: [Nous.Skills.PythonSecurity]` or pull in
+  `skills: [{:group, :review}]`. Group `:review`;
+  tags `:python`, `:security`, `:vulnerability`.
+  """
+
   use Nous.Skill, tags: [:python, :security, :vulnerability], group: :review
 
   @impl true

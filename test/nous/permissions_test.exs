@@ -4,6 +4,8 @@ defmodule Nous.PermissionsTest do
   alias Nous.Permissions
   alias Nous.Permissions.Policy
 
+  doctest Nous.Permissions
+
   describe "default_policy/0" do
     test "returns a policy with default mode" do
       policy = Permissions.default_policy()

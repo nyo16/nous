@@ -13,11 +13,32 @@ vectors_path = Path.join(System.tmp_dir!(), "nous_zvec_example")
 
 IO.puts("Initializing hybrid store...")
 
-{:ok, store} =
-  Store.Hybrid.init(
-    muninn_config: %{index_path: index_path},
-    zvec_config: %{collection_path: vectors_path, embedding_dimension: 384}
-  )
+store =
+  case Store.Hybrid.init(
+         muninn_config: %{index_path: index_path},
+         zvec_config: %{collection_path: vectors_path, embedding_dimension: 384}
+       ) do
+    {:ok, store} ->
+      store
+
+    {:error, reason} ->
+      IO.puts("""
+
+      Skipping: #{reason}
+
+      The muninn and zvec dependencies ship commented out in this repo. Uncomment
+      both of these lines in mix.exs (under "Memory system store backends"):
+
+          {:muninn, "~> 0.4", optional: true},
+          {:zvec, "~> 0.2", optional: true},
+
+      then run:
+
+          mix deps.get
+      """)
+
+      System.halt(0)
+  end
 
 # Store memories (with mock embeddings for demo)
 memories = [

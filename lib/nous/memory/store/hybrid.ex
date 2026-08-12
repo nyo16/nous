@@ -6,7 +6,7 @@ if Code.ensure_loaded?(Muninn) and Code.ensure_loaded?(Zvec) do
     Provides both `search_text/3` (via Muninn BM25) and `search_vector/3` (via Zvec HNSW).
     Uses a shared ETS table as the source of truth for entry data.
 
-    Requires optional deps: `{:muninn, "~> 0.4"}` and `{:zvec, "~> 0.1"}`
+    Requires optional deps: `{:muninn, "~> 0.4"}` and `{:zvec, "~> 0.2"}`
 
     ## Options
 
@@ -247,54 +247,67 @@ else
     @moduledoc """
     Hybrid memory store combining Muninn (full-text) and Zvec (vector) search.
 
-    **Not available** - add `{:muninn, "~> 0.4"}` and `{:zvec, "~> 0.1"}` to your deps.
+    **Not available** - add `{:muninn, "~> 0.4"}` and `{:zvec, "~> 0.2"}` to your deps.
     """
 
     @behaviour Nous.Memory.Store
 
     @dialyzer {:nowarn_function,
-               init: 1, store: 2, fetch: 2, delete: 2, update: 3, search_text: 3, list: 2}
+               init: 1,
+               store: 2,
+               fetch: 2,
+               delete: 2,
+               update: 3,
+               search_text: 3,
+               search_vector: 3,
+               list: 2}
 
     @impl true
     def init(_opts) do
       {:error,
-       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def store(_state, _entry) do
       {:error,
-       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def fetch(_state, _id) do
       {:error,
-       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def delete(_state, _id) do
       {:error,
-       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def update(_state, _id, _updates) do
       {:error,
-       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def search_text(_state, _query, _opts) do
       {:error,
-       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.2\"} to your mix.exs deps."}
+    end
+
+    @impl true
+    def search_vector(_state, _embedding, _opts) do
+      {:error,
+       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
 
     @impl true
     def list(_state, _opts) do
       {:error,
-       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.1\"} to your mix.exs deps."}
+       "Muninn and/or Zvec are not available. Add {:muninn, \"~> 0.4\"} and {:zvec, \"~> 0.2\"} to your mix.exs deps."}
     end
   end
 end

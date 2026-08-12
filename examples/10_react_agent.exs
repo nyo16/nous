@@ -24,6 +24,7 @@ defmodule DemoTools do
     IO.puts("  [Search: #{query}]")
 
     q = String.downcase(query)
+
     cond do
       String.contains?(q, "lewis hamilton") && String.contains?(q, "age") ->
         "Lewis Hamilton was born January 7, 1985. As of 2024, he is 39 years old."
@@ -44,6 +45,7 @@ defmodule DemoTools do
 
   def calculate(_ctx, %{"expression" => expr}) do
     IO.puts("  [Calculate: #{expr}]")
+
     try do
       {result, _} = Code.eval_string(expr)
       "#{expr} = #{result}"
@@ -59,23 +61,24 @@ end
 
 IO.puts("--- Method 1: Manual ReAct Pattern ---\n")
 
-agent = Nous.new("lmstudio:qwen3",
-  instructions: """
-  You solve problems by thinking step by step.
+agent =
+  Nous.new("lmstudio:qwen3",
+    instructions: """
+    You solve problems by thinking step by step.
 
-  For each step:
-  1. State what you need to find out
-  2. Use a tool to get information
-  3. Process the result
-  4. Continue until you have the answer
+    For each step:
+    1. State what you need to find out
+    2. Use a tool to get information
+    3. Process the result
+    4. Continue until you have the answer
 
-  Available tools: search (look up facts), calculate (do math)
-  """,
-  tools: [
-    &DemoTools.search/2,
-    &DemoTools.calculate/2
-  ]
-)
+    Available tools: search (look up facts), calculate (do math)
+    """,
+    tools: [
+      &DemoTools.search/2,
+      &DemoTools.calculate/2
+    ]
+  )
 
 question = "How old is Lewis Hamilton, and how many F1 championships has he won?"
 IO.puts("Question: #{question}\n")
@@ -93,12 +96,13 @@ IO.puts("")
 IO.puts("--- Method 2: ReActAgent Module ---\n")
 
 # ReActAgent adds built-in tools: plan, note, todo, final_answer
-react_agent = Nous.ReActAgent.new("lmstudio:qwen3",
-  tools: [
-    &DemoTools.search/2,
-    &DemoTools.calculate/2
-  ]
-)
+react_agent =
+  Nous.ReActAgent.new("lmstudio:qwen3",
+    tools: [
+      &DemoTools.search/2,
+      &DemoTools.calculate/2
+    ]
+  )
 
 IO.puts("ReActAgent includes additional reasoning tools:")
 IO.puts("  - plan: Outline approach before starting")
@@ -113,7 +117,7 @@ IO.puts("Question: #{question2}\n")
 
 IO.puts("\nAnswer: #{result2.output}")
 IO.puts("Tool calls: #{result2.usage.tool_calls}")
-IO.puts("Iterations: #{result2.usage.iterations || 1}")
+IO.puts("Iterations: #{result2.iterations}")
 
 # ============================================================================
 # When to Use ReAct

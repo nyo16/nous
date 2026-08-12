@@ -1,5 +1,17 @@
 defmodule Nous.Skills.DocGen do
-  @moduledoc "Built-in skill for documentation generation."
+  @moduledoc """
+  Built-in skill — documentation generation.
+
+  Injects a system-prompt section covering module docs, function docs with
+  parameters and edge cases, type annotations and runnable examples, with
+  instructions to match the project's existing doc style, prioritise public
+  APIs, and never restate the obvious.
+
+  Activates on prompts containing "document", "add docs", "docstring",
+  "moduledoc", "write docs" or "generate docs". Group `:docs`;
+  tags `:docs`, `:documentation`, `:docstring`.
+  """
+
   use Nous.Skill,
     keywords: ["document", "add docs", "docstring", "moduledoc", "write docs", "generate docs"],
     tags: [:docs, :documentation, :docstring],
