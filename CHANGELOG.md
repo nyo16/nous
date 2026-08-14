@@ -193,6 +193,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shepherd's `mkdir` is not recursive, so the nested path it used could never be
   created and the cgroup containment was a silent no-op.
 
+- **A saved session silently rewrote every tool-calling assistant message.**
+  Found by the plan-03 regression gate before any refactor, in three layers that
+  hid each other:
+  `Nous.Message`'s changeset used Ecto's default `empty_values: [""]`, so
+  `content: ""` was treated as *absent* and became `nil`. `Message.assistant/2`
+  builds its struct directly and kept `""`, while `Message.new/1` dropped it — so
+  the same logical message differed by which constructor made it, and
+  `Context.deserialize/1` goes through `new!/1`. Every save/restore therefore
+  rewrote the `content: ""` that a pure tool-call turn carries into `content:
+  nil`, and providers distinguish the two, so a resumed session sent a different
+  request shape than the one that was saved.
+  Underneath that, `validate_content/1` rejected empty content outright, so once
+  the coercion was removed, deserializing any transcript containing a tool call
+  failed instead of merely corrupting it. Empty content is now valid for
+  `:assistant` in both its forms (`""` for OpenAI/Gemini, `nil` for Anthropic),
+  which is what a pure tool-call turn looks like and what streaming produces
+  before the first delta.
+  Underneath *that*, the Anthropic and Gemini response parsers manufactured `""`
+  for content that was simply absent — masked until now by the very coercion
+  above. They set the key only when it carries something, as the OpenAI parser
+  already did, so "the model sent no content" is `nil` and "the model sent an
+  empty string" is `""`, and the two are no longer conflated.
+
 ### Performance
 
 - **Oversized tool results can spill to a store instead of the context window.**

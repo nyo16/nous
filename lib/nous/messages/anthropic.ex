@@ -46,16 +46,25 @@ defmodule Nous.Messages.Anthropic do
 
     {content_parts, reasoning_content, tool_calls} = parse_content(content_data)
 
+    # Absent content is `nil`, not `""`. `ContentPart.consolidate/1` returns an
+    # empty string for an empty parts list, and putting that in `attrs` would
+    # claim the model replied with an empty string when it sent no content block
+    # at all — the shape Anthropic uses for a pure tool-call turn. Set only the
+    # keys that carry something, exactly as the OpenAI parser does, and let the
+    # struct default supply nil for the rest.
     attrs = %{
       role: :assistant,
-      content: ContentPart.consolidate(content_parts),
-      reasoning_content: ContentPart.consolidate(reasoning_content),
       metadata: %{
         model_name: model,
         usage: parse_usage(usage_data),
         timestamp: DateTime.utc_now()
       }
     }
+
+    attrs = put_unless_empty(attrs, :content, ContentPart.consolidate(content_parts))
+
+    attrs =
+      put_unless_empty(attrs, :reasoning_content, ContentPart.consolidate(reasoning_content))
 
     attrs = if length(tool_calls) > 0, do: Map.put(attrs, :tool_calls, tool_calls), else: attrs
 
@@ -103,6 +112,11 @@ defmodule Nous.Messages.Anthropic do
   end
 
   # Private helpers
+
+  # Set `key` only when the value carries something. An empty string means "the
+  # provider sent no content", which is nil, not "".
+  defp put_unless_empty(attrs, _key, value) when value in [nil, ""], do: attrs
+  defp put_unless_empty(attrs, key, value), do: Map.put(attrs, key, value)
 
   defp message_to_anthropic(%Message{role: :user, metadata: %{content_parts: content_parts}})
        when is_list(content_parts) do

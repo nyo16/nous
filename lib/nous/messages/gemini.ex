@@ -73,12 +73,15 @@ defmodule Nous.Messages.Gemini do
       |> maybe_put_metadata(:finish_reason, finish_reason)
       |> maybe_put_metadata(:prompt_feedback, prompt_feedback)
 
-    attrs = %{
-      role: :assistant,
-      content: consolidated_content,
-      reasoning_content: ContentPart.consolidate(reasoning_content),
-      metadata: metadata
-    }
+    # Absent content is nil, not "" — see the same note in Nous.Messages.Anthropic.
+    # A pure tool-call candidate has no text part, and claiming it replied with an
+    # empty string changes what the next request carries.
+    attrs = %{role: :assistant, metadata: metadata}
+
+    attrs = put_unless_empty(attrs, :content, consolidated_content)
+
+    attrs =
+      put_unless_empty(attrs, :reasoning_content, ContentPart.consolidate(reasoning_content))
 
     attrs = if length(tool_calls) > 0, do: Map.put(attrs, :tool_calls, tool_calls), else: attrs
 
@@ -622,6 +625,11 @@ defmodule Nous.Messages.Gemini do
 
   defp maybe_put_metadata(metadata, _key, nil), do: metadata
   defp maybe_put_metadata(metadata, key, value), do: Map.put(metadata, key, value)
+
+  # Set `key` only when the value carries something. An empty string means "the
+  # provider sent no content", which is nil, not "".
+  defp put_unless_empty(attrs, _key, value) when value in [nil, ""], do: attrs
+  defp put_unless_empty(attrs, key, value), do: Map.put(attrs, key, value)
 
   # Parse path: store Vertex's thoughtSignature inside the tool_call's
   # internal metadata bag so it survives until the next turn.
