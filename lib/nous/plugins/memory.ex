@@ -94,6 +94,7 @@ defmodule Nous.Plugins.Memory do
 
   require Logger
 
+  alias Nous.Agent.Context
   alias Nous.Memory.{Embedding, Entry, Scope, Search, Tools}
 
   @impl true
@@ -531,7 +532,11 @@ defmodule Nous.Plugins.Memory do
             #{memory_text}
             """)
 
-          %{ctx | messages: ctx.messages ++ [memory_msg]}
+          # Logged like any other transcript message, marked with its source so a
+          # later reader can tell injected context from conversation. Writing
+          # `%{ctx | messages: ...}` here used to make "model-visible implies
+          # logged" decorative.
+          Context.add_message(ctx, memory_msg, source: :memory)
 
         {:error, reason} ->
           # Backend error must not crash the agent run - degrade gracefully.

@@ -69,6 +69,7 @@ defmodule Nous.Plugins.KnowledgeBase do
 
   require Logger
 
+  alias Nous.Agent.Context
   alias Nous.KnowledgeBase.Tools
 
   @impl true
@@ -221,7 +222,9 @@ defmodule Nous.Plugins.KnowledgeBase do
             |> Enum.join("\n")
 
           kb_msg = Nous.Message.system("[Relevant Knowledge]\n#{kb_text}")
-          %{ctx | messages: ctx.messages ++ [kb_msg]}
+          # Logged like any other transcript message, marked with its source so a
+          # later reader can tell injected context from conversation.
+          Context.add_message(ctx, kb_msg, source: :knowledge_base)
 
         _ ->
           ctx

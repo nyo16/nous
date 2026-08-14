@@ -3,8 +3,30 @@ defmodule Nous.AgentRunner.PromptAssembly do
   # System-prompt and model-settings assembly helpers for Nous.AgentRunner:
   # todo injection, plugin system-prompt fragments, and structured-output
   # settings/synthetic-tool merging. Internal to the runner.
+  #
+  # ## The assembled system prompt is not an event
+  #
+  # Plugin and skill system-prompt fragments are assembly-time state, not
+  # history. They are derived from agent config, plugins and skills, and
+  # re-derived on every run, so appending one to `Nous.Session.Log` would write
+  # a copy of the same text to a durable log per run — and a rewrite of the
+  # transcript's system message is not a fact about what happened, it is a fact
+  # about how this request was assembled.
+  #
+  # So this module does not write `%{ctx | messages: ...}` any more, which used
+  # to leave the materialized view and the fold disagreeing (the next append
+  # would either resurrect the un-rewritten prompt or bake the derived text into
+  # the log). It hands the fragment to
+  # `Nous.Agent.Context.put_system_prompt_overlay/2`, which applies it during
+  # materialization instead: `messages` stays exactly the fold plus one pure,
+  # idempotent overlay, and nothing derived reaches the log.
+  #
+  # A side effect worth knowing: the overlay is idempotent, where the old
+  # in-place rewrite compounded. Continuing the same context across three runs
+  # used to append the plugin fragment to the system message three times.
 
-  alias Nous.{Message, OutputSchema, Plugin}
+  alias Nous.Agent.Context
+  alias Nous.{OutputSchema, Plugin}
 
   require Logger
 
@@ -12,22 +34,8 @@ defmodule Nous.AgentRunner.PromptAssembly do
   # Only applied once per iteration (on first iteration, or when system prompt needs updating)
   def apply_plugin_system_prompts(agent, ctx) do
     case Plugin.collect_system_prompts(agent.plugins, agent, ctx) do
-      nil ->
-        ctx
-
-      plugin_prompt ->
-        # Update the system message if it exists, otherwise inject one
-        updated_messages =
-          case ctx.messages do
-            [%Message{role: :system} = sys | rest] ->
-              updated_content = sys.content <> "\n\n" <> plugin_prompt
-              [%{sys | content: updated_content} | rest]
-
-            messages ->
-              [Message.system(plugin_prompt) | messages]
-          end
-
-        %{ctx | messages: updated_messages}
+      nil -> ctx
+      plugin_prompt -> Context.put_system_prompt_overlay(ctx, plugin_prompt)
     end
   end
 

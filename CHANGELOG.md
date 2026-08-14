@@ -216,6 +216,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already did, so "the model sent no content" is `nil` and "the model sent an
   empty string" is `""`, and the two are no longer conflated.
 
+- **Compaction no longer destroys history.** `Nous.Agent.Context` is now backed by
+  an append-only event log (`Nous.Session.Log`) whose model-visible surface is a
+  pure fold. `ctx.messages` is materialized from that fold and kept in lockstep,
+  so every existing reader — including `result.messages`, `result.all_messages`
+  and `result.new_messages` — is byte-identical. The log is internal.
+  What it buys immediately: `Nous.Plugins.Summarization` appends a
+  `{:replace, start, stop}` event instead of rewriting the message list, so a
+  summary *shadows* the range it replaces and every original event stays in the
+  log. Its in-place tool-result pruning became a replace too — previously the next
+  append re-materialized and silently resurrected the oversized results, undoing
+  the pruning it had just done.
+  Six sites wrote `%{ctx | messages: ...}` directly, which is what made
+  "model-visible implies logged" decorative; all six now go through the log
+  (`Plugins.Memory` and `Plugins.KnowledgeBase` carry a `source` marker so
+  injected context is distinguishable from conversation, and
+  `patch_dangling_tool_calls/1`'s synthetic results are events).
+  `Context.serialize/1` is `version: 2` and persists events; a v1 blob still
+  loads and seeds a log that folds back to its original messages.
+  The plan's rule that an assistant event with empty content should be skipped in
+  derivation was **dropped**: skipping it made `Context.last_message/1` and output
+  extraction disagree with the log, turning a run whose model replied with empty
+  content — a content filter, a `max_tokens` cutoff, a provider hiccup — from
+  `{:ok, ""}` into `{:error, :no_output}`. "Providers reject an empty assistant
+  turn" is a fact about what a *request* may contain; the fold is history and
+  filters nothing.
+
+- **The plugin system prompt no longer compounds across runs.** The per-request
+  system-prompt rewrite is assembly-time state, applied as an idempotent overlay
+  during materialization rather than written over the message list. Continuing one
+  context across three runs used to append the plugin fragment to the system
+  message three times.
+
 ### Performance
 
 - **Oversized tool results can spill to a store instead of the context window.**

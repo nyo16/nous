@@ -320,7 +320,7 @@ defmodule Nous.AgentServerTest do
       assert :ok = AgentServer.save_context(pid)
 
       {:ok, data} = PersistenceETS.load(session_id)
-      assert data.version == 1
+      assert data.version == 2
       assert data.system_prompt == "Be helpful"
       GenServer.stop(pid)
     end
@@ -366,7 +366,7 @@ defmodule Nous.AgentServerTest do
       # The caller's contract is unchanged: :ok comes back only once the
       # backend write has actually landed.
       assert :ok = Task.await(saver, 5_000)
-      assert {:ok, %{version: 1}} = SlowPersistence.load(session_id)
+      assert {:ok, %{version: 2}} = SlowPersistence.load(session_id)
 
       GenServer.stop(pid)
     end

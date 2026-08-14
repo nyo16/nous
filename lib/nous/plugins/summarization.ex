@@ -101,6 +101,7 @@ defmodule Nous.Plugins.Summarization do
 
   @behaviour Nous.Plugin
 
+  alias Nous.Agent.Context
   alias Nous.AgentRunner.RequestDispatch
   alias Nous.Message
   alias Nous.Model
@@ -185,12 +186,10 @@ defmodule Nous.Plugins.Summarization do
       %{agent_name: agent.name, messages_before: messages_before}
     )
 
-    # Pruning is pure list rewriting and sits OUTSIDE the try on purpose: if
-    # it raises, that is a bug in Nous.Transcript, and dressing it up as a
-    # "compaction exception" would bury it. The orphaned :start is the signal.
-    max_result_chars = Map.get(config, :max_result_chars, @default_max_result_chars)
-    pruned = Transcript.prune_tool_results(ctx.messages, max_result_chars)
-    ctx = %{ctx | messages: pruned}
+    # Pruning sits OUTSIDE the try on purpose: if it raises, that is a bug in
+    # Nous.Transcript, and dressing it up as a "compaction exception" would bury
+    # it. The orphaned :start is the signal.
+    ctx = prune(ctx, Map.get(config, :max_result_chars, @default_max_result_chars))
 
     telemetry_base = %{
       agent_name: agent.name,
@@ -243,7 +242,7 @@ defmodule Nous.Plugins.Summarization do
     keep_recent = Map.get(config, :keep_recent, @default_keep_recent)
     {system_msgs, conversation} = Enum.split_with(ctx.messages, &(&1.role == :system))
 
-    {old_messages, recent_messages} =
+    {old_messages, _recent_messages} =
       conversation
       |> Enum.split(max(length(conversation) - keep_recent, 0))
       |> then(fn {old, recent} -> Transcript.balance_tool_call_boundary(old, recent) end)
@@ -251,17 +250,39 @@ defmodule Nous.Plugins.Summarization do
     if old_messages == [] do
       {ctx, %{llm_called: false, summarized: false}}
     else
-      run_summarizer(agent, ctx, config, {system_msgs, old_messages, recent_messages})
+      range = old_message_range(ctx.messages, length(old_messages))
+      run_summarizer(agent, ctx, config, {system_msgs, old_messages, range})
     end
   end
 
-  defp run_summarizer(agent, ctx, config, {system_msgs, old_messages, recent_messages}) do
+  # Where the old block sits in `ctx.messages`. That is the currency
+  # `Context.replace_message_range/4` speaks, and it is not the same as the index
+  # in `conversation`, which had the system messages split out of it. The context
+  # then maps those message positions onto the events that produced them, so the
+  # replace range comes from the log rather than from an assumption that message
+  # N is event N.
+  #
+  # The boundary is already tool-pair-balanced by
+  # `Transcript.balance_tool_call_boundary/2`, so the range can never shadow an
+  # assistant message while leaving its tool result behind — which is the one
+  # mistake here that every provider rejects with a 400.
+  defp old_message_range(messages, old_count) do
+    old_indexed =
+      messages
+      |> Enum.with_index()
+      |> Enum.reject(fn {msg, _index} -> msg.role == :system end)
+      |> Enum.take(old_count)
+
+    {old_indexed |> hd() |> elem(1), old_indexed |> List.last() |> elem(1)}
+  end
+
+  defp run_summarizer(agent, ctx, config, {system_msgs, old_messages, range}) do
     model = summary_model(agent, config)
     outcome = %{llm_called: true, provider: model.provider, model: model.model}
 
     case request_summary(agent, model, config, system_msgs, old_messages) do
       {:ok, response} ->
-        apply_summary(ctx, config, response, {system_msgs, recent_messages}, outcome)
+        apply_summary(ctx, config, response, range, outcome)
 
       {:error, reason} ->
         Logger.warning("Summarization failed, keeping pruned messages: #{inspect(reason)}")
@@ -269,14 +290,21 @@ defmodule Nous.Plugins.Summarization do
     end
   end
 
-  defp apply_summary(ctx, config, response, {system_msgs, recent_messages}, outcome) do
+  defp apply_summary(ctx, config, response, {first, last}, outcome) do
     usage = response.metadata[:usage]
 
     case summary_text(response) do
       {:ok, text} ->
         summary_msg = Message.system("[Conversation Summary]\n#{text}")
 
-        ctx = %{ctx | messages: system_msgs ++ [summary_msg | recent_messages]}
+        # The payoff. The summary is appended as a replace over the range it
+        # summarizes instead of rewriting the message list, so it lands exactly
+        # where that conversation was and every original event stays in the log:
+        # compaction no longer destroys history. Anything else inside the range
+        # is shadowed with it — an injected system message between two turns,
+        # say — and its content went into the summarizer's input, so it is
+        # represented in what replaces it.
+        ctx = Context.replace_message_range(ctx, first, last, summary_msg)
         ctx = put_config(ctx, %{summary_count: Map.get(config, :summary_count, 0) + 1})
 
         {ctx, Map.merge(outcome, %{summarized: true, usage: usage})}
@@ -285,6 +313,22 @@ defmodule Nous.Plugins.Summarization do
         Logger.warning("Summarization returned no text, keeping pruned messages")
         {ctx, Map.merge(outcome, %{summarized: false, error: reason, usage: usage})}
     end
+  end
+
+  # Pruning rewrites the content of individual tool results, which as events is
+  # one in-place `{:replace, seq, seq}` per pruned message: the oversized
+  # original stays in the log and only the surface shrinks. The message count and
+  # order are untouched, so a tool_call/tool_result pair still cannot be broken
+  # by pruning, and the indices stay valid across the reduce.
+  defp prune(ctx, max_result_chars) do
+    ctx.messages
+    |> Transcript.prune_tool_results(max_result_chars)
+    |> Enum.zip(ctx.messages)
+    |> Enum.with_index()
+    |> Enum.reduce(ctx, fn
+      {{unchanged, unchanged}, _index}, acc -> acc
+      {{pruned, _original}, index}, acc -> Context.replace_message(acc, index, pruned)
+    end)
   end
 
   # Only the TEXT survives. The request deliberately carries the

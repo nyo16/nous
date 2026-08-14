@@ -570,23 +570,32 @@ defmodule Nous.AgentRunner do
   end
 
   defp build_result(_agent, ctx, output) do
+    # `ctx.messages` is not a list the runner appended to any more: it is the
+    # fold of this session's event log, re-materialized by `Nous.Agent.Context`
+    # after every append, plus the assembly-time system-prompt overlay that is
+    # deliberately not history (see `Nous.AgentRunner.PromptAssembly`). Reading
+    # it here IS reading the fold; folding `ctx.log` directly instead would drop
+    # that overlay and hand back a transcript the model never saw.
+    transcript = ctx.messages
+
     %{
       output: output,
       usage: ctx.usage,
       iterations: ctx.iteration,
-      all_messages: ctx.messages,
-      new_messages: get_new_messages(ctx),
+      all_messages: transcript,
+      new_messages: get_new_messages(transcript),
       deps: ctx.deps,
       # Include context for continuation
       context: ctx
     }
   end
 
-  defp get_new_messages(ctx) do
-    # Get messages added during this run (after initial user message)
-    # This is a simplification - could be more sophisticated
-    ctx.messages
-    |> Enum.drop_while(fn msg -> msg.role != :assistant end)
+  # Messages added during this run: the transcript from its first assistant turn
+  # on. Derived from the fold rather than diffed against a remembered length,
+  # because compaction can replace a range mid-run and a remembered index would
+  # then name the wrong message.
+  defp get_new_messages(transcript) do
+    Enum.drop_while(transcript, fn msg -> msg.role != :assistant end)
   end
 
   defp emit_error_telemetry(agent, duration, error) do
