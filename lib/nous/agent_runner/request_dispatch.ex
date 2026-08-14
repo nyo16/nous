@@ -3,16 +3,37 @@ defmodule Nous.AgentRunner.RequestDispatch do
   # Model request dispatch for Nous.AgentRunner: fallback-chain requests
   # (plain and streaming), team rate-limiter acquire/record/release, and
   # provider-specific settings/tool-schema rebuilding. Internal to the runner.
+  #
+  # ## Where the session invariant is checked
+  #
+  # This is the narrowest place where the final message list and the session
+  # context are both in scope, so `Nous.Session.Invariant.verify/2` runs here —
+  # once per request, before the fallback chain, since every model in the chain
+  # is sent the same list. Both agent-loop paths are covered:
+  # `request_with_fallback/5` and `stream_request_with_fallback/5`.
+  #
+  # `stream_with_fallback/4` is NOT checked: it is the `Nous.run_stream/3` path,
+  # which hands the raw stream back to the caller and has no `%Nous.Agent.Context{}`
+  # in scope at all (`Nous.AgentRunner` builds its message list and never threads
+  # the context down). `run_stream/3` runs exactly one iteration and is likewise
+  # out of scope for turn/step semantics; both exclusions are the same fact about
+  # that path, and threading a context through it for a bookkeeping check is not
+  # worth the churn.
 
   alias Nous.{Fallback, ModelDispatcher, Tool}
   alias Nous.AgentRunner.{PromptAssembly, Streaming}
+  alias Nous.Session.Invariant
 
   require Logger
 
   # Request with fallback chain support.
   # When fallback models are configured, tries each model in order on eligible errors.
   # Returns {:ok, response, active_model} or {:error, reason}.
-  def request_with_fallback(agent, messages, model_settings, all_tools) do
+  #
+  # `ctx` is the session context the messages were assembled from; it defaults to
+  # nil for callers that have no session (the invariant check is then a no-op).
+  def request_with_fallback(agent, messages, model_settings, all_tools, ctx \\ nil) do
+    Invariant.verify(ctx, messages)
     model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
 
     Fallback.with_fallback(model_chain, fn model ->
@@ -41,10 +62,10 @@ defmodule Nous.AgentRunner.RequestDispatch do
     end)
   end
 
-  # Streaming counterpart to request_with_fallback/4. Initializes the stream
+  # Streaming counterpart to request_with_fallback/5. Initializes the stream
   # via stream_with_fallback/4 (so initialization errors trigger fallback),
   # then consumes the stream eagerly into a %Nous.Message{} structurally
-  # identical to what request_with_fallback/4 returns. Per-chunk delta
+  # identical to what request_with_fallback/5 returns. Per-chunk delta
   # callbacks fire from the consumer, and the assembled message flows back
   # into the same do_iteration code path that handles tool calls and the
   # next iteration.
@@ -53,6 +74,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
   @openai_compat_providers ~w(openai custom vllm sglang lmstudio llamacpp)a
 
   def stream_request_with_fallback(agent, messages, model_settings, all_tools, ctx) do
+    Invariant.verify(ctx, messages)
     model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
 
     Fallback.with_fallback(model_chain, fn model ->

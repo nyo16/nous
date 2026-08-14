@@ -127,6 +127,35 @@ defmodule Nous.Session.Log do
   def events(%__MODULE__{events: events}), do: Enum.reverse(events)
 
   @doc """
+  Events from `seq` onward, oldest first. Costs O(number returned), not O(log).
+
+  `events/1` reverses the whole list, which is fine for a one-off read and wrong
+  for anything on the append path — publishing newly committed events runs on
+  every append, and so does a consumer catching up from a known seq. Because
+  events are stored newest-first, taking the tail walks only what is new.
+
+  `seq` at or beyond the end returns `[]`.
+
+  ## Examples
+
+      iex> log = Nous.Session.Log.new()
+      iex> {:ok, log} = Nous.Session.Log.append(log, :user_message, %{content: "a"})
+      iex> {:ok, log} = Nous.Session.Log.append(log, :user_message, %{content: "b"})
+      iex> Nous.Session.Log.since(log, 1) |> Enum.map(& &1.data.content)
+      ["b"]
+      iex> Nous.Session.Log.since(log, 5)
+      []
+
+  """
+  @spec since(t(), non_neg_integer()) :: [Event.t()]
+  def since(%__MODULE__{events: events, next_seq: next_seq}, seq)
+      when is_integer(seq) and seq >= 0 do
+    events
+    |> Enum.take(max(next_seq - seq, 0))
+    |> Enum.reverse()
+  end
+
+  @doc """
   The number of events, shadowed ones included.
   """
   @spec count(t()) :: non_neg_integer()

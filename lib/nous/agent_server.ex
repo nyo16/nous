@@ -89,6 +89,65 @@ defmodule Nous.AgentServer do
   | `{:agent_complete, result}`      | The full result struct (output + context + usage) |
   | `{:agent_error, message}`        | An error occurred during execution      |
   | `{:agent_cancelled, reason}`     | The execution was cancelled             |
+  | `{:session_event, %Nous.Session.Event{}}` | One committed log event — surface and bookkeeping alike |
+
+  `{:session_event, _}` is published by `Nous.Agent.Context` itself for every
+  event committed to the session log, which is why nothing in this server
+  broadcasts it: `init/1` already points the run context at this topic. It is
+  the message to render a transcript from, since it also carries the turn and
+  step boundaries (`:turn_start`, `:step_start`, `:step_end`, `:turn_end`) that
+  the ad-hoc callbacks above cannot express.
+
+  ## Steering and injection
+
+  `send_message/2` is the interrupting path: it cancels whatever is in flight
+  and starts over. The inbox paths never interrupt anything — they queue a
+  message and let the run claim it at its next boundary:
+
+  | Call         | Queued for | Wakes an idle agent? |
+  |--------------|------------|----------------------|
+  | `followup/2` | next turn  | yes                  |
+  | `steer/2`    | next step  | yes                  |
+  | `inject/2`   | next step  | **no**               |
+
+  `steer/2` and `inject/2` differ in exactly one bit, and it is the bit people
+  get wrong. Worked example, on an agent that is idle after its last run:
+
+      # Nothing happens. No model request, no tokens, no run. The note is queued
+      # and will be handed to the next request the agent makes anyway.
+      AgentServer.inject(pid, "FYI: the staging deploy is frozen until 14:00")
+
+      # This starts a run. It claims the injected note *and* this message, in
+      # that order, so both are in the first request's message list.
+      AgentServer.steer(pid, "Which services are still pending release?")
+
+  Mid-run, the distinction is about latency rather than about starting work:
+
+      AgentServer.send_message(pid, "Audit every service for stale configs")
+      # ... the agent is three tool calls deep ...
+      AgentServer.steer(pid, "Actually, skip anything under /legacy")
+      # The NEXT model request of that same run sees the instruction. The tool
+      # call already in flight is neither interrupted nor cancelled, and the
+      # message is not claimed by the request that is already on the wire.
+
+  Both accept a binary or a `Nous.Message`, and both are safe to call whether or
+  not a run is in flight.
+
+  ## Run state
+
+  The server keeps an explicit `run_state` of `:idle` or `:running`, and every
+  transition into `:idle` goes through one function. That is what makes `wakeup`
+  decidable: `steer/2` on an idle agent must start work and `inject/2` must not,
+  and both answers depend on knowing — not inferring — whether a run is in
+  flight.
+
+  The upstream implementation this was ported from needs a `wakeRequested` latch
+  to cover the window where a message lands after the last claim of a run that
+  is about to end. There is no latch here. The wake intent rides on the queued
+  message itself (see `Nous.Session.Inbox`), so the `:running -> :idle`
+  transition just asks the inbox whether a run is still owed. Enqueueing and
+  finishing are both serialized through this process's mailbox, so exactly one
+  of the two starts the run.
 
   ## Lifecycle
 
@@ -105,6 +164,8 @@ defmodule Nous.AgentServer do
   require Logger
 
   alias Nous.Agent.Context
+  alias Nous.Message
+  alias Nous.Session.{Inbox, Recovery}
 
   @type agent_config :: %{
           model: String.t(),
@@ -122,12 +183,26 @@ defmodule Nous.AgentServer do
           topic: String.t(),
           agent_type: :standard | :react,
           current_task: Task.t() | nil,
-          cancelled_ref: :atomics.atomics_ref()
+          task_generation: non_neg_integer(),
+          cancelled_ref: :atomics.atomics_ref(),
+          inactivity_timeout: timeout(),
+          inactivity_timer_ref: reference() | nil,
+          persistence: module() | nil,
+          run_state: :idle | :running,
+          inbox: Inbox.t()
         }
 
   # Client API
 
   @default_inactivity_timeout :timer.minutes(5)
+
+  # Iteration ceiling for every run this server starts.
+  @max_run_iterations 15
+
+  # An inbox claim is a queue read on a process that is never blocked waiting on
+  # the claiming task, so this is a safety net against a server that has died or
+  # wedged, not a tuning knob. The runner treats a timeout as "nothing claimed".
+  @claim_timeout 5_000
 
   @doc """
   Start an AgentServer linked to the calling process.
@@ -169,6 +244,50 @@ defmodule Nous.AgentServer do
   def send_message(pid, message) do
     GenServer.cast(pid, {:user_message, message})
   end
+
+  @doc """
+  Queue a message for the agent's next **step**, waking it if it is idle.
+
+  Mid-run steering. The message is claimed by the next model request of the run
+  already in flight — not by the request currently on the wire — and nothing is
+  cancelled or discarded. On an idle agent it starts a run.
+
+  `message` may be a binary or a `Nous.Message`. Returns immediately.
+
+  Contrast `inject/2`, which queues to the same place and never starts a run.
+  The moduledoc has a worked example of the difference.
+  """
+  @spec steer(GenServer.server(), Message.t() | String.t()) :: :ok
+  def steer(server, message), do: GenServer.cast(server, {:enqueue, message, :next_step, true})
+
+  @doc """
+  Queue context for the agent's next **step** without waking it.
+
+  Injected context waits for the next admitted request rather than starting one:
+  on an idle agent this is inert until something else makes the agent run, and
+  on a running agent it behaves exactly like `steer/2`.
+
+  Use it for material the agent should have *if* it asks another question —
+  retrieved documents, a changed permission, a note from another process — where
+  spending a model request purely to deliver it would be wrong.
+
+  `message` may be a binary or a `Nous.Message`. Returns immediately.
+  """
+  @spec inject(GenServer.server(), Message.t() | String.t()) :: :ok
+  def inject(server, message), do: GenServer.cast(server, {:enqueue, message, :next_step, false})
+
+  @doc """
+  Queue a message for the agent's next **turn**, waking it if it is idle.
+
+  "Answer this once you have finished what you are doing." Unlike
+  `send_message/2` it never cancels the run in flight, and unlike `steer/2` it
+  does not join that run: it is claimed when the next turn opens.
+
+  `message` may be a binary or a `Nous.Message`. Returns immediately.
+  """
+  @spec followup(GenServer.server(), Message.t() | String.t()) :: :ok
+  def followup(server, message),
+    do: GenServer.cast(server, {:enqueue, message, :next_turn, true})
 
   @doc """
   Get conversation context.
@@ -319,7 +438,13 @@ defmodule Nous.AgentServer do
       cancelled_ref: cancelled_ref,
       inactivity_timeout: inactivity_timeout,
       inactivity_timer_ref: inactivity_timer_ref,
-      persistence: persistence
+      persistence: persistence,
+      # Whether a run is in flight. `current_task` alone was nearly this, but
+      # it is cleared from five different handlers and an async_nolink task
+      # announces its end through three different messages, so "is the agent
+      # working?" was spread too thin to base a wake decision on.
+      run_state: :idle,
+      inbox: Inbox.new()
     }
 
     {:ok, state, {:continue, :load_persisted_context}}
@@ -331,11 +456,18 @@ defmodule Nous.AgentServer do
       {:ok, loaded_ctx} ->
         Logger.info("Restored persisted context for session: #{state.session_id}")
 
-        # Merge initial deps back in (they may contain runtime values like PIDs)
-        # and patch any dangling tool calls left over from an interrupted run.
+        # Merge initial deps back in (they may contain runtime values like PIDs),
+        # then repair an interrupted run. Recovery runs BEFORE the patch: it only
+        # fires on an orphaned `:turn_start` and appends risk-classified results
+        # (`:tool_not_started` vs `:tool_outcome_unknown`). Patching first would
+        # satisfy the owed call with its generic "was interrupted and not
+        # executed" result, recovery would then see nothing owed, and the log
+        # would claim a tool never ran when it may well have. On a clean or
+        # turn-less log recovery is a strict no-op, so the fast path is unchanged.
         new_context =
           loaded_ctx
           |> Context.merge_deps(state.context.deps)
+          |> Recovery.recover()
           |> Context.patch_dangling_tool_calls()
           |> Map.merge(%{pubsub: state.pubsub, pubsub_topic: state.topic})
 
@@ -373,33 +505,28 @@ defmodule Nous.AgentServer do
             Logger.debug("Previous task exited during shutdown")
         end
 
-        %{state | current_task: nil}
+        idle(state)
       else
-        state
+        idle(state)
       end
-
-    # Broadcast that we're processing
-    broadcast(state, {:agent_status, :thinking})
 
     # NOTE: do NOT add the user message to the context here. do_agent_run passes
     # `message` as the prompt to AgentRunner.run/3, whose build_context appends
     # it exactly once. Adding it here too doubled the user message in every turn
     # (wasted tokens + corrupted saved history). The post-run context (which
     # includes the message + response) is stored back via :agent_response_ready.
-    :atomics.put(state.cancelled_ref, 1, 0)
+    {:noreply, start_run(state, {:prompt, message})}
+  end
+
+  @impl true
+  def handle_cast({:enqueue, message, target, wakeup}, state) do
+    state = %{state | inbox: Inbox.send(state.inbox, message, target, wakeup)}
     state = reset_inactivity_timer(state)
 
-    # Run agent asynchronously and track the task
-    server_pid = self()
-    cancelled_ref = state.cancelled_ref
-    generation = state.task_generation
-
-    task =
-      Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-        run_agent_and_respond(server_pid, state, message, cancelled_ref, generation)
-      end)
-
-    {:noreply, %{state | current_task: task}}
+    # A run in flight will claim this at its next boundary. Otherwise only a
+    # waking send starts one — the entire difference between steer/2 and
+    # inject/2, decided here against an unambiguous run_state.
+    {:noreply, maybe_wake(state)}
   end
 
   @impl true
@@ -438,9 +565,9 @@ defmodule Nous.AgentServer do
             )
         end
 
-        %{state | current_task: nil}
+        idle(state)
       else
-        state
+        idle(state)
       end
 
     :atomics.put(state.cancelled_ref, 1, 0)
@@ -453,7 +580,9 @@ defmodule Nous.AgentServer do
         agent_name: state.context.agent_name
       )
 
-    state = %{state | context: new_context}
+    # The queued input belonged to the conversation being discarded, so it goes
+    # with it. Nothing is woken: clear_history is a reset, not a prompt.
+    state = %{state | context: new_context, inbox: Inbox.new()}
 
     # Persist the cleared context off the mailbox so a slow backend can't
     # block. Fire-and-forget (see save_context_async/1 ordering note).
@@ -471,6 +600,15 @@ defmodule Nous.AgentServer do
   def handle_call(:get_history, _from, state) do
     # Return messages from context
     {:reply, state.context.messages, state}
+  end
+
+  @impl true
+  def handle_call({:claim_inbox, target}, _from, state) do
+    # Called by the run task at its turn and step boundaries. Serializing claims
+    # through this process is what makes "did the run see my steer?" decidable
+    # instead of a race: a claim and an enqueue cannot interleave.
+    {messages, inbox} = Inbox.claim(state.inbox, target)
+    {:reply, messages, %{state | inbox: inbox}}
   end
 
   @impl true
@@ -508,7 +646,11 @@ defmodule Nous.AgentServer do
         broadcast(state, {:agent_cancelled, "Execution cancelled by user"})
 
         # Clear current task and reset cancelled flag
-        state = %{state | current_task: nil}
+        # Idle, but deliberately WITHOUT the inbox wake: the operator just asked
+        # this run to stop, and immediately starting another because a steer was
+        # still queued would be the opposite of cancelling. Anything queued waits
+        # for the next real prompt.
+        state = idle(state)
         :atomics.put(state.cancelled_ref, 1, 0)
 
         {:reply, {:ok, :cancelled}, state}
@@ -578,9 +720,12 @@ defmodule Nous.AgentServer do
             result =
               with {:ok, data} <- backend.load(session_id),
                    {:ok, ctx} <- Context.deserialize(data) do
+                # Recovery before the patch — see handle_continue/2 above for
+                # why the order is load-bearing.
                 ctx =
                   ctx
                   |> Context.merge_deps(merge_deps)
+                  |> Recovery.recover()
                   |> Context.patch_dangling_tool_calls()
 
                 {:ok, ctx}
@@ -662,7 +807,7 @@ defmodule Nous.AgentServer do
   @impl true
   def handle_info({:agent_response_ready, generation, context, _result}, state) do
     if generation == state.task_generation do
-      state = %{state | context: context}
+      state = %{state | context: strip_run_seam(context)}
       save_context_async(state)
       {:noreply, state}
     else
@@ -680,7 +825,7 @@ defmodule Nous.AgentServer do
   @impl true
   def handle_info({:agent_task_completed, generation, _reason}, state) do
     if generation == state.task_generation do
-      {:noreply, %{state | current_task: nil}}
+      {:noreply, finish_run(state)}
     else
       # Stale completion from a previous task; current_task already points
       # to a newer task, do not clear it.
@@ -699,7 +844,7 @@ defmodule Nous.AgentServer do
     # now only fires when the task crashes before returning a value (abnormal
     # exit), since [:flush] purges the :DOWN for the normal-exit case.
     Process.demonitor(ref, [:flush])
-    {:noreply, %{state | current_task: nil}}
+    {:noreply, finish_run(state)}
   end
 
   @impl true
@@ -708,7 +853,7 @@ defmodule Nous.AgentServer do
         %{current_task: %Task{ref: ref}} = state
       ) do
     # Our current task's monitor fired; clear the task slot.
-    {:noreply, %{state | current_task: nil}}
+    {:noreply, finish_run(state)}
   end
 
   @impl true
@@ -826,54 +971,146 @@ defmodule Nous.AgentServer do
     end
   end
 
-  defp run_agent_and_respond(server_pid, state, message, cancelled_ref, generation) do
+  # ── run lifecycle ──────────────────────────────────────────────────────────
+
+  # The one place a run starts. `kind` is `{:prompt, message}` for the
+  # interrupting send_message/2 path or `:inbox` for a run the inbox woke, where
+  # the input is whatever the claim boundaries hand over.
+  defp start_run(state, kind) do
+    state = state |> bump_generation() |> reset_inactivity_timer()
+    :atomics.put(state.cancelled_ref, 1, 0)
+
+    broadcast(state, {:agent_status, :thinking})
+
+    server_pid = self()
+    cancelled_ref = state.cancelled_ref
+    generation = state.task_generation
+
+    # The task gets a snapshot of the fields do_agent_run/5 needs. The inbox is
+    # deliberately blanked: the queue of record lives here in the server and the
+    # task reaches it through the :claim_inbox closure, so a copy in the task
+    # could only ever be a stale read of it.
+    snapshot = %{state | inbox: Inbox.new(), current_task: nil}
+
+    task =
+      Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
+        run_agent_and_respond(server_pid, snapshot, kind, cancelled_ref, generation)
+      end)
+
+    %{state | current_task: task, run_state: :running}
+  end
+
+  # The `:running -> :idle` transition, with its exit action. Every caller has
+  # already established that the finishing task is the CURRENT one (by task ref
+  # or by generation), so a stale reply from a superseded run cannot reach here
+  # and cannot un-set a run that has since started.
+  defp finish_run(state), do: state |> idle() |> maybe_wake()
+
+  defp idle(state), do: %{state | current_task: nil, run_state: :idle}
+
+  defp maybe_wake(%{run_state: :running} = state), do: state
+
+  defp maybe_wake(%{run_state: :idle} = state) do
+    if Inbox.wake?(state.inbox), do: start_run(state, :inbox), else: state
+  end
+
+  # The seam the runner claims through. Deliberately a plain closure over the
+  # server pid rather than a module reference: the iteration loop knows only
+  # that `ctx.deps[:claim_inbox]` is a 1-arity function, so nothing in the
+  # runner depends on this server existing. A failed claim is treated as
+  # "nothing claimed" there, so the timeout is a safety net rather than a
+  # correctness boundary.
+  defp claim_inbox_fun(server_pid) do
+    fn target -> GenServer.call(server_pid, {:claim_inbox, target}, @claim_timeout) end
+  end
+
+  # The claim closure is per-run runtime state, not conversation state. Dropping
+  # it on the way back in keeps state.context.deps free of closures, so
+  # get_context/1 returns something inspectable and load_context's merge_deps
+  # cannot carry a dead seam into a restored session.
+  defp strip_run_seam(%Context{} = ctx) do
+    %{ctx | deps: Map.delete(ctx.deps, :claim_inbox)}
+  end
+
+  defp run_agent_and_respond(server_pid, state, kind, cancelled_ref, generation) do
     # Check if cancelled before starting
     if :atomics.get(cancelled_ref, 1) == 1 do
       Logger.info("Execution cancelled before agent run for session: #{state.session_id}")
       broadcast(state, {:agent_cancelled, "Execution cancelled"})
       :cancelled
     else
-      do_agent_run(server_pid, state, message, cancelled_ref, generation)
+      do_agent_run(server_pid, state, kind, cancelled_ref, generation)
     end
   end
 
-  defp do_agent_run(server_pid, state, message, cancelled_ref, generation) do
-    # Run agent with context continuation and notify_pid for events
-    result =
-      Nous.AgentRunner.run(state.agent, message,
-        context: state.context,
-        notify_pid: server_pid,
-        max_iterations: 15,
-        cancellation_check: fn ->
-          if :atomics.get(cancelled_ref, 1) == 1 do
-            throw({:cancelled, "Execution cancelled"})
-          end
-        end
-      )
+  defp do_agent_run(server_pid, state, kind, cancelled_ref, generation) do
+    ctx = %{
+      state.context
+      | deps: Map.put(state.context.deps, :claim_inbox, claim_inbox_fun(server_pid))
+    }
 
-    case result do
-      {:ok, response} ->
-        # Broadcast response
-        broadcast(state, {:agent_response, response.output})
-        broadcast(state, {:agent_complete, response})
+    result = run_agent(state.agent, ctx, kind, server_pid, cancelled_ref)
+    report_run(result, server_pid, state, generation)
+  end
 
-        # Send context update to server, tagged with our generation so it
-        # can be discarded if the user has already sent a newer message.
-        send(server_pid, {:agent_response_ready, generation, response.context, response})
+  defp run_agent(agent, ctx, {:prompt, message}, server_pid, cancelled_ref) do
+    Nous.AgentRunner.run(agent, message,
+      context: ctx,
+      notify_pid: server_pid,
+      max_iterations: @max_run_iterations,
+      cancellation_check: cancellation_check_fun(cancelled_ref)
+    )
+  end
 
-      {:error, %Nous.Errors.ExecutionCancelled{}} ->
-        Logger.info("Agent execution was cancelled for session: #{state.session_id}")
-        broadcast(state, {:agent_cancelled, "Execution cancelled"})
-        send(server_pid, {:agent_task_completed, generation, :cancelled})
+  defp run_agent(agent, ctx, :inbox, server_pid, cancelled_ref) do
+    # No prompt to append: this run's input arrives through the claim
+    # boundaries, so run_with_context/3 — "continue this conversation" — is the
+    # right entry.
+    #
+    # `max_iterations` and `cancellation_check` are set on the struct rather
+    # than passed as options because neither reaches a context that already
+    # exists: AgentRunner.build_context/3 only reads them when it builds a fresh
+    # one, and run_with_context/3 does not read them at all.
+    ctx = %{
+      ctx
+      | max_iterations: @max_run_iterations,
+        cancellation_check: cancellation_check_fun(cancelled_ref)
+    }
 
-      {:error, error} ->
-        error_msg = if is_exception(error), do: Exception.message(error), else: inspect(error)
-        Logger.error("Agent error in session #{state.session_id}: #{error_msg}")
+    Nous.AgentRunner.run_with_context(agent, ctx, notify_pid: server_pid)
+  end
 
-        # Broadcast error
-        broadcast(state, {:agent_error, error_msg})
-        send(server_pid, {:agent_task_completed, generation, :error})
+  defp cancellation_check_fun(cancelled_ref) do
+    fn ->
+      if :atomics.get(cancelled_ref, 1) == 1 do
+        throw({:cancelled, "Execution cancelled"})
+      end
     end
+  end
+
+  defp report_run({:ok, response}, server_pid, state, generation) do
+    # Broadcast response
+    broadcast(state, {:agent_response, response.output})
+    broadcast(state, {:agent_complete, response})
+
+    # Send context update to server, tagged with our generation so it
+    # can be discarded if the user has already sent a newer message.
+    send(server_pid, {:agent_response_ready, generation, response.context, response})
+  end
+
+  defp report_run({:error, %Nous.Errors.ExecutionCancelled{}}, server_pid, state, generation) do
+    Logger.info("Agent execution was cancelled for session: #{state.session_id}")
+    broadcast(state, {:agent_cancelled, "Execution cancelled"})
+    send(server_pid, {:agent_task_completed, generation, :cancelled})
+  end
+
+  defp report_run({:error, error}, server_pid, state, generation) do
+    error_msg = if is_exception(error), do: Exception.message(error), else: inspect(error)
+    Logger.error("Agent error in session #{state.session_id}: #{error_msg}")
+
+    # Broadcast error
+    broadcast(state, {:agent_error, error_msg})
+    send(server_pid, {:agent_task_completed, generation, :error})
   end
 
   defp broadcast(state, message) do

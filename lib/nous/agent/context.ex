@@ -340,6 +340,45 @@ defmodule Nous.Agent.Context do
   end
 
   @doc """
+  Append a **bookkeeping** event to the session log.
+
+  Bookkeeping events (`:turn_start`, `:turn_end`, `:step_start`, `:step_end`,
+  `:tool_call`, `:request_header`) project to no message, so `messages` is
+  unchanged and no existing reader can see them. They are what makes a run
+  reconstructable after the fact — which turn a tool call belonged to, which step
+  produced a request, where a crash interrupted things.
+
+  Refuses a surface type: appending a `:user_message` this way would bypass
+  `add_message/3`'s projection bookkeeping and leave `messages` disagreeing with
+  the log. Invalid events are dropped with a warning rather than raising, because
+  losing one bookkeeping event is strictly better than failing the user's run.
+
+  ## Examples
+
+      iex> ctx = Context.new() |> Context.log_event(:turn_start, %{turn: 1})
+      iex> ctx.messages
+      []
+      iex> [event] = Nous.Session.Log.events(ctx.log)
+      iex> {event.type, event.data.turn}
+      {:turn_start, 1}
+
+  """
+  @spec log_event(t(), Nous.Session.Event.type(), map()) :: t()
+  def log_event(%Context{} = ctx, type, data \\ %{}) when is_atom(type) and is_map(data) do
+    if Nous.Session.Event.surface?(type) do
+      Logger.warning(
+        "Nous.Agent.Context.log_event/3 refuses the surface type #{inspect(type)}; " <>
+          "use add_message/3 so the projection and `messages` stay in step."
+      )
+
+      ctx
+    else
+      ctx = sync(ctx)
+      put_log(ctx, Log.append!(ctx.log, type, data))
+    end
+  end
+
+  @doc """
   Merge usage statistics into the context.
 
   ## Examples
@@ -895,8 +934,13 @@ defmodule Nous.Agent.Context do
 
   defp deserialize_event_type(_type), do: :error
 
+  # Surface-event payload keys, plus the bookkeeping keys turn/step events carry
+  # (`turn`, `step`, `reason`). Recovery's synthetic `:turn_end` uses
+  # `reason: :interrupted`. The risk class of a synthetic tool result rides inside
+  # `metadata`, whose contents are deliberately unchecked, so it needs no key here.
   @known_event_data_keys ~w(
     content name metadata tool_calls tool_call_id reasoning_content source surface_op
+    turn steps step reason outcome
   )
 
   defp deserialize_event_data(data) when is_map(data) do
@@ -1045,7 +1089,35 @@ defmodule Nous.Agent.Context do
 
   defp put_log(%Context{} = ctx, %Log{} = log) do
     {messages, log} = Log.materialize(log)
+    publish_events(ctx, log, Log.count(ctx.log))
     %{ctx | messages: apply_overlay(messages, ctx.system_prompt_overlay), log: log}
+  end
+
+  # Publish every newly committed event so a LiveView can render from the log
+  # instead of from ad-hoc callbacks. The delta is the log's own count before and
+  # after — never anything message-shaped — so a bookkeeping event publishes
+  # exactly like a surface one, and a `put_log/2` that only re-materializes
+  # (`sync/1`) publishes nothing rather than re-broadcasting the session.
+  #
+  # This runs on EVERY append: both guards are head matches, so the common case
+  # (no pubsub configured, which is most tests) allocates nothing. A dead pubsub
+  # must never take down a run — `Nous.PubSub.broadcast/3` already swallows the
+  # `:error` class, and the catch covers the `exit` a custom adapter can throw
+  # from a `GenServer.call` timeout.
+  defp publish_events(%Context{pubsub: nil}, _log, _from), do: :ok
+  defp publish_events(%Context{pubsub_topic: nil}, _log, _from), do: :ok
+
+  defp publish_events(%Context{pubsub: pubsub, pubsub_topic: topic}, log, from) do
+    Enum.each(Log.since(log, from), fn event ->
+      try do
+        Nous.PubSub.broadcast(pubsub, topic, {:session_event, event})
+      catch
+        kind, reason ->
+          Logger.debug(
+            "Nous.Agent.Context: session event broadcast failed: #{inspect({kind, reason})}"
+          )
+      end
+    end)
   end
 
   defp view(%Context{} = ctx) do

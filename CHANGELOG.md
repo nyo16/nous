@@ -248,6 +248,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   context across three runs used to append the plugin fragment to the system
   message three times.
 
+- **You can talk to an agent mid-run.** `Nous.AgentServer.steer/2`, `inject/2` and
+  `followup/2` are new public API on top of `Nous.Session.Inbox`, which has two
+  ordered queues and one primitive with three presets: `followup` = next turn and
+  wake, `steer` = next step and wake, `inject` = next step and **no wake**. That
+  last distinction is the point: injected context waits for the next admitted
+  request rather than starting one, so you can enrich an idle agent without
+  provoking it. A message sent mid-run is claimed by the *next* step, not the one
+  already in flight.
+  `AgentServer` gained an explicit `run_state` so "is a run in flight" has one
+  answer — it was previously spread across five handlers while an `async_nolink`
+  task announces its end three different ways, which is too thin a basis for a
+  wake decision. Cancellation behaviour is unchanged.
+
+- **Turns and steps are durable events.** A step is one model request plus the
+  tools it calls; a turn is zero or more steps. Both are logged, so a run is
+  reconstructable after the fact: which turn a tool call belonged to, which step
+  produced a request, where a crash landed. A zero-step turn is legal and is what a
+  rejected input leaves behind. `pre_step` rejection reuses the existing
+  `:pre_request` hook rather than adding a second mechanism, since a step *is* one
+  request.
+
+- **A crashed run no longer loses or invents history.** `Nous.Session.Recovery`
+  repairs an orphaned `:turn_start` by **appending** — never deleting or rewriting —
+  synthetic risk-classified `:tool_result` events plus a `:turn_end` with reason
+  `:interrupted`, the one reason no live loop emits, so its presence is unambiguous
+  evidence of a crash. Ambiguity always resolves to `:tool_outcome_unknown` rather
+  than `:tool_not_started`: wrongly saying "may have run" costs a human one check,
+  wrongly saying "did not run" is how a duplicate charge or a second `rm -rf`
+  happens. Recovery is idempotent and leaves a clean log untouched.
+  `Nous.Session.fork/2` copies an event prefix and records its parent, and
+  **refuses a boundary inside an open turn** rather than clipping it.
+
+- **Every committed event is broadcast**, so a LiveView can render from the log
+  instead of from ad-hoc callbacks. Existing `Nous.PubSub` topics are reused; the
+  publish is a no-op when no pubsub is configured, is driven by a count delta
+  through the new `Log.since/2` (O(new), not O(log) — otherwise publishing would be
+  quadratic over a session), and a broadcast failure cannot break an append.
+
+- **`Nous.Session.Invariant`** checks that every model-visible request is
+  reconstructable from the log, including an orphaned-tool-result pass for the
+  provider-400 class that an unbalanced compaction range can still produce. It
+  **warns and emits telemetry, never raises** (`config :nous, :session_invariant`
+  promotes it to `:strict` for our own suite, or `:off`), because a legacy append
+  path stays alive for at least one release and taking down a production run over a
+  bookkeeping discrepancy would be the wrong trade.
+
 ### Performance
 
 - **Oversized tool results can spill to a store instead of the context window.**
