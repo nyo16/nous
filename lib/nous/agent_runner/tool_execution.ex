@@ -50,8 +50,10 @@ defmodule Nous.AgentRunner.ToolExecution do
         tool_names = Enum.map_join(real_calls, ", ", &get_tool_field(&1, :name))
         Logger.debug("Detected #{length(real_calls)} tool call(s): #{tool_names}")
 
-        # Build run context for tool execution
-        run_ctx = Context.to_run_context(ctx)
+        # Build run context for tool execution. This is the single construction
+        # site for both the sequential and parallel paths below, so the session
+        # sandbox policy only has to be attached here.
+        run_ctx = Context.to_run_context(ctx, sandbox: agent.sandbox)
 
         # Execute all real tool calls and collect results
         {tool_results, ctx} =

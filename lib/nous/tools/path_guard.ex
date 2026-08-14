@@ -62,8 +62,9 @@ defmodule Nous.Tools.PathGuard do
     with :ok <- reject_nul(path),
          {:ok, root} <- workspace_root(ctx),
          {:ok, expanded} <- expand_against(path, root),
+         {:ok, absolute} <- absname_against(path, root),
          :ok <- ensure_within(expanded, root),
-         {:ok, real_path} <- ensure_no_symlink_escape(expanded, root) do
+         {:ok, real_path} <- ensure_no_symlink_escape(absolute, root) do
       {:ok, real_path}
     end
   end
@@ -107,6 +108,22 @@ defmodule Nous.Tools.PathGuard do
       end
 
     {:ok, expanded}
+  end
+
+  # The path the symlink resolver must see: absolute, but with `..`/`.` left
+  # INTACT. `Path.expand/1` collapses them lexically, which erases exactly the
+  # attack the resolver exists to catch — `link/..` where `link -> /etc` expands
+  # to the workspace root before anyone notices the symlink. `Path.absname/2`
+  # makes the path absolute without touching `..`, so `resolve_real/1` can
+  # resolve each component in order and apply `..` to the *resolved* prefix.
+  defp absname_against(path, root) do
+    absolute =
+      case Path.type(path) do
+        :absolute -> Path.absname(path)
+        _relative -> Path.absname(path, root)
+      end
+
+    {:ok, absolute}
   end
 
   defp ensure_within(expanded, root) do
@@ -154,38 +171,82 @@ defmodule Nous.Tools.PathGuard do
     end
   end
 
-  # Best-effort realpath: resolves symlinks for the portion of the path that
-  # exists, component by component. Non-existent trailing components cannot be
-  # symlinks, so they are appended verbatim (this lets FileWrite create new
-  # files/dirs while still catching an escaping symlink anywhere above them).
   @max_symlink_depth 40
 
-  defp resolve_real(path) do
-    resolve_components(Path.split(Path.expand(path)), "/", 0)
+  @doc """
+  Best-effort `realpath(3)`: resolve symlinks component by component for the
+  portion of `path` that exists.
+
+  Non-existent trailing components cannot be symlinks, so they are appended
+  verbatim — that is what lets `Nous.Tools.FileWrite` create a new file while
+  still catching an escaping symlink anywhere above it.
+
+  Returns `{:ok, canonical_path}`, or `{:error, :symlink_loop}` once resolution
+  exceeds #{@max_symlink_depth} hops.
+
+  `Path.expand/1` is not a substitute, and is not used here: it collapses `..`
+  lexically *before* resolving a preceding symlink, so `<root>/link/..` where
+  `link -> /etc` would wrongly resolve back inside the root instead of to `/`.
+  That bug is the reason this function exists. `..` and `.` are applied to the
+  already-*resolved* prefix, component by component, exactly as the kernel does.
+
+  Shared with `Nous.Sandbox.writable_roots/1`, which needs the same
+  canonicalisation to compare roots.
+
+  ## Examples
+
+      iex> {:ok, real} = Nous.Tools.PathGuard.resolve_real(System.tmp_dir!())
+      iex> Path.type(real)
+      :absolute
+
+  """
+  @spec resolve_real(String.t()) :: {:ok, String.t()} | {:error, :symlink_loop}
+  def resolve_real(path) do
+    path
+    |> Path.absname()
+    |> Path.split()
+    |> resolve_components("/", 0)
   end
 
-  defp resolve_components(_remaining, _resolved, depth) when depth > @max_symlink_depth do
+  defp resolve_components(_remaining, _resolved, hops) when hops > @max_symlink_depth do
     {:error, :symlink_loop}
   end
 
-  defp resolve_components([], resolved, _depth), do: {:ok, resolved}
+  defp resolve_components([], resolved, _hops), do: {:ok, resolved}
 
-  defp resolve_components(["/" | rest], resolved, depth),
-    do: resolve_components(rest, resolved, depth)
+  defp resolve_components(["/" | rest], resolved, hops),
+    do: resolve_components(rest, resolved, hops)
 
-  defp resolve_components([comp | rest], resolved, depth) do
+  defp resolve_components(["." | rest], resolved, hops),
+    do: resolve_components(rest, resolved, hops)
+
+  # `..` walks the RESOLVED prefix, which is symlink-free by construction, so
+  # `Path.dirname/1` is the real parent. `Path.dirname("/") == "/"`, so this
+  # cannot climb above the filesystem root.
+  defp resolve_components([".." | rest], resolved, hops),
+    do: resolve_components(rest, Path.dirname(resolved), hops)
+
+  defp resolve_components([comp | rest], resolved, hops) do
     candidate = Path.join(resolved, comp)
 
     case File.read_link(candidate) do
       {:ok, target} ->
         # Resolve the link target against the directory holding the link
-        # (absolute targets ignore the base), then continue resolving the
-        # remaining components from the resolved target.
-        resolved_target = Path.expand(target, resolved)
-        resolve_components(Path.split(resolved_target) ++ rest, "/", depth + 1)
+        # (`Path.absname/2`, not `Path.expand/2`: a target containing `..` must
+        # go back through this loop rather than be collapsed lexically), then
+        # continue resolving the remaining components from the resolved target.
+        resolved_target = Path.absname(target, resolved)
+        resolve_components(Path.split(resolved_target) ++ rest, "/", hops + 1)
 
       _not_a_symlink ->
-        resolve_components(rest, candidate, depth + 1)
+        # No increment: the budget counts symlink HOPS, the way `realpath(3)`
+        # counts them before `ELOOP`. Counting components instead spent the
+        # budget on ordinary directories — a symlink-free 34-deep path was
+        # refused as `:symlink_loop`, and `Nous.Sandbox.Policy.canonical/1`
+        # swallows that error and falls back to the lexical `Path.expand/1` this
+        # resolver exists to avoid. Termination is unaffected: this branch always
+        # consumes a component.
+        resolve_components(rest, candidate, hops)
     end
   end
 end

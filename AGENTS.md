@@ -91,6 +91,11 @@ Nous.new("openai:gpt-4o",
   # Plugins (optional, composable)
   plugins: [Nous.Plugins.SubAgent, Nous.Plugins.HumanInTheLoop],
 
+  # OS confinement for subprocesses (Nous.Tools.Bash). Sibling to :permissions —
+  # permissions decide whether a tool runs, the sandbox confines what its
+  # subprocess may touch. :read_only | :workspace_write | :danger_full_access.
+  sandbox: :workspace_write,
+
   # Resilience
   fallback: ["anthropic:claude-sonnet-4-5", "groq:llama-3.1-70b-versatile"],
 
@@ -193,14 +198,23 @@ these, it will be rejected.
 3. **File tools enforce a workspace root.** Don't bypass `PathGuard`. Pass
    paths within the workspace; the guard rejects `..` traversal, absolute
    paths outside, and symlink escapes.
-4. **HTTP from agents goes through `UrlGuard`.** Don't make raw `Req.get/1`
+4. **`Nous.Tools.Bash` is confined by `Nous.Sandbox` when a mode is set.**
+   `confine/2` wraps argv so the OS enforces the policy; it is pure and never
+   spawns. Fail closed: with no usable provider the tool refuses to run rather
+   than running unconfined — don't add a passthrough. Runner failure ("bwrap
+   could not start") is classified *before* denial, because "the command never
+   ran" must not read as "confinement worked". The default is still
+   `:danger_full_access` (unconfined, warns once); set
+   `config :nous, :sandbox_mode, :workspace_write` or `sandbox:` per agent/run.
+   `FileGrep` is a documented exemption — neither provider restricts reads.
+5. **HTTP from agents goes through `UrlGuard`.** Don't make raw `Req.get/1`
    calls from a tool to a user-controlled URL — use `Nous.Tools.WebFetch` or
    call `UrlGuard.validate/2` first. Blocks RFC1918, loopback, link-local,
    cloud-metadata IPs.
-5. **`PromptTemplate` rejects `<% ... %>` blocks** — only `<%= @var %>`
+6. **`PromptTemplate` rejects `<% ... %>` blocks** — only `<%= @var %>`
    substitution is allowed. Don't try to enable EEx evaluation on
    LLM-touched templates; it's an RCE vector.
-6. **Sub-agent deps don't auto-forward.** If you spawn a sub-agent via
+7. **Sub-agent deps don't auto-forward.** If you spawn a sub-agent via
    `Nous.Plugins.SubAgent`, declare which deps it sees with
    `:sub_agent_shared_deps, [:key1, :key2]`. The default `[]` is correct
    for security.

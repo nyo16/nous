@@ -7,6 +7,10 @@ defmodule Nous.Application do
   def start(_type, _args) do
     configure_hackney_pool()
 
+    # Canonicalise the sandbox temp roots once here so Nous.Sandbox.confine/2
+    # never has to touch the filesystem (see Nous.Sandbox.warm/0).
+    Nous.Sandbox.warm()
+
     children =
       [
         {Finch, name: Nous.Finch, pools: finch_pools()},

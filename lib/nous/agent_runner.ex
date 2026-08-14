@@ -117,6 +117,10 @@ defmodule Nous.AgentRunner do
     * `:context` - Existing context to continue from
     * `:output_type` - Override the agent's `output_type` for this run
     * `:structured_output` - Override the agent's `structured_output` options for this run
+    * `:sandbox` - Override the agent's `sandbox` policy for this run. Accepts
+      the same shapes as `Nous.Agent.new/2`'s `:sandbox` option (a mode atom, a
+      keyword list, or a `Nous.Sandbox.Policy`), e.g.
+      `Nous.run(agent, prompt, sandbox: :read_only)`
     * `:stream` - When `true`, the LLM call streams chunks while still running
       the tool-call loop (default: `false`). Fires `:on_llm_new_delta` per
       text chunk and `:on_llm_new_thinking_delta` per reasoning chunk.
@@ -435,7 +439,8 @@ defmodule Nous.AgentRunner do
 
   # Private functions
 
-  # Apply per-run overrides for output_type, structured_output and model_settings
+  # Apply per-run overrides for output_type, structured_output, model_settings
+  # and the sandbox policy
   defp apply_runtime_overrides(agent, opts) do
     agent
     |> then(fn a ->
@@ -457,6 +462,13 @@ defmodule Nous.AgentRunner do
       case Keyword.fetch(opts, :model_settings) do
         {:ok, ms} when is_map(ms) -> %{a | model_settings: Map.merge(a.model_settings, ms)}
         _ -> a
+      end
+    end)
+    |> then(fn a ->
+      case Keyword.fetch(opts, :sandbox) do
+        {:ok, nil} -> %{a | sandbox: nil}
+        {:ok, sandbox} -> %{a | sandbox: Nous.Sandbox.Policy.new(sandbox)}
+        :error -> a
       end
     end)
   end

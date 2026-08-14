@@ -54,13 +54,21 @@ defmodule Nous.RunContext do
           retry: non_neg_integer(),
           usage: Usage.t(),
           approval_handler: approval_handler() | nil,
-          approval_gated?: boolean()
+          approval_gated?: boolean(),
+          sandbox: Nous.Sandbox.Policy.t() | nil
         }
 
   @type t :: t(any())
 
   @enforce_keys [:deps]
-  defstruct [:deps, retry: 0, usage: %Usage{}, approval_handler: nil, approval_gated?: false]
+  defstruct [
+    :deps,
+    retry: 0,
+    usage: %Usage{},
+    approval_handler: nil,
+    approval_gated?: false,
+    sandbox: nil
+  ]
 
   @doc """
   Create a new run context with dependencies.
@@ -74,6 +82,11 @@ defmodule Nous.RunContext do
     * `:approval_gated?` - Set by a caller that has ALREADY run its own
       approval pipeline (the agent runner does), so `Nous.ToolExecutor` does
       not prompt a second time. Defaults to `false` — i.e. ungated.
+    * `:sandbox` - Optional `Nous.Sandbox.Policy` for this session. Tools that
+      spawn subprocesses pass the context to `Nous.Sandbox.Policy.resolve/2`,
+      which treats this field as the session-level override: it wins over
+      `deps[:workspace_root]` and over the `:sandbox_mode` application setting.
+      `nil` (the default) means unset — resolution falls back to app config.
 
   ## Examples
 
@@ -97,7 +110,8 @@ defmodule Nous.RunContext do
       retry: Keyword.get(opts, :retry, 0),
       usage: Keyword.get(opts, :usage, Usage.new()),
       approval_handler: Keyword.get(opts, :approval_handler),
-      approval_gated?: Keyword.get(opts, :approval_gated?, false)
+      approval_gated?: Keyword.get(opts, :approval_gated?, false),
+      sandbox: Keyword.get(opts, :sandbox)
     }
   end
 end

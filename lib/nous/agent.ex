@@ -49,6 +49,7 @@ defmodule Nous.Agent do
           enable_todos: boolean(),
           behaviour_module: module() | nil,
           permissions: Nous.Permissions.Policy.t() | nil,
+          sandbox: Nous.Sandbox.Policy.t() | nil,
           parallel_tool_calls: boolean()
         }
 
@@ -72,6 +73,7 @@ defmodule Nous.Agent do
     end_strategy: :early,
     enable_todos: false,
     permissions: nil,
+    sandbox: nil,
     parallel_tool_calls: false
   ]
 
@@ -104,6 +106,19 @@ defmodule Nous.Agent do
     * `:permissions` - Optional `Nous.Permissions.Policy` enforced at runtime:
       blocked tools are removed from the model's tool list and approval-required
       tools must pass the approval handler (see `Nous.Permissions`)
+    * `:sandbox` - Optional OS-level confinement for subprocesses that tools
+      spawn (`Nous.Tools.Bash`). Accepts a mode atom (`:read_only`,
+      `:workspace_write`, `:danger_full_access`), a keyword list
+      (`[mode: :workspace_write, workspace_root: "/srv/ws"]`), or a
+      `Nous.Sandbox.Policy` struct; anything non-nil is normalized through
+      `Nous.Sandbox.Policy.new/1`. `nil` (the default) falls back to the
+      `config :nous, :sandbox_mode` application setting.
+
+      This is a **sibling** knob to `:permissions`, not a replacement for it:
+      permissions decide whether a tool may run at all, the sandbox confines
+      what the subprocess that tool spawns may touch once it is running. A
+      blocked tool never executes; a sandboxed tool executes with the OS
+      refusing its writes. Use both.
     * `:parallel_tool_calls` - Execute multiple tool calls from one model
       response concurrently (default: `false`). Hooks, approval checks, and
       post-processing (callbacks, `merge_deps`) stay sequential in call order;
@@ -163,6 +178,7 @@ defmodule Nous.Agent do
       end_strategy: Keyword.get(opts, :end_strategy, :early),
       behaviour_module: Keyword.get(opts, :behaviour_module),
       permissions: Keyword.get(opts, :permissions),
+      sandbox: normalize_sandbox(Keyword.get(opts, :sandbox)),
       parallel_tool_calls: Keyword.get(opts, :parallel_tool_calls, false)
     }
   end
@@ -187,6 +203,8 @@ defmodule Nous.Agent do
     * `:context` - Existing context to continue from
     * `:output_type` - Override the agent's `output_type` for this run
     * `:structured_output` - Override the agent's `structured_output` options for this run
+    * `:sandbox` - Override the agent's `sandbox` policy for this run (same
+      shapes as the `:sandbox` option to `new/2`)
 
   ## Examples
 
@@ -370,6 +388,13 @@ defmodule Nous.Agent do
   defp generate_name do
     "agent_#{:erlang.unique_integer([:positive])}"
   end
+
+  # `nil` means "unset" — resolution falls back to `config :nous, :sandbox_mode`
+  # at spawn time. Anything else is normalized eagerly so a bad mode raises at
+  # agent construction rather than mid-run inside a tool call.
+  @spec normalize_sandbox(term()) :: Nous.Sandbox.Policy.t() | nil
+  defp normalize_sandbox(nil), do: nil
+  defp normalize_sandbox(sandbox), do: Nous.Sandbox.Policy.new(sandbox)
 
   # Auto-include Skills plugin when skills are configured
   defp ensure_skills_plugin(plugins, []), do: plugins

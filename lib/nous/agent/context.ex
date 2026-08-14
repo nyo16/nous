@@ -385,6 +385,12 @@ defmodule Nous.Agent.Context do
 
   This allows tools to continue using the existing RunContext interface.
 
+  ## Options
+
+    * `:sandbox` - `Nous.Sandbox.Policy` to carry onto the run context as the
+      session-level sandbox override. The agent runner passes `agent.sandbox`
+      here; `nil` leaves resolution to application config.
+
   ## Examples
 
       iex> ctx = Context.new(deps: %{db: :postgres})
@@ -392,9 +398,14 @@ defmodule Nous.Agent.Context do
       iex> run_ctx.deps.db
       :postgres
 
+      iex> ctx = Context.new(deps: %{})
+      iex> run_ctx = Context.to_run_context(ctx, sandbox: Nous.Sandbox.Policy.new(:read_only))
+      iex> run_ctx.sandbox.mode
+      :read_only
+
   """
-  @spec to_run_context(t()) :: Nous.RunContext.t()
-  def to_run_context(%Context{} = ctx) do
+  @spec to_run_context(t(), keyword()) :: Nous.RunContext.t()
+  def to_run_context(%Context{} = ctx, opts \\ []) do
     # `approval_gated?: true`: the runner has already run the full approval +
     # permission-policy pipeline (AgentRunner.ToolExecution.check_tool_approval/3)
     # for this call, so ToolExecutor must not prompt the operator a second time.
@@ -402,7 +413,8 @@ defmodule Nous.Agent.Context do
     Nous.RunContext.new(ctx.deps,
       usage: ctx.usage,
       approval_handler: ctx.approval_handler,
-      approval_gated?: true
+      approval_gated?: true,
+      sandbox: Keyword.get(opts, :sandbox)
     )
   end
 

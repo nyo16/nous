@@ -4,6 +4,28 @@ defmodule Nous.Tools.FileGrep do
 
   Searches file contents using regex patterns. Uses `ripgrep` (rg)
   when available for performance, falls back to pure Elixir regex.
+
+  ## Sandbox exemption
+
+  `ripgrep` is spawned with `System.cmd/3`, outside `NetRunner`, and is
+  deliberately **not** confined by `Nous.Sandbox`. This is the documented
+  exception to "NetRunner is the single execution path". The reasoning:
+
+    * Neither provider restricts reads. Seatbelt's profile is
+      `(allow default) (deny file-write*)` and bwrap binds `/` read-only, so
+      confining a process that only ever reads adds exactly zero enforcement.
+    * The argv is already hardened: the pattern goes through `--regexp` and a
+      `--` terminator ends option parsing before the positional path, and the
+      environment is scrubbed via `Nous.Tools.Env.scrubbed_overrides/0`.
+    * The environment is genuinely scrubbed rather than merged: Erlang's
+      `{env, _}` option *adds to* the inherited environment, so the allowlist
+      is passed as `scrubbed_overrides/0`, which also emits `{name, false}` for
+      every other currently-set variable and thereby actually unsets it.
+    * Every matched path is re-validated through `Nous.Tools.PathGuard` before
+      it reaches the caller.
+    * `Nous.Sandbox` fails closed, so routing this tool through it would delete
+      a working read-only search tool on every host with no provider installed
+      — for no security gain whatsoever.
   """
 
   use Nous.Tool.Schema
@@ -70,8 +92,10 @@ defmodule Nous.Tools.FileGrep do
 
     rg = rg_path()
 
-    # Scrubbed env keeps API keys out of the rg subprocess.
-    case System.cmd(rg, args, stderr_to_stdout: true, env: Nous.Tools.Env.scrubbed()) do
+    # Scrubbed env keeps API keys out of the rg subprocess. `scrubbed_overrides/0`
+    # rather than `scrubbed/0`: `System.cmd/3`'s `:env` merges into the inherited
+    # environment, and `{name, false}` is the only way to remove a variable.
+    case System.cmd(rg, args, stderr_to_stdout: true, env: Nous.Tools.Env.scrubbed_overrides()) do
       {output, 0} -> {:ok, String.trim(output)}
       {_output, 1} -> {:ok, "No matches found"}
       {output, _} -> {:error, "rg failed: #{String.trim(output)}"}

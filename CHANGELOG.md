@@ -66,6 +66,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real PubSub with an `AgentServer`, which is why this never fired in CI; one
   does now.
 
+- **OS-level confinement for tool subprocesses: `Nous.Sandbox`.** `Nous.Tools.Bash`
+  handed the model `/bin/sh -c` as the OS user, with `Nous.Permissions` and
+  approval as the only gate — nothing constrained what the shell touched once it
+  was running, and `Nous.Tools.PathGuard` fences only the *file* tools. There is
+  now a provider behaviour that wraps argv so the kernel enforces a policy, with
+  `Nous.Sandbox.Seatbelt` (macOS `sandbox-exec`) and `Nous.Sandbox.Bwrap` (Linux
+  bubblewrap) in tree. Three modes — `:read_only`, `:workspace_write`,
+  `:danger_full_access` — set per agent (`Nous.new(..., sandbox: :workspace_write)`)
+  or per run (`Nous.run(agent, prompt, sandbox: :read_only)`), or globally with
+  `config :nous, :sandbox_mode`. `confine/2` is a pure argv builder; enforcement
+  is data, and `Nous.Sandbox.classify/3` distinguishes "the OS denied a write"
+  from "the sandbox runner broke and the command never ran" — the latter must
+  never read as working confinement. With no usable provider the tool **refuses
+  to run** rather than running unconfined.
+  **The default is still `:danger_full_access`, with a one-time warning.**
+  Fail-closed confinement is a behaviour change even though it is not an API
+  change: `Bash` would stop working on any host without bubblewrap installed. The
+  default will flip in a later release; opt in now with one line of config.
+  Command hooks are deliberately *not* confined (they are operator-authored, and
+  a hook that cannot write is not a hook) — opt in with
+  `config :nous, :sandbox_confine_command_hooks, true`. `Nous.Tools.FileGrep` is
+  a documented exemption: neither provider restricts reads, so confining a
+  process that only ever reads adds no enforcement.
+
+- **`Nous.Tools.PathGuard` no longer follows a symlink out of the workspace via
+  `..`.** `resolve_real/1` began with `Path.expand/1`, which collapses `..`
+  *lexically* before any symlink is resolved. With `link -> /etc` inside the
+  workspace, `validate("link/../passwd", ctx)` expanded to `<root>/passwd`,
+  passed the containment check, and was **accepted** — the resolver never saw the
+  `..` it exists to catch. `validate/2` compounded it by handing the resolver the
+  already-expanded path. The resolver now starts from `Path.absname/1` (absolute,
+  `..` intact) and applies `.`/`..` to the already-*resolved* prefix, component by
+  component, as the kernel does; `validate/2` passes it the uncollapsed path. The
+  same traversal via `link/passwd` was already blocked, and benign in-workspace
+  `..` still resolves. `resolve_real/1` is now public, shared with
+  `Nous.Sandbox.writable_roots/1` — canonicalisation is load-bearing there too,
+  since an SBPL `(subpath "/tmp")` clause never matches a write the macOS kernel
+  sees as `/private/tmp/...`.
+
+- **`Nous.Tools.Bash` was silently discarding every byte of stderr.** It ran
+  under `NetRunner`'s default `stderr: :consume`, which reads stderr into an
+  internal buffer with no accessor, so `run/2` returned stdout only: compiler
+  errors, stack traces and permission failures never reached the model, which saw
+  an exit code with no explanation. Output is now merged via
+  `Nous.Sandbox.merge_stderr/1` (`/bin/sh -c 'exec "$@" 2>&1'`, argv passed
+  positionally, so no quoting surface). Note that `NetRunner`'s documented
+  `stderr: :redirect` option is not implemented in net_runner 1.0 and is worse
+  than the default — it also disables the `:consume` drain, leaving an unread
+  stderr pipe that deadlocks a child which writes more than a pipe buffer.
+
+- **`Nous.Tools.Bash` never actually scrubbed its environment.** The tool passed
+  `env: Nous.Tools.Env.scrubbed()` to `NetRunner`, which **has no `:env` option**:
+  unknown options reach a port layer that ignores them and the shepherd
+  `execvp`s, so the child inherited the BEAM's entire environment. For this
+  tool's whole existence, one tool call — `{"command": "printenv"}` — returned
+  every provider API key, OAuth token and vault credential in the VM, while the
+  moduledoc claimed the opposite. Confinement could not have mitigated it: both
+  sandbox providers are write fences and do not restrict reads or env.
+  The environment now travels in **argv**, where it cannot be ignored:
+  `Nous.Tools.Env.with_scrubbed_env/1` prefixes `/usr/bin/env -i` plus the
+  allowlisted `NAME=VALUE` pairs (argv elements, so no shell parses them).
+  `Nous.Tools.Env.scrubbed_overrides/0` fixes the sibling bug for
+  `System.cmd/3` callers such as `Nous.Tools.FileGrep`: Erlang's `{env, _}`
+  *merges* rather than replaces, so listing the allowlist left
+  `OPENAI_API_KEY` in place — only `{name, nil}` removes a variable. Measured:
+  the child's environment went from 73 names (including the secret) to 9.
+
+- **`Nous.Tools.Bash` rejects a NUL byte in `command`.** The port layer
+  *truncates* argv at a NUL rather than rejecting it, and a NUL renders as
+  nothing in an approval prompt, an audit log or a terminal. So
+  `git push origin main\0 --dry-run` was approved as a dry run and executed as a
+  push — a bypass of the approval gate that AGENTS.md makes mandatory for this
+  tool. `Nous.Sandbox.Policy` rejects a NUL in `workspace_root` for the same
+  reason (it previously failed closed only by luck, by truncating the SBPL
+  profile mid-string).
+
+- **A real sandbox denial could be reported as a broken sandbox.**
+  `Nous.Sandbox.classify/3` checks runner failure before denial, which is right,
+  but macOS refuses a nested-sandbox escape with
+  `sandbox-exec: sandbox_apply: Operation not permitted` — a line that satisfies
+  the runner-failure signature *and* the denial signature. The escape was
+  prevented, and the tool told the model "this is a broken sandbox … the
+  command's effects did not happen and were not prevented". Both halves false.
+  Three constraints now bound the classifier: exit 0 is always `:ok` (a denial
+  fails the command, so `cat`ting a file that merely mentions a signature is no
+  longer a denial — that was prompt-injectable); fatal signatures match only at
+  the start of a trimmed line (a runner prefixes its own name; a mid-line
+  mention is the command talking *about* the runner); and a line matching both
+  kinds of signature is a **denial**. `Nous.Tools.Bash` also now *appends*
+  verdicts to output instead of replacing it with an error — the classified
+  stream is the command's own output, so replacing it let a forged verdict
+  launder real side effects out of the transcript.
+
+- **`Nous.Tools.PathGuard.resolve_real/1` refused legitimate deep paths.** The
+  hop budget was spent by ordinary directory components, so a symlink-free
+  34-deep path returned `{:error, :symlink_loop}` and `validate/2` reported a
+  symlink loop that did not exist. It counts symlink **hops** now, the way
+  `realpath(3)` counts them before `ELOOP`; loop detection is unchanged. This
+  mattered beyond the confusing error: `Nous.Sandbox.Policy.canonical/1`
+  swallows the error and falls back to the lexical `Path.expand/1` the resolver
+  exists to avoid, so a deep workspace root silently produced a non-canonical
+  SBPL `(subpath …)` that the kernel never matches — degrading
+  `:workspace_write` to `:read_only`.
+
+- **Sandbox hardening from the review pass.** `Nous.Sandbox.Policy` refuses
+  `workspace_root: "/"`, which re-allowed the entire filesystem under
+  `:workspace_write` while every log line still said "confined" — reachable by
+  accident, since the root defaults to `File.cwd!/0`. `Nous.Sandbox.Bwrap` adds
+  `--unshare-pid`: `--proc` without it leaves the host PID namespace, so
+  `/proc/<other-pid>/root/…` resolves in a namespace where `/` is read-write,
+  which is a write escape. Its unprobed executable default is now the absolute
+  `/usr/bin/bwrap` rather than a bare name resolved through an inherited `PATH`
+  full of user-writable directories. `Nous.Sandbox.Seatbelt` grants
+  `/dev/stdout`, `/dev/stderr`, `/dev/tty` and `/dev/fd` — all denied before, so
+  `cmd > /dev/stdout` and `tee /dev/stderr` failed on macOS while succeeding
+  under bwrap. Both providers' `probe/1` now assert that a write outside every
+  root is actually **refused**, instead of only proving the profile parses, and
+  both denial-signature lists cover EACCES as well as EPERM/EROFS. Confined
+  command hooks no longer fail **open**: with stdout-only capture the
+  classification branches were structurally dead, so any nonzero exit under
+  confinement is now `:deny` regardless of `fail_closed` — a security hook that
+  never ran was silently permitting the event. A failed provider probe is no
+  longer memoized (a 2s timeout on a busy host used to fail closed for the rest
+  of the VM's life), and `Nous.Tools.Bash`'s cgroup path is flat because the
+  shepherd's `mkdir` is not recursive, so the nested path it used could never be
+  created and the cgroup containment was a silent no-op.
+
 ### Performance
 
 - **Gemini/Vertex JSON-array streaming is no longer O(n²).** The
