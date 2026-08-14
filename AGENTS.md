@@ -85,9 +85,6 @@ Nous.new("openai:gpt-4o",
   tools: [Nous.Tools.Bash, MyApp.MyTool],
   parallel_tool_calls: true,      # default false; fan out multi-call turns (side effects interleave)
 
-  # Memory backend (optional)
-  memory: %{store: Nous.Memory.Store.ETS, opts: []},
-
   # Plugins (optional, composable)
   plugins: [Nous.Plugins.SubAgent, Nous.Plugins.HumanInTheLoop],
 
@@ -101,6 +98,31 @@ Nous.new("openai:gpt-4o",
 
   # Vendor-specific body params (vLLM/SGLang/LM Studio/llama.cpp)
   extra_body: %{top_k: 50, repetition_penalty: 1.1}
+)
+```
+
+Pluggable **backends** are not `Nous.new/2` options — they are maps in `deps`,
+read by the plugin or subsystem that owns them. Passing them to `Nous.new/2`
+silently does nothing:
+
+```elixir
+Nous.run(agent, prompt,
+  deps: %{
+    workspace_root: "/srv/agent_workspace/#{user_id}",
+
+    # Memory (requires Nous.Plugins.Memory in :plugins)
+    memory_config: %{store: Nous.Memory.Store.ETS},
+
+    # LLM-powered compaction (requires Nous.Plugins.Summarization in :plugins)
+    summarization_config: %{max_context_tokens: 170_000, keep_recent: 10},
+
+    # Spill oversized tool results to a store and show the model a locator
+    spill_config: %{
+      store: Nous.Spill.Local,
+      opts: [root: "/var/lib/nous/spill"],
+      max_inline_bytes: 65_536
+    }
+  }
 )
 ```
 

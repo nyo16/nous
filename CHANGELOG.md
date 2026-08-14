@@ -195,6 +195,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **Oversized tool results can spill to a store instead of the context window.**
+  A multi-megabyte `grep` result cost roughly a million tokens of context and was
+  almost never read in full. New `Nous.Spill` behaviour with a filesystem backend
+  (`Nous.Spill.Local`): results over `max_inline_bytes` (default 64 KB) are
+  written out and replaced with a head+tail preview plus an opaque locator and
+  the backend's own retrieval hint. `Nous.Tools.Bash`'s 1 MB truncation now keeps
+  the bytes it captured instead of discarding them.
+  Opt-in and best-effort by construction: with no `deps[:spill_config]` (or
+  `config :nous, :spill`) behaviour is byte-for-byte unchanged, and a store error
+  logs and keeps the result inline — spilling must never turn a successful tool
+  call into a failure. `file_read` is excluded because spilling it creates a
+  read→spill→read loop. Locators are opaque: callers render them with
+  `retrieval_hint/1` rather than assuming a path a tool can open. Spilled files
+  are `0o600` inside a `0o700` per-session directory, created exclusively so a
+  planted symlink cannot redirect the write, and they **persist until the
+  operator deletes them** — there is no reaper, by design.
+
+- **Compaction prunes before it pays for a summary.**
+  `Nous.Transcript.prune_tool_results/2` replaces any tool result over
+  `max_result_chars` with head 4096 + a marker + tail 1024, with no LLM call at
+  all. `Nous.Plugins.Summarization` now prunes first, re-measures, and skips the
+  summarization request entirely when pressure has cleared — measured at a 90%
+  estimated-token cut on a 50 KB tool result, which is the single largest saving
+  in this release. Pruning only ever rewrites content in place, so it cannot
+  reorder, drop, or split a `tool_call`/`tool_result` pair.
+
+- **One compaction path, not two.** `Nous.Transcript` was public, correct, and
+  entirely dead — nothing in `lib/` called it — while `Nous.Plugins.Summarization`
+  carried a second, independent implementation of the tool-pair boundary rule that
+  all three providers 400 on. `Summarization` is now the live entry point and calls
+  `Transcript` for boundary balancing, pruning and estimation;
+  `balance_tool_call_boundary/2` is public and is the only implementation left.
+
+- **Compaction is observable and crash-detectable.**
+  `[:nous, :compaction, :start | :stop | :exception]` telemetry carries message
+  counts, byte counts (pruning never changes the count, so counts alone make a
+  prune-only compaction look like a no-op), whether the LLM was called, and the
+  summarization `provider`, `model` and usage — enough to reconstruct a compaction
+  after the fact. The in-progress marker is cleared only *after* `:stop`, so a
+  crash mid-compaction leaves a detectable orphaned `:start` rather than a false
+  success.
+
+- **Summarization reuses the provider's KV prefix cache.** It built a brand-new
+  agent with different instructions and no tools, guaranteeing a cache miss on
+  every compaction. It now replays the conversation's own system messages and
+  tools verbatim, and keeps only the returned text — tool calls and reasoning are
+  discarded, so a compaction can no longer produce an orphaned tool call, and a
+  tool-call-only response is an error rather than an empty summary overwriting
+  history.
+
 - **Gemini/Vertex JSON-array streaming is no longer O(n²).** The
   `:stream_parser` buffer was re-walked byte-by-byte from position 0 on every
   arriving chunk, so one large object spread across many chunks cost quadratic
@@ -262,6 +312,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Missing `read_concurrency` / `write_concurrency` flags added to the ETS
   tables whose access pattern warrants them (not blanket-applied — the flags
   cost memory and hurt single-writer tables).
+
+### Added
+
+- **`Nous.Usage.cost/2` and `Nous.Usage.Pricing`.** `%Usage{}` counted tokens and
+  priced nothing, so no caller could answer what a run cost. Prices are per 1M
+  tokens with separate input, output, cache-read and cache-write rates, keyed by
+  `{provider, model}`, with a longest-family-prefix fallback on a `-` boundary so
+  `gpt-4o-2026-05-13` finds `gpt-4o` while an unreleased generation stays
+  `:unknown` rather than inheriting a stale rate. Unknown models return
+  `{:error, :unknown_model}` — never a guess. Local providers (ollama, lmstudio,
+  vllm, sglang, llamacpp) are explicitly zero. Override or extend the table with
+  `config :nous, :model_prices`.
+  Cost is **derived, not stored**: no `cost` field on `%Usage{}`, because a price
+  table changes independently of the run and a stale number persisted in the
+  struct would be worse than no number. Prices are a snapshot recorded
+  2026-08-14 and will go stale; the override config is the fix.
 
 ### Changed
 

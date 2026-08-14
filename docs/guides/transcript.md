@@ -72,27 +72,32 @@ Feed a transcript back into a new run to continue it:
 
 ### `estimate_tokens/1`
 
-Rough token count for a single string, using word count as the proxy. Accepts
-`nil` and `""`.
+Rough token count for a single string: UTF-8 byte length divided by four.
+Accepts `nil` and `""`.
 
 ```elixir
 Nous.Transcript.estimate_tokens("Hello world")
 #=> 2
 
 Nous.Transcript.estimate_tokens("Hello world, how are you?")
-#=> 5
+#=> 6
 
 Nous.Transcript.estimate_tokens(nil)
 #=> 0
 ```
 
-This is deliberately cheap, not accurate -- it splits on whitespace and counts.
-Use a real tokenizer when you need to be exact; use this when you need a
-decision in microseconds.
+This is deliberately cheap, not accurate -- it is a byte ratio, not a
+tokenizer. Four bytes per token is a passable average for English prose; it
+under-counts code and JSON and heavily over-counts CJK. Use a real tokenizer
+when you need to be exact; use this when you need a decision in microseconds.
+It is the same arithmetic the agent runner uses for its pre-request token
+reservation, so the two never disagree.
 
 ### `estimate_messages_tokens/1`
 
-Sums `estimate_tokens/1` over the text content of every message in a list.
+Sums the text of every message in bytes, then divides once -- so it matches
+`estimate_tokens/1` on the concatenated text instead of accumulating a
+rounding error per message.
 
 ```elixir
 messages = [Nous.Message.user("Hello"), Nous.Message.assistant("Hi there")]
@@ -270,7 +275,9 @@ keep serving calls, and swap the list in when the message arrives.
 | `compact_async/2` | `Task.t()` | `compact/2` on a supervised task, awaitable |
 | `compact_async/3` | `{:ok, pid()}` | `compact/2` on a supervised task, with a callback |
 | `maybe_compact_async/3` | `{:ok, pid()}` | `maybe_compact/2` on a task, callback gets `{:compacted \| :unchanged, msgs}` |
-| `estimate_tokens/1` | `non_neg_integer()` | Word-count token estimate for a string |
+| `prune_tool_results/2` | `[Message.t()]` | Truncate oversized tool results in place; count and order preserved |
+| `balance_tool_call_boundary/2` | `{[Message.t()], [Message.t()]}` | Move an `{old, recent}` boundary off a `tool_call`/`tool_result` pair |
+| `estimate_tokens/1` | `non_neg_integer()` | Coarse byte-ratio token estimate for a string |
 | `estimate_messages_tokens/1` | `non_neg_integer()` | Same estimate summed over a message list |
 | `should_compact?/2` | `boolean()` | Is the list longer than this message count? |
 

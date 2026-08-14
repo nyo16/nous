@@ -39,13 +39,35 @@ defmodule Nous.Transcript do
         send(self(), {:compacted, compacted})
       end)
 
-      # Estimate token count
+      # Prune oversized tool results in place (no LLM, no reordering)
+      pruned = Nous.Transcript.prune_tool_results(messages, 8192)
+
+      # Estimate token count (coarse ~4-bytes-per-token heuristic)
       tokens = Nous.Transcript.estimate_tokens("Hello world, how are you?")
-      #=> 5
+      #=> 6
+
+  ## Token estimates are coarse
+
+  `estimate_tokens/1` and `estimate_messages_tokens/1` divide UTF-8 byte
+  length by 4. That ratio is roughly right for English prose and
+  systematically wrong elsewhere: it under-counts code and JSON (dense in
+  punctuation, which tokenizes finely) and badly over-counts CJK text (3
+  bytes per character, often ~1 token per character). Both `maybe_compact/2`
+  triggers are built on it, so `:token_budget` is approximate in both
+  directions — size the budget with headroom, or measure with a real
+  tokenizer and drive compaction from `compact/2` directly.
 
   """
 
   alias Nous.Message
+
+  # Pruning budget. 8 KiB is roughly two pages of output — past that a tool
+  # result is almost always a dump, and the head/tail split (4:1, matching
+  # where signal sits in logs and file reads) preserves what a model needs
+  # to decide what to do next.
+  @default_max_result_chars 8192
+  @prune_head_chars 4096
+  @prune_tail_chars 1024
 
   @doc """
   Compacts a message list by keeping the last `keep_last` messages.
@@ -86,24 +108,109 @@ defmodule Nous.Transcript do
     end
   end
 
-  # Move messages from `recent` into `old` (or vice versa) so the boundary
-  # never splits a tool_call/tool_result pair. Two cases:
-  #
-  # 1. The last message in `old` is an :assistant with tool_calls but the
-  #    matching :tool result(s) are at the head of `recent` - those tool
-  #    results are orphans without their assistant prelude. Move them into
-  #    `old` so they are summarized along with their assistant message.
-  #
-  # 2. The first message in `recent` is a :tool result whose matching
-  #    assistant tool_call sits in `old`. Same fix - pull the orphan tool
-  #    results back into `old`.
-  defp balance_tool_call_boundary(old, recent) do
-    # Pull leading :tool messages from recent into old until the head is
-    # a non-tool message. Their corresponding assistant message is in old.
+  @doc """
+  Moves messages across an `{old, recent}` boundary so it never splits a
+  `tool_call`/`tool_result` pair.
+
+  Anthropic, OpenAI and Gemini all reject a request whose tool results have
+  no preceding assistant `tool_call` (and vice versa), so any code that
+  splits a conversation — compaction, summarization, windowing — must pass
+  its boundary through here.
+
+  Leading `:tool` messages in `recent` are orphans: their assistant prelude
+  is the last message of `old`. They are moved into `old`, which both closes
+  the pair and keeps every message in its original relative order.
+
+  The reverse case needs no work: if `old` ends with an assistant
+  `tool_call`, its results are the very next messages, so they are exactly
+  the leading `:tool` messages this function pulls back.
+
+  ## Examples
+
+      iex> old = [Nous.Message.assistant("calling", tool_calls: [%{id: "c1"}])]
+      iex> recent = [Nous.Message.tool("c1", "done"), Nous.Message.user("next")]
+      iex> {old, recent} = Nous.Transcript.balance_tool_call_boundary(old, recent)
+      iex> {length(old), length(recent)}
+      {2, 1}
+
+  """
+  @spec balance_tool_call_boundary([Message.t()], [Message.t()]) ::
+          {[Message.t()], [Message.t()]}
+  def balance_tool_call_boundary(old, recent) when is_list(old) and is_list(recent) do
     {orphan_tools, recent_rest} =
       Enum.split_while(recent, fn msg -> msg.role == :tool end)
 
     {old ++ orphan_tools, recent_rest}
+  end
+
+  @doc """
+  Truncates oversized tool results in place, without an LLM call.
+
+  A single tool result — a 1 MB file read, a wide `SELECT`, a verbose build
+  log — can dominate a context window and is re-sent on every subsequent
+  turn. This rewrites the content of any `:tool` message whose text exceeds
+  `max_result_chars`, keeping the head and tail (where the useful signal
+  almost always is) and replacing the middle with a marker naming how many
+  bytes were dropped.
+
+  Structural guarantees, relied on by callers that split conversations:
+
+    * the returned list has the same length, in the same order — only
+      content is rewritten, so a `tool_call`/`tool_result` pair can never be
+      broken by pruning;
+    * non-`:tool` messages are returned identically;
+    * a tool result whose content is not plain text (a content-part list)
+      is returned identically rather than flattened into a string.
+
+  ## Examples
+
+      iex> big = Nous.Message.tool("c1", String.duplicate("x", 20_000))
+      iex> [pruned] = Nous.Transcript.prune_tool_results([big])
+      iex> String.contains?(pruned.content, "bytes elided")
+      true
+
+      iex> small = Nous.Message.tool("c1", "ok")
+      iex> Nous.Transcript.prune_tool_results([small]) == [small]
+      true
+
+  """
+  @spec prune_tool_results([Message.t()], pos_integer()) :: [Message.t()]
+  def prune_tool_results(messages, max_result_chars \\ @default_max_result_chars)
+
+  def prune_tool_results(messages, max_result_chars)
+      when is_list(messages) and is_integer(max_result_chars) and max_result_chars > 0 do
+    Enum.map(messages, &prune_message(&1, max_result_chars))
+  end
+
+  # Only :tool messages with plain-text content are prunable. Everything
+  # else — including a multimodal content-part list — is passed through
+  # untouched: mangling parts into a string would lose the images.
+  defp prune_message(%Message{role: :tool, content: content} = msg, max_result_chars)
+       when is_binary(content) do
+    if oversized?(content, max_result_chars) do
+      %{msg | content: truncate_middle(content)}
+    else
+      msg
+    end
+  end
+
+  defp prune_message(msg, _max_result_chars), do: msg
+
+  # byte_size/1 is O(1) and never smaller than the codepoint count, so it
+  # settles the overwhelmingly common "well under the cap" case without
+  # walking the binary. Only a candidate pays for String.length/1.
+  defp oversized?(content, max_result_chars) do
+    byte_size(content) > max_result_chars and String.length(content) > max_result_chars
+  end
+
+  defp truncate_middle(content) do
+    head = String.slice(content, 0, @prune_head_chars)
+    tail = String.slice(content, -@prune_tail_chars, @prune_tail_chars)
+    dropped = byte_size(content) - byte_size(head) - byte_size(tail)
+
+    head <>
+      "\n\n[... #{dropped} bytes elided by transcript pruning; kept #{@prune_head_chars} leading" <>
+      " and #{@prune_tail_chars} trailing characters ...]\n\n" <> tail
   end
 
   @doc """
@@ -245,15 +352,26 @@ defmodule Nous.Transcript do
   end
 
   @doc """
-  Estimates the token count of a string using word count as a proxy.
+  Estimates the token count of a string as UTF-8 bytes divided by four.
 
-  This is a rough estimate (~1.3 tokens per word for English text).
-  For precise counting, use a proper tokenizer.
+  A coarse byte-ratio estimate, not a tokenizer. Four bytes per token is a
+  passable average for English prose; it under-counts code, JSON and other
+  punctuation-dense text (which tokenizes far finer than 4 bytes per token)
+  and heavily over-counts CJK, where a 3-byte character is often a single
+  token. Anything that must be exact — a hard context-window check, billing
+  — needs a real tokenizer.
+
+  This is deliberately the same arithmetic as the agent runner's pre-request
+  reservation estimate (`Nous.AgentRunner.RequestDispatch.estimate_request_tokens/1`),
+  so the framework has one token heuristic rather than two that disagree.
 
   ## Examples
 
       iex> Nous.Transcript.estimate_tokens("Hello world")
       2
+
+      iex> Nous.Transcript.estimate_tokens("antidisestablishmentarianism")
+      7
 
       iex> Nous.Transcript.estimate_tokens("")
       0
@@ -264,11 +382,16 @@ defmodule Nous.Transcript do
   def estimate_tokens(""), do: 0
 
   def estimate_tokens(text) when is_binary(text) do
-    text |> String.split() |> length()
+    div(byte_size(text), 4)
   end
 
   @doc """
   Estimates total tokens across a list of messages.
+
+  Sums message text in bytes and divides once, so the result matches
+  `estimate_tokens/1` on the concatenated text rather than accumulating a
+  rounding error per message. Same caveats as `estimate_tokens/1`: it is a
+  byte ratio, not a tokenizer.
 
   ## Examples
 
@@ -279,9 +402,9 @@ defmodule Nous.Transcript do
   """
   @spec estimate_messages_tokens([Message.t()]) :: non_neg_integer()
   def estimate_messages_tokens(messages) when is_list(messages) do
-    Enum.reduce(messages, 0, fn msg, acc ->
-      acc + estimate_tokens(Message.extract_text(msg))
-    end)
+    messages
+    |> Enum.reduce(0, fn msg, acc -> acc + byte_size(Message.extract_text(msg)) end)
+    |> div(4)
   end
 
   @doc """

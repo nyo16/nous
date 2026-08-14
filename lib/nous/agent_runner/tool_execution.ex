@@ -4,7 +4,7 @@ defmodule Nous.AgentRunner.ToolExecution do
   # execution pipelines, pre/post hooks, approval and permission-policy
   # enforcement, and tool result recording. Internal to the runner.
 
-  alias Nous.{Message, Messages, OutputSchema, Permissions, Tool, ToolExecutor}
+  alias Nous.{Message, Messages, OutputSchema, Permissions, Spill, Tool, ToolExecutor}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
   alias Nous.Hook
 
@@ -24,6 +24,15 @@ defmodule Nous.AgentRunner.ToolExecution do
   # `ToolTimeout` into its retry path, so the inner timer must win and produce
   # a proper per-tool timeout result rather than an opaque outer task kill.
   @timeout_headroom_ms :timer.seconds(5)
+
+  # Tools whose entire job is to hand back file bytes verbatim, and which must
+  # therefore never have their results spilled. Spilling one builds a
+  # read→spill→read loop: the model reads a file, gets a locator whose retrieval
+  # hint says "read it with file_read", reads *that*, gets another locator over
+  # the cap, forever. Search tools are deliberately absent — `file_grep` and
+  # `file_glob` produce exactly the multi-megabyte digests spilling exists for,
+  # and their output is a summary across many files, not one file to re-read.
+  @never_spill_tools ~w(file_read)
 
   def handle_tool_calls(agent, behaviour, ctx, response, tools) do
     # Extract tool calls
@@ -155,7 +164,9 @@ defmodule Nous.AgentRunner.ToolExecution do
       Nous.TaskSupervisor
       |> Task.Supervisor.async_stream_nolink(
         approved,
-        fn call -> {get_tool_field(call, :id), execute_single_tool(tools, call, run_ctx)} end,
+        fn call ->
+          {get_tool_field(call, :id), execute_single_tool(tools, call, run_ctx, agent)}
+        end,
         timeout: call_timeout,
         # Kill a task that blows the ceiling instead of blocking on it, so the
         # rest of the batch still drains.
@@ -481,7 +492,7 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   # Execute a tool call and record its result, returning the result message and updated context
   def execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx) do
-    {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
+    {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx, agent)
     record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx)
   end
 
@@ -535,7 +546,7 @@ defmodule Nous.AgentRunner.ToolExecution do
     {result_msg, acc_ctx}
   end
 
-  def execute_single_tool(tools, call, run_ctx) do
+  def execute_single_tool(tools, call, run_ctx, agent) do
     alias Nous.Tool.ContextUpdate
 
     # Clean up tool name - Claude sometimes adds XML-like syntax
@@ -607,8 +618,52 @@ defmodule Nous.AgentRunner.ToolExecution do
         {error_msg, %{}}
       end
 
+    # Spill before the result becomes message content: this is the single point
+    # where a completed tool result turns into a message, so the sequential and
+    # the parallel path are both covered by one call.
+    result = maybe_spill_result(result, cleaned_name, run_ctx, agent)
+
     {Message.tool(call_id, result, name: cleaned_name), context_updates}
   end
+
+  # Hand an oversized text result to the spill store and keep a preview plus a
+  # locator inline. Opt-in and best effort by construction:
+  # `Nous.Spill.maybe_spill/2` answers `:inline` when no `deps[:spill_config]`
+  # (or `config :nous, :spill`) is configured, when the result already fits,
+  # when it is not valid UTF-8, and when the backend failed — so nothing here
+  # can turn a successful tool call into an error.
+  defp maybe_spill_result(result, tool_name, run_ctx, agent) when is_binary(result) do
+    if tool_name in @never_spill_tools do
+      result
+    else
+      opts = [
+        ctx: run_ctx,
+        source: tool_name,
+        # Owner scopes stored content. `deps[:session_id]` is the key
+        # `Nous.Sandbox.Policy.resolve/2` already reads for session identity, so
+        # spilled files line up with the rest of a session's footprint; the
+        # agent name is the coarser fallback for a run that carries no session
+        # id, and `Nous.Spill` falls back to "unscoped" for an unnamed agent.
+        owner: spill_owner(run_ctx) || agent.name,
+        suggested_name: "#{tool_name}-result.txt"
+      ]
+
+      case Spill.maybe_spill(result, opts) do
+        {:spilled, replacement, _locator} -> replacement
+        :inline -> result
+      end
+    end
+  end
+
+  # Structured results (maps, lists, structs) are left alone: the provider
+  # marshalling owns their encoding, and stringifying a term just to spill it
+  # would change what the model sees.
+  defp maybe_spill_result(result, _tool_name, _run_ctx, _agent), do: result
+
+  # Binary-only, so a non-string session id can never reach the backend and
+  # crash a tool call that otherwise succeeded.
+  defp spill_owner(%{deps: %{session_id: session_id}}) when is_binary(session_id), do: session_id
+  defp spill_owner(_run_ctx), do: nil
 
   # Format tool errors to preserve structured information while providing LLM-friendly response
   @spec format_tool_error(term(), String.t()) :: %{summary: String.t(), response: String.t()}

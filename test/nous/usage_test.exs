@@ -1,6 +1,7 @@
 defmodule Nous.UsageTest do
   use ExUnit.Case, async: true
 
+  alias Nous.Model
   alias Nous.Usage
 
   doctest Usage
@@ -138,6 +139,98 @@ defmodule Nous.UsageTest do
       assert usage.input_tokens == 100
       assert usage.output_tokens == 0
       assert usage.total_tokens == 0
+    end
+  end
+
+  describe "cost/2" do
+    # Rates below come from the Nous.Usage.Pricing snapshot table (recorded
+    # 2026-08-14). If that table is refreshed, these expectations move with it.
+    test "prices all four token kinds for a provider that reports them disjointly" do
+      usage = %Usage{
+        input_tokens: 10_000,
+        output_tokens: 2_000,
+        cache_read_input_tokens: 50_000,
+        cache_creation_input_tokens: 8_000
+      }
+
+      # claude-sonnet-4-5: $3.00 input, $15.00 output, $0.30 cache read,
+      # $3.75 cache write, all per 1M tokens.
+      assert {:ok, cost} = Usage.cost(usage, "anthropic:claude-sonnet-4-5")
+
+      assert_in_delta cost.input, 0.03, 1.0e-9
+      assert_in_delta cost.output, 0.03, 1.0e-9
+      assert_in_delta cost.cache_read, 0.015, 1.0e-9
+      assert_in_delta cost.cache_write, 0.03, 1.0e-9
+      assert_in_delta cost.total, 0.105, 1.0e-9
+    end
+
+    test "does not double-count cached tokens when the provider folds them into input" do
+      # Gemini's promptTokenCount includes cachedContentTokenCount, so only
+      # 6_000 of the 10_000 input tokens are billed at the input rate.
+      usage = %Usage{
+        input_tokens: 10_000,
+        output_tokens: 1_000,
+        cache_read_input_tokens: 4_000
+      }
+
+      # gemini-2.5-flash: $0.30 input, $2.50 output, $0.03 cache read.
+      assert {:ok, cost} = Usage.cost(usage, "gemini:gemini-2.5-flash")
+
+      assert_in_delta cost.input, 0.0018, 1.0e-9
+      assert_in_delta cost.output, 0.0025, 1.0e-9
+      assert_in_delta cost.cache_read, 0.000_12, 1.0e-9
+      assert_in_delta cost.total, 0.004_42, 1.0e-9
+    end
+
+    test "bills the full input count for Anthropic, which reports cache reads separately" do
+      usage = %Usage{input_tokens: 10_000, cache_read_input_tokens: 4_000}
+
+      assert {:ok, cost} = Usage.cost(usage, "anthropic:claude-sonnet-4-5")
+
+      # 10_000 * $3.00 / 1M, not 6_000 * $3.00 / 1M.
+      assert_in_delta cost.input, 0.03, 1.0e-9
+    end
+
+    test "a zeroed usage costs exactly zero for a known model" do
+      assert {:ok, cost} = Usage.cost(Usage.new(), "openai:gpt-4o")
+
+      assert cost.input === 0.0
+      assert cost.output === 0.0
+      assert cost.cache_read === 0.0
+      assert cost.cache_write === 0.0
+      assert cost.total === 0.0
+    end
+
+    test "a local provider is free" do
+      usage = %Usage{input_tokens: 500_000, output_tokens: 100_000}
+
+      assert {:ok, cost} = Usage.cost(usage, "ollama:llama3.3:70b")
+      assert cost.total === 0.0
+    end
+
+    test "accepts a %Model{} and a \"provider:model\" string interchangeably" do
+      usage = %Usage{input_tokens: 1_234, output_tokens: 567}
+
+      assert Usage.cost(usage, Model.new(:openai, "gpt-4o")) ==
+               Usage.cost(usage, "openai:gpt-4o")
+
+      assert {:ok, %{total: total}} = Usage.cost(usage, "openai:gpt-4o")
+      assert total > 0.0
+    end
+
+    test "returns an error instead of raising for an unpriced model" do
+      usage = %Usage{input_tokens: 10, output_tokens: 10}
+
+      assert Usage.cost(usage, "openai:model-nobody-has-heard-of") ==
+               {:error, :unknown_model}
+
+      assert Usage.cost(usage, Model.new(:groq, "llama-3.3-70b-versatile")) ==
+               {:error, :unknown_model}
+    end
+
+    test "returns an error instead of raising for a malformed model string" do
+      assert Usage.cost(Usage.new(), "not-a-provider-spec") == {:error, :unknown_model}
+      assert Usage.cost(Usage.new(), "nosuchprovider:some-model") == {:error, :unknown_model}
     end
   end
 end

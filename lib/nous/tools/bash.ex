@@ -82,6 +82,39 @@ defmodule Nous.Tools.Bash do
   Because `exec` replaces the wrapper shell, fd 2 is redirected for the sandbox
   runner *itself*, so `sandbox-exec:` / `bwrap:` runner failures are captured
   too — a `2>&1` inside the inner command would miss exactly those.
+
+  ## Spilling large results
+
+  A megabyte of `grep` output costs roughly 250k tokens of context and is almost
+  never read in full. With `Nous.Spill` configured, the agent runner replaces an
+  oversized tool result with a preview plus a locator the model can fetch on
+  demand, and this tool additionally **stores the prefix of a command that blows
+  the 1 MB output ceiling** — output that was previously truncated and discarded.
+
+  Opt in per run, in `deps`:
+
+      Nous.run(agent, prompt,
+        deps: %{
+          spill_config: %{
+            store: Nous.Spill.Local,
+            opts: [root: "/var/lib/nous/spill"],
+            max_inline_bytes: 65_536
+          }
+        }
+      )
+
+  Or application-wide, for a deployment that wants it everywhere:
+
+      config :nous, :spill, %{store: Nous.Spill.Local, opts: [root: "/var/lib/nous/spill"]}
+
+  With neither, output is returned inline and a truncated command keeps its
+  plain `[Output truncated at 1000000 bytes]` marker, exactly as before —
+  spilling is opt-in and changes nothing until it is configured.
+
+  What spilling can **not** do is recover the whole output of a chatty command:
+  `NetRunner` kills the process at the cap, so the 1 MB prefix is all that was
+  ever captured, and the notice says so rather than promising a full transcript.
+  Spilled content persists until you delete it; see `Nous.Spill`.
   """
 
   use Nous.Tool.Schema
@@ -93,6 +126,11 @@ defmodule Nous.Tools.Bash do
 
   @default_timeout 120_000
   @max_output_size 1_000_000
+
+  # The marker a truncated command has always ended with. Unchanged, and last in
+  # the returned text either way, so a caller (or a test) that recognises it
+  # keeps recognising it whether the output was spilled or not.
+  @truncation_marker "\n\n[Output truncated at #{@max_output_size} bytes]"
 
   # Absolute: a relative `sh` would resolve through PATH, which the scrubbed
   # env does not pin.
@@ -136,7 +174,7 @@ defmodule Nous.Tools.Bash do
 
     case Sandbox.confine(argv, policy) do
       {:ok, confined} ->
-        run_confined(confined, timeout)
+        run_confined(confined, ctx, timeout)
 
       {:error, {:sandbox_unavailable, mode, detail}} ->
         {:error,
@@ -157,7 +195,7 @@ defmodule Nous.Tools.Bash do
 
   # ---------------------------------------------------------------------------
 
-  defp run_confined(%Confined{argv: [runner | _]} = confined, timeout) do
+  defp run_confined(%Confined{argv: [runner | _]} = confined, ctx, timeout) do
     # Erlang ports report a failed exec as an ordinary nonzero exit; there is no
     # `{code, path, syscall}` triple to tell "runner missing" from "command
     # failed". Take the weaker signal explicitly, before spawning, so a missing
@@ -165,7 +203,7 @@ defmodule Nous.Tools.Bash do
     # mystery exit code.
     case require_binary(runner) do
       :ok ->
-        spawn_confined(confined, timeout)
+        spawn_confined(confined, ctx, timeout)
 
       {:missing, reason} ->
         {:error,
@@ -174,7 +212,7 @@ defmodule Nous.Tools.Bash do
     end
   end
 
-  defp spawn_confined(%Confined{} = confined, timeout) do
+  defp spawn_confined(%Confined{} = confined, ctx, timeout) do
     # No `:env` option: NetRunner has none, and passing one was how this tool
     # spent its whole existence believing it had scrubbed the environment. The
     # scrubbing is in the argv (`Nous.Tools.Env.with_scrubbed_env/1`).
@@ -192,9 +230,10 @@ defmodule Nous.Tools.Bash do
 
       {:error, {:max_output_exceeded, partial}} ->
         # Classify the partial output too: a chatty command can also be a denied
-        # one, and dropping the marker here would hide it.
-        truncated = "#{partial}\n\n[Output truncated at #{@max_output_size} bytes]"
-        annotate(confined, 1, partial, truncated)
+        # one, and dropping the marker here would hide it. Classification scans
+        # the raw `partial`, never the rendered text, which spilling may have
+        # replaced with a preview and a locator.
+        annotate(confined, 1, partial, truncated(ctx, partial))
 
       {:error, reason} ->
         {:error, "Command failed: #{inspect(reason)}"}
@@ -203,6 +242,62 @@ defmodule Nous.Tools.Bash do
         annotate(confined, exit_status, output, render(output, exit_status))
     end
   end
+
+  # What the model sees when the command blew the output ceiling.
+  #
+  # `partial` is all we have and all we will ever have: NetRunner kills the
+  # process at `@max_output_size`, so the "full" output *is* this 1 MB prefix.
+  # Nothing may imply otherwise — including `Nous.Spill`'s own "Full result
+  # stored at" notice, which is why the caveat below travels with the text.
+  defp truncated(ctx, partial) do
+    case Nous.Spill.config(ctx) do
+      # No store: the tail is dropped, exactly as it always was. Building the
+      # spillable copy of a megabyte would be pure waste here.
+      :disabled -> partial <> @truncation_marker
+      {:ok, _cfg} -> spill_truncated(ctx, partial)
+    end
+  end
+
+  # The caveat and the marker are appended BEFORE spilling, not to the
+  # replacement afterwards: a replacement already fills `max_inline_bytes`, so
+  # appending to it would push the result back over the cap and the runner would
+  # spill the spill. At the end of the text they land in the preview's tail,
+  # which keeps them visible inline, and the stored copy carries them too — so
+  # whoever opens that file knows it is a prefix.
+  #
+  # `annotate/4` still appends a sandbox verdict after this returns, which on a
+  # denial can carry the result a few dozen bytes past the cap. That is the
+  # deliberate trade: losing a denial verdict is far worse than a re-spill whose
+  # tail preserves it.
+  defp spill_truncated(ctx, partial) do
+    text =
+      partial <>
+        "\n\n[Only the first #{@max_output_size} bytes were captured: the command was " <>
+        "killed at the output cap, so a stored copy is that same prefix and no complete " <>
+        "transcript exists.]" <> @truncation_marker
+
+    spill_opts = [
+      ctx: ctx,
+      source: "bash",
+      # Owner scopes stored content; `deps[:session_id]` is the same key
+      # `Nous.Sandbox.Policy.resolve/2` reads for session identity. Without one,
+      # `Nous.Spill` files it under "unscoped" — this tool has no agent to name.
+      owner: spill_owner(ctx),
+      suggested_name: "bash-output.txt"
+    ]
+
+    case Nous.Spill.maybe_spill(text, spill_opts) do
+      {:spilled, replacement, _locator} -> replacement
+      # A store configured with a ceiling above the output cap: nothing to spill,
+      # and the caveat is still true.
+      :inline -> text
+    end
+  end
+
+  # Binary-only, so a non-string session id can never reach the store and turn a
+  # completed command into a crash.
+  defp spill_owner(%{deps: %{session_id: session_id}}) when is_binary(session_id), do: session_id
+  defp spill_owner(_ctx), do: nil
 
   # Annotate, never replace. `rendered` is what the caller would have received
   # with no sandbox in play; a verdict only ever appends to it.
