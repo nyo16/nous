@@ -231,7 +231,9 @@ defmodule Nous.AgentRunner.IterationLoop do
     # Enforce the permission policy: blocked tools are removed from the set the
     # model ever sees (and therefore can't be called). Approval is enforced
     # separately at execution time (see ToolExecution.enforce_policy_approval/2).
-    all_tools = ToolExecution.maybe_filter_by_policy(agent.permissions, all_tools)
+    # Code Mode's `run_code` is injected after that filter — see
+    # ToolExecution.visible_tools/2 for why it sits outside the restriction.
+    all_tools = ToolExecution.visible_tools(agent, all_tools)
 
     # Run pre_request hooks (can block the LLM call). `claimed`/`claimed_content`
     # describe the batch this step boundary just took from the inbox, which is

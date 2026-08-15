@@ -370,7 +370,7 @@ defmodule Nous.AgentRunner do
         else: ctx
 
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
-    all_tools = ToolExecution.maybe_filter_by_policy(agent.permissions, all_tools)
+    all_tools = ToolExecution.visible_tools(agent, all_tools)
 
     if ctx.needs_response do
       # Build messages via behaviour (reflects any plugin context changes)

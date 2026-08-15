@@ -4,7 +4,7 @@ defmodule Nous.AgentRunner.ToolExecution do
   # execution pipelines, pre/post hooks, approval and permission-policy
   # enforcement, and tool result recording. Internal to the runner.
 
-  alias Nous.{Message, Messages, OutputSchema, Permissions, Spill, Tool, ToolExecutor}
+  alias Nous.{CodeMode, Message, Messages, OutputSchema, Permissions, Spill, Tool, ToolExecutor}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
   alias Nous.Hook
 
@@ -87,6 +87,8 @@ defmodule Nous.AgentRunner.ToolExecution do
   # pre/execute/post pipeline before the next call starts, so call N+1's hooks
   # and approval checks observe call N's context effects.
   def run_tool_calls_sequential(real_calls, tools, run_ctx, behaviour, agent, ctx) do
+    code_mode = CodeMode.resolve(agent)
+
     {results, ctx} =
       Enum.reduce(real_calls, {[], ctx}, fn call, {results, acc_ctx} ->
         call_name = get_tool_field(call, :name)
@@ -102,29 +104,34 @@ defmodule Nous.AgentRunner.ToolExecution do
 
         cleaned_name = clean_tool_name(call_name)
 
-        # Short-circuit on tool_call whose arguments JSON failed to parse.
-        # The provider marshalling tagged it with "_invalid_arguments" so
-        # we surface a clean tool-error result and let the LLM retry —
-        # rather than invoking the tool with bogus/empty args.
+        # Short-circuit on a tool_call whose arguments JSON failed to parse.
+        # The provider marshalling tagged it with "_invalid_arguments" so we
+        # surface a clean tool-error result and let the LLM retry — rather than
+        # invoking the tool with bogus/empty args.
         invalid_args = invalid_arguments(call)
 
-        if is_binary(invalid_args) do
-          result_msg = invalid_arguments_result(call_id, cleaned_name, invalid_args)
-          {[result_msg | results], acc_ctx}
-        else
-          run_tool_with_hooks(
-            call,
-            call_id,
-            call_name,
-            cleaned_name,
-            call_arguments,
-            tools,
-            run_ctx,
-            behaviour,
-            agent,
-            acc_ctx,
-            results
-          )
+        cond do
+          is_binary(invalid_args) ->
+            result_msg = invalid_arguments_result(call_id, cleaned_name, invalid_args)
+            {[result_msg | results], acc_ctx}
+
+          CodeMode.collapsed?(code_mode, cleaned_name, call) ->
+            {[code_mode_denial(call_id, cleaned_name) | results], acc_ctx}
+
+          true ->
+            run_tool_with_hooks(
+              call,
+              call_id,
+              call_name,
+              cleaned_name,
+              call_arguments,
+              tools,
+              run_ctx,
+              behaviour,
+              agent,
+              acc_ctx,
+              results
+            )
         end
       end)
 
@@ -271,33 +278,38 @@ defmodule Nous.AgentRunner.ToolExecution do
 
     invalid_args = invalid_arguments(call)
 
-    if is_binary(invalid_args) do
-      {:done, invalid_arguments_result(call_id, cleaned_name, invalid_args)}
-    else
-      hook_payload = %{
-        tool_name: cleaned_name,
-        tool_id: call_id,
-        arguments: call_arguments
-      }
+    cond do
+      is_binary(invalid_args) ->
+        {:done, invalid_arguments_result(call_id, cleaned_name, invalid_args)}
 
-      case Hook.Runner.run(ctx.hook_registry, :pre_tool_use, hook_payload) do
-        :deny ->
-          Logger.info("Tool '#{cleaned_name}' denied by hook")
-          {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)}
+      CodeMode.collapsed?(CodeMode.resolve(agent), cleaned_name, call) ->
+        {:done, code_mode_denial(call_id, cleaned_name)}
 
-        {:deny, reason} ->
-          Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
+      true ->
+        hook_payload = %{
+          tool_name: cleaned_name,
+          tool_id: call_id,
+          arguments: call_arguments
+        }
 
-          {:done,
-           Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
+        case Hook.Runner.run(ctx.hook_registry, :pre_tool_use, hook_payload) do
+          :deny ->
+            Logger.info("Tool '#{cleaned_name}' denied by hook")
+            {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)}
 
-        {:modify, %{arguments: new_args}} ->
-          modified_call = put_tool_field(call, :arguments, new_args)
-          approval_decision(modified_call, call_id, cleaned_name, tools, agent, ctx)
+          {:deny, reason} ->
+            Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
 
-        _ ->
-          approval_decision(call, call_id, cleaned_name, tools, agent, ctx)
-      end
+            {:done,
+             Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
+
+          {:modify, %{arguments: new_args}} ->
+            modified_call = put_tool_field(call, :arguments, new_args)
+            approval_decision(modified_call, call_id, cleaned_name, tools, agent, ctx)
+
+          _ ->
+            approval_decision(call, call_id, cleaned_name, tools, agent, ctx)
+        end
     end
   end
 
@@ -750,10 +762,40 @@ defmodule Nous.AgentRunner.ToolExecution do
     end
   end
 
+  # The tool set one model request may see, in two layers and deliberately in
+  # this order:
+  #
+  #   1. the permission policy removes blocked tools, so the model never sees
+  #      (and therefore cannot call) something it is not allowed to run;
+  #   2. Code Mode injects `run_code` AFTER that filter.
+  #
+  # Injecting second is the point: `run_code` is Code Mode's only entry point,
+  # and a restriction that deleted it would not restrict the agent, it would
+  # mute it — a deny-all policy would leave a `mode: :code` agent with no tools
+  # at all and no way to say so. It is not a hole either: `run_code` still
+  # dispatches through the whole pipeline (hooks, approval, permission
+  # plugins), so a guard can inspect the program text before it runs, and every
+  # tool the program itself calls is filtered by the same policy through
+  # `Nous.CodeMode.bindings/4`.
+  def visible_tools(agent, tools) do
+    granted = maybe_filter_by_policy(agent.permissions, tools)
+
+    CodeMode.visible_tools(CodeMode.resolve(agent), tools, granted, policy: agent.permissions)
+  end
+
   def maybe_filter_by_policy(nil, tools), do: tools
 
   def maybe_filter_by_policy(%Permissions.Policy{} = policy, tools) do
     Permissions.filter_tools(policy, tools)
+  end
+
+  # Under `mode: :code` the model was shown exactly one tool, so a call to any
+  # other one can only fail. Refusing it here — before the pre_tool_use hook —
+  # keeps guards from being asked to approve a call that cannot execute.
+  defp code_mode_denial(call_id, cleaned_name) do
+    Logger.info("Tool '#{cleaned_name}' is not callable directly under code mode")
+
+    Message.tool(call_id, CodeMode.collapse_message(cleaned_name), name: cleaned_name)
   end
 
   # Check if a tool call requires approval and invoke the handler.

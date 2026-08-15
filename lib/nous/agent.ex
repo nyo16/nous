@@ -50,6 +50,7 @@ defmodule Nous.Agent do
           behaviour_module: module() | nil,
           permissions: Nous.Permissions.Policy.t() | nil,
           sandbox: Nous.Sandbox.Policy.t() | nil,
+          code_mode: Nous.CodeMode.mode() | nil,
           parallel_tool_calls: boolean()
         }
 
@@ -74,6 +75,7 @@ defmodule Nous.Agent do
     enable_todos: false,
     permissions: nil,
     sandbox: nil,
+    code_mode: nil,
     parallel_tool_calls: false
   ]
 
@@ -119,6 +121,15 @@ defmodule Nous.Agent do
       what the subprocess that tool spawns may touch once it is running. A
       blocked tool never executes; a sandboxed tool executes with the OS
       refusing its writes. Use both.
+    * `:code_mode` - How the model reaches tools: `:native` (direct tool calls,
+      the classic behaviour), `:code` (the model sees only `run_code` and calls
+      tools from inside a program), or `:both` (it picks per turn). Accepts the
+      atom or its string form. `nil` (the default) falls back to the
+      `config :nous, :code_mode` application setting, and then to `:both` —
+      which behaves as `:native` unless a `Nous.CodeRuntime` provider is
+      configured, so this option changes nothing until you configure one. Like
+      `:sandbox` and `:permissions` this is a runtime knob, not a prompt: see
+      `Nous.CodeMode`.
     * `:parallel_tool_calls` - Execute multiple tool calls from one model
       response concurrently (default: `false`). Hooks, approval checks, and
       post-processing (callbacks, `merge_deps`) stay sequential in call order;
@@ -179,6 +190,7 @@ defmodule Nous.Agent do
       behaviour_module: Keyword.get(opts, :behaviour_module),
       permissions: Keyword.get(opts, :permissions),
       sandbox: normalize_sandbox(Keyword.get(opts, :sandbox)),
+      code_mode: normalize_code_mode(Keyword.get(opts, :code_mode)),
       parallel_tool_calls: Keyword.get(opts, :parallel_tool_calls, false)
     }
   end
@@ -395,6 +407,13 @@ defmodule Nous.Agent do
   @spec normalize_sandbox(term()) :: Nous.Sandbox.Policy.t() | nil
   defp normalize_sandbox(nil), do: nil
   defp normalize_sandbox(sandbox), do: Nous.Sandbox.Policy.new(sandbox)
+
+  # Same contract as :sandbox — `nil` defers to application config at run time,
+  # anything else is normalized eagerly so a typo raises here and not three
+  # iterations into a run.
+  @spec normalize_code_mode(term()) :: Nous.CodeMode.mode() | nil
+  defp normalize_code_mode(nil), do: nil
+  defp normalize_code_mode(mode), do: Nous.CodeMode.new(mode)
 
   # Auto-include Skills plugin when skills are configured
   defp ensure_skills_plugin(plugins, []), do: plugins
