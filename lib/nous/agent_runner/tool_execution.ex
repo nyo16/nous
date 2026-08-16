@@ -225,9 +225,10 @@ defmodule Nous.AgentRunner.ToolExecution do
 
     case Enum.find(tools, fn t -> t.name == name end) do
       %Tool{timeout: timeout, retries: retries} when is_integer(timeout) and timeout > 0 ->
-        # A timeout raised inside ToolExecutor goes through its retry path, so
-        # the call may legitimately spend `timeout` ms on each of its
-        # `retries + 1` attempts before it finally gives up.
+        # A timeout is terminal in ToolExecutor, but an ordinary failure still
+        # retries and can arrive a millisecond under the deadline, so the call
+        # may legitimately spend `timeout` ms on each of its `retries + 1`
+        # attempts before it finally gives up.
         timeout * (retries + 1) + @timeout_headroom_ms
 
       _ ->

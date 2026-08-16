@@ -85,8 +85,9 @@ Nous.new("openai:gpt-4o",
   tools: [Nous.Tools.Bash, MyApp.MyTool],
   parallel_tool_calls: true,      # default false; fan out multi-call turns (side effects interleave)
 
-  # Plugins (optional, composable)
-  plugins: [Nous.Plugins.SubAgent, Nous.Plugins.HumanInTheLoop],
+  # Plugins (optional, composable). LoopGuard notices the model repeating the
+  # same tool call and injects escalating guidance; it never blocks.
+  plugins: [Nous.Plugins.SubAgent, Nous.Plugins.HumanInTheLoop, Nous.Plugins.LoopGuard],
 
   # OS confinement for subprocesses (Nous.Tools.Bash). Sibling to :permissions —
   # permissions decide whether a tool runs, the sandbox confines what its

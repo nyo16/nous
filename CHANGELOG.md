@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A tool timeout is no longer retried, so one approval no longer bought two
+  executions.** `Nous.ToolExecutor.execute_with_timeout/3` kills the tool
+  process on the deadline and then *raises* `Nous.Errors.ToolTimeout`, which the
+  generic rescue clause routed into `handle_execution_error/7` — the retry path.
+  With `retries` defaulting to 1, every timeout ran the tool a second time:
+  measured on the real `bash` tool, a 120-second command asked for at the
+  then-30-second deadline came back as `attempt: 2` after 60 seconds. `bash` is
+  `requires_approval: true` and side-effecting, so a human who approved one
+  `git push`, `rm` or payment POST got two, the first killed part-way through.
+  A timeout is now terminal on both timeout paths: the executor cannot know how
+  much of the work already landed, and wrongly repeating side effects costs far
+  more than the one visible error a caller can retry deliberately. Retries are
+  untouched for ordinary failures. Making retry-on-timeout opt-in per tool was
+  considered and rejected: nothing can make the second run safe, so there is no
+  configuration worth offering. Note that the retry path never re-consulted the
+  approval handler — `check_approval/3` runs once in `execute/3` before the
+  retry loop — so the second execution was also unprompted.
+
 - **Code Mode sub-calls no longer inherit the runner's approval gate.**
   `Nous.Agent.Context.to_run_context/2` marks a context `approval_gated?: true`
   because the runner already ran the approval pipeline for the call it is
@@ -586,6 +604,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   down. `max_nesting` was already at its floor.
 
 ### Fixed
+
+- **A tool could not declare its own deadline, so `Nous.Tools.Bash` was killed
+  at 30s while documenting and granting 120s.** `%Nous.Tool{}` has always had a
+  `:timeout`, but the `tool/3` macro in `Nous.Tool.Schema` accepted no such
+  option and `Nous.Tool.from_module/2` hardcoded the 30-second struct default,
+  so a schema-defined tool's own budget could never reach the executor.
+  Measured: `Nous.Tool.from_module(Nous.Tools.Bash).timeout` was `30_000` while
+  the tool passes `120_000` to `NetRunner` and exposes a `timeout` parameter a
+  model can set to `120_000` — a legitimate 45-second command died at 30
+  seconds, twice (see Security, above), and the documented 2-minute default was
+  unreachable. `tool/3` now takes `:timeout`, carried through `metadata/0` into
+  `from_module/2` on exactly the path `requires_approval` already uses, with an
+  explicit `from_module(mod, timeout: …)` still winning. `Nous.Tools.Bash`
+  declares a deadline five seconds *above* the command budget it grants, so its
+  own timeout fires first and reports "Command timed out after 120000ms"
+  instead of an opaque outer kill; a `timeout` argument may only lower that
+  budget, never raise it past the deadline. The other schema-defined built-ins
+  keep the 30-second default, which their work cannot plausibly exceed.
 
 - **Structured output silently did nothing on Gemini and Vertex AI.**
   `Nous.OutputSchema.to_provider_settings/2` emits the OpenAI-nested

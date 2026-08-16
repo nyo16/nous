@@ -124,7 +124,18 @@ defmodule Nous.Tools.Bash do
 
   require Logger
 
+  # The command budget handed to NetRunner: the default, and also the ceiling a
+  # model may ask for — see command_timeout/1.
   @default_timeout 120_000
+
+  # The `%Tool{}` deadline `Nous.ToolExecutor` enforces, deliberately ABOVE the
+  # command budget. Whichever of the two timers fires first decides what the
+  # model is told, and this tool's own timeout says "Command timed out after
+  # 120000ms" while the executor's is an untrappable kill of the whole tool
+  # process, reported with no idea what the command was doing. Same ordering,
+  # and the same slack, as `Nous.CodeMode.tool_timeout_ms/0`.
+  @tool_deadline @default_timeout + :timer.seconds(5)
+
   @max_output_size 1_000_000
 
   # The marker a truncated command has always ended with. Unchanged, and last in
@@ -142,10 +153,15 @@ defmodule Nous.Tools.Bash do
   tool "bash",
     description: "Execute a shell command and return its output.",
     category: :execute,
+    timeout: @tool_deadline,
     requires_approval: true do
     param(:command, :string, required: true, doc: "The shell command to execute")
 
-    param(:timeout, :integer, doc: "Timeout in milliseconds. Defaults to 120000 (2 minutes).")
+    param(:timeout, :integer,
+      doc:
+        "Timeout in milliseconds. Defaults to 120000 (2 minutes), which is also the maximum: " <>
+          "a larger value is capped."
+    )
   end
 
   @impl true
@@ -158,9 +174,22 @@ defmodule Nous.Tools.Bash do
     if String.contains?(command, <<0>>) do
       {:error, "command contains a NUL byte; refusing to run"}
     else
-      confine_and_run(ctx, command, Map.get(args, "timeout", @default_timeout))
+      confine_and_run(ctx, command, command_timeout(args))
     end
   end
+
+  # The command budget for one call, bounded by @default_timeout. A model may
+  # only LOWER it — the way an explicit `max_bytes` may only lower WebFetch's
+  # ceiling — because a larger request would push the command budget past
+  # @tool_deadline and trade this tool's "Command timed out after Nms" for the
+  # executor's opaque kill. A non-integer or non-positive request is ignored
+  # rather than forwarded: NetRunner's `:timeout` has to be a positive integer.
+  @doc false
+  @spec command_timeout(map()) :: pos_integer()
+  def command_timeout(%{"timeout" => ms}) when is_integer(ms) and ms > 0,
+    do: min(ms, @default_timeout)
+
+  def command_timeout(_args), do: @default_timeout
 
   # ---------------------------------------------------------------------------
 

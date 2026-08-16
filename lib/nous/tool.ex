@@ -47,6 +47,11 @@ defmodule Nous.Tool do
           tags: [atom()]
         }
 
+  # The per-call deadline a tool gets when neither the caller nor the tool's own
+  # metadata names one. Named once so the struct default and the two
+  # constructors below cannot drift apart.
+  @default_timeout 30_000
+
   @enforce_keys [:name, :function]
   defstruct [
     :name,
@@ -56,7 +61,7 @@ defmodule Nous.Tool do
     :module,
     takes_ctx: true,
     retries: 1,
-    timeout: 30_000,
+    timeout: @default_timeout,
     validate_args: true,
     requires_approval: false,
     category: nil,
@@ -119,7 +124,7 @@ defmodule Nous.Tool do
       function: fun,
       takes_ctx: takes_ctx,
       retries: Keyword.get(opts, :retries, 1),
-      timeout: Keyword.get(opts, :timeout, 30_000),
+      timeout: Keyword.get(opts, :timeout, @default_timeout),
       validate_args: Keyword.get(opts, :validate_args, true),
       requires_approval: Keyword.get(opts, :requires_approval, false),
       module: nil,
@@ -140,7 +145,8 @@ defmodule Nous.Tool do
     * `:description` - Override description from metadata
     * `:parameters` - Override parameters from metadata
     * `:retries` - Number of retries on failure (default: 1)
-    * `:timeout` - Timeout in milliseconds (default: 30000)
+    * `:timeout` - Per-call deadline in milliseconds. Defaults to the tool's own
+      `metadata.timeout` when it declares one (see `Nous.Tool.Schema`), else 30000
     * `:validate_args` - Whether to validate arguments (default: true)
     * `:requires_approval` - Whether tool needs human approval before execution (default: false)
     * `:category` - Override category from metadata
@@ -207,7 +213,11 @@ defmodule Nous.Tool do
       function: &module.execute/2,
       takes_ctx: true,
       retries: Keyword.get(opts, :retries, 1),
-      timeout: Keyword.get(opts, :timeout, 30_000),
+      # Falls back to metadata for exactly the reason requires_approval does
+      # below: a tool that declares its own deadline had no way to get it to the
+      # executor, so `Nous.Tools.Bash` documented (and granted its command) a
+      # 2-minute budget while being killed at the 30-second struct default.
+      timeout: Keyword.get(opts, :timeout, Map.get(metadata, :timeout) || @default_timeout),
       validate_args: Keyword.get(opts, :validate_args, true),
       # Fall back to the module's metadata like name/description/parameters do.
       # Hardcoding `false` here silently dropped `requires_approval: true` from

@@ -55,6 +55,15 @@ defmodule Nous.Tools.CodingToolsTest do
       assert {:error, msg} = Bash.execute(ctx(), %{"command" => "sleep 10", "timeout" => 100})
       assert msg =~ "timed out"
     end
+
+    test "a requested timeout may lower the command budget but not raise it" do
+      # The %Tool{} deadline is fixed above the budget so the inner timeout wins
+      # and names what happened; a model that could raise the budget past that
+      # deadline would get the executor's opaque kill instead.
+      assert Bash.command_timeout(%{"timeout" => 5_000}) == 5_000
+      assert Bash.command_timeout(%{"timeout" => 10_000_000}) == Bash.command_timeout(%{})
+      assert Bash.command_timeout(%{"timeout" => "120000"}) == Bash.command_timeout(%{})
+    end
   end
 
   # -- FileRead --

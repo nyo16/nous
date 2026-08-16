@@ -19,6 +19,7 @@ defmodule Nous.AgentRunner.ToolExecutionTest do
   """
 
   alias Nous.{Agent, AgentRunner, Tool, Usage}
+  alias Nous.AgentRunner.ToolExecution
   alias Nous.Session.Log
   alias Nous.Tool.ContextUpdate
 
@@ -191,6 +192,41 @@ defmodule Nous.AgentRunner.ToolExecutionTest do
 
       assert logged_tool_calls(result) == []
       assert result.deps == %{starting: :deps}
+    end
+  end
+
+  describe "the parallel batch ceiling" do
+    # The outer async_stream timeout is the only bound on a tool that declares
+    # none, so it must be derived from the tools in the batch rather than fixed:
+    # a constant would clip `bash`'s ~2-minute budget and replace its own
+    # "Command timed out after Nms" with an opaque outer kill.
+    test "derives from the tool's own timeout, so a long-budget tool is not clipped" do
+      slow = %Tool{Tool.from_function(fn _ctx, _args -> :ok end, name: "slow") | timeout: 90_000}
+
+      ceiling = ToolExecution.batch_call_timeout([call("call_1", "slow")], [slow])
+
+      assert ceiling > slow.timeout * (slow.retries + 1)
+    end
+
+    test "the real Bash tool keeps headroom over its own deadline" do
+      bash = Tool.from_module(Nous.Tools.Bash)
+
+      assert ToolExecution.batch_call_timeout([call("call_1", "bash")], [bash]) > bash.timeout
+    end
+
+    test "a batch takes the largest budget in it, and the module default when a tool is unknown" do
+      short = %Tool{Tool.from_function(fn _ctx, _args -> :ok end, name: "short") | timeout: 10}
+      long = %Tool{Tool.from_function(fn _ctx, _args -> :ok end, name: "long") | timeout: 90_000}
+
+      calls = [call("call_1", "short"), call("call_2", "long")]
+
+      assert ToolExecution.batch_call_timeout(calls, [short, long]) ==
+               ToolExecution.batch_call_timeout([call("call_2", "long")], [long])
+
+      # An unknown name has nothing bounding it from the inside, so it must not
+      # shrink the ceiling below the module default.
+      assert ToolExecution.batch_call_timeout([call("call_3", "mystery")], [short]) ==
+               ToolExecution.default_call_timeout_ms()
     end
   end
 end
