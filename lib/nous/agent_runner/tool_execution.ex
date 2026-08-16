@@ -6,6 +6,7 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   alias Nous.{CodeMode, Message, Messages, OutputSchema, Permissions, Spill, Tool, ToolExecutor}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
+  alias Nous.Tool.ContextUpdate
   alias Nous.Hook
 
   require Logger
@@ -509,10 +510,15 @@ defmodule Nous.AgentRunner.ToolExecution do
   end
 
   # Post-execution stage for one tool call: post_tool_use hook (may modify the
-  # result), on_tool_response callback, behaviour :after_tool, merge_deps.
-  # Shared by the sequential path (via execute_and_record_tool) and the
-  # parallel path, which applies it in original call order after the fan-out.
-  def record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx) do
+  # result), on_tool_response callback, behaviour :after_tool, and the tool's
+  # context update. Shared by the sequential path (via execute_and_record_tool)
+  # and the parallel path, which applies it in original call order after the
+  # fan-out.
+  #
+  # This is also the only stage on the tool path that holds a
+  # `%Nous.Agent.Context{}`, and therefore the only place a `:log_event`
+  # operation can reach a session log.
+  def record_tool_result(call, result_msg, context_update, behaviour, agent, acc_ctx) do
     call_name = get_tool_field(call, :name)
     call_id = get_tool_field(call, :id)
     call_arguments = get_tool_field(call, :arguments)
@@ -547,20 +553,12 @@ defmodule Nous.AgentRunner.ToolExecution do
         acc_ctx
       )
 
-    acc_ctx =
-      if map_size(context_updates) > 0 do
-        Logger.debug("Merging context updates: #{inspect(Map.keys(context_updates))}")
-        Context.merge_deps(acc_ctx, context_updates)
-      else
-        acc_ctx
-      end
+    acc_ctx = apply_tool_context_update(acc_ctx, context_update)
 
     {result_msg, acc_ctx}
   end
 
   def execute_single_tool(tools, call, run_ctx, agent) do
-    alias Nous.Tool.ContextUpdate
-
     # Clean up tool name - Claude sometimes adds XML-like syntax
     call_name = get_tool_field(call, :name)
     call_id = get_tool_field(call, :id)
@@ -572,18 +570,17 @@ defmodule Nous.AgentRunner.ToolExecution do
     {result, context_updates} =
       if tool do
         case ToolExecutor.execute(tool, call_arguments, run_ctx) do
-          # New: Handle ContextUpdate return
+          # Hand the whole update to the post stage instead of folding it to a
+          # deps map here: a `:log_event` operation needs the
+          # `%Nous.Agent.Context{}` only `record_tool_result/6` holds, and
+          # folding early is precisely what used to throw those events away.
           {:ok, result, %ContextUpdate{} = update} ->
-            Logger.debug("Tool '#{cleaned_name}' executed successfully with context updates")
-            updates = context_update_to_map(update)
+            Logger.debug(
+              "Tool '#{cleaned_name}' executed successfully with " <>
+                "#{length(ContextUpdate.operations(update))} context operation(s)"
+            )
 
-            if map_size(updates) > 0 do
-              Logger.debug(
-                "Tool '#{cleaned_name}' returned context updates via ContextUpdate: #{inspect(Map.keys(updates))}"
-              )
-            end
-
-            {result, updates}
+            {result, update}
 
           {:ok, result} ->
             Logger.debug("Tool '#{cleaned_name}' executed successfully")
@@ -711,39 +708,56 @@ defmodule Nous.AgentRunner.ToolExecution do
     end
   end
 
+  # Apply a tool's context update to the accumulating agent context.
+  #
+  # Two shapes arrive here: a `%ContextUpdate{}` from a structured tool return,
+  # and a plain deps map from the legacy `__update_context__` path (or `%{}`
+  # from a tool, timeout or crash that updated nothing).
+  #
+  # The struct clause MUST stay first. A struct is a map, so an `is_map/1`
+  # clause above it would swallow every `%ContextUpdate{}` and silently drop
+  # its events — the exact failure mode this change exists to remove.
+  defp apply_tool_context_update(acc_ctx, %ContextUpdate{} = update) do
+    acc_ctx
+    |> merge_tool_deps(context_update_to_map(update))
+    |> log_tool_events(ContextUpdate.log_events(update))
+  end
+
+  defp apply_tool_context_update(acc_ctx, deps) when is_map(deps) do
+    merge_tool_deps(acc_ctx, deps)
+  end
+
+  # Deps merge exactly as before: the update is folded from an EMPTY map and
+  # the result merged over the context. Folding from `acc_ctx.deps` instead
+  # (what `ContextUpdate.apply/2` does) would quietly redefine `:append` and
+  # `:delete` for every tool already shipping, so that stays a separate
+  # decision from this one.
+  defp merge_tool_deps(acc_ctx, deps) when map_size(deps) == 0, do: acc_ctx
+
+  defp merge_tool_deps(acc_ctx, deps) do
+    Logger.debug("Merging context updates: #{inspect(Map.keys(deps))}")
+    Context.merge_deps(acc_ctx, deps)
+  end
+
+  # Bookkeeping events, in the order the tool added them. `Context.log_event/3`
+  # projects them to no message, so an auditable side effect is recorded
+  # without entering the model's history — and it refuses surface types, so a
+  # tool cannot use this to write into the transcript.
+  defp log_tool_events(acc_ctx, events) do
+    Enum.reduce(events, acc_ctx, fn {type, data}, ctx ->
+      Context.log_event(ctx, type, data)
+    end)
+  end
+
   # Convert ContextUpdate operations to a deps map for merging.
   #
-  # `:append` previously did `existing ++ [item]`, which is O(n^2) over many
-  # appends to the same key in one update. We prepend instead and reverse each
-  # append-built key once at the end. `reversed` tracks keys whose stored list
-  # is currently in reverse order; :set/:merge/:delete store forward-order
-  # values and reset the flag — so a `:set [list]` then `:append` (the only
-  # mixed case) still preserves exact insertion order. Result is byte-identical
-  # to the old `++` reduce.
-  def context_update_to_map(%Nous.Tool.ContextUpdate{operations: ops}) do
-    {acc, reversed} =
-      Enum.reduce(ops, {%{}, MapSet.new()}, fn
-        {:set, key, value}, {acc, reversed} ->
-          {Map.put(acc, key, value), MapSet.delete(reversed, key)}
-
-        {:merge, key, map}, {acc, reversed} ->
-          existing = Map.get(acc, key, %{})
-          {Map.put(acc, key, Map.merge(existing, map)), MapSet.delete(reversed, key)}
-
-        {:append, key, item}, {acc, reversed} ->
-          if MapSet.member?(reversed, key) do
-            {Map.update!(acc, key, &[item | &1]), reversed}
-          else
-            existing = Map.get(acc, key, [])
-            {Map.put(acc, key, [item | Enum.reverse(existing)]), MapSet.put(reversed, key)}
-          end
-
-        {:delete, key}, {acc, reversed} ->
-          {Map.delete(acc, key), MapSet.delete(reversed, key)}
-      end)
-
-    Enum.reduce(reversed, acc, fn key, acc -> Map.update!(acc, key, &Enum.reverse/1) end)
-  end
+  # This was a second, independently maintained fold of the same operation
+  # list. It had drifted (shallow `Map.merge` where `ContextUpdate` deep-merges)
+  # and, with no catch-all clause, a newly added operation type raised
+  # `FunctionClauseError` right here on the hot tool path. One reducer now, in
+  # `Nous.Tool.ContextUpdate` — including the prepend-then-reverse append
+  # optimisation and the reasoning behind it.
+  defdelegate context_update_to_map(update), to: ContextUpdate, as: :to_deps
 
   # Mark a tool as approval-required when the permission policy says so, so the
   # per-tool flag and the policy compose (either one forces the approval gate).

@@ -9,18 +9,29 @@ defmodule Nous.Tools.RunCode do
   reached through bindings derived from the same permission policy that governs
   a direct call (`Nous.CodeMode.bindings/4`).
 
-  ## No provider configured
+  ## The runtime provider
 
-  Phase C of the Code Mode plan — the runtime provider — is blocked on an
-  upstream change, so **this repository ships no provider today**. With none
+  `Nous.CodeRuntime.JS` ships in this repository and runs programs in an
+  embedded V8 isolate. It needs the optional `:tyrex` dependency:
+
+      {:tyrex, "~> 0.4"}
+
+      config :nous, :code_runtime, {Nous.CodeRuntime.JS, timeout_ms: 30_000}
+
+  Any other provider behind `Nous.CodeRuntime` works the same way. With none
   configured this tool returns a clear error naming the configuration it needs;
-  it does not crash, and it does not pretend to have run anything:
+  it does not crash, and it does not pretend to have run anything. `mode: :both`
+  quietly behaves as `:native` when nothing is configured, so that error is only
+  reachable when an operator explicitly asked for `mode: :code`.
 
-      config :nous, :code_runtime, {MyApp.CodeRuntime, budget_ms: 5_000}
+  ## Approval is per sub-call, not per program
 
-  `Nous.CodeMode` accounts for that state too: `mode: :both` quietly behaves as
-  `:native` when nothing is configured, so this error is only reachable when an
-  operator explicitly asked for `mode: :code`.
+  Approving a `run_code` call approves running *that program*. It does not
+  approve whatever the program then decides to call: each sub-call to a tool with
+  `requires_approval: true` consults the approval handler on its own, with the
+  real tool name and the real arguments. With no handler in the context such a
+  tool is refused rather than run — the same default-deny `Nous.ToolExecutor`
+  applies at every other entry point.
 
   ## Result shape
 
@@ -33,6 +44,22 @@ defmodule Nous.Tools.RunCode do
 
   Logs are returned whether the run succeeded or failed, so a program killed by
   its deadline still reports what it managed to say.
+
+  ## Sub-calls go through one lane
+
+  Every tool call the program makes is submitted to a `Nous.CodeMode.Scheduler`
+  started for this run and torn down with it: one driver lane with a
+  `max_parallel` ceiling, an exclusivity barrier for tools that do not declare
+  themselves `concurrency_safe?/1`, and two independent argument snapshots per
+  call. The bindings never reach `Nous.ToolExecutor` on their own.
+
+  The scheduler records each sub-dispatch as a bookkeeping `:tool_call` event the
+  moment it starts. A tool is handed a `%Nous.RunContext{}`, which carries no
+  session log, so those events leave here as `:log_event` operations on a
+  `Nous.Tool.ContextUpdate` — this tool's third return shape — and the agent
+  runner appends them to the real `Nous.Agent.Context`. Being bookkeeping, they
+  project to no message: a program making forty tool calls adds forty audit
+  records and nothing whatsoever to what the model reads.
 
   ## Approval and audit
 
@@ -47,9 +74,11 @@ defmodule Nous.Tools.RunCode do
   use Nous.Tool.Schema
 
   alias Nous.CodeMode
+  alias Nous.CodeMode.Scheduler
   alias Nous.CodeRuntime
   alias Nous.CodeRuntime.{Failure, Request, Result}
   alias Nous.RunContext
+  alias Nous.Tool.ContextUpdate
 
   require Logger
 
@@ -85,24 +114,48 @@ defmodule Nous.Tools.RunCode do
   bare `execute/2` above is the same call with none, which is what a direct
   `Nous.ToolExecutor.execute/3` outside the runner gets.
 
+  Returns `{:ok, output, %Nous.Tool.ContextUpdate{}}` when the program made at
+  least one sub-call, carrying one `:log_event` operation per sub-dispatch in
+  submission order; a program that called nothing returns the plain `{:ok,
+  output}`, because an update with no operations is noise.
+
   ## Options
 
     * `:tools` — every tool in scope *before* the permission policy filtered
       it. Granted ones become real closures, denied ones error stubs.
     * `:policy` — the `Nous.Permissions.Policy` that decides which is which.
-    * `:dispatch` — a `t:Nous.CodeMode.dispatch/0` for sub-calls; defaults to a
-      direct tool execution.
+    * `:dispatch` — a `t:Nous.CodeMode.dispatch/0` the scheduler runs sub-calls
+      through; defaults to `Nous.CodeMode.direct_dispatch/3`. It replaces what
+      the lane calls, never the lane itself.
+    * `:call_id` — the model's tool-call id, so each sub-dispatch event
+      correlates back to this call. Defaults to a minted per-run token.
     * `:runtime` — `{module, config}` overriding `config :nous, :code_runtime`.
   """
-  @spec run(RunContext.t(), map(), keyword()) :: {:ok, map()} | {:error, String.t()}
+  @spec run(RunContext.t(), map(), keyword()) ::
+          {:ok, map()} | {:ok, map(), ContextUpdate.t()} | {:error, String.t()}
   def run(%RunContext{} = ctx, args, opts) when is_map(args) and is_list(opts) do
     with {:ok, program} <- fetch_program(args),
          {:ok, description} <- fetch_description(args),
          {:ok, {module, config}} <- resolve_runtime(opts),
-         {:ok, request} <- build_request(program, ctx, opts),
-         {:ok, ref} <- start_run(module, request, config) do
-      Logger.info("run_code: #{description}")
-      collect(module, ref)
+         {:ok, scheduler} <- start_scheduler(opts) do
+      # `after`, not a stop on the success path only: a provider that raises, a
+      # program that tears its own run down, and a caught exit must all leave no
+      # lane behind, because one leaked GenServer per run_code call is one per
+      # model turn. The single teardown `after` cannot reach — `Nous.ToolExecutor`
+      # killing this process when the tool times out — is covered by the link
+      # `Scheduler.start_link/1` made instead.
+      try do
+        outcome =
+          with {:ok, request} <- build_request(program, ctx, opts, scheduler),
+               {:ok, ref} <- start_run(module, request, config) do
+            Logger.info("run_code: #{description}")
+            collect(module, ref)
+          end
+
+        with_sub_dispatch_events(outcome, scheduler)
+      after
+        Scheduler.stop(scheduler)
+      end
     end
   end
 
@@ -147,13 +200,72 @@ defmodule Nous.Tools.RunCode do
     end
   end
 
-  defp build_request(program, ctx, opts) do
+  # The lane every sub-call goes through. `start_link`, not a supervised child:
+  # the lane's lifetime IS this call's, and the link is what covers the teardown
+  # an `after` clause cannot (an untrappable kill from the tool executor).
+  defp start_scheduler(opts) do
+    case Scheduler.start_link(
+           dispatch: Keyword.get(opts, :dispatch) || (&CodeMode.direct_dispatch/3),
+           call_id: Keyword.get(opts, :call_id) || run_correlation_id()
+         ) do
+      {:ok, scheduler} ->
+        {:ok, scheduler}
+
+      {:error, {:contract, message}} ->
+        {:error, "run_code could not start its sub-call scheduler: #{message}"}
+
+      {:error, reason} ->
+        {:error, "run_code could not start its sub-call scheduler: #{inspect(reason)}"}
+    end
+  end
+
+  # A sub-dispatch event's correlation id names its parent call, and this tool
+  # cannot see the model's tool-call id: `Nous.ToolExecutor` hands a tool its
+  # arguments and a `%RunContext{}`, never the call they came from. A per-run
+  # token keeps two `run_code` calls in the same turn from both minting
+  # `"code:0"`, which is what leaving `:call_id` nil would do.
+  defp run_correlation_id do
+    "run_code-" <> (6 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false))
+  end
+
+  # The bridge from the scheduler's audit trail to the session log. There is no
+  # `Nous.Agent.Context` at this depth to append to, so the events ride out as
+  # `:log_event` operations and the runner appends them where a log exists.
+  defp with_sub_dispatch_events({:ok, output}, scheduler) do
+    case Scheduler.logged_events(scheduler) do
+      [] -> {:ok, output}
+      events -> {:ok, output, Enum.reduce(events, ContextUpdate.new(), &log_event/2)}
+    end
+  end
+
+  # Reachable: a provider may call a binding from `start_run/2` and then refuse
+  # the request. `{:error, _}` has no third slot to carry events in, so name what
+  # is being lost rather than dropping an audit trail in silence.
+  defp with_sub_dispatch_events({:error, _reason} = error, scheduler) do
+    case Scheduler.logged_events(scheduler) do
+      [] ->
+        error
+
+      events ->
+        Logger.warning(
+          "run_code failed after #{length(events)} sub-dispatch(es) " <>
+            "(#{Enum.map_join(events, ", ", fn {_type, data} -> data.name end)}); their " <>
+            "session events are dropped: a failed run_code returns no context update"
+        )
+
+        error
+    end
+  end
+
+  defp log_event({type, data}, update), do: ContextUpdate.log_event(update, type, data)
+
+  defp build_request(program, ctx, opts, scheduler) do
     bindings =
       CodeMode.bindings(
         Keyword.get(opts, :tools, []),
         Keyword.get(opts, :policy),
         ctx,
-        dispatch: Keyword.get(opts, :dispatch)
+        dispatch: Scheduler.dispatch_fun(scheduler)
       )
 
     case Request.new(program, bindings, self()) do

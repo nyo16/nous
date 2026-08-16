@@ -38,6 +38,7 @@ defmodule Nous.Tool.ContextUpdate do
   - `merge/3` - Deep merge a map into an existing map key
   - `append/3` - Append an item to a list key
   - `delete/2` - Remove a key
+  - `log_event/3` - Record a bookkeeping session event (touches no deps)
 
   ## Integration
 
@@ -56,11 +57,14 @@ defmodule Nous.Tool.ContextUpdate do
 
   alias __MODULE__
 
+  require Logger
+
   @type operation ::
           {:set, atom(), any()}
           | {:merge, atom(), map()}
           | {:append, atom(), any()}
           | {:delete, atom()}
+          | {:log_event, atom(), map()}
 
   @type t :: %ContextUpdate{
           operations: [operation()]
@@ -143,26 +147,58 @@ defmodule Nous.Tool.ContextUpdate do
   end
 
   @doc """
+  Record a bookkeeping session event alongside this update.
+
+  For a tool that did something auditable which must NOT enter the model's
+  history — a sub-dispatch made from inside a code run, say. The event is
+  appended to the session log through `Nous.Agent.Context.log_event/3`, which
+  projects to no message, so `ctx.messages` is unchanged.
+
+  `type` and `data` are the same pair `Nous.Agent.Context.log_event/3` takes: a
+  bookkeeping `Nous.Session.Event` type and its payload. A surface type
+  (`:user_message` and friends) is refused there, with a warning, so this
+  cannot be used to smuggle content into the transcript.
+
+  Only a `Nous.Agent.Context` has a log. Applied to a `Nous.RunContext` these
+  operations are dropped — loudly; see `apply_to_run_context/2`.
+
+  ## Example
+
+      ContextUpdate.new()
+      |> ContextUpdate.log_event(:tool_call, %{id: "sub_1", name: "file_read"})
+
+  """
+  @spec log_event(t(), atom(), map()) :: t()
+  def log_event(%ContextUpdate{} = update, type, data) when is_atom(type) and is_map(data) do
+    %{update | operations: update.operations ++ [{:log_event, type, data}]}
+  end
+
+  @doc """
   Apply all operations to a context, returning the updated context.
 
-  Operations are applied in order.
+  Deps operations are applied first, in the order they were added, then
+  `log_event/3` events are appended to the session log, also in order.
+  `ctx.messages` is untouched: a bookkeeping event projects to no message,
+  which is the whole point of recording a tool's side effect this way.
 
   ## Example
 
       update = ContextUpdate.new()
       |> ContextUpdate.set(:key, "value")
       |> ContextUpdate.append(:list, "item")
+      |> ContextUpdate.log_event(:tool_call, %{name: "search"})
 
       new_ctx = ContextUpdate.apply(update, ctx)
 
   """
   @spec apply(t(), Nous.Agent.Context.t()) :: Nous.Agent.Context.t()
-  def apply(%ContextUpdate{operations: ops}, %Nous.Agent.Context{} = ctx) do
-    new_deps = reduce_operations(ops, ctx.deps || %{})
+  def apply(%ContextUpdate{operations: ops} = update, %Nous.Agent.Context{} = ctx) do
+    ctx = %{ctx | deps: to_deps(update, ctx.deps || %{})}
 
     keys =
       ops
       |> Enum.map(&op_key/1)
+      |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
 
     :telemetry.execute(
@@ -171,9 +207,15 @@ defmodule Nous.Tool.ContextUpdate do
       %{agent_name: ctx.agent_name, keys: keys}
     )
 
-    %{ctx | deps: new_deps}
+    Enum.reduce(log_events(update), ctx, fn {type, data}, ctx ->
+      Nous.Agent.Context.log_event(ctx, type, data)
+    end)
   end
 
+  # `:log_event` carries an event type, not a deps key. Reporting it as a key
+  # would tell every telemetry handler that an update which touched no deps
+  # updated one.
+  defp op_key({:log_event, _type, _data}), do: nil
   defp op_key({_op, key, _value}), do: key
   defp op_key({_op, key}), do: key
   defp op_key(_), do: nil
@@ -182,11 +224,29 @@ defmodule Nous.Tool.ContextUpdate do
   Apply all operations to a RunContext, returning the updated context.
 
   For backwards compatibility with tools using RunContext.
+
+  **`log_event/3` operations are dropped here.** A `Nous.RunContext` carries
+  deps and the run seam, not a session log, so there is nowhere for an event to
+  go. The drop is logged at warning level naming the types lost, because a
+  silently discarded audit record is worse than none: it looks like it worked.
+  A tool whose events must survive has to run through `Nous.AgentRunner`, which
+  applies the same update to a `Nous.Agent.Context`.
   """
   @spec apply_to_run_context(t(), Nous.RunContext.t()) :: Nous.RunContext.t()
-  def apply_to_run_context(%ContextUpdate{operations: ops}, %Nous.RunContext{} = ctx) do
-    new_deps = reduce_operations(ops, ctx.deps || %{})
-    %{ctx | deps: new_deps}
+  def apply_to_run_context(%ContextUpdate{} = update, %Nous.RunContext{} = ctx) do
+    case log_events(update) do
+      [] ->
+        :ok
+
+      events ->
+        Logger.warning(
+          "Nous.Tool.ContextUpdate: dropping #{length(events)} log event(s) " <>
+            "#{inspect(Enum.map(events, &elem(&1, 0)))} — a Nous.RunContext has no session " <>
+            "log. Deps operations were still applied."
+        )
+    end
+
+    %{ctx | deps: to_deps(update, ctx.deps || %{})}
   end
 
   @doc """
@@ -202,20 +262,53 @@ defmodule Nous.Tool.ContextUpdate do
   @spec operations(t()) :: [operation()]
   def operations(%ContextUpdate{operations: ops}), do: ops
 
-  # Private
+  @doc """
+  The `{type, data}` pairs added by `log_event/3`, in the order they were added.
 
-  # Reduce operations into a deps map in a single pass. `:append` previously did
-  # `existing ++ [item]` (O(n^2) over many appends to the same key); we prepend
-  # and reverse each append-built key once at the end. `reversed` tracks keys
-  # whose stored list is currently reversed — :set/:merge/:delete store
-  # forward-order values and reset the flag, so a `:set [list]` then `:append`
-  # still yields exact insertion order. Result is identical to the old reduce.
-  defp reduce_operations(ops, initial) do
-    {deps, reversed} =
-      Enum.reduce(ops, {initial, MapSet.new()}, &apply_operation/2)
+  Deps operations are skipped. A caller that owns a session log uses this to
+  append them; a caller that does not uses it to say exactly what it dropped.
+  """
+  @spec log_events(t()) :: [{atom(), map()}]
+  def log_events(%ContextUpdate{operations: ops}) do
+    for {:log_event, type, data} <- ops, do: {type, data}
+  end
+
+  @doc """
+  Fold this update's deps operations into a map, starting from `initial`.
+
+  This is the **single** reducer for `ContextUpdate` operations: `apply/2`,
+  `apply_to_run_context/2` and `Nous.AgentRunner.ToolExecution` all fold
+  through here, so an operation's meaning is defined in exactly one place.
+  There used to be three hand-synchronised copies, and they had already drifted
+  — the runner's did a shallow merge and could not see a new operation type at
+  all.
+
+  `:log_event` operations touch no deps and are skipped: only the caller knows
+  whether it holds something with a log to put them in.
+
+  ## Example
+
+      update = ContextUpdate.new() |> ContextUpdate.append(:log, :b)
+      ContextUpdate.to_deps(update, %{log: [:a]})
+      #=> %{log: [:a, :b]}
+
+  """
+  # `:append` once did `existing ++ [item]`, which is O(n^2) over many appends
+  # to the same key in one update. We prepend instead and reverse each
+  # append-built key once at the end. `reversed` tracks the keys whose stored
+  # list is currently reversed — :set/:merge/:delete store forward-order values
+  # and clear the flag, so a `:set [list]` then `:append` (the only mixed case
+  # that could get this wrong) still yields exact insertion order. The result is
+  # byte-identical to the old `++` reduce; `context_update_test.exs` pins that
+  # against a reference implementation of the old semantics.
+  @spec to_deps(t(), map()) :: map()
+  def to_deps(%ContextUpdate{operations: ops}, initial \\ %{}) do
+    {deps, reversed} = Enum.reduce(ops, {initial, MapSet.new()}, &apply_operation/2)
 
     Enum.reduce(reversed, deps, fn key, deps -> Map.update!(deps, key, &Enum.reverse/1) end)
   end
+
+  # Private
 
   defp apply_operation({:set, key, value}, {deps, reversed}) do
     {Map.put(deps, key, value), MapSet.delete(reversed, key)}
@@ -238,6 +331,12 @@ defmodule Nous.Tool.ContextUpdate do
   defp apply_operation({:delete, key}, {deps, reversed}) do
     {Map.delete(deps, key), MapSet.delete(reversed, key)}
   end
+
+  # `:log_event` records a session event, not a deps key, so the fold ignores
+  # it. Deliberately an explicit clause and not a catch-all: the next operation
+  # type added must fail loudly here rather than vanish, which is exactly the
+  # defect that used to swallow events on the tool path.
+  defp apply_operation({:log_event, _type, _data}, acc), do: acc
 
   defp deep_merge(left, right) when is_map(left) and is_map(right) do
     Map.merge(left, right, fn

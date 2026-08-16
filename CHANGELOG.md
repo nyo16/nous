@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Code Mode sub-calls no longer inherit the runner's approval gate.**
+  `Nous.Agent.Context.to_run_context/2` marks a context `approval_gated?: true`
+  because the runner already ran the approval pipeline for the call it is
+  dispatching — correct for `run_code` itself, and wrong for every tool the
+  program then calls. Passed through unchanged, one approval of "run this
+  program" silently authorised every `Bash`, `FileWrite` and `FileEdit` the
+  program reached: the handler was never consulted and the tool ran. Approving a
+  `run_code` call now approves running *that program* only. Each sub-call to a
+  tool with `requires_approval: true` consults the handler on its own, with the
+  real tool name and the real arguments — which is what an operator needs, since
+  a program computes its arguments at runtime and the approved program text does
+  not show them. With no handler in the context such a tool is refused rather
+  than run, matching the default-deny every other entry point already applies.
+  Found by writing the integration test the plan asked for; the test that had
+  asserted the old behaviour is corrected with a comment recording why.
+
 - **`Nous.Plugins.HumanInTheLoop` no longer auto-approves tools outside its
   `:tools` list.** The handler is only ever invoked for tools already flagged
   `requires_approval: true`, so filtering it by the configured `:tools` list
@@ -415,6 +431,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cost memory and hurt single-writer tables).
 
 ### Added
+
+- **Code Mode: the model can write a program that calls tools, instead of a chain
+  of individual tool calls.** One `run_code` call carries a generated typed SDK
+  declaring every tool in scope; the program loops, branches and fans out in a
+  single round trip, and only what it logs or returns re-enters the conversation.
+  A 10-sub-call fan-out completes in 244ms where a serial chain of the same work
+  needs 400ms plus ten model round trips.
+
+  `Nous.CodeRuntime` is the provider behaviour, and `Nous.CodeRuntime.JS` is the
+  shipped provider: an embedded V8 isolate (Deno via Rustler NIFs) behind the
+  optional `{:tyrex, "~> 0.4"}` dependency, one **fresh isolate per run** so no
+  state carries over. Budgets are provider configuration, never per request, so a
+  program cannot negotiate its own deadline: `:timeout_ms` enforced by a BEAM
+  timer that really terminates the isolate, `:max_heap_mb`, and a byte-accurate
+  `:max_output_bytes` ledger that keeps the fitting prefix.
+
+  Isolation is stated exactly rather than marketed: it is in-process, so a V8
+  escape is an escape into the BEAM. What it does enforce is no filesystem,
+  network, env or subprocess access, and no route into Elixir except the tools you
+  granted — the runtime's arbitrary-module bridge is narrowed to one function and
+  then removed from the isolate before any model-authored code runs. There is
+  deliberately **no instruction budget**, because this substrate has no fuel
+  metering; the wall-clock kill is the only bound on a compute-bound program and
+  it is a real one.
+
+  `mode: :both` is the default and degrades to `:native` when no runtime is
+  configured, rather than advertising a `run_code` that can only fail. It is **not
+  an unconditional token saving** — the SDK is a prompt prefix that can rival the
+  native schemas it replaces — so `docs/guides/code_mode.md` says to measure your
+  own workload instead of implying a win.
 
 - **`Nous.Usage.cost/2` and `Nous.Usage.Pricing`.** `%Usage{}` counted tokens and
   priced nothing, so no caller could answer what a run cost. Prices are per 1M

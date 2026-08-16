@@ -35,6 +35,17 @@ defmodule Nous.CodeModeTest do
 
     defp run(_request, nil), do: Result.ok(nil)
 
+    # A list makes several sub-calls, which is what a real program does and what
+    # the sub-dispatch audit trail has to survive.
+    defp run(request, names) when is_list(names) do
+      [binding] = request.bindings
+
+      outcomes =
+        Enum.map(names, fn name -> binding.functions[name].(%{"from" => "the program"}) end)
+
+      Result.ok(inspect(outcomes), Enum.map(names, &"called #{&1}"))
+    end
+
     defp run(request, name) do
       [binding] = request.bindings
 
@@ -336,12 +347,43 @@ defmodule Nous.CodeModeTest do
       assert {:ok, result} = AgentRunner.run(agent, "go")
 
       # The program reached the tool through its binding, with the caller's
-      # context and the runner's approval gate already applied.
-      assert_receive {:alpha_ran, %{"from" => "the program"}, true}
+      # context - but NOT with the runner's approval gate still closed over it.
+      # Approving `run_code` approved running the program; each sub-call is
+      # approved on its own, so `approval_gated?` is deliberately false here.
+      # This assertion read `true` until testing the approval path showed that
+      # inheriting the flag let a program run an approval-required tool without
+      # the handler ever being consulted.
+      assert_receive {:alpha_ran, %{"from" => "the program"}, false}
 
       message = tool_message(result)
       assert message =~ "alpha saw the program"
       assert message =~ "called alpha"
+    end
+
+    test "every sub-dispatch lands in the run's session log and in none of its messages" do
+      configure_runtime(call: ["alpha", "beta", "alpha"])
+      Nous.ModelDispatcher.put_dispatcher(__MODULE__.RunCodeDispatcher)
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha"), tool("beta")], code_mode: :code)
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      sub_dispatches =
+        result.context.log
+        |> Nous.Session.Log.events()
+        |> Enum.filter(&(&1.type == :tool_call and &1.data[:source] == :code_mode))
+
+      # The whole path, end to end: Scheduler logs at start -> run_code reads the
+      # pairs back and returns them as :log_event operations -> the runner folds
+      # them into the Nous.Agent.Context it owns. Three sub-calls, three records,
+      # in submission order.
+      assert Enum.map(sub_dispatches, & &1.data.name) == ["alpha", "beta", "alpha"]
+      assert Enum.map(sub_dispatches, & &1.data.seq) == [0, 1, 2]
+
+      # And nothing the model reads changed: bookkeeping events project to no
+      # message, so run_code's own result is still the only tool message.
+      assert Enum.count(result.all_messages, &(&1.role == :tool)) == 1
     end
 
     test "a denied tool called from inside a program fails comprehensibly" do

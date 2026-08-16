@@ -63,7 +63,14 @@ defmodule Nous.CodeMode.Scheduler do
   submission order. Bookkeeping events project to no message
   (`Nous.Session.Log.derive_messages/1`), so `ctx.messages` is unchanged by any
   number of sub-dispatches: only what the program logs or returns re-enters the
-  model's context. Read the accumulated context back with `context/1`.
+  model's context.
+
+  There are two ways to read that trail back. `context/1` is for a caller that
+  handed in a real `Nous.Agent.Context`. `logged_events/1` is for one that owns
+  none: `Nous.Tools.RunCode` is handed a `%Nous.RunContext{}`, which has no
+  session log at all, so it forwards the pairs as
+  `Nous.Tool.ContextUpdate.log_event/3` operations and the runner appends them
+  to the context that does exist.
 
   ## Caller chain
 
@@ -283,6 +290,36 @@ defmodule Nous.CodeMode.Scheduler do
   def context(scheduler), do: GenServer.call(scheduler, :context, :infinity)
 
   @doc """
+  The bookkeeping events this scheduler appended, as `{type, data}` pairs in
+  submission order.
+
+  This is the read for a transport that owns no `Nous.Agent.Context`, and so has
+  nothing useful to do with `context/1`: `Nous.Tools.RunCode` forwards these as
+  `Nous.Tool.ContextUpdate.log_event/3` operations, which is how a sub-dispatch
+  reaches the real session log.
+
+  A scheduler that is already gone answers `[]` and says so at `warning` level.
+  Silently losing an audit trail is the one outcome this path exists to prevent;
+  it is unreachable while the caller still holds the link `start_link/1` made,
+  and loud if a future caller drops it.
+  """
+  @spec logged_events(server()) :: [{Nous.Session.Event.type(), map()}]
+  def logged_events(scheduler) do
+    case safe_call(scheduler, :logged_events) do
+      :gone ->
+        Logger.warning(
+          "code-mode scheduler #{inspect(scheduler)} is gone; its sub-dispatch session " <>
+            "events could not be collected and are lost"
+        )
+
+        []
+
+      events when is_list(events) ->
+        events
+    end
+  end
+
+  @doc """
   Whether `tool` may run alongside other sub-calls, given `args`.
 
   Exclusive unless `tool.module` exports `concurrency_safe?/1` and it returns
@@ -352,6 +389,10 @@ defmodule Nous.CodeMode.Scheduler do
        max_parallel: config.max_parallel,
        call_id: config.call_id,
        ctx: config.ctx,
+       # Reverse-ordered {type, data} pairs of every event appended to `ctx`, for
+       # a transport that has no Context of its own to read them out of. See
+       # `logged_events/1`.
+       logged: [],
        next_seq: 0,
        # Head-of-line commit cursor: the seq that is allowed to commit next.
        cursor: 0,
@@ -392,6 +433,10 @@ defmodule Nous.CodeMode.Scheduler do
 
   @impl true
   def handle_call(:context, _from, state), do: {:reply, state.ctx, state}
+
+  @impl true
+  def handle_call(:logged_events, _from, state),
+    do: {:reply, Enum.reverse(state.logged), state}
 
   @impl true
   def handle_info({ref, outcome}, state) when is_map_key(state.inflight, ref) do
@@ -508,8 +553,10 @@ defmodule Nous.CodeMode.Scheduler do
     dispatch = state.dispatch
 
     # Audit first, then run: the record exists before the tool can do anything,
-    # including tearing the run down.
-    ctx = log_dispatch(state, entry)
+    # including tearing the run down. Appending here also means the payload is
+    # validated at start, not whenever someone gets around to reading the trail.
+    {type, data} = event = dispatch_event(state, entry)
+    ctx = Context.log_event(state.ctx, type, data)
 
     task =
       Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
@@ -522,22 +569,29 @@ defmodule Nous.CodeMode.Scheduler do
       state
       | inflight: Map.put(state.inflight, task.ref, {entry, task.pid}),
         exclusive: exclusive,
-        ctx: ctx
+        ctx: ctx,
+        logged: [event | state.logged]
     }
   end
 
-  # Logged at START, inside the lane, so the audit record exists before the tool
+  # Built at START, inside the lane, so the audit record exists before the tool
   # can do anything — including tearing the run down — and lands in submission
   # order because starts are FIFO.
-  defp log_dispatch(state, entry) do
-    Context.log_event(state.ctx, :tool_call, %{
-      id: sub_call_id(state.call_id, entry.seq),
-      name: entry.tool.name,
-      arguments: entry.logged,
-      mode: entry.mode,
-      seq: entry.seq,
-      source: :code_mode
-    })
+  #
+  # ONE construction site, two destinations: the `Context` this scheduler holds
+  # and the `logged` list a transport reads. Re-deriving that list from the log
+  # instead would mean guessing which events were ours in a Context the caller
+  # may have arrived with events already in.
+  defp dispatch_event(state, entry) do
+    {:tool_call,
+     %{
+       id: sub_call_id(state.call_id, entry.seq),
+       name: entry.tool.name,
+       arguments: entry.logged,
+       mode: entry.mode,
+       seq: entry.seq,
+       source: :code_mode
+     }}
   end
 
   defp sub_call_id(nil, seq), do: "code:#{seq}"

@@ -35,7 +35,10 @@ defmodule Nous.CodeMode do
 
   Configure a provider with:
 
-      config :nous, :code_runtime, {MyApp.CodeRuntime, budget_ms: 5_000}
+      config :nous, :code_runtime, {Nous.CodeRuntime.JS, timeout_ms: 30_000}
+
+  `Nous.CodeRuntime.JS` ships here and needs the optional `:tyrex` dependency;
+  any module implementing `Nous.CodeRuntime` works in its place.
 
   ## `run_code` sits outside the restriction layers
 
@@ -311,38 +314,79 @@ defmodule Nous.CodeMode do
       This is where a sub-call scheduler plugs in: serialisation,
       `max_parallel`, argument snapshots and session-event logging all live
       behind it.
+
+  `direct_dispatch/3` is the default because it is the only thing a caller who
+  owns no `Nous.Agent.Context` can honestly do — but it is *not* what the
+  shipped Code Mode path uses. `Nous.Tools.RunCode` starts a
+  `Nous.CodeMode.Scheduler` for each run and passes
+  `Nous.CodeMode.Scheduler.dispatch_fun/1` here, so a real program's sub-calls
+  are ordered by one lane and audited into the session log. Calling `bindings/4`
+  with no `:dispatch` gets the unscheduled path: right for a test or a direct
+  caller, wrong for a run.
   """
   @spec bindings([Tool.t()], Permissions.Policy.t() | nil, RunContext.t(), keyword()) ::
           [Binding.t()]
   def bindings(tools, policy, %RunContext{} = run_ctx, opts \\ []) when is_list(tools) do
     dispatch = Keyword.get(opts, :dispatch) || (&direct_dispatch/3)
     granted = policy |> filter_tools(tools) |> MapSet.new(& &1.name)
+    sub_ctx = reopen_approval_gate(run_ctx)
 
     functions =
       tools
       |> Enum.filter(&is_binary(&1.name))
       |> Enum.uniq_by(& &1.name)
       |> Map.new(fn tool ->
-        {tool.name, binding_fun(tool, MapSet.member?(granted, tool.name), run_ctx, dispatch)}
+        {tool.name, binding_fun(tool, MapSet.member?(granted, tool.name), sub_ctx, dispatch)}
       end)
 
     [%Binding{global: Sdk.global(), functions: functions, error_class: Sdk.error_class()}]
   end
 
+  # Approving `run_code` approves running THAT PROGRAM. It does not approve
+  # whatever the program then decides to call.
+  #
+  # `Nous.Agent.Context.to_run_context/2` marks the context `approval_gated?:
+  # true` because the runner already ran the approval pipeline for the call it is
+  # dispatching - correct for `run_code` itself, and wrong for every sub-call
+  # made underneath it. Handed through unchanged, one approval of "run this
+  # program" silently authorises every `bash`, `file_write` and `file_edit` the
+  # program reaches, which is a bypass of the gate rather than a use of it.
+  # Found by testing it: the handler was never consulted and the tool ran.
+  #
+  # So the gate is reopened here, and per-sub-call approval is the shipped
+  # behaviour. Two consequences, both intended:
+  #
+  #   * the handler is asked once per sub-call, with the real tool name and the
+  #     real arguments - which is what an operator needs to see, since a program
+  #     computes its arguments at runtime and the approved program text does not
+  #     show them.
+  #   * with no handler in the context, an approval-required tool is REJECTED
+  #     rather than run. That is the same default-deny `Nous.ToolExecutor`
+  #     applies to every other entry point, and it is the safe direction: the
+  #     alternative is a program executing unattended what a human was supposed
+  #     to see.
+  defp reopen_approval_gate(%RunContext{} = run_ctx) do
+    %{run_ctx | approval_gated?: false}
+  end
+
   @doc """
   Run one sub-call directly, with no scheduling in front of it.
 
-  This is the default `t:dispatch/0`, and the one a scheduler should sit on top
-  of rather than calling `Nous.ToolExecutor.execute/3` itself: the executor has
-  a **three**-shape return (`{:ok, result}`, `{:ok, result, %ContextUpdate{}}`,
+  This is the default `t:dispatch/0`, and the one `Nous.CodeMode.Scheduler` sits
+  on top of in the shipped `run_code` path rather than calling
+  `Nous.ToolExecutor.execute/3` itself: the executor has a **three**-shape
+  return (`{:ok, result}`, `{:ok, result, %ContextUpdate{}}`,
   `{:error, reason}`) and a dispatch must hand back two. Folding that here, in
   one place, is what keeps a tool that returns a context update from looking
   like a contract breach to everything downstream.
 
   The context update is dropped, loudly. There is no agent context at this
   depth to merge it into — a `%Nous.RunContext{}` is not one — so the honest
-  options are "drop it and say so" or "lie". A caller that owns a
-  `Nous.Agent.Context` should pass its own dispatch and merge properly.
+  options are "drop it and say so" or "lie". That is about a *tool's* deps
+  update: applying those from concurrent sub-calls into a context the runner
+  also owns is the two-writers hazard. The scheduler's own bookkeeping events
+  are a different thing and do reach the session log, as `:log_event`
+  operations on the update `Nous.Tools.RunCode` returns.
   """
   @spec direct_dispatch(Tool.t(), map(), RunContext.t()) :: {:ok, term()} | {:error, map()}
   def direct_dispatch(%Tool{} = tool, args, %RunContext{} = run_ctx) do

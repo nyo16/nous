@@ -11,6 +11,7 @@ the same way as the [HexDocs sidebar](https://hexdocs.pm/nous).
 - **[Tool Development](tool_development.md)** — building robust, validated, secure tools.
 - **[Structured Output](structured_output.md)** — typed/validated results via Ecto schemas, schemaless types, or raw JSON schema.
 - **[Skills](skills.md)** — reusable instruction/capability packages (module- and file-based) and the built-in catalog.
+- **[Code Mode](code_mode.md)** — the model writes a program that calls tools: one round trip instead of a chain.
 - **[Hooks](hooks.md)** — lifecycle interceptors to block, modify, or audit agent actions.
 - **[Memory](memory.md)** — persistent, searchable agent memory (keyword + vector, decay, scoping).
 - **[Knowledge Base](knowledge_base.md)** — structured, linkable knowledge store and tools.

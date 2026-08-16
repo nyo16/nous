@@ -290,6 +290,32 @@ agent =
 
 Falls through on transport errors, 5xx, and rate-limit (429) responses.
 
+### Code Mode: one program instead of a chain of tool calls
+
+```elixir
+# Needs the optional :tyrex dep in your app, then:
+config :nous, :code_runtime, {Nous.CodeRuntime.JS, timeout_ms: 30_000}
+
+agent = Nous.new("openai:gpt-4o", tools: [MyApp.Search, MyApp.Fetch], code_mode: :both)
+```
+
+The model gains one tool, `run_code`, whose description carries a generated typed
+SDK for every tool it may call. It writes a program that loops, branches and fans
+out in a single round trip; only what the program logs or returns re-enters the
+conversation.
+
+`:both` (the default) shows native tools *and* `run_code`, and behaves as
+`:native` when no runtime is configured. `:code` shows only `run_code`. It is
+**not** an unconditional token saving — the SDK is a prompt prefix that can rival
+the native schemas it replaces, so it wins on multi-step and fan-out work and
+loses on a single `bash`. Measure your own workload; see
+`docs/guides/code_mode.md`.
+
+Approval is **per sub-call**: approving a `run_code` call approves running that
+program, not whatever it then decides to call. Each `requires_approval: true`
+sub-call consults your handler with the real tool name and arguments, and is
+refused if there is no handler.
+
 ### Local dev with LM Studio
 
 ```elixir
