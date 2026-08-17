@@ -144,10 +144,25 @@ defmodule Nous.Plugins.Summarization do
     config = ctx.deps[:summarization_config] || %{}
     max_tokens = Map.get(config, :max_context_tokens, @default_max_tokens)
 
-    if ctx.usage.total_tokens > max_tokens do
-      Logger.info(
-        "Compaction triggered: #{ctx.usage.total_tokens} tokens exceeds #{max_tokens} limit"
-      )
+    # The trigger is the size of the transcript about to be SENT, not
+    # `ctx.usage.total_tokens`.
+    #
+    # `usage.total_tokens` is the cumulative bill for the whole run — every input
+    # and output token of every request, summed — so it measured the wrong thing in
+    # both directions. A long conversation of small requests crossed the limit
+    # while its context was still tiny, and compaction then fired on *every*
+    # subsequent request forever, because a bill never decreases. Meanwhile a run
+    # whose context genuinely exploded was not compacted at all: measured before
+    # this changed, a transcript of ~300,000 estimated tokens with
+    # `max_context_tokens: 5_000` was left completely untouched, because no request
+    # had been billed yet. That is the opposite of what the option's name promises.
+    #
+    # `Nous.Transcript.estimate_messages_tokens/1` is this repo's one estimator, so
+    # the threshold now means the same thing as every other token budget here.
+    context_tokens = Transcript.estimate_messages_tokens(ctx.messages)
+
+    if context_tokens > max_tokens do
+      Logger.info("Compaction triggered: ~#{context_tokens} context tokens exceeds #{max_tokens}")
 
       warn_if_orphaned(config)
       {compact(agent, ctx, config, max_tokens), tools}

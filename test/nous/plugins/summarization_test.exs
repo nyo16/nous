@@ -138,6 +138,54 @@ defmodule Nous.Plugins.SummarizationTest do
       assert length(result_ctx.messages) == length(ctx.messages)
     end
 
+    test "triggers on the size of the transcript, not on cumulative usage", %{agent: agent} do
+      # The bug this pins: the trigger used to read `ctx.usage.total_tokens`, the
+      # cumulative bill for the run. A context far past its limit was therefore
+      # ignored whenever little had been billed yet — measured at ~300,000
+      # estimated tokens against `max_context_tokens: 5_000`, left untouched.
+      #
+      # `usage` is deliberately ZERO here. Every other test in this file supplies a
+      # large fake `total_tokens`, which is why they all passed while the plugin was
+      # bounding nothing.
+      big = String.duplicate("x", 40_000)
+
+      ctx =
+        Context.new(
+          deps: %{summarization_config: %{max_context_tokens: 5_000, keep_recent: 2}},
+          usage: %Nous.Usage{total_tokens: 0}
+        )
+
+      ctx = Summarization.init(agent, ctx)
+
+      ctx =
+        Enum.reduce(1..6, Context.add_message(ctx, Message.user("start")), fn i, acc ->
+          acc
+          |> Context.add_message(
+            Message.assistant("",
+              tool_calls: [%{"id" => "c#{i}", "name" => "grep", "arguments" => %{}}]
+            )
+          )
+          |> Context.add_message(Message.tool("c#{i}", big, name: "grep"))
+        end)
+
+      before_tokens = Nous.Transcript.estimate_messages_tokens(ctx.messages)
+      assert before_tokens > 5_000, "the fixture must actually exceed the limit"
+
+      {result_ctx, _tools} = Summarization.before_request(agent, ctx, [])
+      after_tokens = Nous.Transcript.estimate_messages_tokens(result_ctx.messages)
+
+      # Measured: 60,000 estimated tokens against a 5,000 limit comes down to
+      # ~7,800 on the free prune alone — 12x over budget reduced to under 2x.
+      # Closing the last of that gap is the LLM summarization step's job, and no
+      # summary model is configured here, so this asserts what the prune owns.
+      #
+      # Both bounds matter: a prune that trimmed one byte satisfies `<` on its own,
+      # and on the old usage-based trigger nothing was pruned at all, so
+      # `after_tokens` equalled `before_tokens` and both of these fail.
+      assert after_tokens < div(before_tokens, 5)
+      assert after_tokens < 5_000 * 2
+    end
+
     test "does not crash when over threshold but too few messages to summarize", %{agent: agent} do
       ctx =
         Context.new(

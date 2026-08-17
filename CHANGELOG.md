@@ -496,6 +496,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **LM Studio's default `receive_timeout` is 5 minutes, up from 2.** LM Studio
+  JIT-loads a model on the first request that names it, so "slow first token on
+  cold weights" — the reason `:llamacpp` already had 5 minutes — is the *default*
+  behaviour there, not an edge case: loading an 18GB 27B took 21s before a single
+  token appeared. Generation is slow too; one tool-calling step with three tools
+  measured 36.7s for 515 completion tokens, and a loop's later steps carry bigger
+  contexts than its first. At 2 minutes that surfaced mid-run as a bare
+  `%Req.TransportError{reason: :timeout}`, which reads like a broken server rather
+  than a budget the caller can raise. `:vllm` and `:sglang` are the same class of
+  host and were left alone because they were not measured. Override per model with
+  `receive_timeout:` as before.
+
+- **`llama_cpp_ex` updated to `0.8.44`** (from `0.8.22`) and verified against real
+  GGUF models: the four functions this library calls — `init/0`, `load_model/2`,
+  `chat_completion/3`, `stream_chat_completion/3` — are unchanged, and the tagged
+  `--only llama` suite passes on two different local models, covering chat,
+  streaming, `enable_thinking: false`, grammar-constrained JSON and embeddings.
+  Tool calling is still absent upstream, so the provider's "not supported by this
+  backend" behaviour is unchanged. `req`, `ecto` and `elixir_make` were
+  deliberately *not* moved with it: `mix deps.update llama_cpp_ex` pulls them
+  opportunistically, none is required by 0.8.44, and req is the default HTTP
+  backend for every provider.
+
 - **`Nous.HTTP.Buffer` extracted.** Both stream backends reached up into
   `Nous.Providers.HTTP` for buffer helpers, making the transport layer depend
   on the provider layer — the one genuine (non-benign) runtime cycle in the
@@ -604,6 +627,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   down. `max_nesting` was already at its floor.
 
 ### Fixed
+
+- **`Nous.Plugins.Summarization` never bounded the context window.** Its trigger
+  read `ctx.usage.total_tokens` — the cumulative bill for the run, every input
+  and output token of every request summed — instead of the size of the transcript
+  about to be sent. That measured the wrong thing in both directions: a long
+  conversation of small requests crossed the threshold while its context was still
+  tiny and then compacted on *every* subsequent request forever, because a bill
+  never decreases; while a run whose context genuinely exploded was not compacted
+  at all. Reproduced with no LLM involved: a transcript of ~300,000 estimated
+  tokens configured with `max_context_tokens: 5_000` came back byte-identical, 13
+  messages in and 13 out, because nothing had been billed yet. The trigger is now
+  `Nous.Transcript.estimate_messages_tokens/1` over `ctx.messages`, so the
+  threshold means what its name says and matches every other token budget here.
+
+  Found by driving `Nous.ReActAgent` against a local model: with no context
+  management it grew one task to a **170,732-token request against a 32,000-token
+  window** before the server refused it with a 400, and the earlier symptom was a
+  stream of `%Req.TransportError{reason: :timeout}` as each request got slower.
+  Enabling the plugin now cuts the peak on that task to 46,809 tokens. It still
+  does not fit the window: `:keep_recent` messages are exempt from pruning, so a
+  few large recent tool results can exceed any budget by themselves, and
+  `Nous.ReActAgent` ships with no context management of its own — a task it cannot
+  converge on will still outgrow the context.
+
+  Every existing test in this plugin's suite triggered compaction by supplying a
+  large fake `usage.total_tokens` on a *small* transcript, which is why the defect
+  survived; a test now drives it from transcript size with `usage` at zero.
 
 - **A tool could not declare its own deadline, so `Nous.Tools.Bash` was killed
   at 30s while documenting and granting 120s.** `%Nous.Tool{}` has always had a

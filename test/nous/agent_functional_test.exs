@@ -37,34 +37,6 @@ defmodule Nous.AgentFunctionalTest do
       prompt: "What is Elixir?",
       message_count: 3
     },
-    tool_call_response: %{
-      output:
-        "Elixir is a dynamic, functional programming language designed for building scalable and maintainable applications. It runs on the Erlang Virtual Machine (BEAM), which provides features like fault tolerance, hot code swapping, and distributed computing. Elixir is commonly used for web development, real-time systems, and distributed applications. Its syntax is influenced by Ruby, making it easy to learn for developers familiar with that language.",
-      usage: %Nous.Usage{
-        requests: 2,
-        tool_calls: 1,
-        input_tokens: 362,
-        output_tokens: 104,
-        total_tokens: 466
-      },
-      prompt: "Search for Elixir programming language",
-      message_count: 5,
-      tool_calls: 1
-    },
-    multi_tool_response: %{
-      output: "The current time is 2025-10-20 15:30:00 UTC.  \n2 + 2 = 4.",
-      usage: %Nous.Usage{
-        requests: 2,
-        tool_calls: 2,
-        input_tokens: 497,
-        output_tokens: 67,
-        total_tokens: 564
-      },
-      prompt: "What time is it and what is 2 + 2?",
-      message_count: 6,
-      tool_calls: 2,
-      iterations: 2
-    },
     conversation: %{
       messages: [
         %{
@@ -82,7 +54,13 @@ defmodule Nous.AgentFunctionalTest do
       agent =
         Agent.new(Nous.LLMTestHelper.test_model(),
           instructions: "You are a helpful assistant. Be concise.",
-          model_settings: %{temperature: 0.7, max_tokens: 100}
+          # Generous on purpose: on a reasoning model the thinking tokens come out
+          # of the same budget as the answer. Measured on qwen3.8-27b at
+          # `max_tokens: 100`, 80 of the 100 went to reasoning and the response
+          # stopped on `length` — sometimes leaving no visible content at all,
+          # which failed the assertion below with an empty string. The budget was
+          # the flake, not the runner.
+          model_settings: %{temperature: 0.7, max_tokens: 1024}
         )
 
       {:ok, result} = Agent.run(agent, "What is Elixir?", max_iterations: 1)
@@ -152,9 +130,16 @@ defmodule Nous.AgentFunctionalTest do
       assert is_binary(result.output)
       assert String.length(result.output) > 20
 
-      # Compare with fixture
-      fixture = @fixtures.tool_call_response
-      assert result.usage.tool_calls == fixture.tool_calls
+      # The iteration budget is the contract worth asserting here, and it fails
+      # on a plausible bug: a loop that ignores `max_iterations` never stops.
+      #
+      # This used to assert `result.usage.tool_calls == @fixtures.tool_call_response.tool_calls`,
+      # an exact count recorded from one specific model. A chattier model
+      # legitimately searches more than once for the same prompt — measured at 9
+      # calls against the recorded 1 — so the assertion pinned a model rather
+      # than a behaviour: it fails on every model swap and catches no defect.
+      # The meaningful floor (`tool_calls >= 1`) is asserted above.
+      assert result.iterations <= 5
     end
 
     test "agent uses multiple tools" do
@@ -194,9 +179,11 @@ defmodule Nous.AgentFunctionalTest do
       assert result.output =~ ~r/(time|UTC)/i
       assert result.output =~ ~r/4/
 
-      # Compare with fixture
-      fixture = @fixtures.multi_tool_response
-      assert result.usage.tool_calls == fixture.tool_calls
+      # Same reasoning as the single-tool test above: the recorded exact count
+      # (2) pinned one model, and a chattier one legitimately made 8. The floor
+      # that matters — both tools were actually reached — is asserted above, and
+      # the iteration budget is the invariant that can still fail on a bug.
+      assert result.iterations <= 5
     end
   end
 

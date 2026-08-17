@@ -10,6 +10,12 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
   @moduletag :llm
   @moduletag :eval
   @moduletag :react
+  # NOTE: 3 minutes, deliberately not raised. These tests currently fail against
+  # a local model for a real reason, not a slow one: `Nous.ReActAgent` applies no
+  # context management, so a task it cannot converge on grows the request every
+  # iteration. Measured on this host — a single "plan a rectangle area" task
+  # reached a 170,732-token request against a 32,000-token window and was refused
+  # by the server with a 400. Raising this ceiling only buys a slower failure.
   @moduletag timeout: 180_000
 
   alias Nous.Tool

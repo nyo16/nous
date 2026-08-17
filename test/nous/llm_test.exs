@@ -104,8 +104,10 @@ defmodule Nous.LLMTest do
       {:ok, _text} = Nous.LLM.generate_text("lmstudio:qwen3", "hi")
 
       [model] = CapturingDispatcher.get_models()
-      # LMStudio default is 120_000
-      assert model.receive_timeout == 120_000
+      # LM Studio default is 300_000: it JIT-loads a model on the first request
+      # that names it, so a cold large model spends tens of seconds before its
+      # first token.
+      assert model.receive_timeout == 300_000
     end
 
     test "with %Model{} struct preserves receive_timeout" do
