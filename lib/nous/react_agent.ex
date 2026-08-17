@@ -72,6 +72,18 @@ defmodule Nous.ReActAgent do
 
   alias Nous.Agent
 
+  # 30_000 tokens fits inside a 32k-window local model with room for the reply, and
+  # is ample for ReAct's narrow steps. `keep_recent: 8` keeps the last few
+  # observe/act pairs verbatim so the model can still see what it just did.
+  #
+  # Two directions to tune it, and they pull opposite ways. A large-window cloud
+  # model can afford far more. A SLOW model wants LESS: measured on a 27B Q8 local
+  # model at ~13 tokens/sec, one ReAct-shaped request took 72.7s, and a request
+  # carrying a prompt near this ceiling exceeded even a 5-minute per-request budget.
+  # The budget that keeps a fast model sharp is the one that makes a slow model time
+  # out, so there is no single right number here — only a safe starting point.
+  @default_summarization %{max_context_tokens: 30_000, keep_recent: 8}
+
   @type t :: Agent.t()
 
   @doc """
@@ -122,9 +134,37 @@ defmodule Nous.ReActAgent do
       |> Keyword.delete(:react_system_prompt)
       |> Keyword.delete(:require_planning)
       |> Keyword.delete(:track_history)
+      |> with_context_management()
 
     # Create the underlying agent with ReAct behaviour
     Agent.new(model_string, agent_opts)
+  end
+
+  # ReAct is the one agent shape whose defining feature is looping, so it is the
+  # one that must not be handed an unbounded transcript. Measured here against a
+  # local model on a single "plan the area of a rectangle" task:
+  #
+  #   no context management -> a 170,732-token request against a 32,000-token
+  #                            window, refused by the server after 775s
+  #   with this default     -> done in 3 iterations, 4,866 peak tokens, 19.8s
+  #
+  # Enabling it costs nothing on the common path: the plugin prunes oversized tool
+  # results first, which is free, and only pays for an LLM summarization if the
+  # transcript is still over budget after that.
+  #
+  # The budget is deliberately below the plugin's own 100_000 default. ReAct steps
+  # are narrow by construction, and a ceiling above a small local model's entire
+  # window protects nobody — at 100_000 every measurement above fails exactly as it
+  # did. Callers on a large-window model should raise it.
+  #
+  # Supplying your own `plugins:` or `summarization_config` replaces this; nothing
+  # is forced on a caller who has an opinion.
+  #
+  # Only `:plugins` is set here. `%Nous.Agent{}` carries no `:deps` — dependencies
+  # arrive per run — so the matching budget is applied in `run/3` and
+  # `run_stream/3` rather than here, where it would be silently dropped.
+  defp with_context_management(opts) do
+    Keyword.put_new_lazy(opts, :plugins, fn -> [Nous.Plugins.Summarization] end)
   end
 
   @doc """
@@ -182,12 +222,14 @@ defmodule Nous.ReActAgent do
     existing_deps = Keyword.get(opts, :deps, %{})
 
     react_deps =
-      Map.merge(existing_deps, %{
+      existing_deps
+      |> Map.merge(%{
         todos: [],
         plans: [],
         notes: [],
         tool_history: []
       })
+      |> Map.put_new(:summarization_config, @default_summarization)
 
     # Update opts with ReAct context
     react_opts = Keyword.put(opts, :deps, react_deps)
@@ -231,12 +273,14 @@ defmodule Nous.ReActAgent do
     existing_deps = Keyword.get(opts, :deps, %{})
 
     react_deps =
-      Map.merge(existing_deps, %{
+      existing_deps
+      |> Map.merge(%{
         todos: [],
         plans: [],
         notes: [],
         tool_history: []
       })
+      |> Map.put_new(:summarization_config, @default_summarization)
 
     react_opts = Keyword.put(opts, :deps, react_deps)
 

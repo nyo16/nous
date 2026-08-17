@@ -403,8 +403,47 @@ defmodule Nous.Transcript do
   @spec estimate_messages_tokens([Message.t()]) :: non_neg_integer()
   def estimate_messages_tokens(messages) when is_list(messages) do
     messages
-    |> Enum.reduce(0, fn msg, acc -> acc + byte_size(Message.extract_text(msg)) end)
+    |> Enum.reduce(0, fn msg, acc -> acc + message_bytes(msg) end)
     |> div(4)
+  end
+
+  # Text AND tool-call arguments, because both are sent.
+  #
+  # `Message.extract_text/1` returns only content, so an assistant turn carrying
+  # its payload in tool-call arguments measured as ZERO here. Measured exactly: a
+  # 102,000-byte note passed as `arguments` serialises to 102,137 bytes on the wire
+  # and this function returned 0 tokens for it.
+  #
+  # The blind spot landed hardest on the agents that need a budget most. A ReAct
+  # agent's output *is* tool calls — `plan`, `note` and `add_todo` all carry their
+  # text in arguments — so a compaction threshold reading this number saw almost
+  # none of the transcript and fired far too late: a run capped at
+  # `max_context_tokens: 20_000` still built a 46,809-token request.
+  #
+  # Arguments are measured as encoded JSON rather than by summing their parts,
+  # because that is the shape the provider actually sends: keys, quoting and all.
+  defp message_bytes(msg) do
+    byte_size(Message.extract_text(msg)) + tool_call_bytes(msg)
+  end
+
+  # `List.wrap/1` rather than a second clause for the empty/absent case: a
+  # `%Message{}` always carries a `tool_calls` list, so a fallback clause is dead
+  # code that dialyzer correctly refuses.
+  defp tool_call_bytes(%{tool_calls: calls}) do
+    calls
+    |> List.wrap()
+    |> Enum.reduce(0, fn call, acc ->
+      name = call |> Nous.ToolCall.field(:name, "") |> to_string()
+      args = Nous.ToolCall.field(call, :arguments, %{})
+
+      encoded =
+        case args do
+          binary when is_binary(binary) -> binary
+          other -> JSON.encode!(other)
+        end
+
+      acc + byte_size(name) + byte_size(encoded)
+    end)
   end
 
   @doc """

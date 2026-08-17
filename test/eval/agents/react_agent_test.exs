@@ -10,13 +10,23 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
   @moduletag :llm
   @moduletag :eval
   @moduletag :react
-  # NOTE: 3 minutes, deliberately not raised. These tests currently fail against
-  # a local model for a real reason, not a slow one: `Nous.ReActAgent` applies no
-  # context management, so a task it cannot converge on grows the request every
-  # iteration. Measured on this host — a single "plan a rectangle area" task
-  # reached a 170,732-token request against a 32,000-token window and was refused
-  # by the server with a 400. Raising this ceiling only buys a slower failure.
-  @moduletag timeout: 180_000
+  # 10 minutes, and the reason changed while measuring it, so it is worth recording
+  # which reason is the current one.
+  #
+  # It was NOT raised while `Nous.ReActAgent` had no context management: a task the
+  # model could not converge on grew the request every iteration, reaching a
+  # 170,732-token request against a 32,000-token window before the server refused
+  # it with a 400. A bigger ceiling would only have bought a slower failure, so the
+  # honest ceiling was the small one.
+  #
+  # That defect is fixed — `Nous.Transcript` now counts tool-call arguments and
+  # ReActAgent enables compaction by default — and the failure it caused is gone:
+  # no context-size rejections in a full-file run. What remains is genuine variance.
+  # At temperature this task converges in 3 iterations sometimes and loops to the
+  # iteration cap other times, and every loop is another call to a local model: the
+  # same test measured 27s and >180s minutes apart. That is worth waiting out, and
+  # it is no longer hiding a defect.
+  @moduletag timeout: 600_000
 
   alias Nous.Tool
 

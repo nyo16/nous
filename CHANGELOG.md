@@ -607,6 +607,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `async: true` (39 → 30 sync). Files driving `Nous.AgentServer` stay sync and
   say why: `$callers` does not cross `GenServer.start_link`.
 
+- **`Nous.Transcript.estimate_messages_tokens/1` was blind to tool-call
+  arguments, so no token budget could see a tool-calling transcript.** It summed
+  `Message.extract_text/1`, which returns content only. Measured exactly: a
+  102,000-byte payload counted as 25,500 tokens when carried as message content
+  and as **0 tokens** when carried as tool-call arguments — the same payload
+  serialises to 102,137 bytes on the wire either way. Arguments are now counted as
+  encoded JSON, which brings the estimate to 25,503 against that 25,534-token
+  wire size.
+
+  This is the root cause behind the ReAct blow-ups below, and it silently weakened
+  every consumer of the estimate: compaction thresholds, spill decisions and
+  `should_compact?/2`. It bit hardest on the agents that need a budget most,
+  because a tool-using agent keeps its payload in `arguments` by definition.
+
+- **`Nous.ReActAgent` enables context management by default.** ReAct's defining
+  feature is looping, which makes it the one agent shape that must not be handed
+  an unbounded transcript. `Nous.Plugins.Summarization` is now on by default with
+  `max_context_tokens: 30_000, keep_recent: 8`; passing your own `plugins:` or
+  `summarization_config` replaces it entirely.
+
+  Enabling it costs nothing on the common path — the plugin prunes oversized tool
+  results for free and only pays for a summarization if still over budget. On one
+  "plan the area of a rectangle" task against a local model, measured end to end:
+
+  | | peak request | outcome |
+  |---|---|---|
+  | before | 170,732 tokens | refused by the server (32k window) after 775s |
+  | trigger fixed | 46,809 tokens | still refused, 203s |
+  | + estimator fixed | **4,866 tokens** | completed, 3 iterations, 19.8s |
+
+  The `:eval` ReAct suite went from ~1 to **7 of 11** passing on a 4B local model,
+  with zero context-size rejections. The remainder is throughput, not capability
+  or context: the same test measured 27s and >180s minutes apart because the model
+  loops a variable number of times, and a *larger* model is worse rather than
+  better — a 27B Q8 generates at ~13 tokens/sec, so one ReAct-shaped request took
+  72.7s and a request near the 30,000-token ceiling exceeded even a 5-minute
+  per-request budget. 648 of its 956 completion tokens were reasoning, and
+  `enable_thinking: false` was ignored by that model, so two thirds of the
+  generation is invisible overhead for an agent already being told to reason.
+
 - **Race-hiding sleeps replaced with real synchronisation**, wall-clock
   concurrency assertions replaced with a structural in-flight counter asserting
   the maximum is *exactly* the expected concurrency (a `<=` bound also passes
