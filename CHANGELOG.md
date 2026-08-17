@@ -607,6 +607,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `async: true` (39 → 30 sync). Files driving `Nous.AgentServer` stay sync and
   say why: `$callers` does not cross `GenServer.start_link`.
 
+- **`Nous.ReActAgent`'s own tools declared no parameters, so the agent could not
+  work.** All six — `plan`, `note`, `add_todo`, `complete_todo`, `list_todos`,
+  `final_answer` — were built with `Tool.from_function/2` passing only `name:` and
+  `description:`, so the schema fell back to an empty object. Measured: every one
+  reached the model with `properties: []` and `required: []`, while their
+  descriptions promised parameters in prose ("Parameter: answer (your complete
+  solution)").
+
+  A model that honours the schema therefore called them with `{}`. `final_answer`
+  returned the literal string `"No answer provided"`, and `note`/`final_answer` —
+  which pattern-match on `%{"content" => _}` and `%{"answer" => _}` — raised
+  `FunctionClauseError` instead. The loop retried calls that could never succeed
+  until it ran out of iterations, which is what made ReAct look like a
+  model-capability problem. All six now carry real schemas, and those two functions
+  answer a schema-violating call with a sentence naming the missing parameter
+  rather than raising, because models do ignore schemas and a crash teaches them
+  nothing.
+
+- **The ReAct prompt contained an obligation that could never be discharged.**
+  "Complete all pending todos before calling `final_answer`" makes every
+  `add_todo` create a new prerequisite for finishing, so a task whose deliverable
+  *is* a todo list can never be answered — measured as
+  `{:error, %MaxIterationsExceeded{}}` on "make a todo list for learning Elixir,
+  then answer with the list", having done the work and never being allowed to
+  report it. Completing todos is now advised rather than required, and the prompt
+  states plainly that an answer with pending todos beats running out of steps.
+
+- **`Nous.ReActAgent` defaults to 25 iterations rather than the generic 10.** Its
+  mandated workflow is plan (1) + one `add_todo` per step + `note` observations +
+  one `complete_todo` each + `final_answer` (1), so a four-step task needs 11
+  iterations before it is permitted to answer. The agent could not follow its own
+  instructions inside the default budget.
+
+  Together these take the `:eval` ReAct suite from 1 of 11 to **11 of 11 on two
+  different local models** — a 4B in 155s and a 27B in 793s — where before the fixes
+  the suite spent 25 minutes mostly timing out. `7.1` answers `"8"` to "What is 5
+  plus 3?" instead of `"No answer provided"`.
+
 - **`Nous.Transcript.estimate_messages_tokens/1` was blind to tool-call
   arguments, so no token budget could see a tool-calling transcript.** It summed
   `Message.extract_text/1`, which returns content only. Measured exactly: a

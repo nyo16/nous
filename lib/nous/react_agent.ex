@@ -84,6 +84,16 @@ defmodule Nous.ReActAgent do
   # out, so there is no single right number here — only a safe starting point.
   @default_summarization %{max_context_tokens: 30_000, keep_recent: 8}
 
+  # The generic agent default is 10, and ReAct cannot follow its own instructions
+  # inside that. Its mandated workflow is plan (1) + one `add_todo` per step +
+  # `note` observations + one `complete_todo` each + `final_answer` (1), so a
+  # four-step task needs 1 + 4 + 1 + 4 + 1 = 11 iterations before it may answer.
+  # Measured consequence: `{:error, %MaxIterationsExceeded{max_iterations: 10}}` on
+  # a "make a todo list" task, having done the work and never being allowed to
+  # report it. A budget that forbids the prescribed ritual is a budget bug, not
+  # model weakness.
+  @default_max_iterations 25
+
   @type t :: Agent.t()
 
   @doc """
@@ -232,7 +242,10 @@ defmodule Nous.ReActAgent do
       |> Map.put_new(:summarization_config, @default_summarization)
 
     # Update opts with ReAct context
-    react_opts = Keyword.put(opts, :deps, react_deps)
+    react_opts =
+      opts
+      |> Keyword.put(:deps, react_deps)
+      |> Keyword.put_new(:max_iterations, @default_max_iterations)
 
     # Run the agent
     case Agent.run(agent, prompt, react_opts) do
@@ -282,7 +295,10 @@ defmodule Nous.ReActAgent do
       })
       |> Map.put_new(:summarization_config, @default_summarization)
 
-    react_opts = Keyword.put(opts, :deps, react_deps)
+    react_opts =
+      opts
+      |> Keyword.put(:deps, react_deps)
+      |> Keyword.put_new(:max_iterations, @default_max_iterations)
 
     Agent.run_stream(agent, prompt, react_opts)
   end

@@ -73,7 +73,11 @@ defmodule Nous.Agents.ReActAgent do
   - Never repeat the exact same tool call with identical parameters
   - Always explain your reasoning before acting
   - Use 'list_todos' to check progress
-  - Complete all pending todos before calling final_answer
+  - Complete todos as you finish them, but never let bookkeeping stop you from
+    finishing: if the task is answered, call 'final_answer' even with todos pending
+  - You have a limited number of steps. If you already have what you need to
+    answer, call 'final_answer' now — an answer with pending todos is far better
+    than running out of steps with no answer at all
   - Call 'note' to document important observations
 
   EXAMPLE FLOW:
@@ -242,40 +246,88 @@ defmodule Nous.Agents.ReActAgent do
     end
   end
 
+  # Every one of these carries an explicit `parameters:` schema, and that is not
+  # decoration — it is the difference between the agent working and flailing.
+  #
+  # They were previously declared with `name:` and `description:` only, so
+  # `Tool.from_function/2` fell back to an empty object: measured, all six reached
+  # the model with `properties: []` and `required: []` while their descriptions
+  # promised parameters in prose. A model that honours the schema therefore calls
+  # them with `{}` — which made `final_answer` return the literal string "No answer
+  # provided", and made `note`/`final_answer`, which pattern-match on
+  # `%{"content" => _}` and `%{"answer" => _}`, raise `FunctionClauseError` instead.
+  # The loop then retried calls that could never work, burning the iteration budget,
+  # which is what made ReAct look like a model-quality problem.
+  #
+  # The descriptions still name their parameters, because a schema and a sentence
+  # reinforce each other for a small model, but the schema is what a provider
+  # actually enforces.
   defp react_tools do
     [
       Tool.from_function(&ReActTools.plan/2,
         name: "plan",
         description:
-          "Create a structured plan for solving the task. Analyzes known facts, facts to look up, and facts to derive. Use this FIRST before taking any actions."
+          "Create a structured plan for solving the task. Analyzes known facts, facts to look up, and facts to derive. Use this FIRST before taking any actions.",
+        parameters: object(%{"task" => string("The task or problem to plan for.")}, ["task"])
       ),
       Tool.from_function(&ReActTools.note/2,
         name: "note",
         description:
-          "Record an observation, insight, or intermediate finding. Use this to document important information discovered during your work."
+          "Record an observation, insight, or intermediate finding. Use this to document important information discovered during your work.",
+        parameters:
+          object(%{"content" => string("The observation or finding to record.")}, ["content"])
       ),
       Tool.from_function(&ReActTools.add_todo/2,
         name: "add_todo",
         description:
-          "Add a task to your todo list. Use this to break down complex problems into manageable subtasks. Parameters: item (required), priority (optional: high/medium/low)."
+          "Add a task to your todo list. Use this to break down complex problems into manageable subtasks. Parameters: item (required), priority (optional: high/medium/low).",
+        parameters:
+          object(
+            %{
+              "item" => string("The task to add."),
+              "priority" => %{
+                "type" => "string",
+                "enum" => ~w(high medium low),
+                "description" => "Priority. Defaults to medium."
+              }
+            },
+            ["item"]
+          )
       ),
       Tool.from_function(&ReActTools.complete_todo/2,
         name: "complete_todo",
         description:
-          "Mark a todo item as complete. Parameters: id (todo number) OR item (description matching the todo)."
+          "Mark a todo item as complete. Parameters: id (todo number) OR item (description matching the todo).",
+        parameters:
+          object(
+            %{
+              "id" => %{"type" => "integer", "description" => "The todo number to complete."},
+              "item" => string("The todo description to complete, if the number is unknown.")
+            },
+            []
+          )
       ),
       Tool.from_function(&ReActTools.list_todos/2,
         name: "list_todos",
         description:
-          "View all current todos with their status. Shows pending and completed tasks to help track progress."
+          "View all current todos with their status. Shows pending and completed tasks to help track progress.",
+        parameters: object(%{}, [])
       ),
       Tool.from_function(&ReActTools.final_answer/2,
         name: "final_answer",
         description:
-          "Provide the final answer to complete the task. REQUIRED to finish. Only call this after you have gathered all necessary information and solved the problem. Parameter: answer (your complete solution)."
+          "Provide the final answer to complete the task. REQUIRED to finish. Only call this after you have gathered all necessary information and solved the problem. Parameter: answer (your complete solution).",
+        parameters:
+          object(%{"answer" => string("The complete answer to the user's task.")}, ["answer"])
       )
     ]
   end
+
+  defp object(properties, required) do
+    %{"type" => "object", "properties" => properties, "required" => required}
+  end
+
+  defp string(description), do: %{"type" => "string", "description" => description}
 
   defp find_last_assistant_text(messages) do
     messages
