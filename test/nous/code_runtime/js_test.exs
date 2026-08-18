@@ -7,6 +7,14 @@ defmodule Nous.CodeRuntime.JSTest do
 
   @moduletag :code_runtime_js
 
+  # Every deadline and cancel test terminates a live isolate that still owes
+  # replies to fire-and-forget `console.log` calls, and the substrate logs one
+  # error per undelivered reply — hundreds of lines per CI run, all of them the
+  # expected consequence of a kill working. Captured so a real failure is still
+  # visible in the output; `mix test --include code_runtime_js` still shows them
+  # for anyone debugging the provider.
+  @moduletag :capture_log
+
   # tyrex is optional. Without it there is nothing to test rather than a wall of
   # failures, which is the same compile-time check `Nous.Application` uses to
   # decide whether to start this provider's supervision at all.

@@ -5,8 +5,10 @@ defmodule Nous.SandboxIntegrationTest do
 
   @moduletag :sandbox_integration
 
-  alias Nous.Sandbox
-  alias Nous.Sandbox.Policy
+  # The aliases live inside the `if` below, not here: on a host without the
+  # platform binary (CI's Linux runners have no `bwrap`) the whole block compiles
+  # out, and aliases at module level would then warn as unused on exactly the
+  # platform where the suite is meant to be a silent no-op.
 
   # The provider for THIS host, or `nil`. Resolved at compile time on purpose:
   # ExUnit offers no runtime skip from `setup`, so on a host without the binary
@@ -20,6 +22,9 @@ defmodule Nous.SandboxIntegrationTest do
 
   if platform_provider do
     @provider platform_provider
+
+    alias Nous.Sandbox
+    alias Nous.Sandbox.Policy
 
     setup do
       original_backend = Application.fetch_env(:nous, :sandbox_backend)

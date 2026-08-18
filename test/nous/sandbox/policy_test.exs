@@ -155,9 +155,28 @@ defmodule Nous.Sandbox.PolicyTest do
         Policy.new(mode: :workspace_write, workspace_root: "/..")
       end
 
-      # Control: the parent of the workspace is not "/" and is perfectly legal,
-      # so the refusal above is about "/" alone and not about rejecting `..`.
-      assert Policy.new(mode: :workspace_write, workspace_root: "/tmp/..").workspace_root != "/"
+      # Control: a `..` path that does NOT land on "/" is perfectly legal, so the
+      # refusals above are about "/" alone and not about rejecting `..`.
+      #
+      # The fixture is derived, not written literally. `"/tmp/.."` was the obvious
+      # choice and is platform-dependent: on Linux it canonicalises to "/" and is
+      # therefore correctly refused, while on macOS `/tmp` is a symlink to
+      # `/private/tmp` so it lands on `/private`. It tested a different thing on
+      # each OS — green on a laptop, red on CI. A path two levels deep inside the
+      # system temp dir has a parent that is never "/" on any host.
+      nested =
+        Path.join([
+          System.tmp_dir!(),
+          "nous_policy_control_#{System.unique_integer([:positive])}",
+          "child"
+        ])
+
+      File.mkdir_p!(nested)
+      on_exit(fn -> File.rm_rf!(Path.dirname(nested)) end)
+
+      control = Path.join(nested, "..")
+      assert Policy.canonical(control) != "/", "control fixture must not resolve to /"
+      assert Policy.new(mode: :workspace_write, workspace_root: control).workspace_root != "/"
     end
 
     test "a workspace root containing a NUL byte is refused" do
