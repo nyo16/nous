@@ -4,8 +4,9 @@ defmodule Nous.AgentRunner.ToolExecution do
   # execution pipelines, pre/post hooks, approval and permission-policy
   # enforcement, and tool result recording. Internal to the runner.
 
-  alias Nous.{Message, Messages, OutputSchema, Permissions, Tool, ToolExecutor}
+  alias Nous.{CodeMode, Message, Messages, OutputSchema, Permissions, Spill, Tool, ToolExecutor}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
+  alias Nous.Tool.ContextUpdate
   alias Nous.Hook
 
   require Logger
@@ -24,6 +25,15 @@ defmodule Nous.AgentRunner.ToolExecution do
   # `ToolTimeout` into its retry path, so the inner timer must win and produce
   # a proper per-tool timeout result rather than an opaque outer task kill.
   @timeout_headroom_ms :timer.seconds(5)
+
+  # Tools whose entire job is to hand back file bytes verbatim, and which must
+  # therefore never have their results spilled. Spilling one builds a
+  # read→spill→read loop: the model reads a file, gets a locator whose retrieval
+  # hint says "read it with file_read", reads *that*, gets another locator over
+  # the cap, forever. Search tools are deliberately absent — `file_grep` and
+  # `file_glob` produce exactly the multi-megabyte digests spilling exists for,
+  # and their output is a summary across many files, not one file to re-read.
+  @never_spill_tools ~w(file_read)
 
   def handle_tool_calls(agent, behaviour, ctx, response, tools) do
     # Extract tool calls
@@ -50,8 +60,10 @@ defmodule Nous.AgentRunner.ToolExecution do
         tool_names = Enum.map_join(real_calls, ", ", &get_tool_field(&1, :name))
         Logger.debug("Detected #{length(real_calls)} tool call(s): #{tool_names}")
 
-        # Build run context for tool execution
-        run_ctx = Context.to_run_context(ctx)
+        # Build run context for tool execution. This is the single construction
+        # site for both the sequential and parallel paths below, so the session
+        # sandbox policy only has to be attached here.
+        run_ctx = Context.to_run_context(ctx, sandbox: agent.sandbox)
 
         # Execute all real tool calls and collect results
         {tool_results, ctx} =
@@ -76,6 +88,8 @@ defmodule Nous.AgentRunner.ToolExecution do
   # pre/execute/post pipeline before the next call starts, so call N+1's hooks
   # and approval checks observe call N's context effects.
   def run_tool_calls_sequential(real_calls, tools, run_ctx, behaviour, agent, ctx) do
+    code_mode = CodeMode.resolve(agent)
+
     {results, ctx} =
       Enum.reduce(real_calls, {[], ctx}, fn call, {results, acc_ctx} ->
         call_name = get_tool_field(call, :name)
@@ -91,29 +105,34 @@ defmodule Nous.AgentRunner.ToolExecution do
 
         cleaned_name = clean_tool_name(call_name)
 
-        # Short-circuit on tool_call whose arguments JSON failed to parse.
-        # The provider marshalling tagged it with "_invalid_arguments" so
-        # we surface a clean tool-error result and let the LLM retry —
-        # rather than invoking the tool with bogus/empty args.
+        # Short-circuit on a tool_call whose arguments JSON failed to parse.
+        # The provider marshalling tagged it with "_invalid_arguments" so we
+        # surface a clean tool-error result and let the LLM retry — rather than
+        # invoking the tool with bogus/empty args.
         invalid_args = invalid_arguments(call)
 
-        if is_binary(invalid_args) do
-          result_msg = invalid_arguments_result(call_id, cleaned_name, invalid_args)
-          {[result_msg | results], acc_ctx}
-        else
-          run_tool_with_hooks(
-            call,
-            call_id,
-            call_name,
-            cleaned_name,
-            call_arguments,
-            tools,
-            run_ctx,
-            behaviour,
-            agent,
-            acc_ctx,
-            results
-          )
+        cond do
+          is_binary(invalid_args) ->
+            result_msg = invalid_arguments_result(call_id, cleaned_name, invalid_args)
+            {[result_msg | results], acc_ctx}
+
+          CodeMode.collapsed?(code_mode, cleaned_name, call) ->
+            {[code_mode_denial(call_id, cleaned_name) | results], acc_ctx}
+
+          true ->
+            run_tool_with_hooks(
+              call,
+              call_id,
+              call_name,
+              cleaned_name,
+              call_arguments,
+              tools,
+              run_ctx,
+              behaviour,
+              agent,
+              acc_ctx,
+              results
+            )
         end
       end)
 
@@ -153,7 +172,9 @@ defmodule Nous.AgentRunner.ToolExecution do
       Nous.TaskSupervisor
       |> Task.Supervisor.async_stream_nolink(
         approved,
-        fn call -> {get_tool_field(call, :id), execute_single_tool(tools, call, run_ctx)} end,
+        fn call ->
+          {get_tool_field(call, :id), execute_single_tool(tools, call, run_ctx, agent)}
+        end,
         timeout: call_timeout,
         # Kill a task that blows the ceiling instead of blocking on it, so the
         # rest of the batch still drains.
@@ -204,9 +225,10 @@ defmodule Nous.AgentRunner.ToolExecution do
 
     case Enum.find(tools, fn t -> t.name == name end) do
       %Tool{timeout: timeout, retries: retries} when is_integer(timeout) and timeout > 0 ->
-        # A timeout raised inside ToolExecutor goes through its retry path, so
-        # the call may legitimately spend `timeout` ms on each of its
-        # `retries + 1` attempts before it finally gives up.
+        # A timeout is terminal in ToolExecutor, but an ordinary failure still
+        # retries and can arrive a millisecond under the deadline, so the call
+        # may legitimately spend `timeout` ms on each of its `retries + 1`
+        # attempts before it finally gives up.
         timeout * (retries + 1) + @timeout_headroom_ms
 
       _ ->
@@ -258,33 +280,38 @@ defmodule Nous.AgentRunner.ToolExecution do
 
     invalid_args = invalid_arguments(call)
 
-    if is_binary(invalid_args) do
-      {:done, invalid_arguments_result(call_id, cleaned_name, invalid_args)}
-    else
-      hook_payload = %{
-        tool_name: cleaned_name,
-        tool_id: call_id,
-        arguments: call_arguments
-      }
+    cond do
+      is_binary(invalid_args) ->
+        {:done, invalid_arguments_result(call_id, cleaned_name, invalid_args)}
 
-      case Hook.Runner.run(ctx.hook_registry, :pre_tool_use, hook_payload) do
-        :deny ->
-          Logger.info("Tool '#{cleaned_name}' denied by hook")
-          {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)}
+      CodeMode.collapsed?(CodeMode.resolve(agent), cleaned_name, call) ->
+        {:done, code_mode_denial(call_id, cleaned_name)}
 
-        {:deny, reason} ->
-          Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
+      true ->
+        hook_payload = %{
+          tool_name: cleaned_name,
+          tool_id: call_id,
+          arguments: call_arguments
+        }
 
-          {:done,
-           Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
+        case Hook.Runner.run(ctx.hook_registry, :pre_tool_use, hook_payload) do
+          :deny ->
+            Logger.info("Tool '#{cleaned_name}' denied by hook")
+            {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)}
 
-        {:modify, %{arguments: new_args}} ->
-          modified_call = put_tool_field(call, :arguments, new_args)
-          approval_decision(modified_call, call_id, cleaned_name, tools, agent, ctx)
+          {:deny, reason} ->
+            Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
 
-        _ ->
-          approval_decision(call, call_id, cleaned_name, tools, agent, ctx)
-      end
+            {:done,
+             Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
+
+          {:modify, %{arguments: new_args}} ->
+            modified_call = put_tool_field(call, :arguments, new_args)
+            approval_decision(modified_call, call_id, cleaned_name, tools, agent, ctx)
+
+          _ ->
+            approval_decision(call, call_id, cleaned_name, tools, agent, ctx)
+        end
     end
   end
 
@@ -479,15 +506,20 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   # Execute a tool call and record its result, returning the result message and updated context
   def execute_and_record_tool(tools, call, run_ctx, behaviour, agent, acc_ctx) do
-    {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx)
+    {result_msg, context_updates} = execute_single_tool(tools, call, run_ctx, agent)
     record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx)
   end
 
   # Post-execution stage for one tool call: post_tool_use hook (may modify the
-  # result), on_tool_response callback, behaviour :after_tool, merge_deps.
-  # Shared by the sequential path (via execute_and_record_tool) and the
-  # parallel path, which applies it in original call order after the fan-out.
-  def record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx) do
+  # result), on_tool_response callback, behaviour :after_tool, and the tool's
+  # context update. Shared by the sequential path (via execute_and_record_tool)
+  # and the parallel path, which applies it in original call order after the
+  # fan-out.
+  #
+  # This is also the only stage on the tool path that holds a
+  # `%Nous.Agent.Context{}`, and therefore the only place a `:log_event`
+  # operation can reach a session log.
+  def record_tool_result(call, result_msg, context_update, behaviour, agent, acc_ctx) do
     call_name = get_tool_field(call, :name)
     call_id = get_tool_field(call, :id)
     call_arguments = get_tool_field(call, :arguments)
@@ -522,20 +554,12 @@ defmodule Nous.AgentRunner.ToolExecution do
         acc_ctx
       )
 
-    acc_ctx =
-      if map_size(context_updates) > 0 do
-        Logger.debug("Merging context updates: #{inspect(Map.keys(context_updates))}")
-        Context.merge_deps(acc_ctx, context_updates)
-      else
-        acc_ctx
-      end
+    acc_ctx = apply_tool_context_update(acc_ctx, context_update)
 
     {result_msg, acc_ctx}
   end
 
-  def execute_single_tool(tools, call, run_ctx) do
-    alias Nous.Tool.ContextUpdate
-
+  def execute_single_tool(tools, call, run_ctx, agent) do
     # Clean up tool name - Claude sometimes adds XML-like syntax
     call_name = get_tool_field(call, :name)
     call_id = get_tool_field(call, :id)
@@ -547,18 +571,17 @@ defmodule Nous.AgentRunner.ToolExecution do
     {result, context_updates} =
       if tool do
         case ToolExecutor.execute(tool, call_arguments, run_ctx) do
-          # New: Handle ContextUpdate return
+          # Hand the whole update to the post stage instead of folding it to a
+          # deps map here: a `:log_event` operation needs the
+          # `%Nous.Agent.Context{}` only `record_tool_result/6` holds, and
+          # folding early is precisely what used to throw those events away.
           {:ok, result, %ContextUpdate{} = update} ->
-            Logger.debug("Tool '#{cleaned_name}' executed successfully with context updates")
-            updates = context_update_to_map(update)
+            Logger.debug(
+              "Tool '#{cleaned_name}' executed successfully with " <>
+                "#{length(ContextUpdate.operations(update))} context operation(s)"
+            )
 
-            if map_size(updates) > 0 do
-              Logger.debug(
-                "Tool '#{cleaned_name}' returned context updates via ContextUpdate: #{inspect(Map.keys(updates))}"
-              )
-            end
-
-            {result, updates}
+            {result, update}
 
           {:ok, result} ->
             Logger.debug("Tool '#{cleaned_name}' executed successfully")
@@ -605,8 +628,52 @@ defmodule Nous.AgentRunner.ToolExecution do
         {error_msg, %{}}
       end
 
+    # Spill before the result becomes message content: this is the single point
+    # where a completed tool result turns into a message, so the sequential and
+    # the parallel path are both covered by one call.
+    result = maybe_spill_result(result, cleaned_name, run_ctx, agent)
+
     {Message.tool(call_id, result, name: cleaned_name), context_updates}
   end
+
+  # Hand an oversized text result to the spill store and keep a preview plus a
+  # locator inline. Opt-in and best effort by construction:
+  # `Nous.Spill.maybe_spill/2` answers `:inline` when no `deps[:spill_config]`
+  # (or `config :nous, :spill`) is configured, when the result already fits,
+  # when it is not valid UTF-8, and when the backend failed — so nothing here
+  # can turn a successful tool call into an error.
+  defp maybe_spill_result(result, tool_name, run_ctx, agent) when is_binary(result) do
+    if tool_name in @never_spill_tools do
+      result
+    else
+      opts = [
+        ctx: run_ctx,
+        source: tool_name,
+        # Owner scopes stored content. `deps[:session_id]` is the key
+        # `Nous.Sandbox.Policy.resolve/2` already reads for session identity, so
+        # spilled files line up with the rest of a session's footprint; the
+        # agent name is the coarser fallback for a run that carries no session
+        # id, and `Nous.Spill` falls back to "unscoped" for an unnamed agent.
+        owner: spill_owner(run_ctx) || agent.name,
+        suggested_name: "#{tool_name}-result.txt"
+      ]
+
+      case Spill.maybe_spill(result, opts) do
+        {:spilled, replacement, _locator} -> replacement
+        :inline -> result
+      end
+    end
+  end
+
+  # Structured results (maps, lists, structs) are left alone: the provider
+  # marshalling owns their encoding, and stringifying a term just to spill it
+  # would change what the model sees.
+  defp maybe_spill_result(result, _tool_name, _run_ctx, _agent), do: result
+
+  # Binary-only, so a non-string session id can never reach the backend and
+  # crash a tool call that otherwise succeeded.
+  defp spill_owner(%{deps: %{session_id: session_id}}) when is_binary(session_id), do: session_id
+  defp spill_owner(_run_ctx), do: nil
 
   # Format tool errors to preserve structured information while providing LLM-friendly response
   @spec format_tool_error(term(), String.t()) :: %{summary: String.t(), response: String.t()}
@@ -642,39 +709,56 @@ defmodule Nous.AgentRunner.ToolExecution do
     end
   end
 
+  # Apply a tool's context update to the accumulating agent context.
+  #
+  # Two shapes arrive here: a `%ContextUpdate{}` from a structured tool return,
+  # and a plain deps map from the legacy `__update_context__` path (or `%{}`
+  # from a tool, timeout or crash that updated nothing).
+  #
+  # The struct clause MUST stay first. A struct is a map, so an `is_map/1`
+  # clause above it would swallow every `%ContextUpdate{}` and silently drop
+  # its events — the exact failure mode this change exists to remove.
+  defp apply_tool_context_update(acc_ctx, %ContextUpdate{} = update) do
+    acc_ctx
+    |> merge_tool_deps(context_update_to_map(update))
+    |> log_tool_events(ContextUpdate.log_events(update))
+  end
+
+  defp apply_tool_context_update(acc_ctx, deps) when is_map(deps) do
+    merge_tool_deps(acc_ctx, deps)
+  end
+
+  # Deps merge exactly as before: the update is folded from an EMPTY map and
+  # the result merged over the context. Folding from `acc_ctx.deps` instead
+  # (what `ContextUpdate.apply/2` does) would quietly redefine `:append` and
+  # `:delete` for every tool already shipping, so that stays a separate
+  # decision from this one.
+  defp merge_tool_deps(acc_ctx, deps) when map_size(deps) == 0, do: acc_ctx
+
+  defp merge_tool_deps(acc_ctx, deps) do
+    Logger.debug("Merging context updates: #{inspect(Map.keys(deps))}")
+    Context.merge_deps(acc_ctx, deps)
+  end
+
+  # Bookkeeping events, in the order the tool added them. `Context.log_event/3`
+  # projects them to no message, so an auditable side effect is recorded
+  # without entering the model's history — and it refuses surface types, so a
+  # tool cannot use this to write into the transcript.
+  defp log_tool_events(acc_ctx, events) do
+    Enum.reduce(events, acc_ctx, fn {type, data}, ctx ->
+      Context.log_event(ctx, type, data)
+    end)
+  end
+
   # Convert ContextUpdate operations to a deps map for merging.
   #
-  # `:append` previously did `existing ++ [item]`, which is O(n^2) over many
-  # appends to the same key in one update. We prepend instead and reverse each
-  # append-built key once at the end. `reversed` tracks keys whose stored list
-  # is currently in reverse order; :set/:merge/:delete store forward-order
-  # values and reset the flag — so a `:set [list]` then `:append` (the only
-  # mixed case) still preserves exact insertion order. Result is byte-identical
-  # to the old `++` reduce.
-  def context_update_to_map(%Nous.Tool.ContextUpdate{operations: ops}) do
-    {acc, reversed} =
-      Enum.reduce(ops, {%{}, MapSet.new()}, fn
-        {:set, key, value}, {acc, reversed} ->
-          {Map.put(acc, key, value), MapSet.delete(reversed, key)}
-
-        {:merge, key, map}, {acc, reversed} ->
-          existing = Map.get(acc, key, %{})
-          {Map.put(acc, key, Map.merge(existing, map)), MapSet.delete(reversed, key)}
-
-        {:append, key, item}, {acc, reversed} ->
-          if MapSet.member?(reversed, key) do
-            {Map.update!(acc, key, &[item | &1]), reversed}
-          else
-            existing = Map.get(acc, key, [])
-            {Map.put(acc, key, [item | Enum.reverse(existing)]), MapSet.put(reversed, key)}
-          end
-
-        {:delete, key}, {acc, reversed} ->
-          {Map.delete(acc, key), MapSet.delete(reversed, key)}
-      end)
-
-    Enum.reduce(reversed, acc, fn key, acc -> Map.update!(acc, key, &Enum.reverse/1) end)
-  end
+  # This was a second, independently maintained fold of the same operation
+  # list. It had drifted (shallow `Map.merge` where `ContextUpdate` deep-merges)
+  # and, with no catch-all clause, a newly added operation type raised
+  # `FunctionClauseError` right here on the hot tool path. One reducer now, in
+  # `Nous.Tool.ContextUpdate` — including the prepend-then-reverse append
+  # optimisation and the reasoning behind it.
+  defdelegate context_update_to_map(update), to: ContextUpdate, as: :to_deps
 
   # Mark a tool as approval-required when the permission policy says so, so the
   # per-tool flag and the policy compose (either one forces the approval gate).
@@ -693,10 +777,40 @@ defmodule Nous.AgentRunner.ToolExecution do
     end
   end
 
+  # The tool set one model request may see, in two layers and deliberately in
+  # this order:
+  #
+  #   1. the permission policy removes blocked tools, so the model never sees
+  #      (and therefore cannot call) something it is not allowed to run;
+  #   2. Code Mode injects `run_code` AFTER that filter.
+  #
+  # Injecting second is the point: `run_code` is Code Mode's only entry point,
+  # and a restriction that deleted it would not restrict the agent, it would
+  # mute it — a deny-all policy would leave a `mode: :code` agent with no tools
+  # at all and no way to say so. It is not a hole either: `run_code` still
+  # dispatches through the whole pipeline (hooks, approval, permission
+  # plugins), so a guard can inspect the program text before it runs, and every
+  # tool the program itself calls is filtered by the same policy through
+  # `Nous.CodeMode.bindings/4`.
+  def visible_tools(agent, tools) do
+    granted = maybe_filter_by_policy(agent.permissions, tools)
+
+    CodeMode.visible_tools(CodeMode.resolve(agent), tools, granted, policy: agent.permissions)
+  end
+
   def maybe_filter_by_policy(nil, tools), do: tools
 
   def maybe_filter_by_policy(%Permissions.Policy{} = policy, tools) do
     Permissions.filter_tools(policy, tools)
+  end
+
+  # Under `mode: :code` the model was shown exactly one tool, so a call to any
+  # other one can only fail. Refusing it here — before the pre_tool_use hook —
+  # keeps guards from being asked to approve a call that cannot execute.
+  defp code_mode_denial(call_id, cleaned_name) do
+    Logger.info("Tool '#{cleaned_name}' is not callable directly under code mode")
+
+    Message.tool(call_id, CodeMode.collapse_message(cleaned_name), name: cleaned_name)
   end
 
   # Check if a tool call requires approval and invoke the handler.

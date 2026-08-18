@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **A tool timeout is no longer retried, so one approval no longer bought two
+  executions.** `Nous.ToolExecutor`'s internal `execute_with_timeout` kills the tool
+  process on the deadline and then *raises* `Nous.Errors.ToolTimeout`, which the
+  generic rescue clause routed into `handle_execution_error/7` — the retry path.
+  With `retries` defaulting to 1, every timeout ran the tool a second time:
+  measured on the real `bash` tool, a 120-second command asked for at the
+  then-30-second deadline came back as `attempt: 2` after 60 seconds. `bash` is
+  `requires_approval: true` and side-effecting, so a human who approved one
+  `git push`, `rm` or payment POST got two, the first killed part-way through.
+  A timeout is now terminal on both timeout paths: the executor cannot know how
+  much of the work already landed, and wrongly repeating side effects costs far
+  more than the one visible error a caller can retry deliberately. Retries are
+  untouched for ordinary failures. Making retry-on-timeout opt-in per tool was
+  considered and rejected: nothing can make the second run safe, so there is no
+  configuration worth offering. Note that the retry path never re-consulted the
+  approval handler — `check_approval/3` runs once in `execute/3` before the
+  retry loop — so the second execution was also unprompted.
+
+- **Code Mode sub-calls no longer inherit the runner's approval gate.**
+  `Nous.Agent.Context.to_run_context/2` marks a context `approval_gated?: true`
+  because the runner already ran the approval pipeline for the call it is
+  dispatching — correct for `run_code` itself, and wrong for every tool the
+  program then calls. Passed through unchanged, one approval of "run this
+  program" silently authorised every `Bash`, `FileWrite` and `FileEdit` the
+  program reached: the handler was never consulted and the tool ran. Approving a
+  `run_code` call now approves running *that program* only. Each sub-call to a
+  tool with `requires_approval: true` consults the handler on its own, with the
+  real tool name and the real arguments — which is what an operator needs, since
+  a program computes its arguments at runtime and the approved program text does
+  not show them. With no handler in the context such a tool is refused rather
+  than run, matching the default-deny every other entry point already applies.
+  Found by writing the integration test the plan asked for; the test that had
+  asserted the old behaviour is corrected with a comment recording why.
+
 - **`Nous.Plugins.HumanInTheLoop` no longer auto-approves tools outside its
   `:tools` list.** The handler is only ever invoked for tools already flagged
   `requires_approval: true`, so filtering it by the configured `:tools` list
@@ -66,7 +100,285 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real PubSub with an `AgentServer`, which is why this never fired in CI; one
   does now.
 
+- **OS-level confinement for tool subprocesses: `Nous.Sandbox`.** `Nous.Tools.Bash`
+  handed the model `/bin/sh -c` as the OS user, with `Nous.Permissions` and
+  approval as the only gate — nothing constrained what the shell touched once it
+  was running, and `Nous.Tools.PathGuard` fences only the *file* tools. There is
+  now a provider behaviour that wraps argv so the kernel enforces a policy, with
+  `Nous.Sandbox.Seatbelt` (macOS `sandbox-exec`) and `Nous.Sandbox.Bwrap` (Linux
+  bubblewrap) in tree. Three modes — `:read_only`, `:workspace_write`,
+  `:danger_full_access` — set per agent (`Nous.new(..., sandbox: :workspace_write)`)
+  or per run (`Nous.run(agent, prompt, sandbox: :read_only)`), or globally with
+  `config :nous, :sandbox_mode`. `confine/2` is a pure argv builder; enforcement
+  is data, and `Nous.Sandbox.classify/3` distinguishes "the OS denied a write"
+  from "the sandbox runner broke and the command never ran" — the latter must
+  never read as working confinement. With no usable provider the tool **refuses
+  to run** rather than running unconfined.
+  **The default is still `:danger_full_access`, with a one-time warning.**
+  Fail-closed confinement is a behaviour change even though it is not an API
+  change: `Bash` would stop working on any host without bubblewrap installed. The
+  default will flip in a later release; opt in now with one line of config.
+  Command hooks are deliberately *not* confined (they are operator-authored, and
+  a hook that cannot write is not a hook) — opt in with
+  `config :nous, :sandbox_confine_command_hooks, true`. `Nous.Tools.FileGrep` is
+  a documented exemption: neither provider restricts reads, so confining a
+  process that only ever reads adds no enforcement.
+
+- **`Nous.Tools.PathGuard` no longer follows a symlink out of the workspace via
+  `..`.** `resolve_real/1` began with `Path.expand/1`, which collapses `..`
+  *lexically* before any symlink is resolved. With `link -> /etc` inside the
+  workspace, `validate("link/../passwd", ctx)` expanded to `<root>/passwd`,
+  passed the containment check, and was **accepted** — the resolver never saw the
+  `..` it exists to catch. `validate/2` compounded it by handing the resolver the
+  already-expanded path. The resolver now starts from `Path.absname/1` (absolute,
+  `..` intact) and applies `.`/`..` to the already-*resolved* prefix, component by
+  component, as the kernel does; `validate/2` passes it the uncollapsed path. The
+  same traversal via `link/passwd` was already blocked, and benign in-workspace
+  `..` still resolves. `resolve_real/1` is now public, shared with
+  `Nous.Sandbox.writable_roots/1` — canonicalisation is load-bearing there too,
+  since an SBPL `(subpath "/tmp")` clause never matches a write the macOS kernel
+  sees as `/private/tmp/...`.
+
+- **`Nous.Tools.Bash` was silently discarding every byte of stderr.** It ran
+  under `NetRunner`'s default `stderr: :consume`, which reads stderr into an
+  internal buffer with no accessor, so `run/2` returned stdout only: compiler
+  errors, stack traces and permission failures never reached the model, which saw
+  an exit code with no explanation. Output is now merged via
+  `Nous.Sandbox.merge_stderr/1` (`/bin/sh -c 'exec "$@" 2>&1'`, argv passed
+  positionally, so no quoting surface). Note that `NetRunner`'s documented
+  `stderr: :redirect` option is not implemented in net_runner 1.0 and is worse
+  than the default — it also disables the `:consume` drain, leaving an unread
+  stderr pipe that deadlocks a child which writes more than a pipe buffer.
+
+- **`Nous.Tools.Bash` never actually scrubbed its environment.** The tool passed
+  `env: Nous.Tools.Env.scrubbed()` to `NetRunner`, which **has no `:env` option**:
+  unknown options reach a port layer that ignores them and the shepherd
+  `execvp`s, so the child inherited the BEAM's entire environment. For this
+  tool's whole existence, one tool call — `{"command": "printenv"}` — returned
+  every provider API key, OAuth token and vault credential in the VM, while the
+  moduledoc claimed the opposite. Confinement could not have mitigated it: both
+  sandbox providers are write fences and do not restrict reads or env.
+  The environment now travels in **argv**, where it cannot be ignored:
+  `Nous.Tools.Env.with_scrubbed_env/1` prefixes `/usr/bin/env -i` plus the
+  allowlisted `NAME=VALUE` pairs (argv elements, so no shell parses them).
+  `Nous.Tools.Env.scrubbed_overrides/0` fixes the sibling bug for
+  `System.cmd/3` callers such as `Nous.Tools.FileGrep`: Erlang's `{env, _}`
+  *merges* rather than replaces, so listing the allowlist left
+  `OPENAI_API_KEY` in place — only `{name, nil}` removes a variable. Measured:
+  the child's environment went from 73 names (including the secret) to 9.
+
+- **`Nous.Tools.Bash` rejects a NUL byte in `command`.** The port layer
+  *truncates* argv at a NUL rather than rejecting it, and a NUL renders as
+  nothing in an approval prompt, an audit log or a terminal. So
+  `git push origin main\0 --dry-run` was approved as a dry run and executed as a
+  push — a bypass of the approval gate that AGENTS.md makes mandatory for this
+  tool. `Nous.Sandbox.Policy` rejects a NUL in `workspace_root` for the same
+  reason (it previously failed closed only by luck, by truncating the SBPL
+  profile mid-string).
+
+- **A real sandbox denial could be reported as a broken sandbox.**
+  `Nous.Sandbox.classify/3` checks runner failure before denial, which is right,
+  but macOS refuses a nested-sandbox escape with
+  `sandbox-exec: sandbox_apply: Operation not permitted` — a line that satisfies
+  the runner-failure signature *and* the denial signature. The escape was
+  prevented, and the tool told the model "this is a broken sandbox … the
+  command's effects did not happen and were not prevented". Both halves false.
+  Three constraints now bound the classifier: exit 0 is always `:ok` (a denial
+  fails the command, so `cat`ting a file that merely mentions a signature is no
+  longer a denial — that was prompt-injectable); fatal signatures match only at
+  the start of a trimmed line (a runner prefixes its own name; a mid-line
+  mention is the command talking *about* the runner); and a line matching both
+  kinds of signature is a **denial**. `Nous.Tools.Bash` also now *appends*
+  verdicts to output instead of replacing it with an error — the classified
+  stream is the command's own output, so replacing it let a forged verdict
+  launder real side effects out of the transcript.
+
+- **`Nous.Tools.PathGuard.resolve_real/1` refused legitimate deep paths.** The
+  hop budget was spent by ordinary directory components, so a symlink-free
+  34-deep path returned `{:error, :symlink_loop}` and `validate/2` reported a
+  symlink loop that did not exist. It counts symlink **hops** now, the way
+  `realpath(3)` counts them before `ELOOP`; loop detection is unchanged. This
+  mattered beyond the confusing error: `Nous.Sandbox.Policy.canonical/1`
+  swallows the error and falls back to the lexical `Path.expand/1` the resolver
+  exists to avoid, so a deep workspace root silently produced a non-canonical
+  SBPL `(subpath …)` that the kernel never matches — degrading
+  `:workspace_write` to `:read_only`.
+
+- **Sandbox hardening from the review pass.** `Nous.Sandbox.Policy` refuses
+  `workspace_root: "/"`, which re-allowed the entire filesystem under
+  `:workspace_write` while every log line still said "confined" — reachable by
+  accident, since the root defaults to `File.cwd!/0`. `Nous.Sandbox.Bwrap` adds
+  `--unshare-pid`: `--proc` without it leaves the host PID namespace, so
+  `/proc/<other-pid>/root/…` resolves in a namespace where `/` is read-write,
+  which is a write escape. Its unprobed executable default is now the absolute
+  `/usr/bin/bwrap` rather than a bare name resolved through an inherited `PATH`
+  full of user-writable directories. `Nous.Sandbox.Seatbelt` grants
+  `/dev/stdout`, `/dev/stderr`, `/dev/tty` and `/dev/fd` — all denied before, so
+  `cmd > /dev/stdout` and `tee /dev/stderr` failed on macOS while succeeding
+  under bwrap. Both providers' `probe/1` now assert that a write outside every
+  root is actually **refused**, instead of only proving the profile parses, and
+  both denial-signature lists cover EACCES as well as EPERM/EROFS. Confined
+  command hooks no longer fail **open**: with stdout-only capture the
+  classification branches were structurally dead, so any nonzero exit under
+  confinement is now `:deny` regardless of `fail_closed` — a security hook that
+  never ran was silently permitting the event. A failed provider probe is no
+  longer memoized (a 2s timeout on a busy host used to fail closed for the rest
+  of the VM's life), and `Nous.Tools.Bash`'s cgroup path is flat because the
+  shepherd's `mkdir` is not recursive, so the nested path it used could never be
+  created and the cgroup containment was a silent no-op.
+
+- **A saved session silently rewrote every tool-calling assistant message.**
+  Found by the plan-03 regression gate before any refactor, in three layers that
+  hid each other:
+  `Nous.Message`'s changeset used Ecto's default `empty_values: [""]`, so
+  `content: ""` was treated as *absent* and became `nil`. `Message.assistant/2`
+  builds its struct directly and kept `""`, while `Message.new/1` dropped it — so
+  the same logical message differed by which constructor made it, and
+  `Context.deserialize/1` goes through `new!/1`. Every save/restore therefore
+  rewrote the `content: ""` that a pure tool-call turn carries into `content:
+  nil`, and providers distinguish the two, so a resumed session sent a different
+  request shape than the one that was saved.
+  Underneath that, `validate_content/1` rejected empty content outright, so once
+  the coercion was removed, deserializing any transcript containing a tool call
+  failed instead of merely corrupting it. Empty content is now valid for
+  `:assistant` in both its forms (`""` for OpenAI/Gemini, `nil` for Anthropic),
+  which is what a pure tool-call turn looks like and what streaming produces
+  before the first delta.
+  Underneath *that*, the Anthropic and Gemini response parsers manufactured `""`
+  for content that was simply absent — masked until now by the very coercion
+  above. They set the key only when it carries something, as the OpenAI parser
+  already did, so "the model sent no content" is `nil` and "the model sent an
+  empty string" is `""`, and the two are no longer conflated.
+
+- **Compaction no longer destroys history.** `Nous.Agent.Context` is now backed by
+  an append-only event log (`Nous.Session.Log`) whose model-visible surface is a
+  pure fold. `ctx.messages` is materialized from that fold and kept in lockstep,
+  so every existing reader — including `result.messages`, `result.all_messages`
+  and `result.new_messages` — is byte-identical. The log is internal.
+  What it buys immediately: `Nous.Plugins.Summarization` appends a
+  `{:replace, start, stop}` event instead of rewriting the message list, so a
+  summary *shadows* the range it replaces and every original event stays in the
+  log. Its in-place tool-result pruning became a replace too — previously the next
+  append re-materialized and silently resurrected the oversized results, undoing
+  the pruning it had just done.
+  Six sites wrote `%{ctx | messages: ...}` directly, which is what made
+  "model-visible implies logged" decorative; all six now go through the log
+  (`Plugins.Memory` and `Plugins.KnowledgeBase` carry a `source` marker so
+  injected context is distinguishable from conversation, and
+  `patch_dangling_tool_calls/1`'s synthetic results are events).
+  `Context.serialize/1` is `version: 2` and persists events; a v1 blob still
+  loads and seeds a log that folds back to its original messages.
+  The plan's rule that an assistant event with empty content should be skipped in
+  derivation was **dropped**: skipping it made `Context.last_message/1` and output
+  extraction disagree with the log, turning a run whose model replied with empty
+  content — a content filter, a `max_tokens` cutoff, a provider hiccup — from
+  `{:ok, ""}` into `{:error, :no_output}`. "Providers reject an empty assistant
+  turn" is a fact about what a *request* may contain; the fold is history and
+  filters nothing.
+
+- **The plugin system prompt no longer compounds across runs.** The per-request
+  system-prompt rewrite is assembly-time state, applied as an idempotent overlay
+  during materialization rather than written over the message list. Continuing one
+  context across three runs used to append the plugin fragment to the system
+  message three times.
+
+- **You can talk to an agent mid-run.** `Nous.AgentServer.steer/2`, `inject/2` and
+  `followup/2` are new public API on top of `Nous.Session.Inbox`, which has two
+  ordered queues and one primitive with three presets: `followup` = next turn and
+  wake, `steer` = next step and wake, `inject` = next step and **no wake**. That
+  last distinction is the point: injected context waits for the next admitted
+  request rather than starting one, so you can enrich an idle agent without
+  provoking it. A message sent mid-run is claimed by the *next* step, not the one
+  already in flight.
+  `AgentServer` gained an explicit `run_state` so "is a run in flight" has one
+  answer — it was previously spread across five handlers while an `async_nolink`
+  task announces its end three different ways, which is too thin a basis for a
+  wake decision. Cancellation behaviour is unchanged.
+
+- **Turns and steps are durable events.** A step is one model request plus the
+  tools it calls; a turn is zero or more steps. Both are logged, so a run is
+  reconstructable after the fact: which turn a tool call belonged to, which step
+  produced a request, where a crash landed. A zero-step turn is legal and is what a
+  rejected input leaves behind. `pre_step` rejection reuses the existing
+  `:pre_request` hook rather than adding a second mechanism, since a step *is* one
+  request.
+
+- **A crashed run no longer loses or invents history.** `Nous.Session.Recovery`
+  repairs an orphaned `:turn_start` by **appending** — never deleting or rewriting —
+  synthetic risk-classified `:tool_result` events plus a `:turn_end` with reason
+  `:interrupted`, the one reason no live loop emits, so its presence is unambiguous
+  evidence of a crash. Ambiguity always resolves to `:tool_outcome_unknown` rather
+  than `:tool_not_started`: wrongly saying "may have run" costs a human one check,
+  wrongly saying "did not run" is how a duplicate charge or a second `rm -rf`
+  happens. Recovery is idempotent and leaves a clean log untouched.
+  `Nous.Session.fork/2` copies an event prefix and records its parent, and
+  **refuses a boundary inside an open turn** rather than clipping it.
+
+- **Every committed event is broadcast**, so a LiveView can render from the log
+  instead of from ad-hoc callbacks. Existing `Nous.PubSub` topics are reused; the
+  publish is a no-op when no pubsub is configured, is driven by a count delta
+  through the new `Log.since/2` (O(new), not O(log) — otherwise publishing would be
+  quadratic over a session), and a broadcast failure cannot break an append.
+
+- **`Nous.Session.Invariant`** checks that every model-visible request is
+  reconstructable from the log, including an orphaned-tool-result pass for the
+  provider-400 class that an unbalanced compaction range can still produce. It
+  **warns and emits telemetry, never raises** (`config :nous, :session_invariant`
+  promotes it to `:strict` for our own suite, or `:off`), because a legacy append
+  path stays alive for at least one release and taking down a production run over a
+  bookkeeping discrepancy would be the wrong trade.
+
 ### Performance
+
+- **Oversized tool results can spill to a store instead of the context window.**
+  A multi-megabyte `grep` result cost roughly a million tokens of context and was
+  almost never read in full. New `Nous.Spill` behaviour with a filesystem backend
+  (`Nous.Spill.Local`): results over `max_inline_bytes` (default 64 KB) are
+  written out and replaced with a head+tail preview plus an opaque locator and
+  the backend's own retrieval hint. `Nous.Tools.Bash`'s 1 MB truncation now keeps
+  the bytes it captured instead of discarding them.
+  Opt-in and best-effort by construction: with no `deps[:spill_config]` (or
+  `config :nous, :spill`) behaviour is byte-for-byte unchanged, and a store error
+  logs and keeps the result inline — spilling must never turn a successful tool
+  call into a failure. `file_read` is excluded because spilling it creates a
+  read→spill→read loop. Locators are opaque: callers render them with
+  `retrieval_hint/1` rather than assuming a path a tool can open. Spilled files
+  are `0o600` inside a `0o700` per-session directory, created exclusively so a
+  planted symlink cannot redirect the write, and they **persist until the
+  operator deletes them** — there is no reaper, by design.
+
+- **Compaction prunes before it pays for a summary.**
+  `Nous.Transcript.prune_tool_results/2` replaces any tool result over
+  `max_result_chars` with head 4096 + a marker + tail 1024, with no LLM call at
+  all. `Nous.Plugins.Summarization` now prunes first, re-measures, and skips the
+  summarization request entirely when pressure has cleared — measured at a 90%
+  estimated-token cut on a 50 KB tool result, which is the single largest saving
+  in this release. Pruning only ever rewrites content in place, so it cannot
+  reorder, drop, or split a `tool_call`/`tool_result` pair.
+
+- **One compaction path, not two.** `Nous.Transcript` was public, correct, and
+  entirely dead — nothing in `lib/` called it — while `Nous.Plugins.Summarization`
+  carried a second, independent implementation of the tool-pair boundary rule that
+  all three providers 400 on. `Summarization` is now the live entry point and calls
+  `Transcript` for boundary balancing, pruning and estimation;
+  `balance_tool_call_boundary/2` is public and is the only implementation left.
+
+- **Compaction is observable and crash-detectable.**
+  `[:nous, :compaction, :start | :stop | :exception]` telemetry carries message
+  counts, byte counts (pruning never changes the count, so counts alone make a
+  prune-only compaction look like a no-op), whether the LLM was called, and the
+  summarization `provider`, `model` and usage — enough to reconstruct a compaction
+  after the fact. The in-progress marker is cleared only *after* `:stop`, so a
+  crash mid-compaction leaves a detectable orphaned `:start` rather than a false
+  success.
+
+- **Summarization reuses the provider's KV prefix cache.** It built a brand-new
+  agent with different instructions and no tools, guaranteeing a cache miss on
+  every compaction. It now replays the conversation's own system messages and
+  tools verbatim, and keeps only the returned text — tool calls and reasoning are
+  discarded, so a compaction can no longer produce an orphaned tool call, and a
+  tool-call-only response is an error rather than an empty summary overwriting
+  history.
 
 - **Gemini/Vertex JSON-array streaming is no longer O(n²).** The
   `:stream_parser` buffer was re-walked byte-by-byte from position 0 on every
@@ -136,7 +448,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tables whose access pattern warrants them (not blanket-applied — the flags
   cost memory and hurt single-writer tables).
 
+### Added
+
+- **Code Mode: the model can write a program that calls tools, instead of a chain
+  of individual tool calls.** One `run_code` call carries a generated typed SDK
+  declaring every tool in scope; the program loops, branches and fans out in a
+  single round trip, and only what it logs or returns re-enters the conversation.
+  A 10-sub-call fan-out completes in 244ms where a serial chain of the same work
+  needs 400ms plus ten model round trips.
+
+  `Nous.CodeRuntime` is the provider behaviour, and `Nous.CodeRuntime.JS` is the
+  shipped provider: an embedded V8 isolate (Deno via Rustler NIFs) behind the
+  optional `{:tyrex, "~> 0.4"}` dependency, one **fresh isolate per run** so no
+  state carries over. Budgets are provider configuration, never per request, so a
+  program cannot negotiate its own deadline: `:timeout_ms` enforced by a BEAM
+  timer that really terminates the isolate, `:max_heap_mb`, and a byte-accurate
+  `:max_output_bytes` ledger that keeps the fitting prefix.
+
+  Isolation is stated exactly rather than marketed: it is in-process, so a V8
+  escape is an escape into the BEAM. What it does enforce is no filesystem,
+  network, env or subprocess access, and no route into Elixir except the tools you
+  granted — the runtime's arbitrary-module bridge is narrowed to one function and
+  then removed from the isolate before any model-authored code runs. There is
+  deliberately **no instruction budget**, because this substrate has no fuel
+  metering; the wall-clock kill is the only bound on a compute-bound program and
+  it is a real one.
+
+  `mode: :both` is the default and degrades to `:native` when no runtime is
+  configured, rather than advertising a `run_code` that can only fail. It is **not
+  an unconditional token saving** — the SDK is a prompt prefix that can rival the
+  native schemas it replaces — so `docs/guides/code_mode.md` says to measure your
+  own workload instead of implying a win.
+
+- **`Nous.Usage.cost/2` and `Nous.Usage.Pricing`.** `%Usage{}` counted tokens and
+  priced nothing, so no caller could answer what a run cost. Prices are per 1M
+  tokens with separate input, output, cache-read and cache-write rates, keyed by
+  `{provider, model}`, with a longest-family-prefix fallback on a `-` boundary so
+  `gpt-4o-2026-05-13` finds `gpt-4o` while an unreleased generation stays
+  `:unknown` rather than inheriting a stale rate. Unknown models return
+  `{:error, :unknown_model}` — never a guess. Local providers (ollama, lmstudio,
+  vllm, sglang, llamacpp) are explicitly zero. Override or extend the table with
+  `config :nous, :model_prices`.
+  Cost is **derived, not stored**: no `cost` field on `%Usage{}`, because a price
+  table changes independently of the run and a stale number persisted in the
+  struct would be worse than no number. Prices are a snapshot recorded
+  2026-08-14 and will go stale; the override config is the fix.
+
 ### Changed
+
+- **LM Studio's default `receive_timeout` is 5 minutes, up from 2.** LM Studio
+  JIT-loads a model on the first request that names it, so "slow first token on
+  cold weights" — the reason `:llamacpp` already had 5 minutes — is the *default*
+  behaviour there, not an edge case: loading an 18GB 27B took 21s before a single
+  token appeared. Generation is slow too; one tool-calling step with three tools
+  measured 36.7s for 515 completion tokens, and a loop's later steps carry bigger
+  contexts than its first. At 2 minutes that surfaced mid-run as a bare
+  `%Req.TransportError{reason: :timeout}`, which reads like a broken server rather
+  than a budget the caller can raise. `:vllm` and `:sglang` are the same class of
+  host and were left alone because they were not measured. Override per model with
+  `receive_timeout:` as before.
+
+- **`llama_cpp_ex` updated to `0.8.44`** (from `0.8.22`) and verified against real
+  GGUF models: the four functions this library calls — `init/0`, `load_model/2`,
+  `chat_completion/3`, `stream_chat_completion/3` — are unchanged, and the tagged
+  `--only llama` suite passes on two different local models, covering chat,
+  streaming, `enable_thinking: false`, grammar-constrained JSON and embeddings.
+  Tool calling is still absent upstream, so the provider's "not supported by this
+  backend" behaviour is unchanged. `req`, `ecto` and `elixir_make` were
+  deliberately *not* moved with it: `mix deps.update llama_cpp_ex` pulls them
+  opportunistically, none is required by 0.8.44, and req is the default HTTP
+  backend for every provider.
 
 - **`Nous.HTTP.Buffer` extracted.** Both stream backends reached up into
   `Nous.Providers.HTTP` for buffer helpers, making the transport layer depend
@@ -226,6 +607,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `async: true` (39 → 30 sync). Files driving `Nous.AgentServer` stay sync and
   say why: `$callers` does not cross `GenServer.start_link`.
 
+- **`Nous.ReActAgent`'s own tools declared no parameters, so the agent could not
+  work.** All six — `plan`, `note`, `add_todo`, `complete_todo`, `list_todos`,
+  `final_answer` — were built with `Tool.from_function/2` passing only `name:` and
+  `description:`, so the schema fell back to an empty object. Measured: every one
+  reached the model with `properties: []` and `required: []`, while their
+  descriptions promised parameters in prose ("Parameter: answer (your complete
+  solution)").
+
+  A model that honours the schema therefore called them with `{}`. `final_answer`
+  returned the literal string `"No answer provided"`, and `note`/`final_answer` —
+  which pattern-match on `%{"content" => _}` and `%{"answer" => _}` — raised
+  `FunctionClauseError` instead. The loop retried calls that could never succeed
+  until it ran out of iterations, which is what made ReAct look like a
+  model-capability problem. All six now carry real schemas, and those two functions
+  answer a schema-violating call with a sentence naming the missing parameter
+  rather than raising, because models do ignore schemas and a crash teaches them
+  nothing.
+
+- **The ReAct prompt contained an obligation that could never be discharged.**
+  "Complete all pending todos before calling `final_answer`" makes every
+  `add_todo` create a new prerequisite for finishing, so a task whose deliverable
+  *is* a todo list can never be answered — measured as
+  `{:error, %MaxIterationsExceeded{}}` on "make a todo list for learning Elixir,
+  then answer with the list", having done the work and never being allowed to
+  report it. Completing todos is now advised rather than required, and the prompt
+  states plainly that an answer with pending todos beats running out of steps.
+
+- **`Nous.ReActAgent` defaults to 25 iterations rather than the generic 10.** Its
+  mandated workflow is plan (1) + one `add_todo` per step + `note` observations +
+  one `complete_todo` each + `final_answer` (1), so a four-step task needs 11
+  iterations before it is permitted to answer. The agent could not follow its own
+  instructions inside the default budget.
+
+  Together these take the `:eval` ReAct suite from 1 of 11 to **11 of 11 on two
+  different local models** — a 4B in 155s and a 27B in 793s — where before the fixes
+  the suite spent 25 minutes mostly timing out. `7.1` answers `"8"` to "What is 5
+  plus 3?" instead of `"No answer provided"`.
+
+- **`Nous.Transcript.estimate_messages_tokens/1` was blind to tool-call
+  arguments, so no token budget could see a tool-calling transcript.** It summed
+  `Message.extract_text/1`, which returns content only. Measured exactly: a
+  102,000-byte payload counted as 25,500 tokens when carried as message content
+  and as **0 tokens** when carried as tool-call arguments — the same payload
+  serialises to 102,137 bytes on the wire either way. Arguments are now counted as
+  encoded JSON, which brings the estimate to 25,503 against that 25,534-token
+  wire size.
+
+  This is the root cause behind the ReAct blow-ups below, and it silently weakened
+  every consumer of the estimate: compaction thresholds, spill decisions and
+  `should_compact?/2`. It bit hardest on the agents that need a budget most,
+  because a tool-using agent keeps its payload in `arguments` by definition.
+
+- **`Nous.ReActAgent` enables context management by default.** ReAct's defining
+  feature is looping, which makes it the one agent shape that must not be handed
+  an unbounded transcript. `Nous.Plugins.Summarization` is now on by default with
+  `max_context_tokens: 30_000, keep_recent: 8`; passing your own `plugins:` or
+  `summarization_config` replaces it entirely.
+
+  Enabling it costs nothing on the common path — the plugin prunes oversized tool
+  results for free and only pays for a summarization if still over budget. On one
+  "plan the area of a rectangle" task against a local model, measured end to end:
+
+  | | peak request | outcome |
+  |---|---|---|
+  | before | 170,732 tokens | refused by the server (32k window) after 775s |
+  | trigger fixed | 46,809 tokens | still refused, 203s |
+  | + estimator fixed | **4,866 tokens** | completed, 3 iterations, 19.8s |
+
+  The `:eval` ReAct suite went from ~1 to **7 of 11** passing on a 4B local model,
+  with zero context-size rejections. The remainder is throughput, not capability
+  or context: the same test measured 27s and >180s minutes apart because the model
+  loops a variable number of times, and a *larger* model is worse rather than
+  better — a 27B Q8 generates at ~13 tokens/sec, so one ReAct-shaped request took
+  72.7s and a request near the 30,000-token ceiling exceeded even a 5-minute
+  per-request budget. 648 of its 956 completion tokens were reasoning, and
+  `enable_thinking: false` was ignored by that model, so two thirds of the
+  generation is invisible overhead for an agent already being told to reason.
+
 - **Race-hiding sleeps replaced with real synchronisation**, wall-clock
   concurrency assertions replaced with a structural in-flight counter asserting
   the maximum is *exactly* the expected concurrency (a `<=` bound also passes
@@ -246,6 +705,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   down. `max_nesting` was already at its floor.
 
 ### Fixed
+
+- **`Nous.Plugins.Summarization` never bounded the context window.** Its trigger
+  read `ctx.usage.total_tokens` — the cumulative bill for the run, every input
+  and output token of every request summed — instead of the size of the transcript
+  about to be sent. That measured the wrong thing in both directions: a long
+  conversation of small requests crossed the threshold while its context was still
+  tiny and then compacted on *every* subsequent request forever, because a bill
+  never decreases; while a run whose context genuinely exploded was not compacted
+  at all. Reproduced with no LLM involved: a transcript of ~300,000 estimated
+  tokens configured with `max_context_tokens: 5_000` came back byte-identical, 13
+  messages in and 13 out, because nothing had been billed yet. The trigger is now
+  `Nous.Transcript.estimate_messages_tokens/1` over `ctx.messages`, so the
+  threshold means what its name says and matches every other token budget here.
+
+  Found by driving `Nous.ReActAgent` against a local model: with no context
+  management it grew one task to a **170,732-token request against a 32,000-token
+  window** before the server refused it with a 400, and the earlier symptom was a
+  stream of `%Req.TransportError{reason: :timeout}` as each request got slower.
+  Enabling the plugin now cuts the peak on that task to 46,809 tokens. It still
+  does not fit the window: `:keep_recent` messages are exempt from pruning, so a
+  few large recent tool results can exceed any budget by themselves, and
+  `Nous.ReActAgent` ships with no context management of its own — a task it cannot
+  converge on will still outgrow the context.
+
+  Every existing test in this plugin's suite triggered compaction by supplying a
+  large fake `usage.total_tokens` on a *small* transcript, which is why the defect
+  survived; a test now drives it from transcript size with `usage` at zero.
+
+- **A tool could not declare its own deadline, so `Nous.Tools.Bash` was killed
+  at 30s while documenting and granting 120s.** `%Nous.Tool{}` has always had a
+  `:timeout`, but the `tool/3` macro in `Nous.Tool.Schema` accepted no such
+  option and `Nous.Tool.from_module/2` hardcoded the 30-second struct default,
+  so a schema-defined tool's own budget could never reach the executor.
+  Measured: `Nous.Tool.from_module(Nous.Tools.Bash).timeout` was `30_000` while
+  the tool passes `120_000` to `NetRunner` and exposes a `timeout` parameter a
+  model can set to `120_000` — a legitimate 45-second command died at 30
+  seconds, twice (see Security, above), and the documented 2-minute default was
+  unreachable. `tool/3` now takes `:timeout`, carried through `metadata/0` into
+  `from_module/2` on exactly the path `requires_approval` already uses, with an
+  explicit `from_module(mod, timeout: …)` still winning. `Nous.Tools.Bash`
+  declares a deadline five seconds *above* the command budget it grants, so its
+  own timeout fires first and reports "Command timed out after 120000ms"
+  instead of an opaque outer kill; a `timeout` argument may only lower that
+  budget, never raise it past the deadline. The other schema-defined built-ins
+  keep the 30-second default, which their work cannot plausibly exceed.
 
 - **Structured output silently did nothing on Gemini and Vertex AI.**
   `Nous.OutputSchema.to_provider_settings/2` emits the OpenAI-nested

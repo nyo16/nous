@@ -85,17 +85,45 @@ Nous.new("openai:gpt-4o",
   tools: [Nous.Tools.Bash, MyApp.MyTool],
   parallel_tool_calls: true,      # default false; fan out multi-call turns (side effects interleave)
 
-  # Memory backend (optional)
-  memory: %{store: Nous.Memory.Store.ETS, opts: []},
+  # Plugins (optional, composable). LoopGuard notices the model repeating the
+  # same tool call and injects escalating guidance; it never blocks.
+  plugins: [Nous.Plugins.SubAgent, Nous.Plugins.HumanInTheLoop, Nous.Plugins.LoopGuard],
 
-  # Plugins (optional, composable)
-  plugins: [Nous.Plugins.SubAgent, Nous.Plugins.HumanInTheLoop],
+  # OS confinement for subprocesses (Nous.Tools.Bash). Sibling to :permissions —
+  # permissions decide whether a tool runs, the sandbox confines what its
+  # subprocess may touch. :read_only | :workspace_write | :danger_full_access.
+  sandbox: :workspace_write,
 
   # Resilience
   fallback: ["anthropic:claude-sonnet-4-5", "groq:llama-3.1-70b-versatile"],
 
   # Vendor-specific body params (vLLM/SGLang/LM Studio/llama.cpp)
   extra_body: %{top_k: 50, repetition_penalty: 1.1}
+)
+```
+
+Pluggable **backends** are not `Nous.new/2` options — they are maps in `deps`,
+read by the plugin or subsystem that owns them. Passing them to `Nous.new/2`
+silently does nothing:
+
+```elixir
+Nous.run(agent, prompt,
+  deps: %{
+    workspace_root: "/srv/agent_workspace/#{user_id}",
+
+    # Memory (requires Nous.Plugins.Memory in :plugins)
+    memory_config: %{store: Nous.Memory.Store.ETS},
+
+    # LLM-powered compaction (requires Nous.Plugins.Summarization in :plugins)
+    summarization_config: %{max_context_tokens: 170_000, keep_recent: 10},
+
+    # Spill oversized tool results to a store and show the model a locator
+    spill_config: %{
+      store: Nous.Spill.Local,
+      opts: [root: "/var/lib/nous/spill"],
+      max_inline_bytes: 65_536
+    }
+  }
 )
 ```
 
@@ -193,14 +221,23 @@ these, it will be rejected.
 3. **File tools enforce a workspace root.** Don't bypass `PathGuard`. Pass
    paths within the workspace; the guard rejects `..` traversal, absolute
    paths outside, and symlink escapes.
-4. **HTTP from agents goes through `UrlGuard`.** Don't make raw `Req.get/1`
+4. **`Nous.Tools.Bash` is confined by `Nous.Sandbox` when a mode is set.**
+   `confine/2` wraps argv so the OS enforces the policy; it is pure and never
+   spawns. Fail closed: with no usable provider the tool refuses to run rather
+   than running unconfined — don't add a passthrough. Runner failure ("bwrap
+   could not start") is classified *before* denial, because "the command never
+   ran" must not read as "confinement worked". The default is still
+   `:danger_full_access` (unconfined, warns once); set
+   `config :nous, :sandbox_mode, :workspace_write` or `sandbox:` per agent/run.
+   `FileGrep` is a documented exemption — neither provider restricts reads.
+5. **HTTP from agents goes through `UrlGuard`.** Don't make raw `Req.get/1`
    calls from a tool to a user-controlled URL — use `Nous.Tools.WebFetch` or
    call `UrlGuard.validate/2` first. Blocks RFC1918, loopback, link-local,
    cloud-metadata IPs.
-5. **`PromptTemplate` rejects `<% ... %>` blocks** — only `<%= @var %>`
+6. **`PromptTemplate` rejects `<% ... %>` blocks** — only `<%= @var %>`
    substitution is allowed. Don't try to enable EEx evaluation on
    LLM-touched templates; it's an RCE vector.
-6. **Sub-agent deps don't auto-forward.** If you spawn a sub-agent via
+7. **Sub-agent deps don't auto-forward.** If you spawn a sub-agent via
    `Nous.Plugins.SubAgent`, declare which deps it sees with
    `:sub_agent_shared_deps, [:key1, :key2]`. The default `[]` is correct
    for security.
@@ -253,6 +290,32 @@ agent =
 ```
 
 Falls through on transport errors, 5xx, and rate-limit (429) responses.
+
+### Code Mode: one program instead of a chain of tool calls
+
+```elixir
+# Needs the optional :tyrex dep in your app, then:
+config :nous, :code_runtime, {Nous.CodeRuntime.JS, timeout_ms: 30_000}
+
+agent = Nous.new("openai:gpt-4o", tools: [MyApp.Search, MyApp.Fetch], code_mode: :both)
+```
+
+The model gains one tool, `run_code`, whose description carries a generated typed
+SDK for every tool it may call. It writes a program that loops, branches and fans
+out in a single round trip; only what the program logs or returns re-enters the
+conversation.
+
+`:both` (the default) shows native tools *and* `run_code`, and behaves as
+`:native` when no runtime is configured. `:code` shows only `run_code`. It is
+**not** an unconditional token saving — the SDK is a prompt prefix that can rival
+the native schemas it replaces, so it wins on multi-step and fan-out work and
+loses on a single `bash`. Measure your own workload; see
+`docs/guides/code_mode.md`.
+
+Approval is **per sub-call**: approving a `run_code` call approves running that
+program, not whatever it then decides to call. Each `requires_approval: true`
+sub-call consults your handler with the real tool name and arguments, and is
+refused if there is no handler.
 
 ### Local dev with LM Studio
 

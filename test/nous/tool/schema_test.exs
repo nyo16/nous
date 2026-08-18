@@ -54,6 +54,20 @@ defmodule Nous.Tool.SchemaTest do
     def execute(_ctx, _args), do: {:ok, "done"}
   end
 
+  # Tool whose own work legitimately outlives the %Nous.Tool{} default deadline.
+  defmodule SlowTool do
+    use Nous.Tool.Schema
+
+    tool "slow",
+      description: "A tool that takes its time",
+      timeout: 90_000 do
+      param(:input, :string, required: true)
+    end
+
+    @impl Nous.Tool.Behaviour
+    def execute(_ctx, _args), do: {:ok, "done"}
+  end
+
   # Tool with all param types
   defmodule AllTypesTool do
     use Nous.Tool.Schema
@@ -121,6 +135,21 @@ defmodule Nous.Tool.SchemaTest do
     test "requires_approval flows into Tool.from_module/2" do
       assert Tool.from_module(ApprovalTool).requires_approval == true
       assert Tool.from_module(MinimalTool).requires_approval == false
+    end
+
+    test "a declared timeout is included in metadata" do
+      assert SlowTool.metadata().timeout == 90_000
+    end
+
+    test "an undeclared timeout is nil rather than a copy of the struct default" do
+      # nil means "declared nothing". %Nous.Tool{} owns the fallback value; a
+      # second copy of 30_000 baked in here could drift away from it.
+      assert MinimalTool.metadata().timeout == nil
+    end
+
+    test "timeout flows into Tool.from_module/2, and the default applies without it" do
+      assert Tool.from_module(SlowTool).timeout == 90_000
+      assert Tool.from_module(MinimalTool).timeout == 30_000
     end
 
     test "required params appear in required list" do
@@ -212,6 +241,11 @@ defmodule Nous.Tool.SchemaTest do
       assert schema.category == nil
       assert schema.tags == []
       assert length(schema.params) == 1
+    end
+
+    test "a declared timeout appears in the introspection schema" do
+      assert SlowTool.__tool_schema__().timeout == 90_000
+      assert MinimalTool.__tool_schema__().timeout == nil
     end
   end
 

@@ -7,6 +7,10 @@ defmodule Nous.Application do
   def start(_type, _args) do
     configure_hackney_pool()
 
+    # Canonicalise the sandbox temp roots once here so Nous.Sandbox.confine/2
+    # never has to touch the filesystem (see Nous.Sandbox.warm/0).
+    Nous.Sandbox.warm()
+
     children =
       [
         {Finch, name: Nous.Finch, pools: finch_pools()},
@@ -23,7 +27,7 @@ defmodule Nous.Application do
         # a supervised owner, suspended workflows could vanish whenever the
         # process that saved them exited.
         Nous.Workflow.Checkpoint.ETS
-      ] ++ optional_bumblebee_children()
+      ] ++ optional_bumblebee_children() ++ optional_code_runtime_children()
 
     # Tuned restart limits to match AgentDynamicSupervisor - default 3-in-5
     # would cascade to take Nous.AgentRegistry + the dynamic supervisor down
@@ -51,6 +55,27 @@ defmodule Nous.Application do
     end
   else
     defp optional_bumblebee_children, do: []
+  end
+
+  # tyrex is an optional dep behind `Nous.CodeRuntime.JS`. Two children, both
+  # only meaningful when a code run can actually happen:
+  #
+  # - the Registry maps a tyrex runtime pid to the session that owns it. The
+  #   bridge runs inside the runtime's process, so `self()` there is the one
+  #   piece of identity guest JavaScript cannot forge - which is exactly why the
+  #   lookup is keyed by it rather than by anything travelling in the payload.
+  # - the DynamicSupervisor owns one temporary Session per run. `:temporary`
+  #   because a code run is not restartable: re-running a model-authored program
+  #   would repeat whatever side effects its tools already committed.
+  if Code.ensure_loaded?(Tyrex) do
+    defp optional_code_runtime_children do
+      [
+        {Registry, keys: :unique, name: Nous.CodeRuntime.JS.Registry},
+        {DynamicSupervisor, strategy: :one_for_one, name: Nous.CodeRuntime.JS.Supervisor}
+      ]
+    end
+  else
+    defp optional_code_runtime_children, do: []
   end
 
   # Finch pool sizing (P-2). This was `size: 10, count: 1`, which capped the

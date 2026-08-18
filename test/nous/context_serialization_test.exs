@@ -9,7 +9,32 @@ defmodule Nous.Agent.ContextSerializationTest do
       ctx = Context.new()
       data = Context.serialize(ctx)
 
-      assert data.version == 1
+      assert data.version == 2
+    end
+
+    test "persists the event log alongside the projected messages" do
+      ctx =
+        Context.new()
+        |> Context.add_message(Message.user("Hello"))
+        |> Context.add_message(Message.assistant("Hi there!"))
+
+      data = Context.serialize(ctx)
+
+      assert Enum.map(data.events, & &1.seq) == [0, 1]
+      assert Enum.map(data.events, & &1.type) == ["user_message", "assistant_message"]
+      # JSON-encodable throughout: no atoms for the type, no tuples in the data.
+      assert Enum.all?(data.events, &match?({:ok, _, _}, DateTime.from_iso8601(&1.time)))
+      assert length(data.messages) == 2
+    end
+
+    test "writes a replace surface_op as a list, not a tuple" do
+      ctx =
+        Context.new(messages: [Message.user("one"), Message.user("two")])
+        |> Context.replace_message_range(0, 1, Message.system("[summary]"))
+
+      data = Context.serialize(ctx)
+
+      assert %{surface_op: ["replace", 0, 1]} = List.last(data.events).data
     end
 
     test "serializes basic fields" do
@@ -333,6 +358,90 @@ defmodule Nous.Agent.ContextSerializationTest do
 
     test "returns error for empty map" do
       assert {:error, "missing or invalid version field"} = Context.deserialize(%{})
+    end
+
+    test "a v1 blob seeds a log that folds back to its messages" do
+      # What a pre-log release wrote: a flat message list, no events.
+      v1 = %{
+        version: 1,
+        messages: [
+          %{role: :system, content: "sys", tool_calls: [], metadata: %{}},
+          %{role: :user, content: "Q", tool_calls: [], metadata: %{}},
+          %{
+            role: :assistant,
+            content: "",
+            tool_calls: [%{"id" => "c1", "name" => "echo"}],
+            metadata: %{}
+          },
+          %{role: :tool, content: "ok", tool_call_id: "c1", name: "echo", metadata: %{}}
+        ],
+        tool_calls: [],
+        system_prompt: "sys",
+        deps: %{},
+        usage: %{},
+        needs_response: true,
+        iteration: 1,
+        max_iterations: 10,
+        started_at: nil,
+        agent_name: "legacy"
+      }
+
+      {:ok, restored} = Context.deserialize(v1)
+
+      assert Enum.map(restored.messages, & &1.role) == [:system, :user, :assistant, :tool]
+      assert Enum.map(restored.messages, & &1.content) == ["sys", "Q", "", "ok"]
+      # The messages are a fold of a real log now, not the list that was read.
+      assert restored.messages == Nous.Session.Log.derive_messages(restored.log)
+      assert Enum.map(Nous.Session.Log.events(restored.log), & &1.seq) == [0, 1, 2, 3]
+    end
+
+    test "a v2 blob round-trips events, messages and event times" do
+      ctx =
+        Context.new(messages: [Message.system("sys"), Message.user("Q")])
+        |> Context.add_message(Message.assistant("A"))
+
+      {:ok, restored} = ctx |> Context.serialize() |> Context.deserialize()
+
+      assert restored.messages == ctx.messages
+
+      assert Enum.map(Nous.Session.Log.events(restored.log), &{&1.seq, &1.type, &1.time}) ==
+               Enum.map(Nous.Session.Log.events(ctx.log), &{&1.seq, &1.type, &1.time})
+    end
+
+    test "a v2 blob keeps shadowed history and the compacted view" do
+      ctx =
+        Context.new(messages: [Message.user("one"), Message.user("two"), Message.user("three")])
+        |> Context.replace_message_range(0, 1, Message.system("[summary of 1-2]"))
+
+      {:ok, restored} = ctx |> Context.serialize() |> Context.deserialize()
+
+      assert Enum.map(restored.messages, & &1.content) == ["[summary of 1-2]", "three"]
+      # Nothing was deleted: the shadowed originals survive the round trip.
+      assert length(Nous.Session.Log.events(restored.log)) == 4
+    end
+
+    test "a v2 blob whose events were written by JSON (string keys) still reads" do
+      ctx =
+        Context.new(messages: [Message.user("one"), Message.user("two")])
+        |> Context.replace_message_range(0, 1, Message.system("[summary]"))
+
+      json_ish =
+        ctx
+        |> Context.serialize()
+        |> Map.update!(:events, fn events ->
+          Enum.map(events, fn event ->
+            event
+            |> Map.new(fn {k, v} -> {Atom.to_string(k), v} end)
+            |> Map.update!("data", fn data ->
+              Map.new(data, fn {k, v} -> {Atom.to_string(k), v} end)
+            end)
+          end)
+        end)
+
+      {:ok, restored} = Context.deserialize(json_ish)
+
+      assert Enum.map(restored.messages, & &1.content) == ["[summary]"]
+      assert length(Nous.Session.Log.events(restored.log)) == 3
     end
   end
 end

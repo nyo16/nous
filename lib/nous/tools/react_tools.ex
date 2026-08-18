@@ -110,6 +110,15 @@ defmodule Nous.Tools.ReActTools do
   Confirmation message.
   """
   @spec note(Nous.RunContext.t(), args()) :: result()
+  # A schema-violating call gets a sentence it can act on rather than a
+  # `FunctionClauseError`. Models do ignore schemas, and a raise told the model only
+  # that something exploded, so it retried the same malformed call and spent the
+  # iteration budget. The happy path stays the first clause, so a correct call pays
+  # nothing for this.
+  def note(_ctx, args) when is_map(args) and not is_map_key(args, "content") do
+    {:error, "note requires a `content` parameter: the observation or finding to record."}
+  end
+
   def note(ctx, %{"content" => content}) do
     timestamp = DateTime.utc_now() |> DateTime.to_string()
 
@@ -295,6 +304,12 @@ defmodule Nous.Tools.ReActTools do
   The final answer wrapped with completion metadata.
   """
   @spec final_answer(Nous.RunContext.t(), args()) :: result()
+  # Same reasoning as `note/2` above: a missing `answer` is the model's mistake to
+  # correct, so tell it what to send.
+  def final_answer(_ctx, args) when is_map(args) and not is_map_key(args, "answer") do
+    {:error, "final_answer requires an `answer` parameter: your complete solution."}
+  end
+
   def final_answer(ctx, %{"answer" => answer}) do
     todos = ctx.deps[:todos] || []
     plans = ctx.deps[:plans] || []

@@ -117,6 +117,10 @@ defmodule Nous.AgentRunner do
     * `:context` - Existing context to continue from
     * `:output_type` - Override the agent's `output_type` for this run
     * `:structured_output` - Override the agent's `structured_output` options for this run
+    * `:sandbox` - Override the agent's `sandbox` policy for this run. Accepts
+      the same shapes as `Nous.Agent.new/2`'s `:sandbox` option (a mode atom, a
+      keyword list, or a `Nous.Sandbox.Policy`), e.g.
+      `Nous.run(agent, prompt, sandbox: :read_only)`
     * `:stream` - When `true`, the LLM call streams chunks while still running
       the tool-call loop (default: `false`). Fires `:on_llm_new_delta` per
       text chunk and `:on_llm_new_thinking_delta` per reasoning chunk.
@@ -366,7 +370,7 @@ defmodule Nous.AgentRunner do
         else: ctx
 
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
-    all_tools = ToolExecution.maybe_filter_by_policy(agent.permissions, all_tools)
+    all_tools = ToolExecution.visible_tools(agent, all_tools)
 
     if ctx.needs_response do
       # Build messages via behaviour (reflects any plugin context changes)
@@ -435,7 +439,8 @@ defmodule Nous.AgentRunner do
 
   # Private functions
 
-  # Apply per-run overrides for output_type, structured_output and model_settings
+  # Apply per-run overrides for output_type, structured_output, model_settings
+  # and the sandbox policy
   defp apply_runtime_overrides(agent, opts) do
     agent
     |> then(fn a ->
@@ -457,6 +462,13 @@ defmodule Nous.AgentRunner do
       case Keyword.fetch(opts, :model_settings) do
         {:ok, ms} when is_map(ms) -> %{a | model_settings: Map.merge(a.model_settings, ms)}
         _ -> a
+      end
+    end)
+    |> then(fn a ->
+      case Keyword.fetch(opts, :sandbox) do
+        {:ok, nil} -> %{a | sandbox: nil}
+        {:ok, sandbox} -> %{a | sandbox: Nous.Sandbox.Policy.new(sandbox)}
+        :error -> a
       end
     end)
   end
@@ -558,23 +570,32 @@ defmodule Nous.AgentRunner do
   end
 
   defp build_result(_agent, ctx, output) do
+    # `ctx.messages` is not a list the runner appended to any more: it is the
+    # fold of this session's event log, re-materialized by `Nous.Agent.Context`
+    # after every append, plus the assembly-time system-prompt overlay that is
+    # deliberately not history (see `Nous.AgentRunner.PromptAssembly`). Reading
+    # it here IS reading the fold; folding `ctx.log` directly instead would drop
+    # that overlay and hand back a transcript the model never saw.
+    transcript = ctx.messages
+
     %{
       output: output,
       usage: ctx.usage,
       iterations: ctx.iteration,
-      all_messages: ctx.messages,
-      new_messages: get_new_messages(ctx),
+      all_messages: transcript,
+      new_messages: get_new_messages(transcript),
       deps: ctx.deps,
       # Include context for continuation
       context: ctx
     }
   end
 
-  defp get_new_messages(ctx) do
-    # Get messages added during this run (after initial user message)
-    # This is a simplification - could be more sophisticated
-    ctx.messages
-    |> Enum.drop_while(fn msg -> msg.role != :assistant end)
+  # Messages added during this run: the transcript from its first assistant turn
+  # on. Derived from the fold rather than diffed against a remembered length,
+  # because compaction can replace a range mid-run and a remembered index would
+  # then name the wrong message.
+  defp get_new_messages(transcript) do
+    Enum.drop_while(transcript, fn msg -> msg.role != :assistant end)
   end
 
   defp emit_error_telemetry(agent, duration, error) do

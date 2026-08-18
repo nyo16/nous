@@ -590,15 +590,28 @@ defmodule Nous.Message do
 
   defp changeset(message, attrs) do
     message
-    |> cast(attrs, [
-      :role,
-      :content,
-      :reasoning_content,
-      :tool_calls,
-      :tool_call_id,
-      :name,
-      :metadata
-    ])
+    |> cast(
+      attrs,
+      [
+        :role,
+        :content,
+        :reasoning_content,
+        :tool_calls,
+        :tool_call_id,
+        :name,
+        :metadata
+      ],
+      # `empty_values: []` overrides Ecto's default `[""]`. With the default, an
+      # empty-string content was treated as *absent* and silently became nil, so
+      # `build/1` (behind `assistant/2` and friends) kept `""` while `new/1`
+      # dropped it — the same logical message differed by which constructor made
+      # it. That asymmetry was a persistence bug: `Context.deserialize/1` goes
+      # through `new!/1`, so every save/restore rewrote the `content: ""` that a
+      # tool-calling assistant message carries into `content: nil`. Providers do
+      # distinguish the two, so a resumed session sent a different request shape
+      # than the one that was saved.
+      empty_values: []
+    )
     |> validate_required([:role])
     |> put_change(:created_at, DateTime.utc_now())
     |> validate_content()
@@ -610,13 +623,18 @@ defmodule Nous.Message do
     content = get_field(changeset, :content)
 
     case {role, content} do
+      # An assistant message may legitimately carry no prose: a pure tool-call
+      # turn is `content: ""` (OpenAI, Gemini) or `content: nil` (Anthropic), and
+      # streaming populates content after the struct exists. Both empty forms are
+      # accepted for :assistant and preserved as given, because
+      # `Message.assistant/2` has always produced `""` here and a round trip
+      # through `new/1` that rewrote it to nil changed the request shape a
+      # resumed session sends.
+      {:assistant, empty} when empty in [nil, ""] ->
+        changeset
+
       {_, nil} ->
-        # Allow nil content for assistant messages (streaming can populate later)
-        if role == :assistant do
-          changeset
-        else
-          add_error(changeset, :content, "content is required")
-        end
+        add_error(changeset, :content, "content is required")
 
       {_, ""} ->
         add_error(changeset, :content, "content cannot be empty")

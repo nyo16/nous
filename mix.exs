@@ -83,6 +83,15 @@ defmodule Nous.MixProject do
       # HTML parsing (for web content extraction in research tools)
       {:floki, "~> 0.36", optional: true},
 
+      # Code Mode's JS runtime: an embedded Deno isolate via Rustler NIFs
+      # (optional — add to your app's deps to unlock `Nous.CodeRuntime.JS`).
+      # 0.4 is the floor, not a preference: it is the first version with an
+      # execution interrupt that terminates a `while(true){}` guest, an opt-in
+      # `:apply` allowlist rather than an always-on arbitrary-module gateway,
+      # and a `:max_heap_mb` cap. Code Mode needs all three, so an earlier
+      # tyrex is not "mostly fine" — it is unusable for model-authored code.
+      {:tyrex, "~> 0.4", optional: true},
+
       # Memory system store backends (all optional — add to your app's deps to unlock)
       # {:muninn, "~> 0.4", optional: true},
       # {:zvec, "~> 0.2", optional: true},
@@ -165,6 +174,7 @@ defmodule Nous.MixProject do
         # Production Guides
         {"docs/guides/skills.md", filename: "skills", title: "Skills Guide"},
         {"docs/guides/hooks.md", filename: "hooks", title: "Hooks Guide"},
+        {"docs/guides/code_mode.md", filename: "code_mode", title: "Code Mode Guide"},
         {"docs/guides/liveview-integration.md",
          filename: "liveview_integration", title: "Phoenix LiveView Integration"},
         {"docs/guides/best_practices.md",

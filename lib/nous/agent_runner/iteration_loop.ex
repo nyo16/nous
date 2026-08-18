@@ -9,21 +9,87 @@ defmodule Nous.AgentRunner.IterationLoop do
   # orchestration loop never left the facade" — do_iteration_body/3 was a
   # 199-line function reaching into 8 contexts). Pure move: the public API and
   # every telemetry event are unchanged.
+  #
+  # ## Turns and steps
+  #
+  # This module owns the iteration, so it is where turn and step boundaries are
+  # recorded as durable events (`:turn_start`, `:step_start`, `:step_end`,
+  # `:turn_end`) through `Nous.Agent.Context.log_event/3`:
+  #
+  #   * a **step** is one model request plus the tools it calls. A step is
+  #     logged only when a request is actually dispatched, so counting
+  #     `:step_start` events counts requests.
+  #   * a **turn** is zero or more steps. It opens on entry to
+  #     `execute_loop/3`, before its first input is claimed, and closes when
+  #     nothing is owed. A turn with **zero steps is legal**: a `:pre_request`
+  #     hook that denies the first claimed batch leaves exactly that, which is
+  #     how a rejected attempt still leaves a record.
+  #
+  # `execute_loop/3` is therefore the turn boundary and is NOT the recursion
+  # target; `loop/3` is. Recursing through `execute_loop/3` would nest one turn
+  # inside another per iteration.
+  #
+  # `Nous.AgentRunner.run_stream/3` runs exactly one iteration, never enters
+  # this loop, and is **explicitly out of scope for turns, steps and the
+  # inbox** by decision. Do not retrofit them onto it: a stream is a single
+  # request whose consumer owns the iteration, so "zero or more steps until
+  # nothing is owed" has nothing to describe there.
+  #
+  # ## Claiming input mid-run
+  #
+  # When `ctx.deps[:claim_inbox]` holds a 1-arity function it is called at the
+  # turn boundary with `:next_turn` and at every step boundary with
+  # `:next_step`, and every `Nous.Message` it returns is appended to the log
+  # before the request is built. That is the seam `Nous.Session.Inbox` and
+  # `Nous.AgentServer.steer/2` are wired through; the loop itself knows nothing
+  # about servers or queues. Without the key, nothing changes.
 
   alias Nous.{Errors, Hook, Message, Plugin}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
   alias Nous.AgentRunner.{PromptAssembly, RequestDispatch, ToolExecution}
+  alias Nous.Session.{Event, Log}
 
   require Logger
 
+  # `ctx.deps` key holding this turn's exit reason once something other than
+  # "nothing is owed" decided it. Runtime-only, and removed when the turn
+  # closes so it never reaches `result.deps` or a persisted context.
+  @exit_reason_key :__turn_exit_reason__
+
+  # A turn: opens before its first input is claimed, closes when nothing is
+  # owed. `loop/3` is the recursion target — see the moduledoc note.
   def execute_loop(agent, behaviour, ctx) do
-    # Check for cancellation
     case check_cancellation(ctx) do
       {:error, _} = err ->
         err
 
+      # Checked before open_turn/1 so a run cancelled before it starts neither
+      # logs a turn nor claims from the inbox — a claim into a context that is
+      # about to be discarded would silently eat the queued input. `loop/3`
+      # checks for every subsequent iteration, so this stays one check per step.
       :ok ->
-        do_iteration(agent, behaviour, ctx)
+        {ctx, turn} = open_turn(ctx)
+
+        case do_iteration(agent, behaviour, ctx) do
+          {:ok, ctx} ->
+            {:ok, close_turn(ctx, turn)}
+
+          # An error return carries no context, so this turn's `:turn_end` has
+          # nowhere to live: AgentRunner discards the context on error and
+          # AgentServer never persists it, which discards this turn's
+          # `:turn_start` along with it. The log stays consistent by losing
+          # both. A `:turn_start` that DID reach storage before a crash is
+          # `Nous.Session.Recovery`'s problem, and `:interrupted` is its marker.
+          {:error, _} = err ->
+            err
+        end
+    end
+  end
+
+  defp loop(agent, behaviour, ctx) do
+    case check_cancellation(ctx) do
+      {:error, _} = err -> err
+      :ok -> do_iteration(agent, behaviour, ctx)
     end
   end
 
@@ -43,66 +109,84 @@ defmodule Nous.AgentRunner.IterationLoop do
     end
   end
 
-  def do_iteration(_agent, _behaviour, %{needs_response: false} = ctx), do: {:ok, ctx}
-
   def do_iteration(agent, behaviour, ctx) do
-    if Context.max_iterations_reached?(ctx) do
-      Logger.error("""
-      Max iterations exceeded
-        Agent: #{agent.name}
-        Max iterations: #{ctx.max_iterations}
-        Total tokens used: #{ctx.usage.total_tokens}
-      """)
+    # Step boundary. Claim anything steered or injected since the last request
+    # *before* asking whether anything is owed: a message that arrived mid-run
+    # is exactly what makes another step owed, and claiming after the check
+    # would strand it until some unrelated run began.
+    {ctx, claimed} = claim(ctx, :next_step)
 
-      error = Errors.MaxIterationsExceeded.exception(max_iterations: ctx.max_iterations)
-      {:error, error}
-    else
-      iteration_start = System.monotonic_time()
+    cond do
+      not ctx.needs_response ->
+        {:ok, ctx}
 
-      :telemetry.execute(
-        [:nous, :agent, :iteration, :start],
-        %{system_time: System.system_time()},
-        %{
-          agent_name: agent.name,
-          iteration: ctx.iteration,
-          max_iterations: ctx.max_iterations
-        }
-      )
+      Context.max_iterations_reached?(ctx) ->
+        Logger.error("""
+        Max iterations exceeded
+          Agent: #{agent.name}
+          Max iterations: #{ctx.max_iterations}
+          Total tokens used: #{ctx.usage.total_tokens}
+        """)
 
-      result = do_iteration_body(agent, behaviour, ctx)
+        {:error, Errors.MaxIterationsExceeded.exception(max_iterations: ctx.max_iterations)}
 
-      iteration_duration = System.monotonic_time() - iteration_start
-
-      iteration_meta = %{
-        agent_name: agent.name,
-        iteration: ctx.iteration,
-        tool_calls:
-          case result do
-            {:ok, %{usage: %{tool_calls: tc}}} -> tc
-            _ -> 0
-          end,
-        needs_response:
-          case result do
-            {:ok, %{needs_response: nr}} -> nr
-            _ -> false
-          end
-      }
-
-      :telemetry.execute(
-        [:nous, :agent, :iteration, :stop],
-        %{duration: iteration_duration},
-        iteration_meta
-      )
-
-      result
+      true ->
+        instrumented_iteration(agent, behaviour, ctx, claimed)
     end
   end
 
-  def do_iteration_body(agent, behaviour, ctx) do
-    {ctx, all_tools, pre_request_result} = prepare_tools(agent, behaviour, ctx)
+  defp instrumented_iteration(agent, behaviour, ctx, claimed) do
+    iteration_start = System.monotonic_time()
 
-    # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the LLM call
-    if ctx.needs_response and pre_request_result != :deny do
+    :telemetry.execute(
+      [:nous, :agent, :iteration, :start],
+      %{system_time: System.system_time()},
+      %{
+        agent_name: agent.name,
+        iteration: ctx.iteration,
+        max_iterations: ctx.max_iterations
+      }
+    )
+
+    result = do_iteration_body(agent, behaviour, ctx, claimed)
+
+    iteration_duration = System.monotonic_time() - iteration_start
+
+    iteration_meta = %{
+      agent_name: agent.name,
+      iteration: ctx.iteration,
+      tool_calls:
+        case result do
+          {:ok, %{usage: %{tool_calls: tc}}} -> tc
+          _ -> 0
+        end,
+      needs_response:
+        case result do
+          {:ok, %{needs_response: nr}} -> nr
+          _ -> false
+        end
+    }
+
+    :telemetry.execute(
+      [:nous, :agent, :iteration, :stop],
+      %{duration: iteration_duration},
+      iteration_meta
+    )
+
+    result
+  end
+
+  def do_iteration_body(agent, behaviour, ctx, claimed) do
+    {ctx, all_tools, pre_step_result} = prepare_tools(agent, behaviour, ctx, claimed)
+
+    # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the
+    # LLM call. A denial here is the `pre_step` rejection: the claimed batch
+    # stays in the transcript (it happened, and dropping user input to record a
+    # refusal would be a poor trade), but no step is spent on it, so the turn
+    # closes with `reason: :rejected` — and with zero steps when this was the
+    # first claim.
+    if ctx.needs_response and not denied?(pre_step_result) do
+      ctx = log_step_start(ctx)
       {ctx, messages, model_settings} = prepare_request(agent, behaviour, ctx, all_tools)
 
       Logger.debug(
@@ -114,17 +198,22 @@ defmodule Nous.AgentRunner.IterationLoop do
           handle_response(agent, behaviour, ctx, response, active_model, all_tools)
 
         {:error, reason} ->
+          # Close the step before the error handler runs, so an unclosed
+          # `:step_start` in a recovered log means "died inside the step" and
+          # never "the request came back an error".
+          ctx = log_step_end(ctx, :error)
           handle_request_error(agent, behaviour, ctx, reason)
       end
     else
-      {:ok, ctx}
+      {:ok, note_rejection(ctx, pre_step_result)}
     end
   end
 
   # Assemble the tool set the model will see this iteration (behaviour tools +
   # plugin tools, minus anything the permission policy blocks) and run the
-  # pre-request hooks. Returns `{ctx, all_tools, pre_request_verdict}`.
-  def prepare_tools(agent, behaviour, ctx) do
+  # pre_request hooks — which double as the `pre_step` interception point, since
+  # a step IS one model request. Returns `{ctx, all_tools, pre_step_verdict}`.
+  def prepare_tools(agent, behaviour, ctx, claimed) do
     # Get tools from behaviour + plugins
     tools = behaviour.get_tools(agent)
     plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
@@ -142,17 +231,25 @@ defmodule Nous.AgentRunner.IterationLoop do
     # Enforce the permission policy: blocked tools are removed from the set the
     # model ever sees (and therefore can't be called). Approval is enforced
     # separately at execution time (see ToolExecution.enforce_policy_approval/2).
-    all_tools = ToolExecution.maybe_filter_by_policy(agent.permissions, all_tools)
+    # Code Mode's `run_code` is injected after that filter — see
+    # ToolExecution.visible_tools/2 for why it sits outside the restriction.
+    all_tools = ToolExecution.visible_tools(agent, all_tools)
 
-    # Run pre_request hooks (can block the LLM call)
-    pre_request_result =
+    # Run pre_request hooks (can block the LLM call). `claimed`/`claimed_content`
+    # describe the batch this step boundary just took from the inbox, which is
+    # what lets a hook reject *this input* instead of only "a request". Text,
+    # not structs: a command hook JSON-encodes this payload and %Message{} is
+    # not encodable.
+    pre_step_result =
       Hook.Runner.run(ctx.hook_registry, :pre_request, %{
         agent_name: agent.name,
         tool_count: length(all_tools),
-        iteration: ctx.iteration
+        iteration: ctx.iteration,
+        claimed: length(claimed),
+        claimed_content: Enum.map(claimed, &Message.extract_text/1)
       })
 
-    {ctx, all_tools, pre_request_result}
+    {ctx, all_tools, pre_step_result}
   end
 
   # Build the messages and model settings for this iteration's model call.
@@ -230,7 +327,8 @@ defmodule Nous.AgentRunner.IterationLoop do
             request_agent,
             messages,
             model_settings,
-            all_tools
+            all_tools,
+            ctx
           )
         end
       end
@@ -304,8 +402,11 @@ defmodule Nous.AgentRunner.IterationLoop do
         ctx
       end
 
+    # Close the step: one model request plus the tools it called.
+    ctx = log_step_end(ctx, :ok)
+
     # Continue loop
-    execute_loop(agent, behaviour, ctx)
+    loop(agent, behaviour, ctx)
   end
 
   # A failed model request: give the behaviour's handle_error a chance to retry
@@ -321,10 +422,10 @@ defmodule Nous.AgentRunner.IterationLoop do
     # Try error handler if implemented
     case Behaviour.call(behaviour, :handle_error, [agent, reason, ctx], {:error, reason}) do
       {:retry, new_ctx} ->
-        execute_loop(agent, behaviour, new_ctx)
+        loop(agent, behaviour, new_ctx)
 
       {:continue, new_ctx} ->
-        execute_loop(agent, behaviour, new_ctx)
+        loop(agent, behaviour, new_ctx)
 
       {:error, _} = err ->
         err
@@ -356,5 +457,127 @@ defmodule Nous.AgentRunner.IterationLoop do
         schemas = RequestDispatch.convert_tools_for_provider(provider, all_tools)
         {schemas, %{ctx | tool_schema_cache: {key, schemas}}}
     end
+  end
+
+  # ── turn and step bookkeeping ──────────────────────────────────────────────
+
+  # The reasons a live loop may write to `:turn_end`. `:interrupted` is NOT
+  # among them and must never be emitted here: `Nous.Session.Recovery` uses it
+  # as the unambiguous marker of a turn that never closed because the VM went
+  # away mid-run. A live loop emitting it would make a crash indistinguishable
+  # from an orderly exit and would silently break recovery's risk
+  # classification of lost tool results.
+  @live_turn_end_reasons [:complete, :rejected]
+
+  defp open_turn(ctx) do
+    {previous_turns, _steps} = turn_cursor(ctx)
+    turn = previous_turns + 1
+
+    ctx =
+      ctx
+      |> clear_exit_reason()
+      |> Context.log_event(:turn_start, %{turn: turn})
+      |> claim_into(:next_turn)
+
+    {ctx, turn}
+  end
+
+  defp close_turn(ctx, turn) do
+    {_turn, steps} = turn_cursor(ctx)
+    reason = exit_reason(ctx)
+
+    ctx
+    |> clear_exit_reason()
+    |> Context.log_event(:turn_end, %{turn: turn, steps: steps, reason: reason})
+  end
+
+  defp log_step_start(ctx) do
+    {turn, steps} = turn_cursor(ctx)
+    Context.log_event(ctx, :step_start, %{turn: turn, step: steps + 1})
+  end
+
+  defp log_step_end(ctx, outcome) do
+    {turn, step} = turn_cursor(ctx)
+    Context.log_event(ctx, :step_end, %{turn: turn, step: step, outcome: outcome})
+  end
+
+  # `{turns_opened, steps_started_in_the_current_turn}`, read back off the log
+  # rather than carried in the context. Two reasons: %Context{} has no field for
+  # it and inventing one would put loop bookkeeping into a struct that gets
+  # serialized, and a restored session keeps counting where it left off for
+  # free. One pass over the events per boundary — noise beside the model request
+  # it brackets.
+  defp turn_cursor(%Context{log: log}) do
+    Enum.reduce(Log.events(log), {0, 0}, fn
+      %Event{type: :turn_start}, {turn, _steps} -> {turn + 1, 0}
+      %Event{type: :step_start}, {turn, steps} -> {turn, steps + 1}
+      _event, acc -> acc
+    end)
+  end
+
+  # `Hook.Runner.run/3` answers a blocking event with `:deny` OR
+  # `{:deny, reason}`; matching only the bare atom let every hook that bothered
+  # to explain itself through.
+  defp denied?(:deny), do: true
+  defp denied?({:deny, _reason}), do: true
+  defp denied?(_allowed), do: false
+
+  defp note_rejection(ctx, verdict) do
+    if denied?(verdict), do: put_exit_reason(ctx, :rejected), else: ctx
+  end
+
+  defp put_exit_reason(%Context{} = ctx, reason) when reason in @live_turn_end_reasons do
+    %{ctx | deps: Map.put(ctx.deps, @exit_reason_key, reason)}
+  end
+
+  defp exit_reason(%Context{deps: deps}) do
+    case Map.get(deps, @exit_reason_key) do
+      reason when reason in @live_turn_end_reasons -> reason
+      _nothing_owed -> :complete
+    end
+  end
+
+  defp clear_exit_reason(%Context{} = ctx) do
+    %{ctx | deps: Map.delete(ctx.deps, @exit_reason_key)}
+  end
+
+  # ── claiming from the inbox ────────────────────────────────────────────────
+
+  defp claim_into(ctx, target), do: ctx |> claim(target) |> elem(0)
+
+  defp claim(%Context{} = ctx, target) do
+    case Map.get(ctx.deps, :claim_inbox) do
+      claim_fun when is_function(claim_fun, 1) ->
+        case safe_claim(claim_fun, target) do
+          [] -> {ctx, []}
+          messages -> {Context.add_messages(ctx, messages), messages}
+        end
+
+      _absent ->
+        {ctx, []}
+    end
+  end
+
+  # The claim crosses a process boundary — the inbox of record lives with the
+  # run's owner, not in this task's copy of the context — so it can time out or
+  # find that owner gone. Catching every kind is deliberate and not a swallowed
+  # error: the reason is logged in full, and killing a live agent run because a
+  # steering queue was briefly unreachable is strictly worse than making this
+  # one request without the claimed input, which the next boundary picks up
+  # anyway. Non-message values are dropped for the same reason — `claim_inbox`
+  # is an extension seam, and a badly written one must not crash the run either.
+  defp safe_claim(claim_fun, target) do
+    case claim_fun.(target) do
+      messages when is_list(messages) -> Enum.filter(messages, &match?(%Message{}, &1))
+      _other -> []
+    end
+  catch
+    kind, reason ->
+      Logger.warning(
+        "Nous.AgentRunner: inbox claim for #{inspect(target)} failed " <>
+          "(#{inspect(kind)}: #{inspect(reason)}); continuing without claimed input"
+      )
+
+      []
   end
 end

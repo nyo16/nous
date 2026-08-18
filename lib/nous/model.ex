@@ -302,8 +302,25 @@ defmodule Nous.Model do
   @spec default_receive_timeout(provider()) :: non_neg_integer()
   # 2 minutes for local Ollama
   defp default_receive_timeout(:ollama), do: 120_000
-  # 2 minutes for local LM Studio
-  defp default_receive_timeout(:lmstudio), do: 120_000
+
+  # 5 minutes for local LM Studio — the same as LlamaCpp below, for that reason
+  # plus one of its own.
+  #
+  # LM Studio JIT-loads a model on the first request that names it, so "slow
+  # first token on cold weights" is not merely possible here, it is the default
+  # behaviour: loading an 18GB 27B took 21s before a single token appeared.
+  # Generation on a large local model is slow too — one ReAct step with three
+  # tools measured 36.7s for 515 completion tokens, 314 of them reasoning, and a
+  # loop's later steps carry far bigger contexts than its first.
+  #
+  # At 2 minutes that combination times out mid-run as a bare
+  # `%Req.TransportError{reason: :timeout}`, which reads like a broken server
+  # rather than a budget the caller can raise. Measured against the ReAct eval
+  # suite on qwen3.8-27b: four tests failed that way at 2 minutes.
+  #
+  # `:vllm` and `:sglang` are the same class of host and would likely want the
+  # same value; they are left alone because they were not measured.
+  defp default_receive_timeout(:lmstudio), do: 300_000
   # 2 minutes for local vLLM
   defp default_receive_timeout(:vllm), do: 120_000
   # 2 minutes for local SGLang

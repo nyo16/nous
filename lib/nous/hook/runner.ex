@@ -15,10 +15,51 @@ defmodule Nous.Hook.Runner do
   - `:function` — Calls the function directly with `(event, payload)`
   - `:module` — Calls `module.handle(event, payload)`
   - `:command` — Executes shell command via `NetRunner.run/2` with JSON on stdin
+
+  ## Sandbox
+
+  Command hooks are **not** confined by `Nous.Sandbox` by default. Hooks are
+  user-authored operator code, not model-authored, and a hook that cannot write
+  anywhere defeats the point of having a hook. Confining them by default would
+  also fail closed on every host with no sandbox provider, silently breaking
+  working deployments.
+
+  Operators who run hooks whose contents they do not fully control can opt in:
+
+      config :nous, :sandbox_confine_command_hooks, true
+
+  With the flag on, the hook argv is wrapped using
+  `Nous.Sandbox.Policy.resolve(nil)` (no `Nous.RunContext` exists at this
+  layer, so the policy comes from application config). If no provider can
+  enforce the requested mode, the hook does **not** run unconfined: a warning
+  is logged and an `{:error, _}` result is returned, which follows the hook's
+  existing `fail_closed` semantics — `:deny` when `fail_closed: true`,
+  otherwise the run continues to the next hook.
+
+  The flag alone is not enough. `:sandbox_mode` must also be set: an unset
+  mode resolves to `:danger_full_access`, which means the flag is on and hooks
+  still run unconfined. That combination logs an explicit warning naming both
+  settings, once per VM.
+
+  Unlike `Nous.Tools.Bash`, hook stderr stays on `:consume`: the hook protocol
+  parses stdout as JSON, so merging stderr in would corrupt it. Consequently
+  `Nous.Sandbox.classify/3` is **not** used on this path — every signature it
+  matches is written to stderr, which this path never sees. Instead, once the
+  argv is actually confined (`enforcement != :none`), any nonzero exit other
+  than the protocol's own `2` (deny) is treated as `:deny` regardless of
+  `fail_closed`: from stdout alone, "the sandbox denied the hook", "the runner
+  could not start" and "the hook failed" are indistinguishable, and a hook
+  that may never have run must not be able to permit the event.
+
+  Unconfined hooks (`enforcement == :none`, the default) keep their historical
+  behaviour exactly: a nonzero exit other than `2` fails open unless the hook
+  sets `fail_closed: true`.
   """
 
   alias Nous.Hook
   alias Nous.Hook.Registry
+  alias Nous.Sandbox
+  alias Nous.Sandbox.{Confined, Policy}
 
   require Logger
 
@@ -226,30 +267,133 @@ defmodule Nous.Hook.Runner do
       })
 
     contained("Command hook", fn ->
-      case NetRunner.run(argv, input: json_input, timeout: timeout) do
-        {output, 0} ->
-          parse_command_output(output)
-
-        {_output, 2} ->
-          :deny
-
-        {:error, :timeout} ->
-          Logger.warning("Command hook timed out after #{timeout}ms: #{inspect(argv)}")
-          {:error, :timeout}
-
-        {output, exit_code} ->
-          Logger.warning("Command hook exited with code #{exit_code}: #{String.trim(output)}")
-
-          # Non-0/2 exit codes default to fail OPEN for backward compat;
-          # set fail_closed: true on the hook to treat them as :deny so a
-          # crashing security-gating hook can't be silently bypassed.
-          if fail_closed do
-            {:deny, "command hook exited with code #{exit_code} (fail_closed)"}
-          else
-            :allow
-          end
+      case confine_hook_argv(argv) do
+        {:ok, confined} -> run_command_hook(confined, json_input, timeout, fail_closed)
+        {:error, reason} -> {:error, reason}
       end
     end)
+  end
+
+  # Off by default: hooks are operator-authored, and one that cannot write
+  # anywhere is not a hook. With the flag on we resolve from application config
+  # — there is no `Nous.RunContext` at this layer to carry a session policy.
+  #
+  # The unconfined branch still goes through `Nous.Sandbox.confine/2` rather
+  # than skipping it, because `:danger_full_access` is that module's documented
+  # way to ask for no confinement: it short-circuits before any backend probe
+  # and yields a passthrough argv carrying `enforcement: :none`. One code path,
+  # no special case.
+  defp confine_hook_argv(argv) do
+    policy =
+      if Application.get_env(:nous, :sandbox_confine_command_hooks, false) do
+        policy = Policy.resolve(nil)
+        warn_confine_flag_without_mode_once(policy)
+        policy
+      else
+        Policy.new(:danger_full_access)
+      end
+
+    case Sandbox.confine(argv, policy) do
+      {:ok, confined} ->
+        {:ok, confined}
+
+      {:error, reason} ->
+        Logger.warning(
+          "Command hook NOT run: no sandbox can confine it (#{inspect(reason)}): " <>
+            "#{inspect(argv)}. Running it unconfined is not an option; " <>
+            "`fail_closed` decides whether this denies the event."
+        )
+
+        {:error, reason}
+    end
+  end
+
+  @confine_flag_warned_key {__MODULE__, :confine_flag_without_mode_warned}
+
+  # `sandbox_confine_command_hooks: true` with `:sandbox_mode` unset resolves to
+  # `:danger_full_access`: the flag is on and hooks still run unconfined. The
+  # only other signal is `Nous.Sandbox.Policy`'s once-per-VM permissive-default
+  # warning, which an unrelated caller may already have consumed. Refusing to
+  # run would be a surprising hard failure on an opt-in flag, so be loud
+  # instead. Once per VM, same `:persistent_term` latch as `Policy`.
+  defp warn_confine_flag_without_mode_once(%Policy{mode: :danger_full_access}) do
+    if :persistent_term.get(@confine_flag_warned_key, nil) do
+      :ok
+    else
+      :persistent_term.put(@confine_flag_warned_key, true)
+
+      Logger.warning(
+        "`config :nous, :sandbox_confine_command_hooks, true` is set, but the resolved " <>
+          "sandbox mode is :danger_full_access, so command hooks run UNCONFINED. Both " <>
+          "settings are required: also set `config :nous, :sandbox_mode, :workspace_write` " <>
+          "(or :read_only) to actually confine them."
+      )
+    end
+  end
+
+  defp warn_confine_flag_without_mode_once(%Policy{}), do: :ok
+
+  # Deliberately no `Nous.Sandbox.merge_stderr/1` and no `:stderr` opt: the hook
+  # protocol parses stdout as JSON (`parse_command_output/1`), so merging the
+  # child's stderr into that stream would corrupt it.
+  #
+  # This is also why `Nous.Sandbox.classify/3` is not called here. With
+  # `stderr: :consume`, `NetRunner.run/2` returns stdout only, while every
+  # signature `classify/3` matches (`bwrap: `, `operation not permitted`, …) is
+  # written to stderr — so a classification of this stream could only ever
+  # answer `:ok`, and calling it would imply a check that cannot fire. Real
+  # classification would need the hook's *stderr alone* captured, e.g. wrapping
+  # the argv as `sh -c 'exec "$@" 2>"$0"' <tmpfile> …` and classifying that file
+  # after the run. Until then, confinement is handled by failing closed below.
+  defp run_command_hook(%Confined{} = confined, json_input, timeout, fail_closed) do
+    case NetRunner.run(confined.argv, input: json_input, timeout: timeout) do
+      {:error, :timeout} ->
+        Logger.warning("Command hook timed out after #{timeout}ms: #{inspect(confined.argv)}")
+        {:error, :timeout}
+
+      {output, exit_code} when is_integer(exit_code) ->
+        command_hook_result(output, exit_code, fail_closed, confined.enforcement)
+
+      {:error, reason} ->
+        Logger.warning("Command hook failed to run: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp command_hook_result(output, 0, _fail_closed, _enforcement),
+    do: parse_command_output(output)
+
+  defp command_hook_result(_output, 2, _fail_closed, _enforcement), do: :deny
+
+  # Confined: from stdout alone, "the sandbox denied the hook", "the runner
+  # could not start" and "the hook itself failed" are indistinguishable — all
+  # three report on stderr, which this path never sees. A hook that may never
+  # have run must not be able to permit the event, so fail closed regardless of
+  # `fail_closed`. This is the opt-in path only.
+  defp command_hook_result(output, exit_code, _fail_closed, enforcement)
+       when enforcement != :none do
+    Logger.warning(
+      "Confined command hook (#{enforcement}) exited with code #{exit_code}; it may have " <>
+        "been denied by the sandbox or never run at all. Denying: #{String.trim(output)}"
+    )
+
+    {:deny,
+     "confined command hook exited with code #{exit_code}; " <>
+       "it may have been denied by the sandbox or never run"}
+  end
+
+  # Unconfined (the default): unchanged historical behaviour.
+  defp command_hook_result(output, exit_code, fail_closed, :none) do
+    Logger.warning("Command hook exited with code #{exit_code}: #{String.trim(output)}")
+
+    # Non-0/2 exit codes default to fail OPEN for backward compat;
+    # set fail_closed: true on the hook to treat them as :deny so a
+    # crashing security-gating hook can't be silently bypassed.
+    if fail_closed do
+      {:deny, "command hook exited with code #{exit_code} (fail_closed)"}
+    else
+      :allow
+    end
   end
 
   # Run a hook body with full containment: hooks execute arbitrary user code,

@@ -83,6 +83,7 @@ defmodule Nous.Tool.Schema do
       Module.register_attribute(__MODULE__, :tool_category, [])
       Module.register_attribute(__MODULE__, :tool_tags, [])
       Module.register_attribute(__MODULE__, :tool_requires_approval, [])
+      Module.register_attribute(__MODULE__, :tool_timeout, [])
 
       @before_compile Nous.Tool.Schema
     end
@@ -99,6 +100,10 @@ defmodule Nous.Tool.Schema do
     * `:requires_approval` - Whether the tool needs human approval before
       execution (default: `false`). Flows into `Nous.Tool.from_module/2` and
       the agent runner's approval flow.
+    * `:timeout` - Per-call deadline in milliseconds, enforced by
+      `Nous.ToolExecutor`. Flows into `Nous.Tool.from_module/2`, where an
+      explicit `timeout:` option still wins. Omit it to inherit the
+      `%Nous.Tool{}` default.
 
   ## Example
 
@@ -116,6 +121,7 @@ defmodule Nous.Tool.Schema do
     category = Keyword.get(opts, :category)
     tags = Keyword.get(opts, :tags, [])
     requires_approval = Keyword.get(opts, :requires_approval, false)
+    timeout = Keyword.get(opts, :timeout)
 
     quote do
       @tool_name unquote(name)
@@ -123,6 +129,7 @@ defmodule Nous.Tool.Schema do
       @tool_category unquote(category)
       @tool_tags unquote(tags)
       @tool_requires_approval unquote(requires_approval)
+      @tool_timeout unquote(timeout)
 
       unquote(block)
     end
@@ -170,6 +177,11 @@ defmodule Nous.Tool.Schema do
     tags = Module.get_attribute(env.module, :tool_tags)
     requires_approval = Module.get_attribute(env.module, :tool_requires_approval) || false
 
+    # nil when the tool declared nothing, and left nil on purpose: the fallback
+    # value belongs to `%Nous.Tool{}`, and repeating 30_000 here would let the
+    # DSL default and the struct default drift apart.
+    timeout = Module.get_attribute(env.module, :tool_timeout)
+
     json_schema = build_json_schema(params)
 
     metadata = %{
@@ -178,7 +190,8 @@ defmodule Nous.Tool.Schema do
       parameters: json_schema,
       category: category,
       tags: tags,
-      requires_approval: requires_approval
+      requires_approval: requires_approval,
+      timeout: timeout
     }
 
     tool_schema = %{
@@ -187,6 +200,7 @@ defmodule Nous.Tool.Schema do
       category: category,
       tags: tags,
       requires_approval: requires_approval,
+      timeout: timeout,
       params: params
     }
 

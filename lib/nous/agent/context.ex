@@ -54,14 +54,20 @@ defmodule Nous.Agent.Context do
 
   alias __MODULE__
   alias Nous.{Message, Usage}
+  alias Nous.Session.{Event, Log}
 
   @type callback_fn :: (atom(), any() -> any())
 
   @type t :: %Context{
-          # Conversation
+          # Conversation — `messages` is a view materialized from `log`
           messages: [Message.t()],
+          log: Log.t(),
           tool_calls: [map()],
           system_prompt: String.t() | nil,
+
+          # Assembly-time system-prompt fragment (runtime-only, never
+          # serialized, never logged) — see put_system_prompt_overlay/2
+          system_prompt_overlay: String.t() | nil,
 
           # State
           deps: map(),
@@ -107,8 +113,10 @@ defmodule Nous.Agent.Context do
         }
 
   defstruct messages: [],
+            log: %Log{},
             tool_calls: [],
             system_prompt: nil,
+            system_prompt_overlay: nil,
             deps: %{},
             usage: %Usage{},
             needs_response: true,
@@ -156,8 +164,7 @@ defmodule Nous.Agent.Context do
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    %Context{
-      messages: Keyword.get(opts, :messages, []),
+    ctx = %Context{
       system_prompt: Keyword.get(opts, :system_prompt),
       deps: Keyword.get(opts, :deps, %{}),
       usage: Keyword.get(opts, :usage, Usage.new()),
@@ -174,12 +181,25 @@ defmodule Nous.Agent.Context do
       pubsub_topic: Keyword.get(opts, :pubsub_topic),
       stream: Keyword.get(opts, :stream, false)
     }
+
+    # The log is the source of truth from the first message: seeding it and
+    # materializing means a context built with `:messages` folds back to exactly
+    # those messages, `Nous.run(agent, messages: [...])` included.
+    put_log(ctx, Log.seed(Keyword.get(opts, :messages, [])))
   end
 
   @doc """
   Add a message to the context.
 
-  Automatically updates `needs_response` based on message role and content.
+  Appends one surface event to the log and re-materializes `messages` from the
+  fold, so the two stay in lockstep. Automatically updates `needs_response`
+  based on message role and content.
+
+  ## Options
+
+    * `:source` — marks injected context (`:memory`, `:knowledge_base`) in the
+      event's data, so a later reader can tell injected context from
+      conversation. It does not appear in the projected message.
 
   ## Examples
 
@@ -189,19 +209,20 @@ defmodule Nous.Agent.Context do
       1
 
   """
-  @spec add_message(t(), Message.t()) :: t()
-  # NOTE: `messages` is appended-to (`++ [message]`), which is O(n) per call —
-  # acceptable for single appends, but use `add_messages/2` for bulk inserts;
-  # it concatenates once instead of re-walking the list per message.
-  def add_message(%Context{} = ctx, %Message{} = message) do
-    updated_messages = ctx.messages ++ [message]
+  @spec add_message(t(), Message.t(), keyword()) :: t()
+  def add_message(%Context{} = ctx, %Message{} = message, opts \\ []) do
+    ctx = sync(ctx)
 
-    %{ctx | messages: updated_messages}
+    ctx
+    |> put_log(log_message(ctx.log, message, opts))
     |> update_needs_response(message)
   end
 
   @doc """
   Add multiple messages to the context.
+
+  One event per message, materialized once at the end rather than once per
+  message.
 
   ## Examples
 
@@ -214,12 +235,91 @@ defmodule Nous.Agent.Context do
   """
   @spec add_messages(t(), [Message.t()]) :: t()
   def add_messages(%Context{} = ctx, messages) when is_list(messages) do
-    # Concatenate the whole batch ONCE (O(n+m)) instead of `++ [msg]` per
-    # message (O(n*m)). `needs_response` is then folded over just the new
-    # messages — identical result to the old per-item reduce, since
-    # update_needs_response depends only on each message's role.
-    ctx = %{ctx | messages: ctx.messages ++ messages}
-    Enum.reduce(messages, ctx, fn msg, acc -> update_needs_response(acc, msg) end)
+    ctx = sync(ctx)
+    log = Enum.reduce(messages, ctx.log, &log_message(&2, &1, []))
+
+    # `needs_response` is folded over just the new messages — identical to the
+    # per-item reduce, since it depends only on each message's role.
+    Enum.reduce(messages, put_log(ctx, log), fn msg, acc ->
+      update_needs_response(acc, msg)
+    end)
+  end
+
+  @doc """
+  Replace the message at `index` with `message`, in place.
+
+  Appends a `{:replace, seq, seq}` event instead of rewriting the list, so the
+  original stays in the log. This is how compaction prunes an oversized tool
+  result without destroying what it pruned.
+
+  An `index` outside the transcript is a no-op with a warning: a caller working
+  from a stale view must not silently rewrite the wrong message.
+  """
+  @spec replace_message(t(), non_neg_integer(), Message.t()) :: t()
+  def replace_message(%Context{} = ctx, index, %Message{} = message)
+      when is_integer(index) and index >= 0 do
+    replace_message_range(ctx, index, index, message)
+  end
+
+  @doc """
+  Replace the inclusive message range `first..last` with a single `message`.
+
+  Non-destructive compaction: the replacement takes the *position* of the range
+  it shadows, so a summary lands where the conversation it summarizes was, and
+  `Nous.Session.Log.events/1` still returns every shadowed event.
+
+  The replacement inherits the `created_at` of the first message it shadows — it
+  stands in for that range, and the transcript's timestamps stay non-decreasing.
+
+  Every message whose position falls inside the range is shadowed, including one
+  the caller did not enumerate (an injected system message sitting between two
+  conversation turns, say). That is deliberate: the range is a position range,
+  and a hole in it would reorder the transcript.
+  """
+  @spec replace_message_range(t(), non_neg_integer(), non_neg_integer(), Message.t()) :: t()
+  def replace_message_range(%Context{} = ctx, first, last, %Message{} = message)
+      when is_integer(first) and is_integer(last) and first >= 0 and last >= first do
+    ctx = sync(ctx)
+    indexed = Log.derive_indexed(ctx.log)
+    offset = view_offset(ctx, indexed)
+
+    with {:ok, {first_seq, first_message}} <- fetch_pair(indexed, first - offset),
+         {:ok, {last_seq, _}} <- fetch_pair(indexed, last - offset) do
+      positions = surface_positions(ctx.log)
+
+      op = {:replace, Map.fetch!(positions, first_seq), Map.fetch!(positions, last_seq)}
+      opts = [surface_op: op, time: first_message.created_at]
+
+      put_log(ctx, log_message(ctx.log, message, opts))
+    else
+      :error ->
+        Logger.warning(
+          "Nous.Agent.Context.replace_message_range/4: #{first}..#{last} is outside the " <>
+            "#{length(indexed)}-message transcript; leaving it unchanged"
+        )
+
+        ctx
+    end
+  end
+
+  @doc """
+  Set the assembly-time system-prompt fragment, or clear it with `nil`.
+
+  The fragment is appended to the transcript's leading system message (or
+  becomes one, if there is none) every time `messages` is materialized. It is
+  **not** an event, deliberately: it is derived from agent config, plugins and
+  skills, and re-derived on every run, so logging it would append a copy of the
+  same text to a durable log per run. See `Nous.AgentRunner.PromptAssembly`.
+
+  Because it is applied *during* materialization rather than written over
+  `messages`, the view still equals the fold plus this one pure, idempotent
+  overlay — setting it twice replaces it instead of compounding.
+  """
+  @spec put_system_prompt_overlay(t(), String.t() | nil) :: t()
+  def put_system_prompt_overlay(%Context{} = ctx, overlay)
+      when is_binary(overlay) or is_nil(overlay) do
+    ctx = sync(ctx)
+    put_log(%{ctx | system_prompt_overlay: overlay}, ctx.log)
   end
 
   @doc """
@@ -237,6 +337,45 @@ defmodule Nous.Agent.Context do
   @spec add_tool_call(t(), map()) :: t()
   def add_tool_call(%Context{} = ctx, call) when is_map(call) do
     %{ctx | tool_calls: ctx.tool_calls ++ [call]}
+  end
+
+  @doc """
+  Append a **bookkeeping** event to the session log.
+
+  Bookkeeping events (`:turn_start`, `:turn_end`, `:step_start`, `:step_end`,
+  `:tool_call`, `:request_header`) project to no message, so `messages` is
+  unchanged and no existing reader can see them. They are what makes a run
+  reconstructable after the fact — which turn a tool call belonged to, which step
+  produced a request, where a crash interrupted things.
+
+  Refuses a surface type: appending a `:user_message` this way would bypass
+  `add_message/3`'s projection bookkeeping and leave `messages` disagreeing with
+  the log. Invalid events are dropped with a warning rather than raising, because
+  losing one bookkeeping event is strictly better than failing the user's run.
+
+  ## Examples
+
+      iex> ctx = Context.new() |> Context.log_event(:turn_start, %{turn: 1})
+      iex> ctx.messages
+      []
+      iex> [event] = Nous.Session.Log.events(ctx.log)
+      iex> {event.type, event.data.turn}
+      {:turn_start, 1}
+
+  """
+  @spec log_event(t(), Nous.Session.Event.type(), map()) :: t()
+  def log_event(%Context{} = ctx, type, data \\ %{}) when is_atom(type) and is_map(data) do
+    if Nous.Session.Event.surface?(type) do
+      Logger.warning(
+        "Nous.Agent.Context.log_event/3 refuses the surface type #{inspect(type)}; " <>
+          "use add_message/3 so the projection and `messages` stay in step."
+      )
+
+      ctx
+    else
+      ctx = sync(ctx)
+      put_log(ctx, Log.append!(ctx.log, type, data))
+    end
   end
 
   @doc """
@@ -385,6 +524,12 @@ defmodule Nous.Agent.Context do
 
   This allows tools to continue using the existing RunContext interface.
 
+  ## Options
+
+    * `:sandbox` - `Nous.Sandbox.Policy` to carry onto the run context as the
+      session-level sandbox override. The agent runner passes `agent.sandbox`
+      here; `nil` leaves resolution to application config.
+
   ## Examples
 
       iex> ctx = Context.new(deps: %{db: :postgres})
@@ -392,9 +537,14 @@ defmodule Nous.Agent.Context do
       iex> run_ctx.deps.db
       :postgres
 
+      iex> ctx = Context.new(deps: %{})
+      iex> run_ctx = Context.to_run_context(ctx, sandbox: Nous.Sandbox.Policy.new(:read_only))
+      iex> run_ctx.sandbox.mode
+      :read_only
+
   """
-  @spec to_run_context(t()) :: Nous.RunContext.t()
-  def to_run_context(%Context{} = ctx) do
+  @spec to_run_context(t(), keyword()) :: Nous.RunContext.t()
+  def to_run_context(%Context{} = ctx, opts \\ []) do
     # `approval_gated?: true`: the runner has already run the full approval +
     # permission-policy pipeline (AgentRunner.ToolExecution.check_tool_approval/3)
     # for this call, so ToolExecutor must not prompt the operator a second time.
@@ -402,7 +552,8 @@ defmodule Nous.Agent.Context do
     Nous.RunContext.new(ctx.deps,
       usage: ctx.usage,
       approval_handler: ctx.approval_handler,
-      approval_gated?: true
+      approval_gated?: true,
+      sandbox: Keyword.get(opts, :sandbox)
     )
   end
 
@@ -485,7 +636,11 @@ defmodule Nous.Agent.Context do
           )
         end)
 
-      %{ctx | messages: messages ++ synthetic_results}
+      ctx = sync(ctx)
+
+      # Synthetic results are appended as events like any other tool result.
+      # `needs_response` is deliberately untouched, as it was before the log.
+      put_log(ctx, Enum.reduce(synthetic_results, ctx.log, &log_message(&2, &1, [])))
     end
   end
 
@@ -494,15 +649,20 @@ defmodule Nous.Agent.Context do
   @doc """
   Serialize context to a JSON-encodable map.
 
-  Persists messages, usage, metadata. Never persists functions, PIDs, or modules.
-  Includes a `version` field for future migrations.
+  Version 2 persists the **event log**. `messages` is still emitted, because it
+  is what a v1 reader (or a human) consumes, but it is a projection of the
+  events, not the source of truth.
+
+  Persists messages, usage, metadata. Never persists functions, PIDs, or
+  modules. The assembled system-prompt overlay is runtime state and is not
+  persisted either; it is re-derived on the next run.
 
   ## Examples
 
       iex> ctx = Context.new(system_prompt: "Be helpful", max_iterations: 5)
       iex> data = Context.serialize(ctx)
       iex> data.version
-      1
+      2
       iex> data.system_prompt
       "Be helpful"
 
@@ -510,7 +670,8 @@ defmodule Nous.Agent.Context do
   @spec serialize(t()) :: map()
   def serialize(%Context{} = ctx) do
     %{
-      version: 1,
+      version: 2,
+      events: Enum.map(Log.events(ctx.log), &serialize_event/1),
       messages: Enum.map(ctx.messages, &serialize_message/1),
       tool_calls: ctx.tool_calls,
       system_prompt: ctx.system_prompt,
@@ -527,8 +688,14 @@ defmodule Nous.Agent.Context do
   @doc """
   Deserialize a map back into a Context struct.
 
-  Handles version migrations and restores messages, usage, and metadata.
-  Functions, PIDs, and callbacks are not restored and will use defaults.
+  Reads both versions, which is what makes v1 → v2 a migration rather than a
+  break: a v2 blob rebuilds the log from its events, and a v1 blob seeds one
+  from its flat message list. Functions, PIDs, and callbacks are not restored
+  and will use defaults.
+
+  A v1 blob folds back to its original messages, but every message is stamped
+  with the restore time: v1 never persisted `created_at`, so the original
+  timestamps are not in the blob to recover.
 
   Returns `{:ok, context}` or `{:error, reason}`.
 
@@ -542,14 +709,24 @@ defmodule Nous.Agent.Context do
 
   """
   @spec deserialize(map()) :: {:ok, t()} | {:error, term()}
+  def deserialize(%{version: 2} = data) do
+    do_deserialize(data, :v2)
+  end
+
+  def deserialize(%{"version" => 2} = data) do
+    data
+    |> atomize_keys()
+    |> do_deserialize(:v2)
+  end
+
   def deserialize(%{version: 1} = data) do
-    do_deserialize(data)
+    do_deserialize(data, :v1)
   end
 
   def deserialize(%{"version" => 1} = data) do
     data
     |> atomize_keys()
-    |> do_deserialize()
+    |> do_deserialize(:v1)
   end
 
   def deserialize(%{version: v}) when is_integer(v) do
@@ -566,11 +743,7 @@ defmodule Nous.Agent.Context do
 
   # Private functions
 
-  defp do_deserialize(data) do
-    messages =
-      (data[:messages] || [])
-      |> Enum.map(&deserialize_message/1)
-
+  defp do_deserialize(data, version) do
     usage = deserialize_usage(data[:usage] || %{})
 
     started_at =
@@ -586,7 +759,6 @@ defmodule Nous.Agent.Context do
       end
 
     ctx = %Context{
-      messages: messages,
       tool_calls: data[:tool_calls] || [],
       system_prompt: data[:system_prompt],
       deps: data[:deps] || %{},
@@ -604,13 +776,70 @@ defmodule Nous.Agent.Context do
       pubsub_topic: nil
     }
 
-    {:ok, ctx}
+    {:ok, put_log(ctx, restore_log(version, data))}
   rescue
     # Deserializes attacker-controllable persisted blobs; a malformed blob
     # can raise from anywhere in the decode path, so the catch-all is a
     # deliberate boundary honoring the {:ok, _} | {:error, _} contract.
     e -> {:error, Exception.message(e)}
   end
+
+  # v1 has no events: seed the log from the flat message list, exactly as
+  # `Nous.run(agent, messages: [...])` does.
+  defp restore_log(:v1, data), do: data |> persisted_messages() |> Log.seed()
+
+  defp restore_log(:v2, data) do
+    case data[:events] do
+      events when is_list(events) ->
+        rebuild_log(events)
+
+      other ->
+        Logger.warning(
+          "Nous.Agent.Context: v2 blob carries #{inspect(other)} for :events; " <>
+            "falling back to seeding from :messages, which loses shadowed history"
+        )
+
+        data |> persisted_messages() |> Log.seed()
+    end
+  end
+
+  defp persisted_messages(data) do
+    (data[:messages] || []) |> Enum.map(&deserialize_message/1)
+  end
+
+  defp rebuild_log(events) do
+    Enum.reduce(events, Log.new(), fn raw, log ->
+      raw = atomize_keys(raw)
+
+      case deserialize_event_type(raw[:type]) do
+        {:ok, type} ->
+          warn_seq_shift(log, raw[:seq])
+          append_event(log, type, deserialize_event_data(raw[:data]), event_time(raw[:time]))
+
+        :error ->
+          Logger.warning(
+            "Nous.Agent.Context: dropping an event of unknown type #{inspect(raw[:type])} " <>
+              "from persisted data; any later {:replace, _, _} range may no longer line up"
+          )
+
+          log
+      end
+    end)
+  end
+
+  # `seq` is assigned by the log and equals the event's index, so a persisted seq
+  # that does not match the next one is the signal that an earlier event was
+  # dropped — which silently shifts every replace range after it.
+  defp warn_seq_shift(log, seq) when is_integer(seq) do
+    if seq != Log.count(log) do
+      Logger.warning(
+        "Nous.Agent.Context: persisted event seq #{seq} does not match the rebuilt " <>
+          "seq #{Log.count(log)}; the log lost an event and replace ranges may be off"
+      )
+    end
+  end
+
+  defp warn_seq_shift(_log, _seq), do: :ok
 
   defp serialize_message(%Message{} = msg) do
     %{
@@ -669,6 +898,116 @@ defmodule Nous.Agent.Context do
 
     Message.new!(attrs)
   end
+
+  # An event's `data` has to stay JSON-encodable, which rules out the
+  # `{:replace, start, stop}` tuple — a list survives both a JSON round trip and
+  # the ETS backend's raw terms. Nothing else in an event's data is a tuple.
+  defp serialize_event(%Event{} = event) do
+    %{
+      seq: event.seq,
+      type: Atom.to_string(event.type),
+      time: DateTime.to_iso8601(event.time),
+      data: serialize_event_data(event.data)
+    }
+  end
+
+  defp serialize_event_data(data) when is_map(data) do
+    case Map.get(data, :surface_op) do
+      {:replace, start, stop} -> Map.put(data, :surface_op, ["replace", start, stop])
+      _append_or_absent -> data
+    end
+  end
+
+  # NEVER String.to_atom/1 on a persisted blob. The type has to be one the code
+  # already knows or the event is unreadable, which is a much better outcome than
+  # growing the atom table from an attacker-controllable string.
+  defp deserialize_event_type(type) when is_atom(type) and not is_nil(type) do
+    if type in Event.types(), do: {:ok, type}, else: :error
+  end
+
+  defp deserialize_event_type(type) when is_binary(type) do
+    case Enum.find(Event.types(), &(Atom.to_string(&1) == type)) do
+      nil -> :error
+      known -> {:ok, known}
+    end
+  end
+
+  defp deserialize_event_type(_type), do: :error
+
+  # Surface-event payload keys, plus the bookkeeping keys turn/step events carry
+  # (`turn`, `step`, `reason`). Recovery's synthetic `:turn_end` uses
+  # `reason: :interrupted`. The risk class of a synthetic tool result rides inside
+  # `metadata`, whose contents are deliberately unchecked, so it needs no key here.
+  @known_event_data_keys ~w(
+    content name metadata tool_calls tool_call_id reasoning_content source surface_op
+    turn steps step reason outcome
+  )
+
+  defp deserialize_event_data(data) when is_map(data) do
+    warn_unknown_keys(data, @known_event_data_keys, "Nous.Session.Event")
+
+    data
+    |> atomize_keys()
+    |> restore_surface_op()
+    |> restore_source()
+  end
+
+  defp deserialize_event_data(_data), do: %{}
+
+  defp restore_surface_op(%{surface_op: op} = data) do
+    case op do
+      ["replace", start, stop] when is_integer(start) and is_integer(stop) ->
+        Map.put(data, :surface_op, {:replace, start, stop})
+
+      {:replace, start, stop} when is_integer(start) and is_integer(stop) ->
+        data
+
+      append when append in [:append, "append"] ->
+        Map.put(data, :surface_op, :append)
+
+      other ->
+        Logger.warning(
+          "Nous.Agent.Context: unreadable surface_op #{inspect(other)} in persisted event " <>
+            "data; treating the event as a plain append, so a compacted range reappears"
+        )
+
+        Map.delete(data, :surface_op)
+    end
+  end
+
+  defp restore_surface_op(data), do: data
+
+  # The injection markers the plugins write. `source` is provenance, never
+  # something the code dispatches on, so an unrecognised one stays a binary
+  # rather than becoming a new atom.
+  @known_sources [:memory, :knowledge_base]
+
+  defp restore_source(%{source: source} = data) when is_binary(source) do
+    case Enum.find(@known_sources, &(Atom.to_string(&1) == source)) do
+      nil -> data
+      known -> Map.put(data, :source, known)
+    end
+  end
+
+  defp restore_source(data), do: data
+
+  defp event_time(%DateTime{} = time), do: time
+
+  defp event_time(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _offset} ->
+        dt
+
+      _ ->
+        Logger.warning(
+          "Nous.Agent.Context: unreadable event time #{inspect(iso)}; stamping the restore time"
+        )
+
+        DateTime.utc_now()
+    end
+  end
+
+  defp event_time(_other), do: DateTime.utc_now()
 
   defp warn_unknown_keys(map, known_string_keys, module_label) when is_map(map) do
     map
@@ -740,6 +1079,202 @@ defmodule Nous.Agent.Context do
   # resolves already-existing atoms, and unknown keys stay as binaries that
   # downstream Ecto.cast simply ignores.
   defp atomize_keys(map) when is_map(map), do: Nous.Util.atomize_keys(map)
+
+  # --- the materialized view -------------------------------------------------
+  #
+  # `messages` is a view over the log: after every append it is re-derived from
+  # the fold and the cache-warmed log is stored back, so the log is the source of
+  # truth and `messages` is kept in lockstep. Every existing `ctx.messages`
+  # reader keeps working untouched, which is plan constraint D2.
+
+  defp put_log(%Context{} = ctx, %Log{} = log) do
+    {messages, log} = Log.materialize(log)
+    publish_events(ctx, log, Log.count(ctx.log))
+    %{ctx | messages: apply_overlay(messages, ctx.system_prompt_overlay), log: log}
+  end
+
+  # Publish every newly committed event so a LiveView can render from the log
+  # instead of from ad-hoc callbacks. The delta is the log's own count before and
+  # after — never anything message-shaped — so a bookkeeping event publishes
+  # exactly like a surface one, and a `put_log/2` that only re-materializes
+  # (`sync/1`) publishes nothing rather than re-broadcasting the session.
+  #
+  # This runs on EVERY append: both guards are head matches, so the common case
+  # (no pubsub configured, which is most tests) allocates nothing. A dead pubsub
+  # must never take down a run — `Nous.PubSub.broadcast/3` already swallows the
+  # `:error` class, and the catch covers the `exit` a custom adapter can throw
+  # from a `GenServer.call` timeout.
+  defp publish_events(%Context{pubsub: nil}, _log, _from), do: :ok
+  defp publish_events(%Context{pubsub_topic: nil}, _log, _from), do: :ok
+
+  defp publish_events(%Context{pubsub: pubsub, pubsub_topic: topic}, log, from) do
+    Enum.each(Log.since(log, from), fn event ->
+      try do
+        Nous.PubSub.broadcast(pubsub, topic, {:session_event, event})
+      catch
+        kind, reason ->
+          Logger.debug(
+            "Nous.Agent.Context: session event broadcast failed: #{inspect({kind, reason})}"
+          )
+      end
+    end)
+  end
+
+  defp view(%Context{} = ctx) do
+    apply_overlay(Log.derive_messages(ctx.log), ctx.system_prompt_overlay)
+  end
+
+  # The assembled system prompt is assembly-time state, not history: see
+  # `put_system_prompt_overlay/2`. Applying it here, on every materialization, is
+  # what keeps `messages` and the fold from disagreeing without writing derived
+  # text to a durable log.
+  defp apply_overlay(messages, nil), do: messages
+
+  defp apply_overlay([%Message{role: :system} = sys | rest], overlay) do
+    [%{sys | content: (sys.content || "") <> "\n\n" <> overlay} | rest]
+  end
+
+  defp apply_overlay(messages, overlay) do
+    # No leading system message to extend, so the overlay becomes one. It is
+    # stamped with the head message's time rather than the clock, so the
+    # transcript's `created_at` stays non-decreasing and the view stays a pure
+    # function of the log.
+    created_at =
+      case messages do
+        [%Message{created_at: %DateTime{} = at} | _] -> at
+        _ -> DateTime.utc_now()
+      end
+
+    [%{Message.system(overlay) | created_at: created_at} | messages]
+  end
+
+  # A caller that wrote `%{ctx | messages: ...}` directly — test fixtures, and
+  # user code written before the log existed — left the view and the log out of
+  # step. Re-seed from what the caller put there instead of silently resurrecting
+  # the fold on the next append. `view/1` hands back the very terms the fold
+  # cached, so the in-sync case is a pointer comparison per message.
+  defp sync(%Context{} = ctx) do
+    if view(ctx) == ctx.messages do
+      ctx
+    else
+      # Whatever the caller assembled is the transcript now, overlay included;
+      # keeping the overlay would apply it a second time.
+      put_log(%{ctx | system_prompt_overlay: nil}, Log.seed(ctx.messages))
+    end
+  end
+
+  # One place decides how a `%Message{}` becomes an event, so adding, bulk
+  # adding, patching and compaction cannot drift apart.
+  defp log_message(%Log{} = log, %Message{} = message, opts) do
+    case event_data(message, opts) do
+      {type, data} ->
+        # The event's time IS the message's `created_at`: the fold stamps from
+        # it, so re-stamping would make `add_message/3` lossy. A replacement
+        # instead inherits the time of the range it stands in for.
+        time = Keyword.get(opts, :time) || message.created_at
+        append_event(log, type, data, time)
+
+      :skip ->
+        Logger.warning(
+          "Nous.Agent.Context: dropping a message with unsupported role " <>
+            "#{inspect(message.role)}"
+        )
+
+        log
+    end
+  end
+
+  defp append_event(%Log{} = log, type, data, time) do
+    case Log.append(log, type, data, time) do
+      {:ok, log} ->
+        log
+
+      {:error, reason} ->
+        # `metadata` is the only free-form field on a message; everything else is
+        # a string or a provider-normalized map. Retry without it rather than
+        # lose the message, and say so loudly — a pid, ref, port or function in
+        # metadata cannot survive persistence, which is why the event layer
+        # rejects it at append time instead of hours later at save time.
+        Logger.error(
+          "Nous.Agent.Context: #{inspect(type)} event rejected (#{inspect(reason)}); " <>
+            "retrying without :metadata"
+        )
+
+        retry_without_metadata(log, type, data, time)
+    end
+  end
+
+  defp retry_without_metadata(log, type, data, time) do
+    case Log.append(log, type, Map.put(data, :metadata, %{}), time) do
+      {:ok, log} ->
+        log
+
+      {:error, reason} ->
+        Logger.error(
+          "Nous.Agent.Context: #{inspect(type)} event still rejected with no metadata " <>
+            "(#{inspect(reason)}); the message is dropped and this transcript is incomplete"
+        )
+
+        log
+    end
+  end
+
+  defp event_data(%Message{role: :system} = msg, opts),
+    do: {:system_message, base_data(msg, opts)}
+
+  defp event_data(%Message{role: :user} = msg, opts),
+    do: {:user_message, base_data(msg, opts)}
+
+  defp event_data(%Message{role: :assistant} = msg, opts) do
+    data =
+      msg
+      |> base_data(opts)
+      |> Map.put(:tool_calls, msg.tool_calls || [])
+      |> Map.put(:reasoning_content, msg.reasoning_content)
+
+    {:assistant_message, data}
+  end
+
+  defp event_data(%Message{role: :tool} = msg, opts) do
+    {:tool_result, msg |> base_data(opts) |> Map.put(:tool_call_id, msg.tool_call_id)}
+  end
+
+  defp event_data(%Message{}, _opts), do: :skip
+
+  defp base_data(%Message{} = msg, opts) do
+    %{content: msg.content, name: msg.name, metadata: msg.metadata || %{}}
+    |> put_unless_nil(:source, Keyword.get(opts, :source))
+    |> put_unless_nil(:surface_op, Keyword.get(opts, :surface_op))
+  end
+
+  defp put_unless_nil(data, _key, nil), do: data
+  defp put_unless_nil(data, key, value), do: Map.put(data, key, value)
+
+  # The coordinate a `{:replace, start, stop}` names is the surface *position*,
+  # not the raw seq. A replace takes the position of what it replaced, so an
+  # event that pruned a tool result in place carries a high seq and a low
+  # position; naming seqs here would leave it unshadowed inside a later summary.
+  defp surface_positions(%Log{} = log) do
+    Map.new(Log.surface(log), fn event ->
+      case Event.surface_op(event) do
+        {:replace, start, _stop} -> {event.seq, start}
+        :append -> {event.seq, event.seq}
+      end
+    end)
+  end
+
+  # The overlay can inject a system message with no event behind it, which makes
+  # the view one longer than the fold.
+  defp view_offset(%Context{} = ctx, indexed), do: length(ctx.messages) - length(indexed)
+
+  defp fetch_pair(_indexed, index) when index < 0, do: :error
+
+  defp fetch_pair(indexed, index) do
+    case Enum.at(indexed, index) do
+      nil -> :error
+      pair -> {:ok, pair}
+    end
+  end
 
   defp update_needs_response(ctx, %Message{role: :assistant} = message) do
     # Assistant messages with tool calls need a response (tool results)

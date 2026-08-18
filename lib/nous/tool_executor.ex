@@ -37,8 +37,9 @@ defmodule Nous.ToolExecutor do
 
   Automatically handles:
   - Passing RunContext to tools that need it
-  - Retrying on failure (up to tool.retries times)
-  - Timeout enforcement (if tool.timeout is set)
+  - Retrying on failure (up to tool.retries times), except on timeout
+  - Timeout enforcement (if tool.timeout is set), which is terminal: a killed
+    tool may have already had half its side effects, so it is never re-run
   - ContextUpdate extraction from tool results
   - Error wrapping and logging
 
@@ -225,6 +226,17 @@ defmodule Nous.ToolExecutor do
       # Normalize result to handle ContextUpdate
       normalize_result(result)
     rescue
+      # A timeout is TERMINAL, never retried. `execute_with_timeout/3` kills the
+      # tool process mid-flight and then raises, so the executor cannot know how
+      # much of the work already landed. Retrying it (the generic clause below
+      # does, `retries` defaults to 1) turned one human approval of a
+      # side-effecting `bash` call into two executions of it — a `git push` or a
+      # payment POST run once part-way and then again. Wrongly repeating side
+      # effects is the expensive failure; wrongly refusing to costs one visible
+      # error the caller can act on and retry deliberately.
+      _timeout in Errors.ToolTimeout ->
+        handle_timeout(tool, attempt, start_time)
+
       error ->
         handle_execution_error(tool, arguments, ctx, attempt, start_time, error, __STACKTRACE__)
     catch
@@ -354,7 +366,9 @@ defmodule Nous.ToolExecutor do
     end
   end
 
-  # Handle timeout specifically
+  # The single exit for both timeout paths — the `:exit, {:timeout, _}` a tool
+  # propagates from a dead-server call, and the `ToolTimeout` our own deadline
+  # raises. Neither retries; see the rescue clause in do_execute/4.
   defp handle_timeout(tool, attempt, start_time) do
     duration = System.monotonic_time() - start_time
 

@@ -1,9 +1,13 @@
 defmodule Nous.Tool.ContextUpdateTest do
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias Nous.Tool.ContextUpdate
   alias Nous.Agent.Context
+  alias Nous.Message
   alias Nous.RunContext
+  alias Nous.Session.Log
 
   # Reference implementation = the pre-optimization semantics (append via
   # `++ [item]`). The optimized reduce must produce byte-identical deps.
@@ -96,6 +100,105 @@ defmodule Nous.Tool.ContextUpdateTest do
     end
   end
 
+  describe "log_event/3" do
+    test "records the operation in place, interleaved with deps operations" do
+      update =
+        ContextUpdate.new()
+        |> ContextUpdate.set(:a, 1)
+        |> ContextUpdate.log_event(:tool_call, %{id: "sub_1"})
+        |> ContextUpdate.append(:log, :x)
+        |> ContextUpdate.log_event(:tool_call, %{id: "sub_2"})
+
+      assert ContextUpdate.operations(update) == [
+               {:set, :a, 1},
+               {:log_event, :tool_call, %{id: "sub_1"}},
+               {:append, :log, :x},
+               {:log_event, :tool_call, %{id: "sub_2"}}
+             ]
+
+      assert ContextUpdate.log_events(update) == [
+               {:tool_call, %{id: "sub_1"}},
+               {:tool_call, %{id: "sub_2"}}
+             ]
+    end
+
+    test "an update carrying only events still has operations" do
+      refute ContextUpdate.empty?(ContextUpdate.log_event(ContextUpdate.new(), :tool_call, %{}))
+    end
+  end
+
+  describe "apply/2 with log events" do
+    test "the event lands in the session log and messages are untouched" do
+      ctx = Context.new(messages: [Message.user("hi")], deps: %{count: 0})
+
+      update =
+        ContextUpdate.new()
+        |> ContextUpdate.set(:count, 1)
+        |> ContextUpdate.log_event(:tool_call, %{id: "sub_1", name: "file_read"})
+
+      new_ctx = ContextUpdate.apply(update, ctx)
+
+      # Both halves, or the test proves nothing: recorded *and* invisible to the
+      # model. Either one alone passes for a broken implementation.
+      assert new_ctx.deps == %{count: 1}
+      assert new_ctx.messages == ctx.messages
+
+      assert [%{type: :tool_call, data: %{id: "sub_1", name: "file_read"}}] =
+               bookkeeping(new_ctx)
+    end
+
+    test "deps operations apply first, then every event in the order added" do
+      update =
+        ContextUpdate.new()
+        |> ContextUpdate.append(:calls, "one")
+        |> ContextUpdate.log_event(:tool_call, %{seq: 1})
+        |> ContextUpdate.append(:calls, "two")
+        |> ContextUpdate.log_event(:tool_call, %{seq: 2})
+        |> ContextUpdate.log_event(:tool_call, %{seq: 3})
+
+      new_ctx = ContextUpdate.apply(update, Context.new())
+
+      assert new_ctx.deps == %{calls: ["one", "two"]}
+      assert Enum.map(bookkeeping(new_ctx), & &1.data.seq) == [1, 2, 3]
+    end
+
+    test "an events-only update leaves deps untouched and reports no keys updated" do
+      attach_context_update_telemetry()
+
+      deps = %{existing: [1, 2]}
+      ctx = Context.new(deps: deps)
+
+      update =
+        ContextUpdate.new()
+        |> ContextUpdate.log_event(:tool_call, %{id: "sub_1"})
+        |> ContextUpdate.log_event(:tool_call, %{id: "sub_2"})
+
+      new_ctx = ContextUpdate.apply(update, ctx)
+
+      assert new_ctx.deps == deps
+      assert length(bookkeeping(new_ctx)) == 2
+
+      # An event type is not a deps key. Counting one here would tell every
+      # telemetry consumer that deps changed when nothing did.
+      assert_receive {:context_update, %{keys_updated: 0}, %{keys: []}}
+    end
+
+    test "a surface type is refused, so an event cannot smuggle content into the transcript" do
+      ctx = Context.new(messages: [Message.user("hi")])
+
+      update = ContextUpdate.log_event(ContextUpdate.new(), :user_message, %{content: "injected"})
+
+      log =
+        capture_log(fn ->
+          new_ctx = ContextUpdate.apply(update, ctx)
+          assert new_ctx.messages == ctx.messages
+          assert bookkeeping(new_ctx) == []
+        end)
+
+      assert log =~ "refuses the surface type"
+    end
+  end
+
   describe "apply_to_run_context/2" do
     test "applies the same append semantics to a RunContext" do
       update =
@@ -106,5 +209,109 @@ defmodule Nous.Tool.ContextUpdateTest do
       run_ctx = ContextUpdate.apply_to_run_context(update, RunContext.new(%{log: [:start]}))
       assert %{log: [:start, :a, :b]} = run_ctx.deps
     end
+
+    test "drops log events loudly and still applies the deps operations" do
+      update =
+        ContextUpdate.new()
+        |> ContextUpdate.set(:count, 1)
+        |> ContextUpdate.log_event(:tool_call, %{id: "sub_1"})
+        |> ContextUpdate.log_event(:step_start, %{step: 2})
+
+      run_ctx = RunContext.new(%{count: 0})
+
+      {updated, log} =
+        with_log(fn -> ContextUpdate.apply_to_run_context(update, run_ctx) end)
+
+      # A RunContext has no session log, so the events cannot be honoured. The
+      # warning is the contract: a silently discarded audit record looks like it
+      # worked.
+      assert updated.deps == %{count: 1}
+      assert log =~ "dropping 2 log event(s)"
+      assert log =~ "[:tool_call, :step_start]"
+    end
+
+    test "says nothing when there is nothing to drop" do
+      update = ContextUpdate.set(ContextUpdate.new(), :count, 1)
+
+      {_updated, log} =
+        with_log(fn -> ContextUpdate.apply_to_run_context(update, RunContext.new(%{})) end)
+
+      refute log =~ "dropping"
+    end
+  end
+
+  describe "to_deps/2 — the one reducer the runner also uses" do
+    # `Nous.AgentRunner.ToolExecution.context_update_to_map/1` used to be a
+    # second, independent fold starting from an empty map. These pin the two
+    # cases the prepend optimisation could get wrong, against a reference
+    # implementation of the pre-optimisation `++` semantics.
+    test "set of a list then append is byte-identical to the old ++ fold" do
+      ops = [{:set, :k, [9, 8]}, {:append, :k, 1}, {:append, :k, 2}]
+
+      assert ContextUpdate.to_deps(%ContextUpdate{operations: ops}) ==
+               reference_reduce(ops, %{})
+    end
+
+    test "many appends to one key are byte-identical to the old ++ fold" do
+      ops = Enum.map(1..2_000, &{:append, :log, &1})
+
+      assert ContextUpdate.to_deps(%ContextUpdate{operations: ops}) ==
+               reference_reduce(ops, %{})
+    end
+
+    test "interleaved log events do not perturb the deps fold" do
+      deps_ops = [
+        {:set, :k, [9, 8]},
+        {:append, :k, 1},
+        {:append, :other, :x},
+        {:delete, :gone}
+      ]
+
+      mixed = [
+        {:log_event, :tool_call, %{seq: 1}},
+        {:set, :k, [9, 8]},
+        {:append, :k, 1},
+        {:log_event, :tool_call, %{seq: 2}},
+        {:append, :other, :x},
+        {:delete, :gone},
+        {:log_event, :tool_call, %{seq: 3}}
+      ]
+
+      initial = %{gone: true}
+
+      assert ContextUpdate.to_deps(%ContextUpdate{operations: mixed}, initial) ==
+               reference_reduce(deps_ops, initial)
+    end
+
+    test "merge is a deep merge, as merge/3 documents" do
+      # The runner's duplicate fold used a shallow `Map.merge` here and dropped
+      # the untouched nested branch. One reducer, one answer — this one.
+      ops = [{:set, :settings, %{a: %{b: 1}}}, {:merge, :settings, %{a: %{c: 2}}}]
+
+      assert ContextUpdate.to_deps(%ContextUpdate{operations: ops}) ==
+               %{settings: %{a: %{b: 1, c: 2}}}
+    end
+  end
+
+  # Only the events the model never sees. `Context.new(messages: ...)` seeds the
+  # log with surface events, which are not what these tests are about.
+  defp bookkeeping(%Context{log: log}) do
+    log |> Log.events() |> Enum.reject(&Nous.Session.Event.surface?/1)
+  end
+
+  defp attach_context_update_telemetry do
+    test_pid = self()
+    handler_id = {__MODULE__, self(), make_ref()}
+
+    :telemetry.attach(
+      handler_id,
+      [:nous, :context, :update],
+      fn _event, measurements, metadata, _cfg ->
+        send(test_pid, {:context_update, measurements, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
   end
 end

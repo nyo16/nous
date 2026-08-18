@@ -93,12 +93,19 @@ defmodule Nous.ModelTest do
       openai = Model.new(:openai, "gpt-4")
       assert openai.receive_timeout == 180_000
 
-      # Local OpenAI-compatible servers get 2 minutes
+      # LM Studio gets 5 minutes: it JIT-loads a model on the first request that
+      # names it, so a cold 27B spends tens of seconds before its first token,
+      # and a long tool loop on a large local model outran the previous 2 minutes
+      # in practice.
       lmstudio = Model.new(:lmstudio, "qwen3")
-      assert lmstudio.receive_timeout == 120_000
+      assert lmstudio.receive_timeout == 300_000
 
+      # Other local OpenAI-compatible servers still get 2 minutes.
       ollama = Model.new(:ollama, "llama2")
       assert ollama.receive_timeout == 120_000
+
+      # A local host is never given less headroom than a cloud one.
+      assert lmstudio.receive_timeout >= openai.receive_timeout
     end
 
     test "allows overriding receive_timeout" do

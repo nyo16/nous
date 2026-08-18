@@ -112,7 +112,8 @@ defmodule Nous.ToolExecutorTest do
     @events [
       [:nous, :tool, :execute, :start],
       [:nous, :tool, :execute, :stop],
-      [:nous, :tool, :execute, :exception]
+      [:nous, :tool, :execute, :exception],
+      [:nous, :tool, :timeout]
     ]
 
     def init([]) do
@@ -776,6 +777,78 @@ defmodule Nous.ToolExecutorTest do
       capture_log(fn ->
         assert {:error, %Errors.ToolError{}} = ToolExecutor.execute(tool, %{}, ctx)
       end)
+    end
+  end
+
+  describe "timeouts" do
+    # A timeout kills the tool process mid-flight, so the executor cannot know
+    # how much of the work already landed. These tests pin the two halves of
+    # that: the kill is real (not merely reported), and the call is not repeated
+    # — `bash` is approval-gated and side-effecting, and one approval must never
+    # buy two executions.
+    test "a tool that outlives its timeout is killed, reported once, and never retried" do
+      test_pid = self()
+
+      slow = fn _ctx, _args ->
+        send(test_pid, {:ran, self()})
+        Process.sleep(500)
+        {:ok, "the tool was allowed to finish"}
+      end
+
+      tool = Tool.from_function(slow, name: "slow_killed", timeout: 50, retries: 1)
+      task = Task.async(fn -> ToolExecutor.execute(tool, %{}, RunContext.new(%{})) end)
+
+      assert_receive {:ran, tool_pid}
+      # Monitor before the deadline fires: `:killed` as the exit reason is the
+      # difference between a process the executor stopped and one that chose to
+      # return. "The call returned an error" proves neither.
+      ref = Process.monitor(tool_pid)
+      assert_receive {:DOWN, ^ref, :process, ^tool_pid, :killed}
+      refute Process.alive?(tool_pid)
+
+      # `retries: 1` used to run the tool a second time here. Counting
+      # invocations is what catches that: a retried timeout still comes back as
+      # a timeout, so the error alone says nothing about how often the side
+      # effects happened.
+      refute_receive {:ran, _}, 300
+
+      assert {:error, %Errors.ToolTimeout{tool_name: "slow_killed", timeout: 50}} =
+               Task.await(task)
+    end
+
+    test "an ordinary failure with retries: 1 still runs the tool twice" do
+      test_pid = self()
+
+      failing = fn _ctx, _args ->
+        send(test_pid, :attempted)
+        raise "not a timeout"
+      end
+
+      tool = Tool.from_function(failing, name: "retried_failure", retries: 1)
+
+      capture_log(fn ->
+        assert {:error, %Errors.ToolError{attempt: 2}} =
+                 ToolExecutor.execute(tool, %{}, RunContext.new(%{}))
+      end)
+
+      assert_receive :attempted
+      assert_receive :attempted
+    end
+
+    test "the timeout event carries the tool name and the configured budget" do
+      tool =
+        Tool.from_function(fn _ctx, _args -> Process.sleep(500) end,
+          name: "slow_telemetry",
+          timeout: 60,
+          retries: 0
+        )
+
+      assert {:error, %Errors.ToolTimeout{}} =
+               ToolExecutor.execute(tool, %{}, RunContext.new(%{}))
+
+      assert [{[:nous, :tool, :timeout], %{timeout: 60}, %{tool_name: "slow_telemetry"}}] =
+               TelemetryCapture.get_events("slow_telemetry")
+               |> Enum.filter(fn {event, _, _} -> event == [:nous, :tool, :timeout] end)
     end
   end
 end
