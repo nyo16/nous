@@ -237,8 +237,8 @@ defmodule Nous.Sandbox do
   @doc """
   Canonicalise and memoize the temp roots.
 
-  Called from `Nous.Application.start/2` so the one filesystem read this module
-  needs happens at boot rather than inside `confine/2`. Idempotent.
+  Called from the application's own `start` callback so the one filesystem read
+  this module needs happens at boot rather than inside `confine/2`. Idempotent.
   """
   @spec warm() :: :ok
   def warm do

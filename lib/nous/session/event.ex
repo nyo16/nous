@@ -32,7 +32,7 @@ defmodule Nous.Session.Event do
   > content is assembly-time state rather than history. That assumption does not
   > survive contact with the code: `Nous.Plugins.Summarization` appends its
   > summary as a **system** message mid-conversation, and
-  > `Nous.AgentRunner.build_initial_messages/3` puts one at the head. A system
+  > `build_initial_messages` in `Nous.AgentRunner` puts one at the head. A system
   > message is therefore a real, ordered part of the transcript and needs a
   > surface type. The *rewrite* of the system prompt in
   > `Nous.AgentRunner.PromptAssembly` stays assembly-time and is deliberately not

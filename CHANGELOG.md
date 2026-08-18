@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **A tool timeout is no longer retried, so one approval no longer bought two
-  executions.** `Nous.ToolExecutor.execute_with_timeout/3` kills the tool
+  executions.** `Nous.ToolExecutor`'s internal `execute_with_timeout` kills the tool
   process on the deadline and then *raises* `Nous.Errors.ToolTimeout`, which the
   generic rescue clause routed into `handle_execution_error/7` — the retry path.
   With `retries` defaulting to 1, every timeout ran the tool a second time:

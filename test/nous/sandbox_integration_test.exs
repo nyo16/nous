@@ -96,13 +96,26 @@ defmodule Nous.SandboxIntegrationTest do
     test "workspace_write still denies a write outside every writable root", %{
       workspace: workspace
     } do
-      # The project directory: writable without a sandbox (we are editing it),
-      # and not among `writable_roots/1` when the workspace root is a temp dir.
+      # The project directory: writable without a sandbox (we are editing it), and
+      # not among `writable_roots/1` when the workspace root is a temp dir.
       target = Path.join(File.cwd!(), "nous_sandbox_outside_probe_#{unique()}")
       on_exit(fn -> File.rm_rf!(target) end)
 
       policy = Policy.new(mode: :workspace_write, workspace_root: workspace)
-      refute Enum.any?(Sandbox.writable_roots(policy), &String.starts_with?(target, &1 <> "/"))
+      roots = Sandbox.writable_roots(policy)
+
+      # That premise is about the HOST, not the code, and it is false when the
+      # checkout itself sits inside a writable root: a clone under `/tmp` puts
+      # `File.cwd!()` beneath `/private/tmp`, which is writable by policy. Asserting
+      # it there produces a red that says nothing about the sandbox, so name the
+      # unusable fixture rather than failing the behaviour it cannot exercise.
+      if Enum.any?(roots, &String.starts_with?(target, &1 <> "/")) do
+        flunk(
+          "fixture unusable on this host: the checkout (#{File.cwd!()}) is inside a writable " <>
+            "root (#{inspect(roots)}), so no outside-the-fence path exists here. Run from a " <>
+            "checkout outside the system temp dir."
+        )
+      end
 
       assert {:ok, confined} =
                @provider.confine(["/bin/sh", "-c", "echo x > #{target}"], policy)

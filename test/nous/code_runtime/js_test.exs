@@ -46,6 +46,41 @@ defmodule Nous.CodeRuntime.JSTest do
       end
     end
 
+    describe "generated source integrity" do
+      test "a hostile tool name cannot break out of the generated JavaScript" do
+        # Tool names are model-visible data spliced into generated source, so the
+        # quote, backslash and newline below each close the string literal early if
+        # the name is interpolated rather than encoded.
+        #
+        # U+2028/U+2029 are in the fixture but NOT what this test proves: ES2019
+        # legalised both inside string literals, so V8 accepts them raw. The prelude
+        # escapes them anyway (see its comment); this asserts only that carrying them
+        # does no harm.
+        hostile = "evil\u2028name\u2029with\"quote'and\\backslash\nnewline"
+
+        result =
+          run("return typeof tools[#{inspect(hostile)}];",
+            functions: %{hostile => fn _ -> {:ok, "ran"} end}
+          )
+
+        # A broken escape is a syntax error, not a wrong answer, so reaching a value
+        # at all is the property: the source parsed with that name inside it.
+        assert result.error == nil
+        assert result.value == "function"
+      end
+
+      test "a hostile tool name is callable by its exact name" do
+        hostile = ~s|tool"with'quotes|
+
+        result =
+          run(~s|return await tools[#{inspect(hostile)}]({});|,
+            functions: %{hostile => fn _ -> {:ok, "called"} end}
+          )
+
+        assert result.value == "called"
+      end
+    end
+
     describe "one round trip" do
       test "a program loops, calling a tool with each previous result" do
         result =

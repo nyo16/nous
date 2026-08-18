@@ -37,7 +37,8 @@ defmodule Nous.CodeRuntime.JS do
     * `:timeout_ms` (default `30_000`) - wall clock for the whole run, enforced
       by a BEAM timer that kills the isolate. This is the authoritative deadline
       because the substrate's own timeout does not cover time spent inside tool
-      calls; see `Nous.CodeRuntime.JS.Session` for why.
+      calls — an allowlisted bridge call runs inline on the runtime's own message
+      loop, so a deadline the substrate owns cannot see a slow tool.
     * `:max_heap_mb` (default `256`) - V8 heap cap. Exceeding it ends the run
       with an `:abort` failure; the BEAM is unaffected.
     * `:max_output_bytes` (default `1_000_000`) - byte-accurate ledger over

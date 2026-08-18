@@ -89,7 +89,7 @@ defmodule Nous.CodeRuntime.JS.Prelude do
     """
       const __done = new Map();
       const __sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-      const __backoff = #{Jason.encode!(backoff)};
+      const __backoff = #{encode(backoff)};
 
       const __harvest = (batch) => {
         for (const [id, outcome] of Object.entries(batch)) __done.set(id, outcome);
@@ -267,8 +267,29 @@ defmodule Nous.CodeRuntime.JS.Prelude do
   defp error_class(_bindings), do: "ToolError"
 
   # JSON encoding, not interpolation: a tool name is model-visible data and can
-  # contain a quote, a backslash, a newline or a line separator. `Jason` escapes
-  # all of them, and `\u2028`/`\u2029` too, which are valid in JSON strings but
-  # terminate a JavaScript line.
-  defp encode(value), do: Jason.encode!(value, escape: :javascript_safe)
+  # contain a quote, a backslash or a newline, any of which would otherwise break
+  # out of the string literal it is spliced into.
+  #
+  # `JSON` is the standard-library encoder this repo standardised on. `Jason` was
+  # used here first and was wrong twice over: it is not a declared dependency of
+  # this project — it only happens to arrive transitively through `req`, so shipped
+  # code was calling a library a downstream app need not have — and its
+  # `escape: :javascript_safe` option has no equivalent here.
+  #
+  # The two replacements keep that option's job. `JSON.encode!/1` passes U+2028 and
+  # U+2029 through RAW (verified — they are legal in a JSON string), and those are
+  # JavaScript *line terminators* outside a string literal.
+  #
+  # Honest scope: ES2019 legalised both characters INSIDE string literals, so a
+  # modern V8 runs the unescaped form fine and a test cannot prove otherwise on this
+  # substrate. They are escaped anyway because splicing a raw line terminator into
+  # generated source is safe only by accident of where it currently lands — one
+  # refactor putting a name in a comment or a template literal makes it a syntax
+  # error, and two `String.replace` calls on a tool name is not a cost.
+  defp encode(value) do
+    value
+    |> JSON.encode!()
+    |> String.replace("\u2028", "\\u2028")
+    |> String.replace("\u2029", "\\u2029")
+  end
 end

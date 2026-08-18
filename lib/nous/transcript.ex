@@ -362,7 +362,7 @@ defmodule Nous.Transcript do
   — needs a real tokenizer.
 
   This is deliberately the same arithmetic as the agent runner's pre-request
-  reservation estimate (`Nous.AgentRunner.RequestDispatch.estimate_request_tokens/1`),
+  reservation estimate (`estimate_request_tokens` in `Nous.AgentRunner.RequestDispatch`),
   so the framework has one token heuristic rather than two that disagree.
 
   ## Examples

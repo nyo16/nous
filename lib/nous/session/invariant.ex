@@ -29,7 +29,7 @@ defmodule Nous.Session.Invariant do
     2. **System content.** Where both sides hold a `:system` message, its content
        is not compared — only the role and the position. The overlay is
        concatenated into that content, and a behaviour may substitute its own
-       assembled prompt wholesale (`Nous.Agents.ReactAgent` and
+       assembled prompt wholesale (`Nous.Agents.ReActAgent` and
        `Nous.Agents.KnowledgeBaseAgent` reject the transcript's system messages
        and prepend a freshly built one). System text is re-derived per request, so
        the log cannot say what it should be; asserting on it would be asserting on
