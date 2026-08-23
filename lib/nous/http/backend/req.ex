@@ -36,7 +36,7 @@ defmodule Nous.HTTP.Backend.Req do
            headers: headers,
            receive_timeout: timeout,
            redirect: false,
-           finch: finch_name
+           finch: [name: finch_name]
          ) do
       {:ok, %Req.Response{status: status, body: response_body}} when status in 200..299 ->
         {:ok, response_body}
