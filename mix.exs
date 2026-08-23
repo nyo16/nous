@@ -71,10 +71,11 @@ defmodule Nous.MixProject do
       # backend, declare `{:hackney, "~> 4.0"}` in your app's deps and select
       # it via `NOUS_HTTP_BACKEND=hackney` (or the streaming variant).
       {:finch, "~> 0.19"},
-      # Locked on req 0.6.3. `~> 0.5` already admits 0.6.x
-      # (`Version.match?("0.6.3", "~> 0.5") == true`), so `or ~> 0.6` is a
-      # verified no-op — kept only so downstream resolvers don't churn.
-      {:req, "~> 0.5 or ~> 0.6"},
+      # req 0.7+: `finch:` takes options (`[name: ...]`) — the bare-atom shape
+      # our backends used through 0.6 is deprecated with a per-request IO.warn
+      # and slated for removal, so the call sites use the new shape and the
+      # constraint floor moves with them.
+      {:req, "~> 0.7"},
       {:hackney, "~> 4.0", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)

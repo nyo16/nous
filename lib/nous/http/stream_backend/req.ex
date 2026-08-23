@@ -141,7 +141,7 @@ defmodule Nous.HTTP.StreamBackend.Req do
           # redirect: false — provider APIs don't 3xx; Req's unvalidated follow
           # would be an SSRF bounce. See Nous.HTTP.Backend.Req.
           redirect: false,
-          finch: finch_name,
+          finch: [name: finch_name],
           into: fn {:data, chunk}, {req, resp} ->
             cond do
               resp.status not in 200..299 ->
