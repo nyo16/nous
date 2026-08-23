@@ -102,9 +102,8 @@ Persistent agent memory with hybrid search:
 | [memory/basic_ets.exs](memory/basic_ets.exs) | Simplest setup — ETS store, keyword search, zero deps |
 | [memory/local_bumblebee.exs](memory/local_bumblebee.exs) | Local semantic search via Bumblebee, no API keys |
 | [memory/sqlite_full.exs](memory/sqlite_full.exs) | SQLite + FTS5, single-file production setup |
-| [memory/duckdb_full.exs](memory/duckdb_full.exs) | DuckDB with FTS + vector search |
+| [memory/duckdb_full.exs](memory/duckdb_full.exs) | DuckDB with ILIKE text search + cosine-similarity vector scan |
 | [memory/postgresql_full.exs](memory/postgresql_full.exs) | PostgreSQL + tsvector + pgvector, full Store implementation |
-| [memory/hybrid_full.exs](memory/hybrid_full.exs) | Muninn + Zvec for maximum search quality |
 | [memory/cross_agent.exs](memory/cross_agent.exs) | Two agents sharing memory with scoping |
 | [memory/auto_update.exs](memory/auto_update.exs) | Auto-update memory after each run (no explicit tool calls) |
 

@@ -23,14 +23,23 @@ defmodule Nous.Memory do
 
   ## Store Backends
 
-  | Backend | FTS | Vector | Deps |
-  |---------|-----|--------|------|
-  | `Store.ETS` | Jaro distance | No | None |
-  | `Store.DuckDB` | FTS extension | VSS | `duckdbex` |
-  | `Store.SQLite` | FTS5 (BM25) | sqlite-vec | `exqlite` |
-  | `Store.Muninn` | Tantivy BM25 | No | `muninn` |
-  | `Store.Zvec` | No | HNSW/IVF | `zvec` |
-  | `Store.Hybrid` | Tantivy BM25 | HNSW/IVF | `muninn` + `zvec` |
+  | Backend | Text search | Vector search | Deps |
+  |---------|-------------|---------------|------|
+  | `Store.ETS` | Jaro distance | None | None |
+  | `Store.SQLite` | FTS5 (BM25) | Cosine similarity, computed in Elixir over every stored embedding | `exqlite` |
+  | `Store.DuckDB` | ILIKE (the `fts` extension is loaded best-effort) | `list_cosine_similarity` in SQL | `duckdbex` |
+
+  **No shipped backend does indexed (ANN) vector search** — both vector paths above
+  are full scans over the entries that have an embedding. That is usually the right
+  trade at the corpus sizes agent memory reaches, but it is a scan, and it is worth
+  knowing before you point one at a million rows.
+
+  Need something else — Tantivy, HNSW, a vector database, your own search cluster?
+  `Nous.Memory.Store` is a documented extension point: implement the behaviour in
+  your own application, pass the module as `:store`, and every consumer treats it
+  like a built-in. See that module for the contract, `Nous.Memory.Store.Results`
+  for the shared retrieval tail, and `Nous.Memory.Store.Conformance` for the
+  contract suite Nous runs against its own backends.
 
   ## Embedding Providers
 

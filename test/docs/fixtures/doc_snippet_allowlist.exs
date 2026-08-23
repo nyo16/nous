@@ -17,7 +17,6 @@
   {"docs/guides/custom_providers.md", 278,
    "bare `base_url:` option values contrasting correct vs missing /v1"},
   {"docs/guides/hooks.md", 125, "bare `matcher:` option values, one per matching mode"},
-  {"docs/guides/memory.md", 148, "bare mix.exs dep tuples, shown outside the deps list"},
   {"docs/guides/observability.md", 351, "bare mix.exs dep tuples, shown outside the deps list"},
   {"docs/guides/research.md", 128,
    "bare `search_tool:` option value, shown outside its opts list"},

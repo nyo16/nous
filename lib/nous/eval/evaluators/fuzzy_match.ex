@@ -84,49 +84,49 @@ defmodule Nous.Eval.Evaluators.FuzzyMatch do
   def calculate_similarity(s1, s2) do
     distance = levenshtein_distance(s1, s2)
     max_len = max(String.length(s1), String.length(s2))
-    1.0 - distance / max_len
+    similarity = 1.0 - distance / max_len
+
+    # The DP already bounds distance by max_len; clamping makes the documented
+    # 0.0-1.0 contract structural rather than something callers must trust.
+    similarity |> max(0.0) |> min(1.0)
   end
 
   @doc """
   Calculate the Levenshtein distance between two strings.
+
+  Distance is counted in graphemes, not bytes, so a multi-byte character or a
+  combining sequence costs a single edit.
   """
   @spec levenshtein_distance(String.t(), String.t()) :: non_neg_integer()
+  def levenshtein_distance(s1, s2) when s1 == s2, do: 0
+
   def levenshtein_distance(s1, s2) do
-    s1_chars = String.graphemes(s1)
     s2_chars = String.graphemes(s2)
-    s2_len = length(s2_chars)
 
-    # Initialize first row
-    row = Enum.to_list(0..s2_len)
+    # Two-row DP. prev_row[0] is always the row index, so every row seeds itself
+    # and no separate counter has to be threaded through the fold.
+    initial_row = Enum.to_list(0..length(s2_chars))
 
-    # Process each character in s1
-    {final_row, _} =
-      Enum.reduce(Enum.with_index(s1_chars), {row, 0}, fn {c1, i}, {prev_row, _} ->
-        # Start with deletion cost
-        first = i + 1
+    s1
+    |> String.graphemes()
+    |> Enum.reduce(initial_row, &next_row(&1, &2, s2_chars))
+    |> List.last()
+  end
 
-        # Process each character in s2
-        {new_row, _} =
-          Enum.reduce(Enum.with_index(s2_chars), {[first], first}, fn {c2, j}, {acc, prev_diag} ->
-            prev = Enum.at(prev_row, j + 1)
-            current = hd(acc)
+  # d[i][j] = min(d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + cost): deletion,
+  # insertion, substitution. prev_row is consumed head-first, so the diagonal is
+  # just the cell dropped on the previous step - never an Enum.at/2 list scan.
+  defp next_row(c1, [row_index | prev_tail], s2_chars) do
+    initial = {[row_index + 1], prev_tail, row_index}
 
-            cost = if c1 == c2, do: 0, else: 1
-
-            min_val =
-              Enum.min([
-                prev + 1,
-                current + 1,
-                prev_diag + cost
-              ])
-
-            {[min_val | acc], Enum.at(prev_row, j)}
-          end)
-
-        {Enum.reverse(new_row), i + 1}
+    {row_reversed, _prev_tail, _diagonal} =
+      Enum.reduce(s2_chars, initial, fn c2, {acc, [above | rest], diagonal} ->
+        cost = if c1 == c2, do: 0, else: 1
+        value = min(min(above + 1, hd(acc) + 1), diagonal + cost)
+        {[value | acc], rest, above}
       end)
 
-    List.last(final_row)
+    Enum.reverse(row_reversed)
   end
 
   defp normalize(str, config) do

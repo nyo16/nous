@@ -93,8 +93,6 @@ defmodule Nous.MixProject do
       {:tyrex, "~> 0.4", optional: true},
 
       # Memory system store backends (all optional — add to your app's deps to unlock)
-      # {:muninn, "~> 0.4", optional: true},
-      # {:zvec, "~> 0.2", optional: true},
       # {:exqlite, "~> 0.27", optional: true},
       # {:duckdbex, "~> 0.3", optional: true},
 
@@ -531,9 +529,8 @@ defmodule Nous.MixProject do
           Nous.Memory.Store.ETS,
           Nous.Memory.Store.SQLite,
           Nous.Memory.Store.DuckDB,
-          Nous.Memory.Store.Muninn,
-          Nous.Memory.Store.Zvec,
-          Nous.Memory.Store.Hybrid,
+          Nous.Memory.Store.Results,
+          Nous.Memory.Store.Conformance,
           Nous.Memory.Scoring,
           Nous.Memory.Search,
           Nous.Memory.Tools,
