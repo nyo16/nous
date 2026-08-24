@@ -14,7 +14,9 @@ defmodule Nous.Hook.Runner do
 
   - `:function` — Calls the function directly with `(event, payload)`
   - `:module` — Calls `module.handle(event, payload)`
-  - `:command` — Executes shell command via `NetRunner.run/2` with JSON on stdin
+  - `:command` — Executes shell command via `NetRunner.run/2` with JSON on stdin.
+    Requires the optional `:net_runner` dependency; without it every `:command`
+    hook fails closed (denies the event) rather than silently passing.
 
   ## Sandbox
 
@@ -259,19 +261,42 @@ defmodule Nous.Hook.Runner do
 
   # Execute a command hook via NetRunner. The argv list is passed
   # directly - no shell, no expansion.
+  #
+  # net_runner is `optional: true` in mix.exs, so a downstream app may compile
+  # nous without it (NetRunner sits in `no_warn_undefined`). Runtime guard —
+  # not the compile-time Tyrex/Bumblebee conditional — so the real clause stays
+  # compiled downstream and its helpers don't turn into "unused function"
+  # warnings. The guard MUST sit before `confine_hook_argv/1`: with
+  # `:sandbox_confine_command_hooks` on, the confine backends probe the sandbox
+  # via `NetRunner.run/2` themselves, and the resulting UndefinedFunctionError
+  # would be rescued by `contained/2` into a generic `{:error, _}` that fails
+  # OPEN unless `fail_closed` is set. Without NetRunner a :command hook cannot
+  # run at all, and a hook that never ran must not be able to permit the event
+  # — the same reasoning as the confined nonzero-exit branch below — so it
+  # fails closed regardless of `fail_closed`.
   defp execute_command_hook(argv, event, payload, timeout, fail_closed) do
-    json_input =
-      JSON.encode!(%{
-        event: event,
-        payload: sanitize_payload(payload)
-      })
+    if Code.ensure_loaded?(NetRunner) do
+      json_input =
+        JSON.encode!(%{
+          event: event,
+          payload: sanitize_payload(payload)
+        })
 
-    contained("Command hook", fn ->
-      case confine_hook_argv(argv) do
-        {:ok, confined} -> run_command_hook(confined, json_input, timeout, fail_closed)
-        {:error, reason} -> {:error, reason}
-      end
-    end)
+      contained("Command hook", fn ->
+        case confine_hook_argv(argv) do
+          {:ok, confined} -> run_command_hook(confined, json_input, timeout, fail_closed)
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+    else
+      Logger.warning(
+        "Command hook NOT run: the optional :net_runner dependency is not available: " <>
+          "#{inspect(argv)}. Add {:net_runner, \"~> 1.0\"} to your deps to " <>
+          "enable :command hooks. Denying the event (fail closed)."
+      )
+
+      {:deny, "command hook not run: the optional :net_runner dependency is not available"}
+    end
   end
 
   # Off by default: hooks are operator-authored, and one that cannot write
@@ -345,6 +370,10 @@ defmodule Nous.Hook.Runner do
   # classification would need the hook's *stderr alone* captured, e.g. wrapping
   # the argv as `sh -c 'exec "$@" 2>"$0"' <tmpfile> …` and classifying that file
   # after the run. Until then, confinement is handled by failing closed below.
+  #
+  # NetRunner availability is guaranteed here: `execute_command_hook/5` gates
+  # on `Code.ensure_loaded?(NetRunner)` before any confine call and denies the
+  # event when the optional dep is missing.
   defp run_command_hook(%Confined{} = confined, json_input, timeout, fail_closed) do
     case NetRunner.run(confined.argv, input: json_input, timeout: timeout) do
       {:error, :timeout} ->

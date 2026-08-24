@@ -59,6 +59,15 @@ Then run:
 mix deps.get
 ```
 
+Some features are unlocked by optional dependencies. In particular, the `Bash`
+tool and `:command` hooks execute through
+[`net_runner`](https://hex.pm/packages/net_runner), which is optional — without
+it both refuse to run (fail closed) rather than executing unconfined:
+
+```elixir
+{:net_runner, "~> 1.0"}  # required only for Nous.Tools.Bash and :command hooks
+```
+
 ## Quick Start
 
 ### One-shot text generation
@@ -530,11 +539,12 @@ deps = %{
   )
 ```
 
-Sub-agents run in their own context but inherit parent deps automatically
-(excluding plugin-internal keys). Configure `parallel_max_concurrency`,
-`parallel_timeout`, and restrict shared deps with
-`sub_agent_shared_deps: [:key1, :key2]` (default `[]` is correct for
-security).
+Sub-agents run in their own context. **Data deps are not forwarded by
+default** — opt in with `sub_agent_shared_deps: [:key1, :key2]` (or `:all`).
+Confinement and execution policy (`workspace_root`/`session_id`, sandbox,
+permissions, approval handler) always inherit and can only be narrowed by a
+template, never widened. Tune parallelism with `parallel_max_concurrency`
+and `parallel_timeout`.
 
 ### Agent Memory
 

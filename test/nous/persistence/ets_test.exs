@@ -3,6 +3,22 @@ defmodule Nous.Persistence.ETSTest do
 
   alias Nous.Persistence.ETS
 
+  # Poll until `fun` returns truthy (the ttl sweep runs on a timer, so tests
+  # wait for it rather than guessing a fixed sleep).
+  defp eventually(fun, retries \\ 50, delay \\ 20) do
+    cond do
+      fun.() ->
+        true
+
+      retries == 0 ->
+        false
+
+      true ->
+        Process.sleep(delay)
+        eventually(fun, retries - 1, delay)
+    end
+  end
+
   setup do
     # Clean up the ETS table between tests via the owner (table is :protected).
     ETS.clear()
@@ -110,10 +126,8 @@ defmodule Nous.Persistence.ETSTest do
       :ok = ETS.save("stale", %{version: 1})
       assert {:ok, %{version: 1}} = ETS.load("stale")
 
-      # ttl plus several sweep intervals.
-      Process.sleep(250)
-
-      assert {:error, :not_found} == ETS.load("stale")
+      # ttl is 100ms with 30ms sweeps; poll instead of guessing a fixed sleep.
+      assert eventually(fn -> ETS.load("stale") == {:error, :not_found} end)
 
       :ok = ETS.save("fresh", %{version: 1})
       assert {:ok, %{version: 1}} = ETS.load("fresh")

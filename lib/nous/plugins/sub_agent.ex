@@ -46,12 +46,14 @@ defmodule Nous.Plugins.SubAgent do
 
   ## Deps Propagation
 
-  By default, **no parent deps** are forwarded to sub-agents. Sub-agent
-  prompts are LLM-controlled and any tool the sub-agent can call has access
-  to its `ctx.deps` — so secrets, repos, signed URLs, and tokens placed in
-  the parent's deps would otherwise be one prompt-injected sub-agent task
-  away from exfiltration. Opt in explicitly by listing the keys to share, or
-  request "everything except plugin internals" via the `:all` shortcut:
+  Two different things travel from parent to sub-agent, with opposite defaults:
+
+  **Data deps** (database handles, API keys, signed URLs, ...) are forwarded
+  ONLY on explicit opt-in. Sub-agent prompts are LLM-controlled and any tool
+  the sub-agent can call has access to its `ctx.deps` — so secrets placed in
+  the parent's deps would otherwise be one prompt-injected sub-agent task away
+  from exfiltration. Opt in by listing the keys to share, or request
+  "everything except plugin internals" via the `:all` shortcut:
 
       deps: %{
         sub_agent_templates: %{...},
@@ -62,10 +64,27 @@ defmodule Nous.Plugins.SubAgent do
         # sub_agent_shared_deps: :all        # share everything except internals
       }
 
-  > **Security note:** prior to v0.14.4 (this fix) the default was the
-  > equivalent of `:all`. Upgrading is a behaviour change: if your existing
-  > sub-agent flows relied on inheriting parent deps, set
-  > `sub_agent_shared_deps: :all` to restore the old behaviour.
+  **Confinement and execution policy** ALWAYS inherit, regardless of
+  `:sub_agent_shared_deps`: the parent's `:workspace_root` and `:session_id`
+  deps, its effective sandbox policy, its permission policy, and its approval
+  handler all travel to every sub-agent. Withholding them would not protect a
+  secret — it would silently *widen* what a delegated agent may do (e.g.
+  re-rooting `PathGuard` at `File.cwd!()` or dropping the approval gate). A
+  sub-agent template may *narrow* the inherited sandbox/permissions, never
+  widen them.
+
+  Two boundaries of that inheritance to know about: **hooks do not inherit** —
+  a sub-agent runs only the hooks its own template declares, so an operator's
+  `:pre_tool_use` guard on the parent does not gate delegated tool calls (deny
+  tools via `:permissions`, which does inherit, when that matters). And a
+  parent with *no* policy at all (`sandbox`/`permissions` unset, no approval
+  handler) delegates the same unbounded capability set it has itself —
+  inheritance bounds sub-agents by the parent's policy, it does not invent one.
+
+  > **Security note:** prior to v0.14.4 the default was the equivalent of
+  > `:all`. Upgrading is a behaviour change: if your existing sub-agent flows
+  > relied on inheriting parent deps, set `sub_agent_shared_deps: :all` to
+  > restore the old behaviour.
   """
 
   @behaviour Nous.Plugin
@@ -83,8 +102,18 @@ defmodule Nous.Plugins.SubAgent do
     :parallel_max_concurrency,
     :parallel_timeout,
     :__sub_agent_pubsub__,
-    :__sub_agent_pubsub_topic__
+    :__sub_agent_pubsub_topic__,
+    # Injected by Nous.AgentServer: a live closure over the server pid and
+    # generation that hands out queued operator steering messages. Forwarding
+    # it under `:all` would let a sub-agent consume the operator's steering
+    # intended for the parent run.
+    :claim_inbox
   ]
+
+  # Confinement deps are execution policy, not data: a sub-agent must stay
+  # inside the parent's workspace and session no matter which data deps the
+  # developer opts into sharing. These keys ALWAYS travel across delegation.
+  @confinement_keys [:workspace_root, :session_id]
 
   # ===========================================================================
   # Plugin callbacks
@@ -330,7 +359,7 @@ defmodule Nous.Plugins.SubAgent do
   def compute_sub_deps(parent_deps) do
     case parent_deps[:sub_agent_shared_deps] do
       keys when is_list(keys) ->
-        Map.take(parent_deps, keys)
+        Map.merge(confinement(parent_deps), Map.take(parent_deps, keys))
 
       :all ->
         # Explicit opt-in to "everything except plugin internals" - the prior
@@ -340,16 +369,21 @@ defmodule Nous.Plugins.SubAgent do
         Map.drop(parent_deps, @plugin_internal_keys)
 
       nil ->
-        # Default: forward nothing. Sub-agents are LLM-controlled and their
-        # tools can read ctx.deps; secrets in the parent's deps must not
+        # Default: forward no *data* deps. Sub-agents are LLM-controlled and
+        # their tools can read ctx.deps; secrets in the parent's deps must not
         # leak to a sub-agent unless the developer opts in explicitly.
-        %{}
+        # Confinement keys still travel: withholding :workspace_root would
+        # re-root the sub-agent's PathGuard/sandbox at File.cwd!(), silently
+        # WIDENING what a delegated agent may touch.
+        confinement(parent_deps)
 
       invalid ->
         raise ArgumentError,
               ":sub_agent_shared_deps must be a list of keys, :all, or nil, got: #{inspect(invalid)}"
     end
   end
+
+  defp confinement(parent_deps), do: Map.take(parent_deps, @confinement_keys)
 
   defp resolve_agent(ctx, template_name, _args) when is_binary(template_name) do
     templates = ctx.deps[:sub_agent_templates] || %{}
@@ -398,6 +432,7 @@ defmodule Nous.Plugins.SubAgent do
     Logger.info("#{label} Starting: #{String.slice(task, 0, 80)}")
 
     sub_deps = compute_sub_deps(parent_ctx.deps)
+    agent = inherit_execution_policy(agent, parent_ctx)
 
     # Propagate PubSub with scoped topic
     parent_pubsub = parent_ctx.deps[:__sub_agent_pubsub__]
@@ -410,7 +445,10 @@ defmodule Nous.Plugins.SubAgent do
       deps: sub_deps,
       max_iterations: 10,
       pubsub: parent_pubsub,
-      pubsub_topic: sub_topic
+      pubsub_topic: sub_topic,
+      # Map.get for the same legacy-Context tolerance as the policy reads in
+      # inherit_execution_policy/2.
+      approval_handler: Map.get(parent_ctx, :approval_handler)
     ]
 
     case Agent.run(agent, task, run_opts) do
@@ -434,6 +472,56 @@ defmodule Nous.Plugins.SubAgent do
       label = if index, do: "[sub-agent #{index}]", else: "[sub-agent]"
       Logger.error("#{label} Crashed: #{Exception.message(e)}")
       {:error, "Sub-agent execution failed: #{Exception.message(e)}"}
+  end
+
+  # Execution policy inherits across delegation even though data deps do not:
+  # the parent's confinement must bound everything a sub-agent can do. A
+  # template (or inline config) may only *narrow* policy, never widen it —
+  # parent-effective policy wins unless the template's is stricter.
+  # `parent_ctx` is a `Nous.RunContext` in production (the tool executor builds
+  # it with the parent's effective sandbox/permissions attached). Direct/legacy
+  # callers may pass a bare `Nous.Agent.Context`, which has no policy fields —
+  # treat missing as unset rather than crashing.
+  defp inherit_execution_policy(agent, parent_ctx) do
+    parent_permissions = Map.get(parent_ctx, :permissions)
+
+    %{
+      agent
+      | sandbox: inherit_sandbox(parent_ctx, agent.sandbox),
+        permissions: Nous.Permissions.Policy.strictest(parent_permissions, agent.permissions)
+    }
+  end
+
+  # Template has no sandbox of its own: thread the parent's session policy
+  # through unchanged. When that is also nil, the sub-agent resolves from the
+  # forwarded :workspace_root dep + app config — the same effective policy the
+  # parent runs under, so there is nothing to thread.
+  defp inherit_sandbox(parent_ctx, nil), do: Map.get(parent_ctx, :sandbox)
+
+  defp inherit_sandbox(parent_ctx, template_sandbox) do
+    # A template sandbox would become the sub-agent's SESSION policy, which
+    # outranks deps[:workspace_root] in Nous.Sandbox.Policy.resolve/2 — so it
+    # must be bounded by the parent's EFFECTIVE policy even when the parent set
+    # no session override: a nil ctx.sandbox means "resolve from deps + app
+    # config", NOT "unrestricted". Resolving here pins the parent's mode and
+    # workspace root before the template gets a say.
+    parent_sandbox = Map.get(parent_ctx, :sandbox) || Nous.Sandbox.Policy.resolve(parent_ctx)
+
+    # The workspace root and session always come from the parent: a template
+    # may narrow the MODE but must never re-root confinement.
+    mode =
+      if stricter_mode?(template_sandbox.mode, parent_sandbox.mode),
+        do: template_sandbox.mode,
+        else: parent_sandbox.mode
+
+    %{parent_sandbox | mode: mode}
+  end
+
+  # Nous.Sandbox.Policy.modes/0 orders modes widest-confinement (strictest)
+  # first: :read_only < :workspace_write < :danger_full_access.
+  defp stricter_mode?(a, b) do
+    modes = Nous.Sandbox.Policy.modes()
+    Enum.find_index(modes, &(&1 == a)) < Enum.find_index(modes, &(&1 == b))
   end
 
   # ===========================================================================

@@ -183,6 +183,7 @@ defmodule Nous.AgentServer do
           topic: String.t(),
           agent_type: :standard | :react,
           current_task: Task.t() | nil,
+          draining: %{optional(reference()) => Task.t()},
           task_generation: non_neg_integer(),
           cancelled_ref: :atomics.atomics_ref(),
           inactivity_timeout: timeout(),
@@ -203,6 +204,12 @@ defmodule Nous.AgentServer do
   # the claiming task, so this is a safety net against a server that has died or
   # wedged, not a tuning knob. The runner treats a timeout as "nothing claimed".
   @claim_timeout 5_000
+
+  # Grace period for a demoted (draining) task to exit after its async
+  # `:shutdown` before it is hard-killed. This is the grace the old in-handler
+  # Task.shutdown/2 calls used to grant — minus the part where the server
+  # blocked while granting it.
+  @drain_kill_after 5_000
 
   @doc """
   Start an AgentServer linked to the calling process.
@@ -320,11 +327,13 @@ defmodule Nous.AgentServer do
   Cancel the current agent execution.
 
   Returns `{:ok, :cancelled}` when an execution was running and has been
-  stopped, or `{:ok, :no_execution}` when there was nothing to cancel.
+  told to stop, or `{:ok, :no_execution}` when there was nothing to cancel.
 
-  The server will:
+  The server replies immediately — it never waits out the task's shutdown.
+  It will:
   - Set the atomics cancellation flag so the task exits at the next check
-  - Shut down the running task gracefully (5 s timeout)
+  - Demote the running task and shut it down asynchronously (escalating to
+    a hard kill if it ignores the graceful `:shutdown` for 5 s)
   - Broadcast `{:agent_cancelled, reason}` to PubSub subscribers
   - Reset the flag for future executions
   """
@@ -417,8 +426,12 @@ defmodule Nous.AgentServer do
     # Schedule initial inactivity timer
     inactivity_timer_ref = schedule_inactivity_timeout(inactivity_timeout)
 
-    # Atomics ref for lock-free cancellation checks from the task process
-    cancelled_ref = :atomics.new(1, signed: false)
+    # Atomics for lock-free cancellation checks from the task process.
+    # Slot 1: cancel flag for the CURRENT run (reset when a new run starts).
+    # Slot 2: current task generation. A task captures its own generation and
+    # treats a mismatch as cancellation — so a demoted (draining) task stays
+    # cancelled even after the flag is reset for its replacement.
+    cancelled_ref = :atomics.new(2, signed: false)
 
     state = %{
       session_id: session_id,
@@ -428,6 +441,9 @@ defmodule Nous.AgentServer do
       topic: topic,
       agent_type: agent_type,
       current_task: nil,
+      # Superseded tasks that were told to shut down but have not yet died,
+      # keyed by their monitor ref. Reaped by the {ref, result}/:DOWN clauses.
+      draining: %{},
       # Monotonic task generation counter. Every spawned task captures the
       # generation it ran under; replies whose generation no longer matches
       # the current one are stale (the user sent a new message, called
@@ -485,7 +501,8 @@ defmodule Nous.AgentServer do
     # stale and will be filtered by handle_info before it can clobber state.
     state = bump_generation(state)
 
-    # Gracefully shutdown any existing task if running
+    # Demote any in-flight task; demotion is non-blocking, so the new run
+    # starts immediately instead of after the old task's shutdown grace.
     state =
       if state.current_task do
         Logger.warning("Cancelling existing task for new message in session: #{state.session_id}")
@@ -493,19 +510,7 @@ defmodule Nous.AgentServer do
         # Set cancelled flag to signal the task to stop
         :atomics.put(state.cancelled_ref, 1, 1)
 
-        # Attempt graceful shutdown first
-        case Task.shutdown(state.current_task, 2_000) do
-          {:ok, _result} ->
-            Logger.debug("Previous task completed during shutdown")
-
-          nil ->
-            Logger.debug("Previous task already exited")
-
-          {:exit, _reason} ->
-            Logger.debug("Previous task exited during shutdown")
-        end
-
-        idle(state)
+        demote_current_task(state)
       else
         idle(state)
       end
@@ -547,25 +552,10 @@ defmodule Nous.AgentServer do
 
     state =
       if state.current_task do
-        case Task.shutdown(state.current_task, 2_000) do
-          {:ok, _result} ->
-            :ok
-
-          nil ->
-            # task did not respond to graceful shutdown within timeout
-            :ok
-
-          {:exit, reason} ->
-            # Task crashed during shutdown. Log so it isn't silently
-            # swallowed — debugging mid-run crashes was painful when
-            # this clause was `_ -> :ok`.
-            Logger.warning(
-              "AgentServer task exited during reset for session " <>
-                "#{state.session_id}: #{inspect(reason)}"
-            )
-        end
-
-        idle(state)
+        # Old behaviour blocked here in Task.shutdown/2 for up to 2 s; now the
+        # task drains asynchronously. A mid-run crash is still surfaced — by
+        # the draining :DOWN clause instead of the shutdown return value.
+        demote_current_task(state)
       else
         idle(state)
       end
@@ -603,12 +593,22 @@ defmodule Nous.AgentServer do
   end
 
   @impl true
-  def handle_call({:claim_inbox, target}, _from, state) do
+  def handle_call({:claim_inbox, target, generation}, _from, state) do
     # Called by the run task at its turn and step boundaries. Serializing claims
     # through this process is what makes "did the run see my steer?" decidable
     # instead of a race: a claim and an enqueue cannot interleave.
-    {messages, inbox} = Inbox.claim(state.inbox, target)
-    {:reply, messages, %{state | inbox: inbox}}
+    #
+    # The generation tag keeps a DRAINING task honest: demotion is
+    # asynchronous, so a superseded task can still reach a claim boundary in
+    # the window before its exit signal lands. Handing it messages would steal
+    # steering queued for the run that replaced it, so a stale claim gets
+    # nothing and the inbox is left untouched.
+    if generation == state.task_generation do
+      {messages, inbox} = Inbox.claim(state.inbox, target)
+      {:reply, messages, %{state | inbox: inbox}}
+    else
+      {:reply, [], state}
+    end
   end
 
   @impl true
@@ -618,39 +618,33 @@ defmodule Nous.AgentServer do
         Logger.info("No execution to cancel for session: #{state.session_id}")
         {:reply, {:ok, :no_execution}, state}
 
-      task ->
+      _task ->
         Logger.info("Cancelling execution for session: #{state.session_id}")
 
-        # Bump generation FIRST so a reply that arrives between :atomics.put
-        # and Task.shutdown is filtered as stale rather than overwriting state.
+        # Bump generation FIRST so a reply that is already in the mailbox is
+        # filtered as stale rather than overwriting state.
         state = bump_generation(state)
 
         # Set cancelled flag - the runner will check this via atomics
         :atomics.put(state.cancelled_ref, 1, 1)
 
-        # Shutdown task gracefully with timeout
-        shutdown_result = Task.shutdown(task, 5_000)
-
-        case shutdown_result do
-          {:ok, _result} ->
-            Logger.debug("Task completed before shutdown")
-
-          nil ->
-            Logger.debug("Task already exited")
-
-          {:exit, reason} ->
-            Logger.debug("Task exited with reason: #{inspect(reason)}")
-        end
+        # Demote the task and reply NOW. This handler used to block in
+        # Task.shutdown/2 for up to 5 s, stalling every concurrent call on
+        # this server (get_context, claim_inbox, ...) behind one cancel.
+        state = demote_current_task(state)
 
         # Broadcast cancellation
         broadcast(state, {:agent_cancelled, "Execution cancelled by user"})
 
-        # Clear current task and reset cancelled flag
-        # Idle, but deliberately WITHOUT the inbox wake: the operator just asked
-        # this run to stop, and immediately starting another because a steer was
-        # still queued would be the opposite of cancelling. Anything queued waits
-        # for the next real prompt.
-        state = idle(state)
+        # Reset the cancelled flag for future executions. The draining task
+        # stops seeing the flag raised, but it does not need it: its
+        # :shutdown exit signal is already on the way, and anything it still
+        # sends is dropped by the generation filter.
+        #
+        # Idle (via the demotion), but deliberately WITHOUT the inbox wake:
+        # the operator just asked this run to stop, and immediately starting
+        # another because a steer was still queued would be the opposite of
+        # cancelling. Anything queued waits for the next real prompt.
         :atomics.put(state.cancelled_ref, 1, 0)
 
         {:reply, {:ok, :cancelled}, state}
@@ -848,6 +842,17 @@ defmodule Nous.AgentServer do
   end
 
   @impl true
+  def handle_info({ref, _result}, %{draining: draining} = state)
+      when is_reference(ref) and is_map_key(draining, ref) do
+    # A demoted task completed normally before its exit signal landed. Its
+    # {:agent_response_ready, ...} / {:agent_task_completed, ...} sends were
+    # already dropped as stale by the generation filter; absorb the return
+    # value, flush the monitor, and forget the task.
+    Process.demonitor(ref, [:flush])
+    {:noreply, %{state | draining: Map.delete(draining, ref)}}
+  end
+
+  @impl true
   def handle_info(
         {:DOWN, ref, :process, _pid, _reason},
         %{current_task: %Task{ref: ref}} = state
@@ -857,10 +862,40 @@ defmodule Nous.AgentServer do
   end
 
   @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{draining: draining} = state)
+      when is_map_key(draining, ref) do
+    # A draining task finished dying; drop its entry. :shutdown/:killed are
+    # the expected ends of a demoted task (grace, then escalation). Anything
+    # else is a mid-run crash, which the old synchronous shutdown used to
+    # log — keep it visible.
+    if reason not in [:normal, :shutdown, :killed] do
+      Logger.warning(
+        "Draining task for session #{state.session_id} exited abnormally: #{inspect(reason)}"
+      )
+    end
+
+    {:noreply, %{state | draining: Map.delete(draining, ref)}}
+  end
+
+  @impl true
   def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
     # Some other monitor fired (Phoenix.PubSub, future plugin monitor, or a
     # stale ref from a previous task). Don't clear current_task - that would
     # drop our newer task's bookkeeping.
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:drain_kill, ref}, state) do
+    # Grace period expired for a demoted task. If it is still draining, it
+    # ignored the graceful :shutdown (trap_exit, wedged NIF, ...) — escalate
+    # to the untrappable kill Task.shutdown/2 would have used, without ever
+    # having blocked this server. The :DOWN clause above reaps the entry.
+    case state.draining do
+      %{^ref => %Task{pid: pid}} -> Process.exit(pid, :kill)
+      _ -> :ok
+    end
+
     {:noreply, state}
   end
 
@@ -888,6 +923,11 @@ defmodule Nous.AgentServer do
       :atomics.put(state.cancelled_ref, 1, 1)
       _ = Task.shutdown(state.current_task, 1_000)
     end
+
+    # Draining tasks already got their graceful :shutdown at demotion time,
+    # and the escalation timers die with this process — so the kill is
+    # unconditional here. Fire-and-forget: there is nothing left to reap.
+    for {_ref, %Task{pid: pid}} <- state.draining, do: Process.exit(pid, :kill)
 
     :ok
   end
@@ -990,7 +1030,7 @@ defmodule Nous.AgentServer do
     # deliberately blanked: the queue of record lives here in the server and the
     # task reaches it through the :claim_inbox closure, so a copy in the task
     # could only ever be a stale read of it.
-    snapshot = %{state | inbox: Inbox.new(), current_task: nil}
+    snapshot = %{state | inbox: Inbox.new(), current_task: nil, draining: %{}}
 
     task =
       Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
@@ -998,6 +1038,26 @@ defmodule Nous.AgentServer do
       end)
 
     %{state | current_task: task, run_state: :running}
+  end
+
+  # Non-blocking replacement for the old in-handler `Task.shutdown/2`: the
+  # current task is demoted into `draining`, told to shut down with an async
+  # exit signal, and given @drain_kill_after ms before a :drain_kill message
+  # escalates to an untrappable kill. The {ref, result} and :DOWN clauses
+  # above reap the entry, so nothing leaks.
+  #
+  # Invariant: every caller has ALREADY bumped the generation, so anything a
+  # draining task still sends — {:agent_response_ready, ...},
+  # {:agent_task_completed, ...} — carries a stale generation and is dropped
+  # by the handle_info filters, and its claim_inbox calls return nothing.
+  # Demoting without bumping would let a dying run clobber fresh state.
+  defp demote_current_task(%{current_task: %Task{} = task} = state) do
+    # async_nolink tasks are monitored, never linked, so this exit signal is
+    # a plain kill request rather than a link teardown.
+    Process.exit(task.pid, :shutdown)
+    Process.send_after(self(), {:drain_kill, task.ref}, @drain_kill_after)
+
+    idle(%{state | draining: Map.put(state.draining, task.ref, task)})
   end
 
   # The `:running -> :idle` transition, with its exit action. Every caller has
@@ -1019,9 +1079,12 @@ defmodule Nous.AgentServer do
   # that `ctx.deps[:claim_inbox]` is a 1-arity function, so nothing in the
   # runner depends on this server existing. A failed claim is treated as
   # "nothing claimed" there, so the timeout is a safety net rather than a
-  # correctness boundary.
-  defp claim_inbox_fun(server_pid) do
-    fn target -> GenServer.call(server_pid, {:claim_inbox, target}, @claim_timeout) end
+  # correctness boundary. The captured generation lets the server refuse
+  # claims from a run it has since demoted (see {:claim_inbox, ...}).
+  defp claim_inbox_fun(server_pid, generation) do
+    fn target ->
+      GenServer.call(server_pid, {:claim_inbox, target, generation}, @claim_timeout)
+    end
   end
 
   # The claim closure is per-run runtime state, not conversation state. Dropping
@@ -1033,8 +1096,8 @@ defmodule Nous.AgentServer do
   end
 
   defp run_agent_and_respond(server_pid, state, kind, cancelled_ref, generation) do
-    # Check if cancelled before starting
-    if :atomics.get(cancelled_ref, 1) == 1 do
+    # Check if cancelled (or already superseded) before starting
+    if :atomics.get(cancelled_ref, 1) == 1 or :atomics.get(cancelled_ref, 2) != generation do
       Logger.info("Execution cancelled before agent run for session: #{state.session_id}")
       broadcast(state, {:agent_cancelled, "Execution cancelled"})
       :cancelled
@@ -1046,23 +1109,23 @@ defmodule Nous.AgentServer do
   defp do_agent_run(server_pid, state, kind, cancelled_ref, generation) do
     ctx = %{
       state.context
-      | deps: Map.put(state.context.deps, :claim_inbox, claim_inbox_fun(server_pid))
+      | deps: Map.put(state.context.deps, :claim_inbox, claim_inbox_fun(server_pid, generation))
     }
 
-    result = run_agent(state.agent, ctx, kind, server_pid, cancelled_ref)
+    result = run_agent(state.agent, ctx, kind, server_pid, cancelled_ref, generation)
     report_run(result, server_pid, state, generation)
   end
 
-  defp run_agent(agent, ctx, {:prompt, message}, server_pid, cancelled_ref) do
+  defp run_agent(agent, ctx, {:prompt, message}, server_pid, cancelled_ref, generation) do
     Nous.AgentRunner.run(agent, message,
       context: ctx,
       notify_pid: server_pid,
       max_iterations: @max_run_iterations,
-      cancellation_check: cancellation_check_fun(cancelled_ref)
+      cancellation_check: cancellation_check_fun(cancelled_ref, generation)
     )
   end
 
-  defp run_agent(agent, ctx, :inbox, server_pid, cancelled_ref) do
+  defp run_agent(agent, ctx, :inbox, server_pid, cancelled_ref, generation) do
     # No prompt to append: this run's input arrives through the claim
     # boundaries, so run_with_context/3 — "continue this conversation" — is the
     # right entry.
@@ -1074,15 +1137,21 @@ defmodule Nous.AgentServer do
     ctx = %{
       ctx
       | max_iterations: @max_run_iterations,
-        cancellation_check: cancellation_check_fun(cancelled_ref)
+        cancellation_check: cancellation_check_fun(cancelled_ref, generation)
     }
 
     Nous.AgentRunner.run_with_context(agent, ctx, notify_pid: server_pid)
   end
 
-  defp cancellation_check_fun(cancelled_ref) do
+  # Cancelled when the flag is set OR this task's generation is no longer
+  # current. The generation term is what keeps a demoted/draining task
+  # cancelled after cancel_execution/clear_history/start_run reset the flag
+  # for the run that replaces it — without it, a trap_exit task could keep
+  # issuing model requests and side-effecting tool calls for the whole
+  # @drain_kill_after grace window.
+  defp cancellation_check_fun(cancelled_ref, generation) do
     fn ->
-      if :atomics.get(cancelled_ref, 1) == 1 do
+      if :atomics.get(cancelled_ref, 1) == 1 or :atomics.get(cancelled_ref, 2) != generation do
         throw({:cancelled, "Execution cancelled"})
       end
     end
@@ -1118,6 +1187,10 @@ defmodule Nous.AgentServer do
   end
 
   defp bump_generation(state) do
-    %{state | task_generation: state.task_generation + 1}
+    generation = state.task_generation + 1
+    # Mirror into the atomics slot so in-flight tasks observe the bump without
+    # a server round trip (see cancellation_check_fun/2).
+    :atomics.put(state.cancelled_ref, 2, generation)
+    %{state | task_generation: generation}
   end
 end

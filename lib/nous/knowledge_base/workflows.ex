@@ -346,13 +346,26 @@ defmodule Nous.KnowledgeBase.Workflows do
       if embedding do
         entries = parse_entries_from_output(state.data.compile_entries)
 
+        texts = Enum.map(entries, & &1.content)
+
         embedded =
-          Enum.map(entries, fn entry ->
-            case Nous.Memory.Embedding.embed(embedding, entry.content, embedding_opts) do
-              {:ok, emb} -> %{entry | embedding: emb}
-              {:error, _} -> entry
-            end
-          end)
+          case Nous.Memory.Embedding.embed_batch(embedding, texts, embedding_opts) do
+            {:ok, vectors} when length(vectors) == length(entries) ->
+              Enum.zip_with(entries, vectors, fn entry, emb -> %{entry | embedding: emb} end)
+
+            _error_or_mismatch ->
+              # `{:error, _}` — or a buggy provider returning the wrong number
+              # of vectors, which zip_with would otherwise silently drop
+              # entries over. Fail-open per entry, matching the previous
+              # per-entry loop: a failed embed leaves that entry unembedded
+              # but keeps the rest.
+              Enum.map(entries, fn entry ->
+                case Nous.Memory.Embedding.embed(embedding, entry.content, embedding_opts) do
+                  {:ok, emb} -> %{entry | embedding: emb}
+                  {:error, _} -> entry
+                end
+              end)
+          end
 
         %{state | data: Map.put(state.data, :compiled_entries, embedded)}
       else

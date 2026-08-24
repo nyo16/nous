@@ -62,8 +62,9 @@ defmodule Nous.AgentRunner.ToolExecution do
 
         # Build run context for tool execution. This is the single construction
         # site for both the sequential and parallel paths below, so the session
-        # sandbox policy only has to be attached here.
-        run_ctx = Context.to_run_context(ctx, sandbox: agent.sandbox)
+        # sandbox and permission policies only have to be attached here.
+        run_ctx =
+          Context.to_run_context(ctx, sandbox: agent.sandbox, permissions: agent.permissions)
 
         # Execute all real tool calls and collect results
         {tool_results, ctx} =
@@ -825,7 +826,7 @@ defmodule Nous.AgentRunner.ToolExecution do
   def check_tool_approval(%Tool{requires_approval: true} = tool, call, %Context{
         approval_handler: handler
       })
-      when is_function(handler) do
+      when is_function(handler, 1) do
     tool_call_info = %{
       name: get_tool_field(call, :name),
       id: get_tool_field(call, :id),

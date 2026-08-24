@@ -238,4 +238,121 @@ defmodule Nous.PermissionsTest do
       assert Permissions.requires_approval?(policy, "anything")
     end
   end
+
+  describe "Policy.strictest/2" do
+    test "nil means no policy: yields the other argument unchanged" do
+      policy = Permissions.default_policy()
+
+      assert Policy.strictest(nil, nil) == nil
+      assert Policy.strictest(policy, nil) == policy
+      assert Policy.strictest(nil, policy) == policy
+    end
+
+    test "picks the stricter mode" do
+      assert Policy.strictest(%Policy{mode: :permissive}, %Policy{mode: :default}).mode ==
+               :default
+
+      assert Policy.strictest(%Policy{mode: :default}, %Policy{mode: :strict}).mode == :strict
+      assert Policy.strictest(%Policy{mode: :strict}, %Policy{mode: :permissive}).mode == :strict
+    end
+
+    test "unions deny lists and approval requirements" do
+      a = %Policy{
+        deny_names: MapSet.new(["bash"]),
+        deny_prefixes: ["net_"],
+        approval_required: MapSet.new(["file_write"])
+      }
+
+      b = %Policy{
+        deny_names: MapSet.new(["file_edit"]),
+        deny_prefixes: ["net_", "sys_"],
+        approval_required: MapSet.new(["file_edit"])
+      }
+
+      combined = Policy.strictest(a, b)
+
+      assert combined.deny_names == MapSet.new(["bash", "file_edit"])
+      assert Enum.sort(combined.deny_prefixes) == ["net_", "sys_"]
+      assert combined.approval_required == MapSet.new(["file_write", "file_edit"])
+    end
+
+    test "allow_unattended_execute is ANDed" do
+      yes = %Policy{allow_unattended_execute: true}
+      no = %Policy{allow_unattended_execute: false}
+
+      assert Policy.strictest(yes, yes).allow_unattended_execute
+      refute Policy.strictest(yes, no).allow_unattended_execute
+    end
+
+    test "a single-sided allowlist stands (deny-by-default survives)" do
+      allowlisted = %Policy{mode: :strict, allow_names: MapSet.new(["file_read"])}
+      open = %Policy{mode: :default}
+
+      combined = Policy.strictest(allowlisted, open)
+
+      refute Permissions.blocked?(combined, "file_read")
+      assert Permissions.blocked?(combined, "bash")
+    end
+
+    test "two allowlists intersect: only what BOTH sides allow survives" do
+      a = %Policy{allow_names: MapSet.new(["file_read", "search"]), allow_prefixes: ["kb_"]}
+      b = %Policy{allow_names: MapSet.new(["file_read"]), allow_prefixes: ["kb_index"]}
+
+      combined = Policy.strictest(a, b)
+
+      refute Permissions.blocked?(combined, "file_read")
+      # allowed by a only
+      assert Permissions.blocked?(combined, "search")
+      # prefix intersection keeps the narrower prefix
+      refute Permissions.blocked?(combined, "kb_index_build")
+      assert Permissions.blocked?(combined, "kb_search")
+    end
+
+    test "names admitted by the other side's prefix survive intersection" do
+      a = %Policy{allow_names: MapSet.new(["kb_search"])}
+      b = %Policy{allow_prefixes: ["kb_"]}
+
+      combined = Policy.strictest(a, b)
+
+      refute Permissions.blocked?(combined, "kb_search")
+      assert Permissions.blocked?(combined, "bash")
+    end
+
+    test "disjoint allowlists allow NOTHING rather than collapsing to no allowlist" do
+      # Set intersection of disjoint allowlists is empty; an empty allowlist on
+      # :default reads as "no allowlist" in blocked?/2 — the combined policy
+      # must instead pin :strict so deny-by-default survives.
+      a = %Policy{allow_names: MapSet.new(["file_read"])}
+      b = %Policy{allow_names: MapSet.new(["search_web"])}
+
+      combined = Policy.strictest(a, b)
+
+      assert Permissions.blocked?(combined, "file_read")
+      assert Permissions.blocked?(combined, "search_web")
+      assert Permissions.blocked?(combined, "bash")
+    end
+
+    test "a template allowlist cannot widen a deny-all :strict policy" do
+      # strict + empty allowlist = deny everything; it must not be treated as
+      # "no opinion" letting the other side's allowlist stand.
+      deny_all = Permissions.strict_policy()
+      widener = %Policy{mode: :strict, allow_names: MapSet.new(["bash"])}
+
+      assert Permissions.blocked?(Policy.strictest(deny_all, widener), "bash")
+      assert Permissions.blocked?(Policy.strictest(widener, deny_all), "bash")
+    end
+
+    test "unknown modes rank strictest (fail closed)" do
+      # Unknown modes outrank every known mode in strictest_mode/2...
+      assert Policy.strictest(%Policy{mode: :bogus}, %Policy{mode: :default}).mode == :bogus
+      # ...and the combined policy stays fail-closed downstream.
+      assert Permissions.blocked?(Policy.strictest(%Policy{mode: :bogus}, %Policy{}), "bash")
+
+      # A deny-all :strict side pins the result to strict-deny-all regardless
+      # of the other side's mode label.
+      combined = Policy.strictest(%Policy{mode: :bogus}, %Policy{mode: :strict})
+      assert combined.mode == :strict
+      assert Permissions.blocked?(combined, "bash")
+    end
+  end
 end

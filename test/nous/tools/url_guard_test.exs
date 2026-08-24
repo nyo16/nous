@@ -88,6 +88,13 @@ defmodule Nous.Tools.UrlGuardTest do
       assert reason =~ "private/loopback/link-local"
     end
 
+    test "rejects 6to4-embedded metadata (2002:a9fe:a9fe::)" do
+      # 2002::/16 embeds a v4 address in the next 32 bits; a9fe:a9fe is
+      # 169.254.169.254, so this must trip the v4 blocklist.
+      assert {:error, reason} = UrlGuard.validate("http://[2002:a9fe:a9fe::]/")
+      assert reason =~ "private/loopback/link-local"
+    end
+
     test "rejects alternate-encoding IP forms for loopback/metadata" do
       # Classic SSRF bypasses: the host is an obfuscated encoding of a blocked
       # address. The BEAM resolver expands decimal/hex/octal integer hosts to

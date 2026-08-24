@@ -56,7 +56,7 @@ defmodule Nous.Tools.FileGrep do
     case Nous.Tools.PathGuard.validate(path, ctx) do
       {:ok, safe_path} ->
         if rg_available?() do
-          run_rg(pattern, safe_path, glob, output_mode)
+          run_rg(pattern, safe_path, glob, output_mode, ctx)
         else
           run_elixir_grep(pattern, safe_path, glob, output_mode, ctx)
         end
@@ -78,17 +78,19 @@ defmodule Nous.Tools.FileGrep do
 
   defp rg_available?, do: not is_nil(rg_path())
 
-  defp run_rg(pattern, path, glob, output_mode) do
+  defp run_rg(pattern, path, glob, output_mode, ctx) do
     # SECURITY: the LLM controls `pattern`/`glob`. Pass the pattern with an
     # explicit `--regexp` flag (rg consumes the following token as its value
     # even if it starts with `-`) and terminate option parsing with `--` before
     # the positional `path`. Without this, a pattern like `-f/etc/passwd` or
     # `--pre=/bin/sh` would be reinterpreted as an rg flag and escape PathGuard.
+    # `--with-filename` forces every output line to start with the matched
+    # path (even for a single-file target) so it can be re-validated below.
     args =
       ["--regexp", pattern] ++
         mode_flag(output_mode) ++
         glob_flag(glob) ++
-        ["--max-count", "#{@default_limit}", "--", path]
+        ["--max-count", "#{@default_limit}", "--with-filename", "--", path]
 
     rg = rg_path()
 
@@ -96,11 +98,43 @@ defmodule Nous.Tools.FileGrep do
     # rather than `scrubbed/0`: `System.cmd/3`'s `:env` merges into the inherited
     # environment, and `{name, false}` is the only way to remove a variable.
     case System.cmd(rg, args, stderr_to_stdout: true, env: Nous.Tools.Env.scrubbed_overrides()) do
-      {output, 0} -> {:ok, String.trim(output)}
+      {output, 0} -> {:ok, output |> String.trim() |> filter_rg_output(output_mode, ctx)}
       {_output, 1} -> {:ok, "No matches found"}
       {output, _} -> {:error, "rg failed: #{String.trim(output)}"}
     end
   end
+
+  # Re-validate every path rg reports against the workspace root, mirroring the
+  # fallback path's `within_workspace?/2` filtering, so the moduledoc invariant
+  # ("every matched path is re-validated") holds regardless of engine.
+  # Validation is memoized per unique path: `content` mode emits up to
+  # @default_limit lines PER FILE, and within_workspace?/2 costs a stat plus a
+  # symlink-resolving PathGuard walk — per-line validation would multiply that
+  # by the match count for no additional safety.
+  defp filter_rg_output(output, output_mode, ctx) do
+    lines = String.split(output, "\n")
+
+    verdicts =
+      lines
+      |> Enum.map(&rg_line_path(&1, output_mode))
+      |> Enum.uniq()
+      |> Map.new(fn path -> {path, within_workspace?(path, ctx)} end)
+
+    lines
+    |> Enum.filter(&Map.fetch!(verdicts, rg_line_path(&1, output_mode)))
+    |> case do
+      [] -> "No matches found"
+      lines -> Enum.join(lines, "\n")
+    end
+  end
+
+  # `content` lines are `path:line:text` and `count` lines are `path:count`;
+  # files-with-matches lines are the bare path.
+  defp rg_line_path(line, mode) when mode in ["content", "count"] do
+    line |> String.split(":", parts: 2) |> hd()
+  end
+
+  defp rg_line_path(line, _files_with_matches), do: line
 
   defp mode_flag("content"), do: ["-n"]
   defp mode_flag("count"), do: ["--count"]

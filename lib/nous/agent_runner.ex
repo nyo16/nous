@@ -121,6 +121,11 @@ defmodule Nous.AgentRunner do
       the same shapes as `Nous.Agent.new/2`'s `:sandbox` option (a mode atom, a
       keyword list, or a `Nous.Sandbox.Policy`), e.g.
       `Nous.run(agent, prompt, sandbox: :read_only)`
+    * `:approval_handler` - Handler consulted before any tool with
+      `requires_approval: true` runs (see `Nous.RunContext`). Without one such
+      tools are rejected. `Nous.Plugins.HumanInTheLoop` can also install a
+      handler via `deps[:hitl_config]`; when both are present the plugin's
+      wrapped handler wins (it is applied at plugin init, after context build).
     * `:stream` - When `true`, the LLM call streams chunks while still running
       the tool-call loop (default: `false`). Fires `:on_llm_new_delta` per
       text chunk and `:on_llm_new_thinking_delta` per reasoning chunk.
@@ -538,6 +543,7 @@ defmodule Nous.AgentRunner do
           notify_pid: Keyword.get(opts, :notify_pid),
           agent_name: agent.name,
           cancellation_check: Keyword.get(opts, :cancellation_check),
+          approval_handler: Keyword.get(opts, :approval_handler),
           pubsub: Keyword.get(opts, :pubsub),
           pubsub_topic: Keyword.get(opts, :pubsub_topic),
           stream: stream

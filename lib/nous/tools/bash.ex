@@ -4,6 +4,8 @@ defmodule Nous.Tools.Bash do
 
   Uses `NetRunner` for safe process execution with automatic timeout
   handling and output size limits. Zero zombie processes guaranteed.
+  `:net_runner` is an optional dependency: without it this tool refuses to
+  run any command (fail closed) — add `{:net_runner, "~> 1.0"}` to your deps.
 
   ## Security
 
@@ -193,12 +195,35 @@ defmodule Nous.Tools.Bash do
 
   # ---------------------------------------------------------------------------
 
+  # net_runner is `optional: true` in mix.exs, so a downstream app may compile
+  # nous without it (NetRunner is in mix.exs `no_warn_undefined` for exactly
+  # this reason). The guard is a RUNTIME check — unlike the compile-time
+  # Tyrex/Bumblebee conditionals in Nous.Application — because wrapping the
+  # real implementation in a compile-time branch would leave every private
+  # helper below unreferenced in downstream builds, spraying "unused function"
+  # warnings. The gate sits BEFORE `Sandbox.confine/2`, not just at the spawn
+  # below, because every spawn on this path — including the sandbox backend
+  # probes confine/2 may run — goes through `NetRunner.run/2`; refusing here
+  # names the problem instead of crashing mid-probe. Fail closed: the command
+  # is never executed unconfined.
   defp confine_and_run(ctx, command, timeout) do
+    if Code.ensure_loaded?(NetRunner) do
+      do_confine_and_run(ctx, command, timeout)
+    else
+      {:error,
+       "Refusing to run: the optional :net_runner dependency is not available, " <>
+         "and the Bash tool executes exclusively through NetRunner. The command " <>
+         "was NOT executed. Add {:net_runner, \"~> 1.0\"} to your deps to enable " <>
+         "this tool."}
+    end
+  end
+
+  defp do_confine_and_run(ctx, command, timeout) do
     policy = Policy.resolve(ctx)
 
     # `/bin/sh` absolute: a relative `sh` would resolve through PATH. `env -i`
-    # inside the confinement, so the scrubbing applies to the model's shell while
-    # the sandbox runner keeps a normal environment.
+    # inside the confinement, so the scrubbing applies to the model's shell
+    # while the sandbox runner keeps a normal environment.
     argv = Nous.Tools.Env.with_scrubbed_env([@shell, "-c", command])
 
     case Sandbox.confine(argv, policy) do

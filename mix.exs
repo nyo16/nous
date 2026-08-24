@@ -17,10 +17,12 @@ defmodule Nous.MixProject do
       source_url: @source_url,
       package: package(),
       elixirc_paths: elixirc_paths(Mix.env()),
-      # hackney is an optional backend (see deps); without this, apps that
-      # depend on nous without hackney get ":hackney is not available"
-      # warnings when compiling the dep.
-      elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool]],
+      # hackney and net_runner are optional backends (see deps); without this,
+      # apps that depend on nous without them get ":hackney is not available" /
+      # "NetRunner is not available" warnings when compiling the dep. The
+      # NetRunner call sites that matter fail closed at runtime (see
+      # Nous.Hook.Runner and Nous.Tools.Bash).
+      elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool, NetRunner]],
       # Coverage ratchet. `mix test --cover` defaults to a 90% threshold this
       # project has never met, and no CI job ran it, so the gate was purely
       # decorative. 59 is the current measured floor (60.05%, :llm/:llama
@@ -113,8 +115,11 @@ defmodule Nous.MixProject do
       # runner is used (over System.cmd/Port) for fine-grained process-tree
       # control and reliable kill-on-timeout of child processes. `~> 1.0` (not
       # the tighter `~> 1.0.4`) so downstream apps can pick up 1.x fixes without
-      # waiting on a nous release.
-      {:net_runner, "~> 1.0"},
+      # waiting on a nous release. optional: true keeps the NIF out of
+      # downstream builds that use neither the Bash tool nor :command hooks;
+      # both paths fail closed (refuse to run, never execute unconfined) when
+      # net_runner is absent — see Nous.Hook.Runner and Nous.Tools.Bash.
+      {:net_runner, "~> 1.0", optional: true},
 
       # Telemetry
       {:telemetry, "~> 1.2"},
@@ -127,6 +132,10 @@ defmodule Nous.MixProject do
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      # Security audit of mix.lock against the GitHub-sourced advisory DB —
+      # run by the deps_audit CI job (`mix deps.audit`, alongside the built-in
+      # `mix hex.audit` retirement check).
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
       # optional (not only: :test) so the `~> 2.1` constraint reaches downstream
       # resolvers — Nous.PubSub integrates with phoenix_pubsub at runtime (guarded
       # by Code.ensure_loaded?), and apps that bring their own copy should see a

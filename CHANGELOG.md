@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Confinement and execution policy now inherit across sub-agent delegation.**
+  `Nous.Plugins.SubAgent`'s safe-by-default deps policy (forward no data deps)
+  had a hole: it also withheld the parent's `:workspace_root`/`:session_id`,
+  re-rooting every sub-agent's `PathGuard` at `File.cwd!()`, and it dropped the
+  parent's sandbox, permission policy, and approval handler entirely — so a
+  delegated agent ran *wider* than its parent, one prompt-injected task away
+  from unconfined file access and unprompted gated tools. Confinement deps now
+  ALWAYS travel (`Map.take` of `[:workspace_root, :session_id]`, merged into
+  every `:sub_agent_shared_deps` shape), and `run_sub_agent` threads the
+  parent's effective sandbox, permissions (`%Nous.RunContext{}` gains
+  `:permissions`, attached by the runner alongside `:sandbox`), and approval
+  handler (`Nous.run/3` now honors an `:approval_handler` opt) into every
+  sub-agent run. A template may only *narrow* inherited policy: sandbox modes
+  combine by strictness with the parent's workspace root and session always
+  winning, and permission policies combine via the new
+  `Nous.Permissions.Policy.strictest/2` (deny/approval unions, stricter mode,
+  allowlist intersection). **Behavioral change:** sub-agents that previously
+  ran unsandboxed under a sandboxed parent are now confined, and approval-gated
+  tools in sub-agents now consult the parent's handler instead of failing
+  closed (no handler still fails closed).
+
 - **A tool timeout is no longer retried, so one approval no longer bought two
   executions.** `Nous.ToolExecutor`'s internal `execute_with_timeout` kills the tool
   process on the deadline and then *raises* `Nous.Errors.ToolTimeout`, which the
@@ -328,7 +349,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   path stays alive for at least one release and taking down a production run over a
   bookkeeping discrepancy would be the wrong trade.
 
+- **`Nous.Tools.UrlGuard` decodes 6to4 addresses and blocks the IETF
+  protocol-assignments range.** A `2002::/16` (6to4) address embeds an IPv4
+  address in its next 32 bits; `http://[2002:a9fe:a9fe::]/` decoded to
+  169.254.169.254 — the cloud metadata endpoint — and passed the blocklist.
+  The embedded IPv4 is now extracted and re-checked against the v4 blocklist
+  (same treatment NAT64 already got), and `192.0.0.0/24` (RFC 6890) joins
+  `@blocked_v4_ranges`. The moduledoc now leads with `validate_pinned/2` and
+  demotes `validate/2` with an explicit DNS-rebinding TOCTOU warning.
+
+- **`Nous.Tools.FileGrep` re-validates ripgrep results against the workspace.**
+  The moduledoc promised "every matched path is re-validated through PathGuard"
+  but only the pure-Elixir fallback did; the `rg` fast path passed output
+  through unfiltered. `rg` output (now always `--with-filename`) is filtered
+  through the same `within_workspace?/2` check on every output mode.
+
 ### Performance
+
+- **Interactive `Nous.AgentServer` interrupts no longer stall the server.**
+  Cancelling or steering an in-flight run called `Task.shutdown(task, 2-5s)`
+  inside the GenServer handler, freezing every concurrent caller (`get_context`
+  included) for the full shutdown window. Interrupted tasks are now demoted to
+  a draining set and shut down asynchronously; the existing generation filter
+  still drops their late replies as stale, and `cancel_execution` replies
+  `{:ok, :cancelled}` immediately.
+
+- **Streaming aggregation in `Nous.LLM` is O(n).** `stream_text/3`'s collector
+  built the running string with `acc.content <> text` per chunk *and* kept the
+  chunk list — quadratic bytes copied over a long stream. It now accumulates
+  chunks only and materializes the final string once via `IO.iodata_to_binary/1`,
+  the same pattern the agent runner's streaming path already used.
+
+- **Knowledge-base compilation embeds in one batch.** `Nous.KnowledgeBase`
+  workflows called `Embedding.embed/3` once per entry; they now issue a single
+  `embed_batch/3` over all entry contents (falling back to the per-entry loop
+  on batch error, preserving per-entry fail-open semantics). And
+  `Nous.Memory.Embedding.embed_batch/3`'s fallback for providers without a
+  native batch endpoint runs the per-text embeds through `Task.async_stream`
+  (concurrency 4, ordered) instead of sequentially — first-error return shape
+  unchanged.
 
 - **Oversized tool results can spill to a store instead of the context window.**
   A multi-megabyte `grep` result cost roughly a million tokens of context and was
@@ -450,6 +509,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`mix_audit` dev/test dependency and a `deps_audit` CI job** running
+  `mix hex.audit` and `mix deps.audit`. Three unpatched, test-only cowlib
+  advisories (EEF-CVE-2026-43966, EEF-CVE-2026-43971, EEF-CVE-2026-43969 /
+  GHSA-g2wm-735q-3f56 — reached only via bypass → plug_cowboy → cowboy in
+  `:test`) are ignored, with the rationale documented in the workflow next to
+  the ignore list; the ignores must be dropped once a patched cowlib ships.
+
 - **Code Mode: the model can write a program that calls tools, instead of a chain
   of individual tool calls.** One `run_code` call carries a generated typed SDK
   declaring every tool in scope; the program loops, branches and fans out in a
@@ -495,6 +561,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2026-08-14 and will go stale; the override config is the fix.
 
 ### Changed
+
+- **BREAKING: `net_runner` is now an optional dependency.** It is required
+  only by `Nous.Tools.Bash` and `:command` hooks. Apps that use either —
+  including any that relied on `net_runner` being transitively available —
+  must add `{:net_runner, "~> 1.0"}` to their own deps. Without it both fail
+  closed: the Bash tool refuses to execute and `:command` hooks deny their
+  events regardless of `fail_closed` — nothing runs unconfined, matching the
+  sandbox's no-passthrough rule.
 
 - **LM Studio's default `receive_timeout` is 5 minutes, up from 2.** LM Studio
   JIT-loads a model on the first request that names it, so "slow first token on

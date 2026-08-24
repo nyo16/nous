@@ -1,5 +1,7 @@
 defmodule Nous.Tools.Search.CommonTest do
-  use ExUnit.Case, async: true
+  # async: false — the api_key/3 fallback tests mutate global Application env
+  # and System env (NOUS_FAKE_SEARCH_KEY).
+  use ExUnit.Case, async: false
 
   alias Nous.Tools.Search.Common
 

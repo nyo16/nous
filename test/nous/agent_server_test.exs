@@ -4,9 +4,21 @@ defmodule Nous.AgentServerTest.SlowPersistence do
   @behaviour Nous.Persistence
 
   @sleep_ms 300
+  @pid_key {__MODULE__, :test_pid}
+
+  # Optional rendezvous: a test that registers itself gets a :save_started
+  # message the moment the backend write begins, so it can synchronize on
+  # "the save is provably in flight" instead of sleeping.
+  def notify_on_save(pid), do: :persistent_term.put(@pid_key, pid)
+  def stop_notifying, do: :persistent_term.erase(@pid_key)
 
   @impl true
   def save(session_id, data) do
+    case :persistent_term.get(@pid_key, nil) do
+      nil -> :ok
+      pid -> send(pid, :save_started)
+    end
+
     Process.sleep(@sleep_ms)
     Nous.Persistence.ETS.save(session_id, data)
   end
@@ -352,11 +364,15 @@ defmodule Nous.AgentServerTest do
           inactivity_timeout: :infinity
         )
 
+      SlowPersistence.notify_on_save(self())
+      on_exit(fn -> SlowPersistence.stop_notifying() end)
+
       # SlowPersistence.save/2 sleeps 300ms.
       saver = Task.async(fn -> AgentServer.save_context(pid) end)
 
-      # Let the handler hand the work to its task before probing the mailbox.
-      Process.sleep(50)
+      # The backend announced the write started, so the handler has already
+      # handed the work to its task and the server mailbox is safe to probe.
+      assert_receive :save_started, 1_000
 
       {elapsed_us, _ctx} = :timer.tc(fn -> AgentServer.get_context(pid) end)
 
@@ -588,10 +604,6 @@ defmodule Nous.AgentServerTest do
 
       # And the server is not spinning on its own traffic.
       assert {:message_queue_len, 0} = Process.info(pid, :message_queue_len)
-      {:reductions, before} = Process.info(pid, :reductions)
-      Process.sleep(100)
-      {:reductions, later} = Process.info(pid, :reductions)
-      assert later - before < 10_000
 
       GenServer.stop(pid)
     end

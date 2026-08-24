@@ -30,7 +30,9 @@ if Code.ensure_loaded?(Muninn) do
 
       with {:ok, index} <- Muninn.create_index(index_path, schema) do
         # Unnamed table - named would crash a second concurrent agent.
-        table = :ets.new(__MODULE__, [:set, :public])
+        # read_concurrency: the entries table is a read-side cache for search
+        # hydration; writes are one insert per stored entry.
+        table = :ets.new(__MODULE__, [:set, :public, read_concurrency: true])
         {:ok, %{index: index, entries: table}}
       end
     rescue
@@ -42,7 +44,8 @@ if Code.ensure_loaded?(Muninn) do
         case Muninn.open_index(index_path) do
           {:ok, index} ->
             # Unnamed table - named would crash a second concurrent agent.
-            table = :ets.new(__MODULE__, [:set, :public])
+            # read_concurrency for the same reason as the create path above.
+            table = :ets.new(__MODULE__, [:set, :public, read_concurrency: true])
             {:ok, %{index: index, entries: table}}
 
           error ->
