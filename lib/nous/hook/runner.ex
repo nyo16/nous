@@ -36,7 +36,10 @@ defmodule Nous.Hook.Runner do
   enforce the requested mode, the hook does **not** run unconfined: a warning
   is logged and an `{:error, _}` result is returned, which follows the hook's
   existing `fail_closed` semantics — `:deny` when `fail_closed: true`,
-  otherwise the run continues to the next hook.
+  otherwise the run continues to the next hook. Security-gating hooks should
+  therefore pair the flag with `fail_closed: true`: under the default
+  `fail_closed: false`, a confine error skips the hook rather than denying
+  the event (the command itself never runs unconfined either way).
 
   The flag alone is not enough. `:sandbox_mode` must also be set: an unset
   mode resolves to `:danger_full_access`, which means the flag is on and hooks

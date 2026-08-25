@@ -162,7 +162,13 @@ defmodule Nous.Permissions.Policy do
       Enum.any?(prefixes, &String.starts_with?(name, String.downcase(&1)))
   end
 
+  # Downcased comparison: admits?/2 and Permissions.blocked?/2 downcase
+  # prefixes at match time, so two literally-built policies with equivalent
+  # mixed-case prefixes must intersect rather than silently deny-all.
   defp prefix_intersection(pa, pb) do
+    pa = String.downcase(pa)
+    pb = String.downcase(pb)
+
     cond do
       String.starts_with?(pa, pb) -> pa
       String.starts_with?(pb, pa) -> pb

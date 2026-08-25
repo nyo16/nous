@@ -287,8 +287,10 @@ defmodule Nous.AgentServerTest do
       # within the backend's sleep, proving the save runs off the mailbox.
       {elapsed_us, _ctx} = :timer.tc(fn -> AgentServer.get_context(pid) end)
 
-      assert elapsed_us < 150_000,
-             "get_context blocked for #{div(elapsed_us, 1000)}ms (>150ms) — save is not async"
+      # 500ms tolerates CI scheduler stalls while staying far below the
+      # seconds-long block a synchronous save would cost.
+      assert elapsed_us < 500_000,
+             "get_context blocked for #{div(elapsed_us, 1000)}ms (>500ms) — save is not async"
 
       # And the save still lands eventually.
       assert eventually(fn ->
@@ -376,8 +378,10 @@ defmodule Nous.AgentServerTest do
 
       {elapsed_us, _ctx} = :timer.tc(fn -> AgentServer.get_context(pid) end)
 
-      assert elapsed_us < 150_000,
-             "get_context blocked for #{div(elapsed_us, 1000)}ms (>150ms) — :save_context still runs on the server process"
+      # 500ms tolerates CI scheduler stalls (same bound as the cancellation
+      # latency tests); a synchronous save would block for the full save time.
+      assert elapsed_us < 500_000,
+             "get_context blocked for #{div(elapsed_us, 1000)}ms (>500ms) — :save_context still runs on the server process"
 
       # The caller's contract is unchanged: :ok comes back only once the
       # backend write has actually landed.

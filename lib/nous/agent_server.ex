@@ -1087,12 +1087,14 @@ defmodule Nous.AgentServer do
     end
   end
 
-  # The claim closure is per-run runtime state, not conversation state. Dropping
-  # it on the way back in keeps state.context.deps free of closures, so
-  # get_context/1 returns something inspectable and load_context's merge_deps
-  # cannot carry a dead seam into a restored session.
+  # The claim closure and cancellation check are per-run runtime state, not
+  # conversation state. Dropping them on the way back in keeps state.context
+  # inspectable AND prevents a stale generation-scoped cancellation closure
+  # from poisoning the next run: the closure captures this run's generation,
+  # and after the next bump it would throw {:cancelled, _} at its first check —
+  # instantly cancelling a run that was never cancelled.
   defp strip_run_seam(%Context{} = ctx) do
-    %{ctx | deps: Map.delete(ctx.deps, :claim_inbox)}
+    %{ctx | deps: Map.delete(ctx.deps, :claim_inbox), cancellation_check: nil}
   end
 
   defp run_agent_and_respond(server_pid, state, kind, cancelled_ref, generation) do
@@ -1113,7 +1115,7 @@ defmodule Nous.AgentServer do
     }
 
     result = run_agent(state.agent, ctx, kind, server_pid, cancelled_ref, generation)
-    report_run(result, server_pid, state, generation)
+    report_run(result, server_pid, state, cancelled_ref, generation)
   end
 
   defp run_agent(agent, ctx, {:prompt, message}, server_pid, cancelled_ref, generation) do
@@ -1131,9 +1133,10 @@ defmodule Nous.AgentServer do
     # right entry.
     #
     # `max_iterations` and `cancellation_check` are set on the struct rather
-    # than passed as options because neither reaches a context that already
-    # exists: AgentRunner.build_context/3 only reads them when it builds a fresh
-    # one, and run_with_context/3 does not read them at all.
+    # than passed as options because run_with_context/3 does not read opts.
+    # (The prompt path passes them as opts; build_context's existing-context
+    # branch honors them via the maybe_update_* clauses.) strip_run_seam/1
+    # removes the closure again when the run's context is persisted.
     ctx = %{
       ctx
       | max_iterations: @max_run_iterations,
@@ -1157,29 +1160,51 @@ defmodule Nous.AgentServer do
     end
   end
 
-  defp report_run({:ok, response}, server_pid, state, generation) do
-    # Broadcast response
-    broadcast(state, {:agent_response, response.output})
-    broadcast(state, {:agent_complete, response})
+  # Broadcasts are suppressed for a stale (demoted) run: the interrupt handler
+  # already broadcast the cancellation, and a drainer's late {:agent_response}/
+  # {:agent_complete}/{:agent_error} after that would mislead any UI following
+  # the event stream. The gen-tagged server message is still sent — the
+  # handle_info generation filter is the single authority for state.
+  defp report_run({:ok, response}, server_pid, state, cancelled_ref, generation) do
+    unless stale_run?(cancelled_ref, generation) do
+      broadcast(state, {:agent_response, response.output})
+      broadcast(state, {:agent_complete, response})
+    end
 
     # Send context update to server, tagged with our generation so it
     # can be discarded if the user has already sent a newer message.
     send(server_pid, {:agent_response_ready, generation, response.context, response})
   end
 
-  defp report_run({:error, %Nous.Errors.ExecutionCancelled{}}, server_pid, state, generation) do
+  defp report_run(
+         {:error, %Nous.Errors.ExecutionCancelled{}},
+         server_pid,
+         state,
+         cancelled_ref,
+         generation
+       ) do
     Logger.info("Agent execution was cancelled for session: #{state.session_id}")
-    broadcast(state, {:agent_cancelled, "Execution cancelled"})
+
+    unless stale_run?(cancelled_ref, generation) do
+      broadcast(state, {:agent_cancelled, "Execution cancelled"})
+    end
+
     send(server_pid, {:agent_task_completed, generation, :cancelled})
   end
 
-  defp report_run({:error, error}, server_pid, state, generation) do
+  defp report_run({:error, error}, server_pid, state, cancelled_ref, generation) do
     error_msg = if is_exception(error), do: Exception.message(error), else: inspect(error)
     Logger.error("Agent error in session #{state.session_id}: #{error_msg}")
 
-    # Broadcast error
-    broadcast(state, {:agent_error, error_msg})
+    unless stale_run?(cancelled_ref, generation) do
+      broadcast(state, {:agent_error, error_msg})
+    end
+
     send(server_pid, {:agent_task_completed, generation, :error})
+  end
+
+  defp stale_run?(cancelled_ref, generation) do
+    :atomics.get(cancelled_ref, 2) != generation
   end
 
   defp broadcast(state, message) do

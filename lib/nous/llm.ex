@@ -174,7 +174,10 @@ defmodule Nous.LLM do
   @doc """
   Stream text from a model.
 
-  Returns `{:ok, stream}` where `stream` yields text chunks as strings.
+  Returns `{:ok, stream}` where `stream` yields text chunks as strings. If an
+  underlying LLM call fails mid-stream (after all fallbacks), the stream emits
+  one final `{:error, reason}` tuple before terminating — consumers that write
+  chunks verbatim should match on binaries.
 
   ## Parameters
 

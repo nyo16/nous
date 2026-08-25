@@ -211,9 +211,10 @@ defmodule Nous.Tools.UrlGuard do
   end
 
   # IPv4 address blocklist check (CIDR-style).
-  defp blocked_range?({a, b, c, d} = _addr) do
+  defp blocked_range?({_, _, _, _} = addr) do
+    addr_int = ip_to_int(addr)
+
     Enum.any?(@blocked_v4_ranges, fn {prefix, prefix_len} ->
-      addr_int = ip_to_int({a, b, c, d})
       prefix_int = ip_to_int(prefix)
       mask = bsl(0xFFFFFFFF, 32 - prefix_len) |> band(0xFFFFFFFF)
       band(addr_int, mask) == band(prefix_int, mask)

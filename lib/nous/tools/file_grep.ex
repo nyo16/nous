@@ -66,13 +66,21 @@ defmodule Nous.Tools.FileGrep do
     end
   end
 
-  # Resolve rg's absolute path once at module load to avoid PATH-poisoning
-  # (a user-controlled `rg` binary earlier on PATH would shadow the real one).
+  # Resolve rg's absolute path once (memoized in :persistent_term at first
+  # use, not at module load — compile-time resolution would bake the build
+  # host's PATH into the beam). Passing the absolute path to System.cmd/3
+  # avoids re-walking PATH per call; the memoized value also keeps the
+  # rg_available?/run_rg pair from resolving twice per search.
   # Returns nil if rg isn't installed.
   defp rg_path do
-    case System.find_executable("rg") do
-      nil -> nil
-      path -> path
+    case :persistent_term.get({__MODULE__, :rg_path}, :unresolved) do
+      :unresolved ->
+        path = System.find_executable("rg")
+        :persistent_term.put({__MODULE__, :rg_path}, path)
+        path
+
+      path ->
+        path
     end
   end
 
@@ -163,7 +171,10 @@ defmodule Nous.Tools.FileGrep do
           {:ok, result} ->
             {:ok, if(result == "", do: "No matches found", else: result)}
 
-          _ ->
+          {:exit, reason} ->
+            {:error, "search failed: the search task crashed (#{inspect(reason)})"}
+
+          nil ->
             {:error,
              "search timed out after #{@elixir_grep_timeout}ms (the pattern may be " <>
                "pathological); install ripgrep for a fast, ReDoS-immune engine"}

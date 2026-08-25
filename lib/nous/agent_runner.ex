@@ -489,6 +489,9 @@ defmodule Nous.AgentRunner do
         |> maybe_update_callbacks(opts)
         |> maybe_update_notify_pid(opts)
         |> maybe_update_stream(opts)
+        |> maybe_update_cancellation_check(opts)
+        |> maybe_update_approval_handler(opts)
+        |> maybe_update_max_iterations(opts)
 
       nil ->
         # Build fresh context
@@ -556,6 +559,37 @@ defmodule Nous.AgentRunner do
   defp maybe_update_stream(ctx, opts) do
     case Keyword.fetch(opts, :stream) do
       {:ok, value} when is_boolean(value) -> %{ctx | stream: value}
+      _ -> ctx
+    end
+  end
+
+  # Run-scoped options a caller passes alongside `:context` used to be silently
+  # dropped, which (a) left continued runs without cooperative cancellation and
+  # (b) made the documented `:approval_handler` opt a no-op for `:context`
+  # callers. Fetch-guarded: absent opts leave the context untouched.
+  defp maybe_update_cancellation_check(ctx, opts) do
+    case Keyword.fetch(opts, :cancellation_check) do
+      {:ok, check} when is_function(check, 0) or is_nil(check) ->
+        %{ctx | cancellation_check: check}
+
+      _ ->
+        ctx
+    end
+  end
+
+  defp maybe_update_approval_handler(ctx, opts) do
+    case Keyword.fetch(opts, :approval_handler) do
+      {:ok, handler} when is_function(handler, 1) or is_nil(handler) ->
+        %{ctx | approval_handler: handler}
+
+      _ ->
+        ctx
+    end
+  end
+
+  defp maybe_update_max_iterations(ctx, opts) do
+    case Keyword.fetch(opts, :max_iterations) do
+      {:ok, max} when is_integer(max) and max > 0 -> %{ctx | max_iterations: max}
       _ -> ctx
     end
   end
