@@ -244,15 +244,18 @@ defmodule Nous.Session.D2MessageContractTest do
       assert shape(restored.messages) == shape(result.all_messages)
     end
 
-    test "serialize/1 keeps a message list a v1 reader can consume" do
+    test "serialize/1 writes the event log only; messages are re-derived on load" do
       {:ok, result} = Nous.run(agent(), "say hello")
 
       serialized = Context.serialize(result.context)
 
-      assert is_list(serialized.messages)
-      assert length(serialized.messages) == length(result.all_messages)
+      # v3: no second copy of the transcript in the blob (audit P-M10) — the
+      # events ARE the transcript, and the loader folds them back.
+      assert serialized.version == 3
+      refute Map.has_key?(serialized, :messages)
 
-      roles = Enum.map(serialized.messages, &(&1[:role] || &1["role"]))
+      {:ok, restored} = Context.deserialize(serialized)
+      roles = Enum.map(restored.messages, & &1.role)
       assert roles == [:system, :user, :assistant, :tool, :assistant]
     end
   end

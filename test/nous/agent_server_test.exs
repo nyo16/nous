@@ -57,6 +57,16 @@ defmodule Nous.AgentServerTest do
     end
   end
 
+  # What a consumer of the persisted blob can observe: the transcript the
+  # loader derives from it. v3 blobs carry events only, so the blob's own
+  # shape is not the contract — the round-trip is.
+  defp persisted_contents(backend, session_id) do
+    with {:ok, data} <- backend.load(session_id),
+         {:ok, ctx} <- Context.deserialize(data) do
+      {:ok, Enum.map(ctx.messages, & &1.content)}
+    end
+  end
+
   @agent_config %{
     model: "openai:gpt-4",
     instructions: "Be helpful",
@@ -252,16 +262,14 @@ defmodule Nous.AgentServerTest do
 
       # The save runs in a supervised Task now, so poll until it lands.
       assert eventually(fn ->
-               match?({:ok, %{messages: [_]}}, PersistenceETS.load(session_id))
+               persisted_contents(PersistenceETS, session_id) == {:ok, ["Pre-clear"]}
              end)
-
-      assert {:ok, %{messages: [%{content: "Pre-clear"}]}} = PersistenceETS.load(session_id)
 
       # Clear (also persists asynchronously).
       AgentServer.clear_history(pid)
 
       # Persistence should converge to empty messages.
-      assert eventually(fn -> match?({:ok, %{messages: []}}, PersistenceETS.load(session_id)) end)
+      assert eventually(fn -> persisted_contents(PersistenceETS, session_id) == {:ok, []} end)
       GenServer.stop(pid)
     end
 
@@ -294,7 +302,7 @@ defmodule Nous.AgentServerTest do
 
       # And the save still lands eventually.
       assert eventually(fn ->
-               match?({:ok, %{messages: [%{content: "Hello"}]}}, SlowPersistence.load(session_id))
+               persisted_contents(SlowPersistence, session_id) == {:ok, ["Hello"]}
              end)
 
       GenServer.stop(pid)
@@ -334,8 +342,7 @@ defmodule Nous.AgentServerTest do
       assert :ok = AgentServer.save_context(pid)
 
       {:ok, data} = PersistenceETS.load(session_id)
-      assert data.version == 2
-      assert data.system_prompt == "Be helpful"
+      assert {:ok, %Context{system_prompt: "Be helpful"}} = Context.deserialize(data)
       GenServer.stop(pid)
     end
 
@@ -386,7 +393,7 @@ defmodule Nous.AgentServerTest do
       # The caller's contract is unchanged: :ok comes back only once the
       # backend write has actually landed.
       assert :ok = Task.await(saver, 5_000)
-      assert {:ok, %{version: 2}} = SlowPersistence.load(session_id)
+      assert {:ok, %{version: 3}} = SlowPersistence.load(session_id)
 
       GenServer.stop(pid)
     end
@@ -476,11 +483,8 @@ defmodule Nous.AgentServerTest do
       # The save now runs in a supervised Task (off the mailbox), so poll until
       # it lands instead of assuming it completed by the next call.
       assert eventually(fn ->
-               match?({:ok, %{messages: [_, _]}}, PersistenceETS.load(session_id))
+               persisted_contents(PersistenceETS, session_id) == {:ok, ["Hello", "Hi!"]}
              end)
-
-      assert {:ok, %{messages: [%{content: "Hello"}, %{content: "Hi!"}]}} =
-               PersistenceETS.load(session_id)
 
       GenServer.stop(pid)
     end

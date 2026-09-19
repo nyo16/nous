@@ -571,6 +571,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`Nous.Persistence.ETS` writes from the caller.** Every `save/2` was a
+  `GenServer.call` into the table-owner process, which copied the serialized
+  context into the owner's mailbox and then into ETS and queued every writer
+  behind one process (audit P-M7). The table is now `:public` with
+  `write_concurrency`; `save/2`, `delete/1` and `clear/0` write directly from
+  the caller and the owner keeps ownership, the TTL sweep and the size cap
+  (checked via a cast, off the caller's path; `sync/0` waits for it). 2.1×
+  faster at one writer and 3.5× at eight on a 1 MB context. The trust
+  boundary is unchanged: the API never had per-session authorisation, so
+  `:protected` only ever stopped a direct `:ets.insert` the same process could
+  reach through `save/2`.
+
+- **A persisted context is one transcript, and can stop growing.**
+  `Nous.Agent.Context.serialize/1` wrote the event log *and* a projected
+  `messages` copy — two transcripts per blob — and the log never shed a
+  shadowed event, so a session summarised again and again carried every
+  original event plus every superseded summary forever (audit P-M10). The
+  blob is now **version 3**: events only; `deserialize/1` re-derives
+  `messages`, and still reads v2 and v1. `Nous.Session.Log.snapshot/1` /
+  `Nous.Agent.Context.snapshot/1` drop every shadowed event while keeping the
+  survivors' seqs (`Log.append_at/5` restores them verbatim; `since/2` walks
+  by seq rather than by count, so it is correct across the gaps). Nothing
+  snapshots implicitly — the log's non-destructive design is what makes fork
+  and rewind possible — but `Nous.Plugins.Summarization` takes
+  `snapshot_log: true` to do it after each successful summary, at which point
+  a session's serialized size no longer grows with the number of compactions.
+  **Behavioral change:** readers of the raw persisted map no longer find
+  `:messages`; load through `Context.deserialize/1` instead. Persistence
+  writes also no longer route through `Nous.Persistence.ETS`'s owner process
+  (see the persistence entry above): the table is `:public`, `save/2`
+  inserts from the caller, and `sync/0` exists for callers that need the
+  size-cap check to have run.
+
 - **`file_grep` output is bounded on both engines, and the pure-Elixir
   fallback no longer walks build output or reads whole trees.** Ripgrep's
   `--max-count` is per file, so a workspace with thousands of matching files

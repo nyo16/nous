@@ -9,10 +9,10 @@ defmodule Nous.Agent.ContextSerializationTest do
       ctx = Context.new()
       data = Context.serialize(ctx)
 
-      assert data.version == 2
+      assert data.version == 3
     end
 
-    test "persists the event log alongside the projected messages" do
+    test "persists the event log and nothing derived from it" do
       ctx =
         Context.new()
         |> Context.add_message(Message.user("Hello"))
@@ -24,7 +24,66 @@ defmodule Nous.Agent.ContextSerializationTest do
       assert Enum.map(data.events, & &1.type) == ["user_message", "assistant_message"]
       # JSON-encodable throughout: no atoms for the type, no tuples in the data.
       assert Enum.all?(data.events, &match?({:ok, _, _}, DateTime.from_iso8601(&1.time)))
-      assert length(data.messages) == 2
+      # v3 drops the projected `messages` copy: the events are the transcript.
+      refute Map.has_key?(data, :messages)
+    end
+
+    test "a v2 blob (events plus a messages copy) still loads from its events" do
+      ctx =
+        Context.new(messages: [Message.user("one"), Message.user("two")])
+        |> Context.replace_message_range(0, 1, Message.system("[summary]"))
+
+      v2 =
+        ctx
+        |> Context.serialize()
+        |> Map.put(:version, 2)
+        |> Map.put(:messages, [%{role: :system, content: "stale copy"}])
+
+      # Events win over the stale messages copy, and shadowed history survives.
+      assert {:ok, restored} = Context.deserialize(v2)
+      assert Enum.map(restored.messages, & &1.content) == ["[summary]"]
+      assert length(Nous.Session.Log.events(restored.log)) == 3
+    end
+
+    test "a snapshotted context serializes smaller and round-trips with its seqs" do
+      ctx =
+        Context.new(messages: [Message.user("one"), Message.user("two"), Message.user("three")])
+        |> Context.replace_message_range(0, 1, Message.system("[summary]"))
+
+      full = Context.serialize(ctx)
+      snap = ctx |> Context.snapshot() |> Context.serialize()
+
+      assert Enum.map(full.events, & &1.seq) == [0, 1, 2, 3]
+      # The two shadowed events are gone; the survivors keep their seqs.
+      assert Enum.map(snap.events, & &1.seq) == [2, 3]
+      assert :erlang.external_size(snap) < :erlang.external_size(full)
+
+      assert {:ok, restored} = Context.deserialize(snap)
+      assert Enum.map(restored.messages, & &1.content) == ["[summary]", "three"]
+      assert Enum.map(Nous.Session.Log.events(restored.log), & &1.seq) == [2, 3]
+      # The head is preserved too, so a later append never reuses a seq.
+      assert Nous.Session.Log.count(restored.log) == 4
+    end
+
+    test "repeated compaction with snapshots does not grow the serialized size" do
+      # Ten rounds of "add a turn, summarise everything so far, snapshot":
+      # without the snapshot every round leaves its predecessors' events and
+      # summaries in the blob (audit P-M10).
+      sizes =
+        Enum.scan(1..10, Context.new(), fn i, ctx ->
+          ctx
+          |> Context.add_message(Message.user("turn #{i}"))
+          |> Context.add_message(Message.assistant("reply #{i}"))
+          |> then(fn ctx ->
+            last = length(ctx.messages) - 1
+            Context.replace_message_range(ctx, 0, last, Message.system("[summary #{i}]"))
+          end)
+          |> Context.snapshot()
+        end)
+        |> Enum.map(&(&1 |> Context.serialize() |> :erlang.external_size()))
+
+      [first | _] = sizes
+      assert Enum.max(sizes) - first < 64, "sizes grew: #{inspect(sizes)}"
     end
 
     test "writes a replace surface_op as a list, not a tuple" do
@@ -78,30 +137,29 @@ defmodule Nous.Agent.ContextSerializationTest do
       assert data.deps[:region] == "us-east-1"
     end
 
-    test "serializes messages" do
+    test "messages round-trip through the events" do
       ctx =
         Context.new()
         |> Context.add_message(Message.user("Hello"))
         |> Context.add_message(Message.assistant("Hi there!"))
 
-      data = Context.serialize(ctx)
+      assert {:ok, restored} = ctx |> Context.serialize() |> Context.deserialize()
 
-      assert length(data.messages) == 2
-      [user_msg, assistant_msg] = data.messages
+      [user_msg, assistant_msg] = restored.messages
       assert user_msg.role == :user
       assert user_msg.content == "Hello"
       assert assistant_msg.role == :assistant
       assert assistant_msg.content == "Hi there!"
     end
 
-    test "serializes tool messages" do
+    test "tool messages round-trip through the events" do
       ctx =
         Context.new()
         |> Context.add_message(Message.tool("call_123", "result data", name: "search"))
 
-      data = Context.serialize(ctx)
+      assert {:ok, restored} = ctx |> Context.serialize() |> Context.deserialize()
 
-      [tool_msg] = data.messages
+      [tool_msg] = restored.messages
       assert tool_msg.role == :tool
       assert tool_msg.tool_call_id == "call_123"
       assert tool_msg.content == "result data"

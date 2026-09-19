@@ -28,6 +28,13 @@ defmodule Nous.Plugins.Summarization do
   - `:summary_model` - Model string for the summarization call (default: the
     conversation's own model, which is also the only setting that preserves
     the provider's prefix cache — see below)
+  - `:snapshot_log` - After a successful summary, drop the shadowed events
+    from the session log (`Nous.Agent.Context.snapshot/1`) so the context and
+    its persisted blob stay O(live history) across repeated compactions.
+    Default `false`: the log's non-destructive design keeps every event so a
+    session can be forked or rewound, and that history is exactly what a
+    snapshot gives up. Turn it on for long-lived sessions where bounded
+    persistence matters more than rewind.
   - `:summary_count` - Read-only counter of completed summarizations
   - `:compaction_in_progress` - Read-only marker; see "Crash visibility"
 
@@ -320,6 +327,7 @@ defmodule Nous.Plugins.Summarization do
         # say — and its content went into the summarizer's input, so it is
         # represented in what replaces it.
         ctx = Context.replace_message_range(ctx, first, last, summary_msg)
+        ctx = if Map.get(config, :snapshot_log, false), do: Context.snapshot(ctx), else: ctx
         ctx = put_config(ctx, %{summary_count: Map.get(config, :summary_count, 0) + 1})
 
         {ctx, Map.merge(outcome, %{summarized: true, usage: usage})}
