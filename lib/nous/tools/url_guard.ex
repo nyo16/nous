@@ -10,9 +10,23 @@ defmodule Nous.Tools.UrlGuard do
 
   ## Usage
 
+  Prefer `validate_pinned/2`: it also returns a vetted IP address to pin the
+  subsequent connection to, which closes the DNS-rebinding TOCTOU window
+  (see below):
+
+      case Nous.Tools.UrlGuard.validate_pinned("https://example.com/foo") do
+        {:ok, uri, ip} -> connect_to(ip, uri)   # pin the connection to `ip`
+        {:error, reason} -> {:error, reason}    # human-readable
+      end
+
+  `validate/2` checks the URL but leaves the HTTP client to do its own DNS
+  lookup afterwards. Between the two resolutions an attacker-controlled DNS
+  record can be rebound to an internal address (a TOCTOU race), so only use
+  it where pinning the connection is impossible:
+
       case Nous.Tools.UrlGuard.validate("https://example.com/foo") do
         {:ok, uri} -> proceed_with(uri)
-        {:error, reason} -> {:error, reason}  # human-readable
+        {:error, reason} -> {:error, reason}
       end
 
   ## Opt-in: allowing private hosts
@@ -69,7 +83,9 @@ defmodule Nous.Tools.UrlGuard do
     # 198.51.100.0/24 - TEST-NET-2 (RFC 5737)
     {{198, 51, 100, 0}, 24},
     # 203.0.113.0/24 - TEST-NET-3 (RFC 5737)
-    {{203, 0, 113, 0}, 24}
+    {{203, 0, 113, 0}, 24},
+    # 192.0.0.0/24 - IETF protocol assignments (RFC 6890)
+    {{192, 0, 0, 0}, 24}
   ]
 
   @doc """
@@ -195,9 +211,10 @@ defmodule Nous.Tools.UrlGuard do
   end
 
   # IPv4 address blocklist check (CIDR-style).
-  defp blocked_range?({a, b, c, d} = _addr) do
+  defp blocked_range?({_, _, _, _} = addr) do
+    addr_int = ip_to_int(addr)
+
     Enum.any?(@blocked_v4_ranges, fn {prefix, prefix_len} ->
-      addr_int = ip_to_int({a, b, c, d})
       prefix_int = ip_to_int(prefix)
       mask = bsl(0xFFFFFFFF, 32 - prefix_len) |> band(0xFFFFFFFF)
       band(addr_int, mask) == band(prefix_int, mask)
@@ -218,9 +235,31 @@ defmodule Nous.Tools.UrlGuard do
     blocked_range?(embedded_v4(g, h))
   end
 
-  # IPv6 loopback (::1) and unspecified (::).
+  # 6to4 prefix 2002::/16 — embeds a v4 address in the next 32 bits
+  # (2002:AABB:CCDD::/48 tunnels for v4 AA.BB.CC.DD), so 2002:a9fe:a9fe::
+  # would otherwise reach cloud metadata. Decode and reuse the v4 blocklist.
+  defp blocked_range?({0x2002, g, h, _, _, _, _, _}) do
+    blocked_range?(embedded_v4(g, h))
+  end
+
+  # IPv6 loopback (::1) and unspecified (::). Must precede the ::/96
+  # compatible-address clause below, which would decode them as 0.0.0.1 /
+  # 0.0.0.0 — same verdict, but the intent here is explicit.
   defp blocked_range?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
   defp blocked_range?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
+
+  # Deprecated IPv4-compatible IPv6 ::/96 (::a.b.c.d) — same embedded-v4 class
+  # as the mapped/NAT64/6to4 clauses above: ::169.254.169.254 parses to
+  # {0,0,0,0,0,0,0xA9FE,0xA9FE} and would otherwise fall through unblocked.
+  defp blocked_range?({0, 0, 0, 0, 0, 0, g, h}) do
+    blocked_range?(embedded_v4(g, h))
+  end
+
+  # SIIT / IPv4-translated ::ffff:0:a.b.c.d (::ffff:0:0/96 with a zero hextet
+  # between the ffff marker and the embedded address).
+  defp blocked_range?({0, 0, 0, 0, 0xFFFF, 0, g, h}) do
+    blocked_range?(embedded_v4(g, h))
+  end
 
   # Unique-local fc00::/7.
   defp blocked_range?({a, _, _, _, _, _, _, _}) when band(a, 0xFE00) == 0xFC00, do: true

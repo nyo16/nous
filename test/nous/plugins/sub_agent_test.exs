@@ -64,6 +64,31 @@ defmodule Nous.Plugins.SubAgentTest do
     def count_tokens(_messages), do: 50
   end
 
+  defmodule PolicyProbeDispatcher do
+    @moduledoc false
+    # First model turn: call the probe tool; once a tool result exists: finish.
+    # Stateless (keyed on the transcript), so `async: true` holds.
+    def request(_model, messages, _settings) do
+      if Enum.any?(messages, &(&1.role == :tool)) do
+        {:ok, message([{:text, "done"}])}
+      else
+        {:ok, message([{:tool_call, %{id: "p1", name: "probe_policy", arguments: %{}}}])}
+      end
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 10
+
+    defp message(parts) do
+      Message.from_legacy(%{
+        parts: parts,
+        usage: %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2, requests: 1},
+        model_name: "test-model",
+        timestamp: DateTime.utc_now()
+      })
+    end
+  end
+
   setup do
     # Process-scoped: `spawn_agents` fans out through
     # `Task.Supervisor.async_stream_nolink`, which propagates `$callers`, so
@@ -678,6 +703,244 @@ defmodule Nous.Plugins.SubAgentTest do
       assert_raise ArgumentError, ~r/sub_agent_shared_deps/, fn ->
         SubAgent.compute_sub_deps(%{sub_agent_shared_deps: "not a list"})
       end
+    end
+  end
+
+  # ===========================================================================
+  # Confinement & execution-policy inheritance
+  # ===========================================================================
+
+  describe "confinement inheritance" do
+    test "default forwards confinement keys but no data deps" do
+      parent_deps = %{
+        workspace_root: "/srv/ws/t1",
+        session_id: "sess-1",
+        api_key: "secret",
+        database: :fake_db
+      }
+
+      assert SubAgent.compute_sub_deps(parent_deps) == %{
+               workspace_root: "/srv/ws/t1",
+               session_id: "sess-1"
+             }
+    end
+
+    test "explicit share list still carries confinement keys" do
+      parent_deps = %{
+        workspace_root: "/srv/ws/t1",
+        api_key: "secret",
+        workspace_id: 42,
+        sub_agent_shared_deps: [:workspace_id]
+      }
+
+      assert SubAgent.compute_sub_deps(parent_deps) == %{
+               workspace_root: "/srv/ws/t1",
+               workspace_id: 42
+             }
+    end
+
+    test "sub-agent file tools stay rooted at the parent workspace, not File.cwd!()" do
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "sub_agent_confine_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+      sub_deps = SubAgent.compute_sub_deps(%{workspace_root: tmp_dir, api_key: "secret"})
+      assert sub_deps == %{workspace_root: tmp_dir}
+
+      # PathGuard roots at the forwarded workspace: a file that IS readable
+      # from cwd is rejected for the sub-agent.
+      sub_ctx = Nous.RunContext.new(sub_deps)
+      outside = Path.expand("mix.exs")
+      assert File.exists?(outside)
+      assert {:error, reason} = Nous.Tools.FileRead.execute(sub_ctx, %{"file_path" => outside})
+      assert reason =~ "workspace"
+
+      # ...while a file inside the forwarded workspace is readable.
+      inside = Path.join(tmp_dir, "note.txt")
+      File.write!(inside, "hello")
+      assert {:ok, content} = Nous.Tools.FileRead.execute(sub_ctx, %{"file_path" => inside})
+      assert content =~ "hello"
+    end
+  end
+
+  defp probe_tool(test_pid, opts) do
+    %Nous.Tool{
+      name: "probe_policy",
+      description: "Report the effective policy this tool runs under",
+      parameters: %{"type" => "object", "properties" => %{}, "required" => []},
+      takes_ctx: true,
+      requires_approval: Keyword.get(opts, :requires_approval, false),
+      function: fn ctx, _args ->
+        send(
+          test_pid,
+          {:probe, Nous.Sandbox.Policy.resolve(ctx), Map.get(ctx, :permissions), ctx.deps}
+        )
+
+        %{ok: true}
+      end
+    }
+  end
+
+  defp parent_ctx(template, tmp_dir, opts) do
+    deps = %{
+      sub_agent_templates: %{"probe" => template},
+      workspace_root: tmp_dir,
+      api_key: "secret"
+    }
+
+    Nous.RunContext.new(deps, opts)
+  end
+
+  describe "execution policy inheritance" do
+    setup do
+      Nous.ModelDispatcher.put_dispatcher(PolicyProbeDispatcher)
+
+      tmp_dir =
+        Path.join(System.tmp_dir!(), "sub_agent_policy_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp_dir)
+      on_exit(fn -> File.rm_rf!(tmp_dir) end)
+
+      %{tmp_dir: tmp_dir}
+    end
+
+    test "sub-agent resolves the parent's sandbox, not the app default", %{tmp_dir: tmp_dir} do
+      template = Agent.new("openai:test-model", tools: [probe_tool(self(), [])])
+      parent_policy = Nous.Sandbox.Policy.new(mode: :read_only, workspace_root: tmp_dir)
+      ctx = parent_ctx(template, tmp_dir, sandbox: parent_policy)
+
+      result = SubAgent.delegate_task(ctx, %{"task" => "go", "template" => "probe"})
+
+      assert result.success
+      assert_receive {:probe, %Nous.Sandbox.Policy{mode: :read_only}, _perms, sub_deps}
+      # Secrets in parent deps still do not travel with default shared deps.
+      refute Map.has_key?(sub_deps, :api_key)
+      assert sub_deps.workspace_root == tmp_dir
+    end
+
+    test "a template cannot widen the parent's sandbox", %{tmp_dir: tmp_dir} do
+      template =
+        Agent.new("openai:test-model",
+          tools: [probe_tool(self(), [])],
+          sandbox: :danger_full_access
+        )
+
+      parent_policy = Nous.Sandbox.Policy.new(mode: :read_only, workspace_root: tmp_dir)
+      ctx = parent_ctx(template, tmp_dir, sandbox: parent_policy)
+
+      result = SubAgent.delegate_task(ctx, %{"task" => "go", "template" => "probe"})
+
+      assert result.success
+      assert_receive {:probe, %Nous.Sandbox.Policy{} = policy, _perms, _sub_deps}
+      assert policy.mode == :read_only
+
+      assert policy.workspace_root ==
+               Nous.Sandbox.Policy.new(workspace_root: tmp_dir).workspace_root
+    end
+
+    test "a stricter template sandbox wins over the parent's", %{tmp_dir: tmp_dir} do
+      template =
+        Agent.new("openai:test-model",
+          tools: [probe_tool(self(), [])],
+          sandbox: :read_only
+        )
+
+      parent_policy = Nous.Sandbox.Policy.new(mode: :workspace_write, workspace_root: tmp_dir)
+      ctx = parent_ctx(template, tmp_dir, sandbox: parent_policy)
+
+      result = SubAgent.delegate_task(ctx, %{"task" => "go", "template" => "probe"})
+
+      assert result.success
+      assert_receive {:probe, %Nous.Sandbox.Policy{mode: :read_only}, _perms, _sub_deps}
+    end
+
+    test "a template cannot re-root confinement when the parent has no session policy",
+         %{tmp_dir: tmp_dir} do
+      # Parent sets NO session sandbox (ctx.sandbox = nil — the default): its
+      # effective policy resolves from deps[:workspace_root] + app config. A
+      # template with its own sandbox (workspace_root defaulting to cwd) must
+      # not become the sub-agent's session policy wholesale — that would
+      # out-rank the forwarded :workspace_root dep and WIDEN confinement.
+      template =
+        Agent.new("openai:test-model",
+          tools: [probe_tool(self(), [])],
+          sandbox: :danger_full_access
+        )
+
+      ctx = parent_ctx(template, tmp_dir, [])
+
+      result = SubAgent.delegate_task(ctx, %{"task" => "go", "template" => "probe"})
+
+      assert result.success
+      assert_receive {:probe, %Nous.Sandbox.Policy{} = policy, _perms, _sub_deps}
+
+      # Root pinned to the parent's workspace, not the template's cwd default.
+      assert policy.workspace_root ==
+               Nous.Sandbox.Policy.new(workspace_root: tmp_dir).workspace_root
+
+      refute policy.workspace_root ==
+               Nous.Sandbox.Policy.new(workspace_root: File.cwd!()).workspace_root
+    end
+
+    test "the parent's permission policy threads into sub-agent tool contexts",
+         %{tmp_dir: tmp_dir} do
+      template = Agent.new("openai:test-model", tools: [probe_tool(self(), [])])
+
+      parent_permissions =
+        Nous.Permissions.build_policy(deny: ["bash"], approval_required: ["file_write"])
+
+      ctx = parent_ctx(template, tmp_dir, permissions: parent_permissions)
+
+      result = SubAgent.delegate_task(ctx, %{"task" => "go", "template" => "probe"})
+
+      assert result.success
+      # The sub-agent's tool ctx carries the parent's policy: if either the
+      # strictest/2 inheritance or the runner's :permissions attachment were
+      # dropped, this would be nil (the template declares no policy).
+      assert_receive {:probe, _policy, %Nous.Permissions.Policy{} = perms, _sub_deps}
+      assert Nous.Permissions.blocked?(perms, "bash")
+      assert Nous.Permissions.requires_approval?(perms, "file_write")
+    end
+
+    test "approval-gated tools in a sub-agent still fail closed without a handler",
+         %{tmp_dir: tmp_dir} do
+      template =
+        Agent.new("openai:test-model",
+          tools: [probe_tool(self(), requires_approval: true)]
+        )
+
+      ctx = parent_ctx(template, tmp_dir, [])
+
+      result = SubAgent.delegate_task(ctx, %{"task" => "go", "template" => "probe"})
+
+      # The run completes (the model gets a rejection tool-result and finishes)
+      # but the gated tool must never have executed.
+      assert result.success
+      refute_received {:probe, _, _, _}
+    end
+
+    test "the parent's approval handler threads into sub-agent runs", %{tmp_dir: tmp_dir} do
+      test_pid = self()
+
+      handler = fn %{name: name} ->
+        send(test_pid, {:approval_requested, name})
+        :approve
+      end
+
+      template =
+        Agent.new("openai:test-model",
+          tools: [probe_tool(self(), requires_approval: true)]
+        )
+
+      ctx = parent_ctx(template, tmp_dir, approval_handler: handler)
+
+      result = SubAgent.delegate_task(ctx, %{"task" => "go", "template" => "probe"})
+
+      assert result.success
+      assert_receive {:approval_requested, "probe_policy"}
+      assert_receive {:probe, _policy, _perms, _sub_deps}
     end
   end
 

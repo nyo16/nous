@@ -206,6 +206,15 @@ at all), opt into the Hackney stream backend via
 `NOUS_HTTP_STREAM_BACKEND=hackney`, or the per-call `stream_backend:` option.
 See `docs/benchmarks/http_backend.md`.
 
+## Optional dependency: net_runner
+
+`net_runner` is `optional: true`. It is required only by `Nous.Tools.Bash`
+and `:command` hooks — both fail closed without it (Bash returns a
+"Refusing to run" error; command hooks return `{:deny, ...}` regardless of
+`fail_closed`, because a hook that never ran must not permit the event).
+If your app uses either, add `{:net_runner, "~> 1.0"}` to your own deps;
+nothing else in Nous needs it.
+
 ## Critical rules (security & correctness)
 
 These are project-wide and non-negotiable. If you write code that breaks
@@ -237,10 +246,16 @@ these, it will be rejected.
 6. **`PromptTemplate` rejects `<% ... %>` blocks** — only `<%= @var %>`
    substitution is allowed. Don't try to enable EEx evaluation on
    LLM-touched templates; it's an RCE vector.
-7. **Sub-agent deps don't auto-forward.** If you spawn a sub-agent via
-   `Nous.Plugins.SubAgent`, declare which deps it sees with
-   `:sub_agent_shared_deps, [:key1, :key2]`. The default `[]` is correct
-   for security.
+7. **Sub-agent *data* deps don't auto-forward; confinement and execution
+   policy always do.** If you spawn a sub-agent via `Nous.Plugins.SubAgent`,
+   declare which data deps it sees with `:sub_agent_shared_deps, [:key1, :key2]`
+   — the default (share nothing) is correct for security, because secrets in
+   parent deps are one prompt-injected sub-agent task away from exfiltration.
+   Independently of that list, the parent's `:workspace_root`/`:session_id`
+   deps, sandbox policy, permission policy, and approval handler ALWAYS
+   inherit: withholding them would *widen* what a delegated agent may do, not
+   protect anything. A template may only narrow inherited policy, never
+   weaken it.
 
 ## Common workflows
 

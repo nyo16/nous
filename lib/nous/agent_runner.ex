@@ -121,6 +121,11 @@ defmodule Nous.AgentRunner do
       the same shapes as `Nous.Agent.new/2`'s `:sandbox` option (a mode atom, a
       keyword list, or a `Nous.Sandbox.Policy`), e.g.
       `Nous.run(agent, prompt, sandbox: :read_only)`
+    * `:approval_handler` - Handler consulted before any tool with
+      `requires_approval: true` runs (see `Nous.RunContext`). Without one such
+      tools are rejected. `Nous.Plugins.HumanInTheLoop` can also install a
+      handler via `deps[:hitl_config]`; when both are present the plugin's
+      wrapped handler wins (it is applied at plugin init, after context build).
     * `:stream` - When `true`, the LLM call streams chunks while still running
       the tool-call loop (default: `false`). Fires `:on_llm_new_delta` per
       text chunk and `:on_llm_new_thinking_delta` per reasoning chunk.
@@ -484,6 +489,9 @@ defmodule Nous.AgentRunner do
         |> maybe_update_callbacks(opts)
         |> maybe_update_notify_pid(opts)
         |> maybe_update_stream(opts)
+        |> maybe_update_cancellation_check(opts)
+        |> maybe_update_approval_handler(opts)
+        |> maybe_update_max_iterations(opts)
 
       nil ->
         # Build fresh context
@@ -538,6 +546,7 @@ defmodule Nous.AgentRunner do
           notify_pid: Keyword.get(opts, :notify_pid),
           agent_name: agent.name,
           cancellation_check: Keyword.get(opts, :cancellation_check),
+          approval_handler: Keyword.get(opts, :approval_handler),
           pubsub: Keyword.get(opts, :pubsub),
           pubsub_topic: Keyword.get(opts, :pubsub_topic),
           stream: stream
@@ -550,6 +559,37 @@ defmodule Nous.AgentRunner do
   defp maybe_update_stream(ctx, opts) do
     case Keyword.fetch(opts, :stream) do
       {:ok, value} when is_boolean(value) -> %{ctx | stream: value}
+      _ -> ctx
+    end
+  end
+
+  # Run-scoped options a caller passes alongside `:context` used to be silently
+  # dropped, which (a) left continued runs without cooperative cancellation and
+  # (b) made the documented `:approval_handler` opt a no-op for `:context`
+  # callers. Fetch-guarded: absent opts leave the context untouched.
+  defp maybe_update_cancellation_check(ctx, opts) do
+    case Keyword.fetch(opts, :cancellation_check) do
+      {:ok, check} when is_function(check, 0) or is_nil(check) ->
+        %{ctx | cancellation_check: check}
+
+      _ ->
+        ctx
+    end
+  end
+
+  defp maybe_update_approval_handler(ctx, opts) do
+    case Keyword.fetch(opts, :approval_handler) do
+      {:ok, handler} when is_function(handler, 1) or is_nil(handler) ->
+        %{ctx | approval_handler: handler}
+
+      _ ->
+        ctx
+    end
+  end
+
+  defp maybe_update_max_iterations(ctx, opts) do
+    case Keyword.fetch(opts, :max_iterations) do
+      {:ok, max} when is_integer(max) and max > 0 -> %{ctx | max_iterations: max}
       _ -> ctx
     end
   end

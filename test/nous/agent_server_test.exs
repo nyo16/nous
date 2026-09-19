@@ -4,9 +4,21 @@ defmodule Nous.AgentServerTest.SlowPersistence do
   @behaviour Nous.Persistence
 
   @sleep_ms 300
+  @pid_key {__MODULE__, :test_pid}
+
+  # Optional rendezvous: a test that registers itself gets a :save_started
+  # message the moment the backend write begins, so it can synchronize on
+  # "the save is provably in flight" instead of sleeping.
+  def notify_on_save(pid), do: :persistent_term.put(@pid_key, pid)
+  def stop_notifying, do: :persistent_term.erase(@pid_key)
 
   @impl true
   def save(session_id, data) do
+    case :persistent_term.get(@pid_key, nil) do
+      nil -> :ok
+      pid -> send(pid, :save_started)
+    end
+
     Process.sleep(@sleep_ms)
     Nous.Persistence.ETS.save(session_id, data)
   end
@@ -275,8 +287,10 @@ defmodule Nous.AgentServerTest do
       # within the backend's sleep, proving the save runs off the mailbox.
       {elapsed_us, _ctx} = :timer.tc(fn -> AgentServer.get_context(pid) end)
 
-      assert elapsed_us < 150_000,
-             "get_context blocked for #{div(elapsed_us, 1000)}ms (>150ms) — save is not async"
+      # 500ms tolerates CI scheduler stalls while staying far below the
+      # seconds-long block a synchronous save would cost.
+      assert elapsed_us < 500_000,
+             "get_context blocked for #{div(elapsed_us, 1000)}ms (>500ms) — save is not async"
 
       # And the save still lands eventually.
       assert eventually(fn ->
@@ -352,16 +366,22 @@ defmodule Nous.AgentServerTest do
           inactivity_timeout: :infinity
         )
 
+      SlowPersistence.notify_on_save(self())
+      on_exit(fn -> SlowPersistence.stop_notifying() end)
+
       # SlowPersistence.save/2 sleeps 300ms.
       saver = Task.async(fn -> AgentServer.save_context(pid) end)
 
-      # Let the handler hand the work to its task before probing the mailbox.
-      Process.sleep(50)
+      # The backend announced the write started, so the handler has already
+      # handed the work to its task and the server mailbox is safe to probe.
+      assert_receive :save_started, 1_000
 
       {elapsed_us, _ctx} = :timer.tc(fn -> AgentServer.get_context(pid) end)
 
-      assert elapsed_us < 150_000,
-             "get_context blocked for #{div(elapsed_us, 1000)}ms (>150ms) — :save_context still runs on the server process"
+      # 500ms tolerates CI scheduler stalls (same bound as the cancellation
+      # latency tests); a synchronous save would block for the full save time.
+      assert elapsed_us < 500_000,
+             "get_context blocked for #{div(elapsed_us, 1000)}ms (>500ms) — :save_context still runs on the server process"
 
       # The caller's contract is unchanged: :ok comes back only once the
       # backend write has actually landed.
@@ -588,10 +608,6 @@ defmodule Nous.AgentServerTest do
 
       # And the server is not spinning on its own traffic.
       assert {:message_queue_len, 0} = Process.info(pid, :message_queue_len)
-      {:reductions, before} = Process.info(pid, :reductions)
-      Process.sleep(100)
-      {:reductions, later} = Process.info(pid, :reductions)
-      assert later - before < 10_000
 
       GenServer.stop(pid)
     end

@@ -529,6 +529,9 @@ defmodule Nous.Agent.Context do
     * `:sandbox` - `Nous.Sandbox.Policy` to carry onto the run context as the
       session-level sandbox override. The agent runner passes `agent.sandbox`
       here; `nil` leaves resolution to application config.
+    * `:permissions` - `Nous.Permissions.Policy` to carry onto the run context
+      so delegating tools can inherit the effective policy. The agent runner
+      passes `agent.permissions` here; enforcement stays in the runner.
 
   ## Examples
 
@@ -553,7 +556,8 @@ defmodule Nous.Agent.Context do
       usage: ctx.usage,
       approval_handler: ctx.approval_handler,
       approval_gated?: true,
-      sandbox: Keyword.get(opts, :sandbox)
+      sandbox: Keyword.get(opts, :sandbox),
+      permissions: Keyword.get(opts, :permissions)
     )
   end
 
