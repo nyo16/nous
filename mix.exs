@@ -27,16 +27,17 @@ defmodule Nous.MixProject do
       elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool, NetRunner, Tyrex]],
       # Coverage ratchet. `mix test --cover` defaults to a 90% threshold this
       # project has never met, and no CI job ran it, so the gate was purely
-      # decorative. 59 is the current measured floor (60.05%, :llm/:llama
-      # excluded as in CI) with ~1pp of headroom, enforced by the `coverage`
+      # decorative. 66 is the current measured floor (67.75%, :llm/:llama
+      # excluded as in CI) with ~1.75pp of headroom, enforced by the `coverage`
       # job in .github/workflows/ci.yml. Raise it as coverage improves; never
       # lower it. History: 56.80% at the audit, 57 after the perf wave, 59 once
-      # the provider/web_fetch/prompt_template suites landed.
+      # the provider/web_fetch/prompt_template suites landed, 66 after the
+      # 2026-09 remediation (ghost backends + Store.Results + Code Mode gates).
       #
       # :threshold MUST be nested under :summary — a bare
       # `test_coverage: [threshold: n]` is silently ignored and you keep the
       # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
-      test_coverage: [summary: [threshold: 59]],
+      test_coverage: [summary: [threshold: 66]],
       # `mix hex.audit` acknowledgements. Two cowlib advisories have no patched
       # release (2.20.0 fixed only CVE-2026-43971):
       #   CVE-2026-43966  structured-fields header CRLF injection
