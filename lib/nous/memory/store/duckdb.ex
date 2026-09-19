@@ -256,7 +256,7 @@ if Code.ensure_loaded?(Duckdbex) do
       %Entry{
         id: map["id"],
         content: map["content"],
-        type: String.to_existing_atom(map["type"]),
+        type: memory_type(map["type"]),
         importance: map["importance"] || 0.5,
         evergreen: to_bool(map["evergreen"]),
         embedding: map["embedding"],
@@ -271,6 +271,15 @@ if Code.ensure_loaded?(Duckdbex) do
         last_accessed_at: parse_datetime(map["last_accessed_at"])
       }
     end
+
+    # Stored rows are not trusted input: decode the column through the literal
+    # `Nous.Memory.Entry.memory_type/0` set, never `String.to_existing_atom/1`
+    # (which accepts any atom the VM happens to hold). Unknown → the struct's
+    # own default.
+    defp memory_type("semantic"), do: :semantic
+    defp memory_type("episodic"), do: :episodic
+    defp memory_type("procedural"), do: :procedural
+    defp memory_type(_other), do: :semantic
 
     defp build_scope_clause(scope, start_idx) when map_size(scope) == 0,
       do: {"", [], start_idx}

@@ -221,7 +221,7 @@ defmodule Nous.Plugins.SubAgentTest do
     end
 
     test "runs a single sub-agent with inline model", %{ctx: ctx} do
-      ctx = SubAgent.init(%Agent{model: nil}, ctx)
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
 
       result =
         SubAgent.delegate_task(ctx, %{
@@ -273,6 +273,141 @@ defmodule Nous.Plugins.SubAgentTest do
     end
   end
 
+  # S-M4 (2026-09-19 audit): the tool arguments are LLM-controlled, so the
+  # model it names, the fan-out it asks for and the nesting it builds are each
+  # bounded — and each refuses rather than substituting or truncating.
+  describe "bounds on LLM-controlled arguments" do
+    test "an inline model outside the allow-list is refused, never substituted", %{ctx: ctx} do
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      result =
+        SubAgent.delegate_task(ctx, %{"task" => "Do it", "model" => "openai:gpt-4o-expensive"})
+
+      assert result.success == false
+
+      assert result.error =~
+               ~s(Model "openai:gpt-4o-expensive" is not in :sub_agent_allowed_models)
+
+      assert result.error =~ ~s(allowed: ["openai:test-model"])
+    end
+
+    test "the default allow-list is the parent's own model", %{ctx: ctx} do
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+      result = SubAgent.delegate_task(ctx, %{"task" => "Do it", "model" => "openai:test-model"})
+      assert result.success == true
+    end
+
+    test "an explicit :sub_agent_allowed_models replaces the default", %{ctx: ctx} do
+      ctx = %{ctx | deps: Map.put(ctx.deps, :sub_agent_allowed_models, ["openai:cheap"])}
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      assert %{success: true} =
+               SubAgent.delegate_task(ctx, %{"task" => "Do it", "model" => "openai:cheap"})
+
+      # The parent's own model is no longer implied once a list is given.
+      assert %{success: false, error: error} =
+               SubAgent.delegate_task(ctx, %{"task" => "Do it", "model" => "openai:test-model"})
+
+      assert error =~ "not in :sub_agent_allowed_models"
+    end
+
+    test "spawn_agents applies the same allow-list per task", %{ctx: ctx} do
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      result =
+        SubAgent.spawn_agents(ctx, %{
+          "tasks" => [
+            %{"task" => "ok", "model" => "openai:test-model"},
+            %{"task" => "nope", "model" => "anthropic:claude-opus-4"}
+          ]
+        })
+
+      assert result.succeeded == 1
+      assert [%{success: true}, %{success: false, error: error}] = result.results
+      assert error =~ "not in :sub_agent_allowed_models"
+    end
+
+    test "templates are developer-configured and not subject to the allow-list", %{ctx: ctx} do
+      ctx = %{ctx | deps: Map.put(ctx.deps, :sub_agent_allowed_models, [])}
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      assert %{success: true} =
+               SubAgent.delegate_task(ctx, %{"task" => "Do it", "template" => "researcher"})
+    end
+
+    test "spawn_agents over :sub_agent_max_tasks is refused whole, not truncated", %{ctx: ctx} do
+      test_pid = self()
+      Nous.ModelDispatcher.put_dispatcher(__MODULE__.CountingDispatcher)
+      Process.put(:counting_sink, test_pid)
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      tasks = for i <- 1..11, do: %{"task" => "task #{i}", "template" => "researcher"}
+      result = SubAgent.spawn_agents(ctx, %{"tasks" => tasks})
+
+      assert result.success == false
+      assert result.error =~ "11 tasks exceeds :sub_agent_max_tasks (10)"
+      refute_receive :model_called, 50
+    end
+
+    test ":sub_agent_max_tasks is configurable", %{ctx: ctx} do
+      ctx = %{ctx | deps: Map.put(ctx.deps, :sub_agent_max_tasks, 2)}
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      two = for i <- 1..2, do: %{"task" => "task #{i}", "template" => "researcher"}
+      three = two ++ [%{"task" => "task 3", "template" => "researcher"}]
+
+      assert %{succeeded: 2} = SubAgent.spawn_agents(ctx, %{"tasks" => two})
+      assert %{success: false, error: error} = SubAgent.spawn_agents(ctx, %{"tasks" => three})
+      assert error =~ "3 tasks exceeds :sub_agent_max_tasks (2)"
+    end
+
+    test "delegation past :sub_agent_max_depth is refused by both tools", %{ctx: ctx} do
+      # Depth 2 with the default ceiling of 2: this agent is a sub-sub-agent
+      # and may not delegate further.
+      ctx = %{ctx | deps: Map.put(ctx.deps, :sub_agent_depth, 2)}
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      assert %{success: false, error: error} =
+               SubAgent.delegate_task(ctx, %{"task" => "deeper", "template" => "researcher"})
+
+      assert error =~ "already 2 level(s) deep"
+      assert error =~ ":sub_agent_max_depth is 2"
+
+      assert %{success: false, error: ^error} =
+               SubAgent.spawn_agents(ctx, %{
+                 "tasks" => [%{"task" => "deeper", "template" => "researcher"}]
+               })
+    end
+
+    test "a depth-1 agent may still delegate under the default ceiling", %{ctx: ctx} do
+      ctx = %{ctx | deps: Map.put(ctx.deps, :sub_agent_depth, 1)}
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      assert %{success: true} =
+               SubAgent.delegate_task(ctx, %{"task" => "one more", "template" => "researcher"})
+    end
+
+    test "a raised :sub_agent_max_depth allows deeper nesting", %{ctx: ctx} do
+      ctx = %{ctx | deps: Map.merge(ctx.deps, %{sub_agent_depth: 2, sub_agent_max_depth: 3})}
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
+
+      assert %{success: true} =
+               SubAgent.delegate_task(ctx, %{"task" => "deeper", "template" => "researcher"})
+    end
+  end
+
+  defmodule CountingDispatcher do
+    @moduledoc false
+
+    def request(_model, _messages, _settings) do
+      send(Process.get(:counting_sink), :model_called)
+      {:error, %Nous.Errors.ModelError{message: "should not be reached", provider: :test}}
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 0
+  end
+
   # ===========================================================================
   # spawn_agents — parallel sub-agents
   # ===========================================================================
@@ -320,7 +455,7 @@ defmodule Nous.Plugins.SubAgentTest do
     end
 
     test "works with inline model config (no template)", %{ctx: ctx} do
-      ctx = SubAgent.init(%Agent{model: nil}, ctx)
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
 
       result =
         SubAgent.spawn_agents(ctx, %{
@@ -613,7 +748,7 @@ defmodule Nous.Plugins.SubAgentTest do
     end
 
     test "inline config uses default instructions when not provided", %{ctx: ctx} do
-      ctx = SubAgent.init(%Agent{model: nil}, ctx)
+      ctx = SubAgent.init(Agent.new("openai:test-model"), ctx)
 
       result =
         SubAgent.spawn_agents(ctx, %{
@@ -642,6 +777,8 @@ defmodule Nous.Plugins.SubAgentTest do
   # ===========================================================================
 
   describe "compute_sub_deps/1" do
+    # Every shape below carries `sub_agent_depth: 1`: the counter is
+    # confinement, computed for the child from the parent's (0 when absent).
     test "default: forwards NOTHING - secrets in parent deps stay with parent" do
       # Sub-agent prompts are LLM-controlled and tools see ctx.deps; the safe
       # default is to forward nothing. Callers must opt in explicitly.
@@ -653,7 +790,7 @@ defmodule Nous.Plugins.SubAgentTest do
         sub_agent_shared_deps: nil
       }
 
-      assert SubAgent.compute_sub_deps(parent_deps) == %{}
+      assert SubAgent.compute_sub_deps(parent_deps) == %{sub_agent_depth: 1}
     end
 
     test "explicit allowlist restricts to specified keys" do
@@ -666,7 +803,7 @@ defmodule Nous.Plugins.SubAgentTest do
 
       result = SubAgent.compute_sub_deps(parent_deps)
 
-      assert result == %{workspace_id: 42}
+      assert result == %{workspace_id: 42, sub_agent_depth: 1}
     end
 
     test "empty allowlist returns empty map" do
@@ -678,7 +815,7 @@ defmodule Nous.Plugins.SubAgentTest do
 
       result = SubAgent.compute_sub_deps(parent_deps)
 
-      assert result == %{}
+      assert result == %{sub_agent_depth: 1}
     end
 
     test ":all opts in to the prior behaviour - everything except plugin internals" do
@@ -695,8 +832,26 @@ defmodule Nous.Plugins.SubAgentTest do
 
       assert SubAgent.compute_sub_deps(parent_deps) == %{
                workspace_id: 42,
-               database: :fake_db
+               database: :fake_db,
+               sub_agent_depth: 1
              }
+    end
+
+    test "the spawn bounds travel as confinement under every sharing shape" do
+      bounds = %{
+        sub_agent_allowed_models: ["openai:gpt-4o-mini"],
+        sub_agent_max_tasks: 3,
+        sub_agent_max_depth: 4,
+        sub_agent_depth: 1
+      }
+
+      for shared <- [nil, [], [:workspace_id], :all] do
+        parent_deps = Map.merge(bounds, %{workspace_id: 42, sub_agent_shared_deps: shared})
+        sub_deps = SubAgent.compute_sub_deps(parent_deps)
+
+        assert Map.take(sub_deps, Map.keys(bounds)) == %{bounds | sub_agent_depth: 2},
+               "shape #{inspect(shared)}"
+      end
     end
 
     test "raises on invalid value" do
@@ -721,7 +876,8 @@ defmodule Nous.Plugins.SubAgentTest do
 
       assert SubAgent.compute_sub_deps(parent_deps) == %{
                workspace_root: "/srv/ws/t1",
-               session_id: "sess-1"
+               session_id: "sess-1",
+               sub_agent_depth: 1
              }
     end
 
@@ -735,7 +891,8 @@ defmodule Nous.Plugins.SubAgentTest do
 
       assert SubAgent.compute_sub_deps(parent_deps) == %{
                workspace_root: "/srv/ws/t1",
-               workspace_id: 42
+               workspace_id: 42,
+               sub_agent_depth: 1
              }
     end
 
@@ -747,7 +904,7 @@ defmodule Nous.Plugins.SubAgentTest do
       on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
       sub_deps = SubAgent.compute_sub_deps(%{workspace_root: tmp_dir, api_key: "secret"})
-      assert sub_deps == %{workspace_root: tmp_dir}
+      assert sub_deps == %{workspace_root: tmp_dir, sub_agent_depth: 1}
 
       # PathGuard roots at the forwarded workspace: a file that IS readable
       # from cwd is rejected for the sub-agent.

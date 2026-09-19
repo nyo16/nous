@@ -102,6 +102,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`Nous.Plugins.SubAgent` bounds what the model may spawn.** The
+  `delegate_task` / `spawn_agents` arguments are LLM-controlled, and nothing
+  bounded them: an inline `model` argument became `Agent.new/2` verbatim (a
+  prompt injection could route a task to any provider the parent had keys
+  for), a `tasks` array of any length fanned out, and a sub-agent whose
+  template carried the plugin could delegate without limit. Three deps now
+  bound them and inherit downward as confinement: `:sub_agent_allowed_models`
+  (default: the parent's own model; templates are developer-configured and
+  exempt), `:sub_agent_max_tasks` (default 10; an over-cap call is refused
+  whole, not truncated) and `:sub_agent_max_depth` (default 2; the current
+  depth travels as `:sub_agent_depth`). Every refusal is a tool error naming
+  the limit — never a silent substitution. **Behavioral change:** an inline
+  `model` that differs from the parent's now needs an explicit allow-list.
+
+- **`Nous.Plugins.InputGuard.Strategies.LLMJudge` no longer fails open by
+  default.** When the judge could not produce a verdict — the LLM call failed,
+  raised, or replied without a `VERDICT:` line — the strategy returned a
+  `:safe` verdict unless `on_error:` said otherwise, so a rate-limited or
+  misconfigured judge read as a judge that had cleared the input. The new
+  default, `on_error: :drop`, returns `{:error, reason}` and
+  `Nous.Plugins.InputGuard` counts it as a *dropped* strategy, which under the
+  default `:any` aggregation upgrades a `:safe` aggregate to `:suspicious`
+  (`fail_closed`). `on_error: :safe` remains as the explicit fail-open opt-in;
+  `:suspicious` / `:blocked` are unchanged. `InputGuard` itself gains the
+  missing clause for a strategy returning `{:error, reason}` — the
+  `Nous.Plugins.InputGuard.Strategy` contract always allowed it, but both
+  `run_strategies/5` variants crashed on it. **Behavioral change:** inputs
+  checked while the judge is unavailable are now flagged rather than passed.
+
+- **The memory `recall` tool clamps its LLM-supplied `limit`.** `limit` went
+  straight to the store; `10_000_000` returned the whole memory store into one
+  tool result (and then the context window), and a non-integer crashed the
+  search. The schema now declares `minimum: 1, maximum: 50` and the tool
+  clamps at runtime (non-integer → the default of 5), mirroring
+  `Nous.Tools.SearchScrape`. Four `String.to_existing_atom/1` sites that
+  decoded LLM- or store-supplied strings (`Nous.KnowledgeBase` health-report
+  issue type/severity, the SQLite/DuckDB memory stores' entry type, the
+  DuckDB decisions store's node/edge enums) now decode through literal
+  allow-lists with a conservative default — `to_existing_atom` raised on an
+  unknown word and accepted *any* atom the VM happened to hold as a valid
+  value.
+
 - **Code Mode sub-calls now honour policy-derived approval, and hooks fire per
   sub-call.** `Nous.CodeMode.bindings/4` handed the raw `%Nous.Tool{}` to the
   executor, whose gate honours only the struct's own `requires_approval` flag.

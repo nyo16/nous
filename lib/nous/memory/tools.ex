@@ -10,6 +10,12 @@ defmodule Nous.Memory.Tools do
   alias Nous.Tool
   alias Nous.Tool.ContextUpdate
 
+  # `limit` is LLM-supplied. Unbounded, one recall could pull the whole store
+  # into the tool result (and then the context window); a non-integer would
+  # crash the search. Same clamp shape as Nous.Tools.SearchScrape.
+  @default_recall_limit 5
+  @max_recall_limit 50
+
   @doc """
   Returns all memory tools as a list.
   """
@@ -79,7 +85,9 @@ defmodule Nous.Memory.Tools do
           },
           "limit" => %{
             "type" => "integer",
-            "description" => "Maximum number of memories to return (default: 5)"
+            "minimum" => 1,
+            "maximum" => 50,
+            "description" => "Maximum number of memories to return (default: 5, max: 50)"
           }
         },
         "required" => ["query"]
@@ -183,7 +191,7 @@ defmodule Nous.Memory.Tools do
     else
       query = Map.fetch!(args, "query")
       type = parse_type_opt(Map.get(args, "type"))
-      limit = Map.get(args, "limit", 5)
+      limit = clamp_limit(Map.get(args, "limit", @default_recall_limit))
 
       embedding_provider = config[:embedding]
       embedding_opts = config[:embedding_opts] || []
@@ -276,4 +284,7 @@ defmodule Nous.Memory.Tools do
   defp parse_type_opt(type), do: parse_type(type)
 
   defp build_search_scope(config), do: Scope.build(config)
+
+  defp clamp_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(@max_recall_limit)
+  defp clamp_limit(_limit), do: @default_recall_limit
 end

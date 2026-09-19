@@ -107,6 +107,33 @@ defmodule Nous.KnowledgeBase.WorkflowsTest do
     end
   end
 
+  describe "health check :build_report node" do
+    # The issue type/severity come from LLM-authored JSON. They used to go
+    # through String.to_existing_atom/1, which raised on an unknown word and
+    # accepted ANY existing atom ("self", "nil", a module name) as an issue
+    # type. Now: literal allow-list, conservative default.
+    test "decodes known types and severities, defaults the rest" do
+      audit_json =
+        JSON.encode!([
+          %{"type" => "stale", "severity" => "high", "entry_id" => "a"},
+          %{"type" => "duplicate", "severity" => "medium", "entry_id" => "b"},
+          %{"type" => "self", "severity" => "nil", "entry_id" => "c"},
+          %{"type" => "Elixir.System", "severity" => "critical", "entry_id" => "d"},
+          %{"entry_id" => "e"}
+        ])
+
+      report = build_report(audit_json)
+
+      assert Enum.map(report.issues, &{&1.entry_id, &1.type, &1.severity}) == [
+               {"a", :stale, :high},
+               {"b", :duplicate, :medium},
+               {"c", :gap, :low},
+               {"d", :gap, :low},
+               {"e", :gap, :low}
+             ]
+    end
+  end
+
   # The :gather_stats node holds a capture of the private transform, which is
   # the only way to exercise it without running the LLM audit step behind it.
   defp gather_stats(store_mod, kb_state) do
@@ -120,6 +147,21 @@ defmodule Nous.KnowledgeBase.WorkflowsTest do
     transform_fn.(
       State.new(%{kb_config: %{store: store_mod, store_state: kb_state, kb_id: "kb1"}})
     )
+  end
+
+  defp build_report(audit_json) do
+    transform_fn =
+      Workflows.build_health_check_pipeline()
+      |> Map.fetch!(:nodes)
+      |> Map.fetch!("build_report")
+      |> Map.fetch!(:config)
+      |> Map.fetch!(:transform_fn)
+
+    stats = %{total_entries: 5, total_links: 0, total_documents: 0}
+
+    transform_fn.(
+      State.new(%{kb_config: %{kb_id: "kb1"}, stats: stats, audit_entries: audit_json})
+    ).data.health_report
   end
 
   defp summaries(state) do

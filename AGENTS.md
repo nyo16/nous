@@ -255,7 +255,11 @@ these, it will be rejected.
    deps, sandbox policy, permission policy, and approval handler ALWAYS
    inherit: withholding them would *widen* what a delegated agent may do, not
    protect anything. A template may only narrow inherited policy, never
-   weaken it.
+   weaken it. The model's own arguments are bounded too: an inline `model`
+   must be in `:sub_agent_allowed_models` (default: the parent's model),
+   `spawn_agents` may carry at most `:sub_agent_max_tasks` (10), and
+   delegation stops at `:sub_agent_max_depth` (2) — each refuses rather than
+   substituting, and all three inherit downward like confinement.
 
 ## Common workflows
 

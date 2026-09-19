@@ -358,9 +358,9 @@ if Code.ensure_loaded?(Duckdbex) do
 
       %Node{
         id: map["id"],
-        type: String.to_existing_atom(map["node_type"]),
+        type: node_type(map["node_type"]),
         label: map["label"],
-        status: String.to_existing_atom(map["status"]),
+        status: node_status(map["status"]),
         confidence: map["confidence"],
         rationale: map["rationale"],
         metadata: decode_json(map["metadata_json"]),
@@ -376,11 +376,41 @@ if Code.ensure_loaded?(Duckdbex) do
         id: map["id"],
         from_id: map["from_id"],
         to_id: map["to_id"],
-        edge_type: String.to_existing_atom(map["edge_type"]),
+        edge_type: edge_type(map["edge_type"]),
         metadata: decode_json(map["metadata_json"]),
         created_at: parse_datetime(map["created_at"])
       }
     end
+
+    # Stored rows are not trusted input: decode each enum column through the
+    # literal set its struct declares (`Nous.Decisions.Node.node_type/0`,
+    # `status/0`, `Nous.Decisions.Edge.edge_type/0`), never
+    # `String.to_existing_atom/1`. Unknown values fall back to the least
+    # consequential member — `:observation` / `:rejected` / `:leads_to` — so
+    # a corrupted row can neither crash the read nor become a live decision.
+    defp node_type("goal"), do: :goal
+    defp node_type("decision"), do: :decision
+    defp node_type("option"), do: :option
+    defp node_type("action"), do: :action
+    defp node_type("outcome"), do: :outcome
+    defp node_type("observation"), do: :observation
+    defp node_type("revisit"), do: :revisit
+    defp node_type(_other), do: :observation
+
+    defp node_status("active"), do: :active
+    defp node_status("completed"), do: :completed
+    defp node_status("superseded"), do: :superseded
+    defp node_status("rejected"), do: :rejected
+    defp node_status(_other), do: :rejected
+
+    defp edge_type("leads_to"), do: :leads_to
+    defp edge_type("chosen"), do: :chosen
+    defp edge_type("rejected"), do: :rejected
+    defp edge_type("requires"), do: :requires
+    defp edge_type("blocks"), do: :blocks
+    defp edge_type("enables"), do: :enables
+    defp edge_type("supersedes"), do: :supersedes
+    defp edge_type(_other), do: :leads_to
 
     defp field_to_column(:type), do: "node_type"
     defp field_to_column(:metadata), do: "metadata_json"
