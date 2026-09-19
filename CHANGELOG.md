@@ -899,6 +899,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `Nous.Tools.UrlGuard` → `Nous.UrlGuard`, `Nous.Tools.PathGuard`
+  → `Nous.PathGuard`, `Nous.Tools.RunCode` → `Nous.CodeMode.RunCodeTool`.**
+  The two guards are core security primitives consumed by `Nous.Provider`
+  (custom `base_url` validation) and `Nous.Sandbox.Policy`, not tools the
+  model calls, so they no longer live under the tool catalog (audit A-M1);
+  the docs group them under "Permissions & Security". `run_code` is Code
+  Mode's transport and lived in `tools/` only by accident of history
+  (A-M3) — it now sits with the scheduler and SDK it is built from. Behaviour
+  is unchanged in all three; there are no aliases, per the repo's
+  code-is-the-contract rule. **Migration:** search-and-replace the three
+  module names. `Nous.Tools.RunCode` was never something an app referenced
+  directly (the runner injects it), so in practice only the guards need
+  touching.
+
+- **`Nous.Agent.Behaviour` no longer hardcodes `Nous.Agents.BasicAgent`.**
+  `Behaviour.default_module/0` is removed; the default is applied by
+  `Nous.Agent.new/2` (as a runtime reference, not a struct default, so it is
+  not a compile-time edge either), and `Behaviour.get_module/1` matches on
+  the `:behaviour_module` field rather than the `%Nous.Agent{}` struct. A
+  hand-built struct that skipped `new/2` and has `behaviour_module: nil` now
+  raises a clear `ArgumentError` at run time instead of silently getting
+  `BasicAgent`. This took the 6-file `agent ↔ behaviour ↔ runner ↔
+  basic_agent` dependency cycle (audit A-M2) down to the 2-node
+  `Nous.Agent ↔ Nous.AgentRunner` facade pair; the behaviour, the iteration
+  loop, tool execution and `BasicAgent` are no longer in any cycle.
+
 - **BREAKING: `net_runner` is now an optional dependency.** It is required
   only by `Nous.Tools.Bash` and `:command` hooks. Apps that use either —
   including any that relied on `net_runner` being transitively available —

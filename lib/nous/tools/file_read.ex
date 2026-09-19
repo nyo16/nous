@@ -38,7 +38,7 @@ defmodule Nous.Tools.FileRead do
     offset = Map.get(args, "offset", 1) |> max(1)
     limit = Map.get(args, "limit", @default_limit)
 
-    with {:ok, safe_path} <- Nous.Tools.PathGuard.validate(file_path, ctx),
+    with {:ok, safe_path} <- Nous.PathGuard.validate(file_path, ctx),
          {:ok, %File.Stat{size: size}} <- File.stat(safe_path),
          :ok <- check_size(size),
          {:ok, lines} <- read_window(safe_path, offset, limit) do

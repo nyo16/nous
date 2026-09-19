@@ -21,7 +21,7 @@ defmodule Nous.Tools.FileGrep do
       `{env, _}` option *adds to* the inherited environment, so the allowlist
       is passed as `scrubbed_overrides/0`, which also emits `{name, false}` for
       every other currently-set variable and thereby actually unsets it.
-    * Every matched path is re-validated through `Nous.Tools.PathGuard` before
+    * Every matched path is re-validated through `Nous.PathGuard` before
       it reaches the caller.
     * `Nous.Sandbox` fails closed, so routing this tool through it would delete
       a working read-only search tool on every host with no provider installed
@@ -59,7 +59,7 @@ defmodule Nous.Tools.FileGrep do
     glob = Map.get(args, "glob")
     output_mode = Map.get(args, "output_mode", "files_with_matches")
 
-    case Nous.Tools.PathGuard.validate(path, ctx) do
+    case Nous.PathGuard.validate(path, ctx) do
       {:ok, safe_path} ->
         if rg_available?() do
           run_rg(pattern, safe_path, glob, output_mode, ctx)
@@ -340,7 +340,7 @@ defmodule Nous.Tools.FileGrep do
   defp glob_match?(file, root, regex), do: Regex.match?(regex, Path.relative_to(file, root))
 
   defp within_workspace?(file, ctx) do
-    File.regular?(file) and match?({:ok, _}, Nous.Tools.PathGuard.validate(file, ctx))
+    File.regular?(file) and match?({:ok, _}, Nous.PathGuard.validate(file, ctx))
   end
 
   defp searchable_size?(file) do

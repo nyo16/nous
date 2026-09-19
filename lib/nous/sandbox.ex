@@ -3,7 +3,7 @@ defmodule Nous.Sandbox do
   OS-level confinement for subprocesses spawned by tools.
 
   `Nous.Tools.Bash` hands the model a shell. `Nous.Permissions` decides *whether*
-  it may run and `Nous.Tools.PathGuard` fences the *file tools*, but neither
+  it may run and `Nous.PathGuard` fences the *file tools*, but neither
   constrains what the shell itself touches once it is running. This module is
   that constraint: a provider behaviour that **wraps argv** so the OS enforces
   the policy.
@@ -56,7 +56,7 @@ defmodule Nous.Sandbox do
   ## What this is not
 
   It is not a kernel boundary you may lean on for multi-tenant isolation, and
-  the TOCTOU window between `Nous.Tools.PathGuard.resolve_real/1` and the
+  the TOCTOU window between `Nous.PathGuard.resolve_real/1` and the
   child's own syscalls is exactly as open as it is in `PathGuard` today. It
   raises the cost of a prompt-injected `rm -rf`; it does not make the host safe
   to hand to an adversary.
@@ -216,7 +216,7 @@ defmodule Nous.Sandbox do
 
   `[]` under `:read_only`. Otherwise three sources — the workspace root,
   `/tmp`, and `System.tmp_dir!/0` — canonicalised through
-  `Nous.Tools.PathGuard.resolve_real/1` and deduplicated, so hosts where they
+  `Nous.PathGuard.resolve_real/1` and deduplicated, so hosts where they
   coincide (`/tmp` on Linux) return fewer than three entries.
 
   No `$HOME`, no git directory, no session state directory. This is the **one**

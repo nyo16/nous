@@ -18,7 +18,7 @@ defmodule Nous.CodeRuntime.JSIntegrationTest do
   alias Nous.Session.Log
   alias Nous.Tool
   alias Nous.Tool.ContextUpdate
-  alias Nous.Tools.RunCode
+  alias Nous.CodeMode.RunCodeTool, as: RunCode
 
   @moduletag :code_runtime_js
 

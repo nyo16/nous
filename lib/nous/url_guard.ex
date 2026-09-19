@@ -1,4 +1,4 @@
-defmodule Nous.Tools.UrlGuard do
+defmodule Nous.UrlGuard do
   @moduledoc """
   SSRF protection for outbound HTTP from tools and providers.
 
@@ -14,7 +14,7 @@ defmodule Nous.Tools.UrlGuard do
   subsequent connection to, which closes the DNS-rebinding TOCTOU window
   (see below):
 
-      case Nous.Tools.UrlGuard.validate_pinned("https://example.com/foo") do
+      case Nous.UrlGuard.validate_pinned("https://example.com/foo") do
         {:ok, uri, ip} -> connect_to(ip, uri)   # pin the connection to `ip`
         {:error, reason} -> {:error, reason}    # human-readable
       end
@@ -24,7 +24,7 @@ defmodule Nous.Tools.UrlGuard do
   record can be rebound to an internal address (a TOCTOU race), so only use
   it where pinning the connection is impossible:
 
-      case Nous.Tools.UrlGuard.validate("https://example.com/foo") do
+      case Nous.UrlGuard.validate("https://example.com/foo") do
         {:ok, uri} -> proceed_with(uri)
         {:error, reason} -> {:error, reason}
       end
@@ -33,7 +33,7 @@ defmodule Nous.Tools.UrlGuard do
 
   For local dev / Docker dev-loop you can pass `allow_private_hosts: true`:
 
-      Nous.Tools.UrlGuard.validate(url, allow_private_hosts: true)
+      Nous.UrlGuard.validate(url, allow_private_hosts: true)
 
   Do NOT enable this in production. It re-opens the SSRF channel.
 

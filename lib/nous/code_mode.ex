@@ -30,7 +30,7 @@ defmodule Nous.CodeMode do
   behaves as `:native` rather than showing the model a `run_code` that can only
   fail, since the native path is right there. `:code` is *not* degraded — an
   operator who asked for code mode gets `run_code`, and calling it without a
-  provider returns an actionable error (see `Nous.Tools.RunCode`) instead of
+  provider returns an actionable error (see `Nous.CodeMode.RunCodeTool`) instead of
   silently reverting to a mode they turned off.
 
   Configure a provider with:
@@ -229,14 +229,14 @@ defmodule Nous.CodeMode do
   """
   @spec run_code_tool([Tool.t()], [Tool.t()], keyword()) :: Tool.t()
   def run_code_tool(all_tools, granted, opts \\ []) do
-    tool = Tool.from_module(Nous.Tools.RunCode, retries: 0, timeout: tool_timeout_ms())
+    tool = Tool.from_module(Nous.CodeMode.RunCodeTool, retries: 0, timeout: tool_timeout_ms())
     policy = Keyword.get(opts, :policy)
 
     %{
       tool
       | description: "#{tool.description}\n\n#{Sdk.render(language(), granted)}",
         function: fn ctx, args ->
-          Nous.Tools.RunCode.run(ctx, args, tools: all_tools, policy: policy)
+          Nous.CodeMode.RunCodeTool.run(ctx, args, tools: all_tools, policy: policy)
         end
     }
   end
@@ -324,7 +324,7 @@ defmodule Nous.CodeMode do
 
   `direct_dispatch/3` is the default because it is the only thing a caller who
   owns no `Nous.Agent.Context` can honestly do — but it is *not* what the
-  shipped Code Mode path uses. `Nous.Tools.RunCode` starts a
+  shipped Code Mode path uses. `Nous.CodeMode.RunCodeTool` starts a
   `Nous.CodeMode.Scheduler` for each run and passes
   `Nous.CodeMode.Scheduler.dispatch_fun/1` here, so a real program's sub-calls
   are ordered by one lane and audited into the session log. Calling `bindings/4`
@@ -394,7 +394,7 @@ defmodule Nous.CodeMode do
   update: applying those from concurrent sub-calls into a context the runner
   also owns is the two-writers hazard. The scheduler's own bookkeeping events
   are a different thing and do reach the session log, as `:log_event`
-  operations on the update `Nous.Tools.RunCode` returns.
+  operations on the update `Nous.CodeMode.RunCodeTool` returns.
 
   Hooks fire per sub-call, from the registry `run_ctx.hook_registry` carries
   (the agent runner attaches it in `Nous.Agent.Context.to_run_context/2`; a

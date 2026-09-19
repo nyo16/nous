@@ -1,7 +1,7 @@
-defmodule Nous.Tools.UrlGuardTest do
+defmodule Nous.UrlGuardTest do
   use ExUnit.Case, async: true
 
-  alias Nous.Tools.UrlGuard
+  alias Nous.UrlGuard
 
   describe "validate/2" do
     test "accepts a public https URL" do

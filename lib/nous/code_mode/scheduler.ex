@@ -67,7 +67,7 @@ defmodule Nous.CodeMode.Scheduler do
 
   There are two ways to read that trail back. `context/1` is for a caller that
   handed in a real `Nous.Agent.Context`. `logged_events/1` is for one that owns
-  none: `Nous.Tools.RunCode` is handed a `%Nous.RunContext{}`, which has no
+  none: `Nous.CodeMode.RunCodeTool` is handed a `%Nous.RunContext{}`, which has no
   session log at all, so it forwards the pairs as
   `Nous.Tool.ContextUpdate.log_event/3` operations and the runner appends them
   to the context that does exist.
@@ -234,7 +234,7 @@ defmodule Nous.CodeMode.Scheduler do
   patience, `Nous.CodeMode.await_timeout_ms/0`: bounding a run is the runtime
   provider's job — its budgets are the deadline that a program cannot ask to
   extend — and the scheduler must not invent a second, shorter one, so it adopts
-  the caller's. Under `Nous.Tools.RunCode` the run is cancelled and the lane torn
+  the caller's. Under `Nous.CodeMode.RunCodeTool` the run is cancelled and the lane torn
   down before this fires; it is the backstop for a lane that is alive, never
   answers, and has nobody else bounding it.
   """
@@ -304,7 +304,7 @@ defmodule Nous.CodeMode.Scheduler do
   submission order.
 
   This is the read for a transport that owns no `Nous.Agent.Context`, and so has
-  nothing useful to do with `context/1`: `Nous.Tools.RunCode` forwards these as
+  nothing useful to do with `context/1`: `Nous.CodeMode.RunCodeTool` forwards these as
   `Nous.Tool.ContextUpdate.log_event/3` operations, which is how a sub-dispatch
   reaches the real session log.
 
@@ -786,7 +786,7 @@ defmodule Nous.CodeMode.Scheduler do
   # in tasks), so only a wedged lane — a `concurrency_safe?/1` that never
   # returns, a suspended process — takes anywhere near this long. The bound is
   # the run's own patience rather than a shorter one of the scheduler's
-  # invention (see `await/3`), and it is a backstop: under `Nous.Tools.RunCode`
+  # invention (see `await/3`), and it is a backstop: under `Nous.CodeMode.RunCodeTool`
   # the tool executor's kill reaches the lane through the link first.
   defp lane_timeout, do: Nous.CodeMode.await_timeout_ms()
 

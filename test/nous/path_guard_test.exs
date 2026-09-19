@@ -1,9 +1,9 @@
-defmodule Nous.Tools.PathGuardTest do
+defmodule Nous.PathGuardTest do
   # async: true is safe — each test gets a unique tmp workspace
   # (System.unique_integer) and touches no shared/global state.
   use ExUnit.Case, async: true
 
-  alias Nous.Tools.PathGuard
+  alias Nous.PathGuard
 
   setup do
     root = Path.join(System.tmp_dir!(), "path_guard_test_#{System.unique_integer([:positive])}")

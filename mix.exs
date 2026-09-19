@@ -427,8 +427,6 @@ defmodule Nous.MixProject do
           Nous.Tools.FileGlob,
           Nous.Tools.FileGrep,
           Nous.Tools.TodoTools,
-          Nous.Tools.PathGuard,
-          Nous.Tools.UrlGuard,
           Nous.Tools.Env
         ],
         "Utility Tools": [
@@ -600,9 +598,11 @@ defmodule Nous.MixProject do
           Nous.Session.Config,
           Nous.Session.Guardrails
         ],
-        Permissions: [
+        "Permissions & Security": [
           Nous.Permissions,
-          Nous.Permissions.Policy
+          Nous.Permissions.Policy,
+          Nous.PathGuard,
+          Nous.UrlGuard
         ],
         "Knowledge Base": [
           Nous.KnowledgeBase,

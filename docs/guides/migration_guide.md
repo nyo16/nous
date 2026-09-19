@@ -156,7 +156,7 @@ Where the error actually fires depends on the provider's base-URL mode:
 - `lmstudio:`, `vllm:` and `sglang:` resolve `:base_url`, then
   `LMSTUDIO_BASE_URL` / `VLLM_BASE_URL` / `SGLANG_BASE_URL`, then the provider's
   built-in localhost default — so they only fail when the URL you supplied is
-  rejected by `Nous.Tools.UrlGuard.validate/2` (bad scheme, unresolvable host,
+  rejected by `Nous.UrlGuard.validate/2` (bad scheme, unresolvable host,
   SSRF-blocked target).
 
 Per-provider settings live under a provider key, not in a `providers:` map:

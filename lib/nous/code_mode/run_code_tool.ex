@@ -1,4 +1,4 @@
-defmodule Nous.Tools.RunCode do
+defmodule Nous.CodeMode.RunCodeTool do
   @moduledoc """
   Code Mode's transport tool: runs a model-authored program that calls tools.
 
