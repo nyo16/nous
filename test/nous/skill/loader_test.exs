@@ -102,11 +102,11 @@ defmodule Nous.Skill.LoaderTest do
   end
 
   describe "load_directory/1" do
-    test "loads skills from directory" do
-      # Create temporary directory with skill files
-      tmp_dir = System.tmp_dir!() |> Path.join("nous_skill_test_#{:rand.uniform(100_000)}")
-      File.mkdir_p!(tmp_dir)
-
+    # @tag :tmp_dir instead of a random-suffixed dir under System.tmp_dir!():
+    # the old `after` block deleted `nous_skill_test_*`, i.e. sibling runs'
+    # directories too (another `mix test` on the same machine, or a retry).
+    @tag :tmp_dir
+    test "loads skills from directory", %{tmp_dir: tmp_dir} do
       File.write!(Path.join(tmp_dir, "skill_a.md"), """
       ---
       name: skill_a
@@ -127,9 +127,6 @@ defmodule Nous.Skill.LoaderTest do
       assert length(skills) == 2
       names = Enum.map(skills, & &1.name) |> Enum.sort()
       assert names == ["skill_a", "skill_b"]
-    after
-      tmp_dir = System.tmp_dir!() |> Path.join("nous_skill_test_*")
-      Path.wildcard(tmp_dir) |> Enum.each(&File.rm_rf!/1)
     end
 
     test "returns empty list for non-existent directory" do

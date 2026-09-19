@@ -26,10 +26,11 @@ defmodule Nous.Message.ContentPartTest do
       assert {:error, :enoent} = ContentPart.from_file("/nonexistent/image.jpg")
     end
 
-    test "detects correct MIME type for different extensions" do
-      # Create temp files with different extensions
-      tmp_dir = System.tmp_dir!()
-
+    # @tag :tmp_dir: the fixed `test_image.<ext>` names under System.tmp_dir!()
+    # collided across concurrent runs of this suite (async: true) and with any
+    # other module writing the same name; ExUnit hands each test its own dir.
+    @tag :tmp_dir
+    test "detects correct MIME type for different extensions", %{tmp_dir: tmp_dir} do
       for {ext, expected_mime} <- [
             {".jpg", "image/jpeg"},
             {".jpeg", "image/jpeg"},
@@ -43,8 +44,6 @@ defmodule Nous.Message.ContentPartTest do
 
         {:ok, content_part} = ContentPart.from_file(path)
         assert String.starts_with?(content_part.content, "data:#{expected_mime};base64,")
-
-        File.rm!(path)
       end
     end
   end

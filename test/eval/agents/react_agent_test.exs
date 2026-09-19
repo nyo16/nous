@@ -32,6 +32,10 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
 
   @default_model Nous.LLMTestHelper.test_model()
 
+  # Explicit ReAct budget (same as `Nous.ReActAgent`'s default) so a
+  # MaxIterationsExceeded result can be checked against the budget it exhausted.
+  @max_iterations 25
+
   setup_all do
     case Nous.LLMTestHelper.check_model_available() do
       :ok -> {:ok, model: @default_model}
@@ -226,22 +230,26 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
         )
 
       result =
-        Nous.ReActAgent.run(agent, """
-        Plan how to calculate (5 + 3) * 2.
-        Add a todo for each step.
-        Calculate step by step using the calculate tool.
-        Complete each todo as you finish.
-        Provide your final answer.
-        """)
+        Nous.ReActAgent.run(
+          agent,
+          """
+          Plan how to calculate (5 + 3) * 2.
+          Add a todo for each step.
+          Calculate step by step using the calculate tool.
+          Complete each todo as you finish.
+          Provide your final answer.
+          """,
+          max_iterations: @max_iterations
+        )
 
       case result do
         {:ok, r} ->
           IO.puts("\n[ReAct 7.8] Output: #{inspect(r.output)}")
           assert r.output != nil
 
-        {:error, %Nous.Errors.MaxIterationsExceeded{}} ->
+        {:error, %Nous.Errors.MaxIterationsExceeded{max_iterations: max}} ->
           IO.puts("\n[ReAct 7.8] Hit max iterations (complex task for small model)")
-          assert true
+          assert max == @max_iterations
 
         {:error, error} ->
           flunk("Unexpected error: #{inspect(error)}")
@@ -349,16 +357,20 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
         )
 
       result =
-        Nous.ReActAgent.run(agent, """
-        Research: What is Elixir and what web framework is commonly used with it?
+        Nous.ReActAgent.run(
+          agent,
+          """
+          Research: What is Elixir and what web framework is commonly used with it?
 
-        Steps:
-        1. Plan your research
-        2. Search for Elixir
-        3. Note what you find
-        4. Search for the web framework
-        5. Provide a comprehensive final answer
-        """)
+          Steps:
+          1. Plan your research
+          2. Search for Elixir
+          3. Note what you find
+          4. Search for the web framework
+          5. Provide a comprehensive final answer
+          """,
+          max_iterations: @max_iterations
+        )
 
       case result do
         {:ok, r} ->
@@ -372,9 +384,9 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
           assert has_relevant_info or r.output != nil,
                  "Expected research results about Elixir/Phoenix"
 
-        {:error, %Nous.Errors.MaxIterationsExceeded{}} ->
+        {:error, %Nous.Errors.MaxIterationsExceeded{max_iterations: max}} ->
           IO.puts("\n[ReAct 7.11] Hit max iterations (complex task for small model)")
-          assert true
+          assert max == @max_iterations
 
         {:error, error} ->
           flunk("Unexpected error: #{inspect(error)}")

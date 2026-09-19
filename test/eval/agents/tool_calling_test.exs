@@ -316,9 +316,13 @@ defmodule Nous.Eval.Agents.ToolCallingTest do
       {:ok, result} = Runner.run_case(test_case, model: context[:model])
 
       IO.puts("\n[Math Test] Output: #{result.actual_output}")
+      IO.puts("[Math Test] Tools called: #{inspect(result.evaluation_details[:tools_called])}")
 
-      # More lenient assertion
-      assert result.score >= 0.0, "Test completed"
+      assert "calculate" in (result.evaluation_details[:tools_called] || []),
+             "Expected calculate tool to be called: #{inspect(result.error || result.actual_output)}"
+
+      assert result.score >= 0.8,
+             "Expected at most one failed check: #{result.evaluation_details[:reason]}"
     end
   end
 
