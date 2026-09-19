@@ -98,10 +98,17 @@ defmodule Nous.Hook.Runner do
     end
   end
 
-  # For blocking events, short-circuit on first :deny
-  defp run_blocking([], _event, _payload), do: :allow
+  # For blocking events, short-circuit on first :deny. Modifications are
+  # applied to the payload the NEXT hook sees AND accumulated, so the caller
+  # gets `{:modify, changes}` back when every hook allowed — without that the
+  # documented `{:modify, %{arguments: ...}}` rewrite reached later hooks and
+  # nobody else.
+  defp run_blocking(hooks, event, payload), do: run_blocking(hooks, event, payload, %{})
 
-  defp run_blocking([hook | rest], event, payload) do
+  defp run_blocking([], _event, _payload, changes) when map_size(changes) == 0, do: :allow
+  defp run_blocking([], _event, _payload, changes), do: {:modify, changes}
+
+  defp run_blocking([hook | rest], event, payload, changes) do
     start_time = System.monotonic_time()
 
     :telemetry.execute(
@@ -121,7 +128,7 @@ defmodule Nous.Hook.Runner do
 
     case result do
       :allow ->
-        run_blocking(rest, event, payload)
+        run_blocking(rest, event, payload, changes)
 
       :deny ->
         Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}")
@@ -145,10 +152,10 @@ defmodule Nous.Hook.Runner do
 
         denied
 
-      {:modify, changes} ->
+      {:modify, new_changes} ->
         # Apply modification to payload, continue with remaining hooks
-        updated_payload = Map.merge(payload, changes)
-        run_blocking(rest, event, updated_payload)
+        updated_payload = Map.merge(payload, new_changes)
+        run_blocking(rest, event, updated_payload, Map.merge(changes, new_changes))
 
       {:error, reason} ->
         Logger.warning(
@@ -172,7 +179,7 @@ defmodule Nous.Hook.Runner do
 
           {:deny, "hook errored (fail_closed): #{inspect(reason)}"}
         else
-          run_blocking(rest, event, payload)
+          run_blocking(rest, event, payload, changes)
         end
     end
   end

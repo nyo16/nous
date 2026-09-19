@@ -62,7 +62,7 @@ defmodule Nous.CodeMode do
 
   alias Nous.CodeMode.Sdk
   alias Nous.CodeRuntime.Binding
-  alias Nous.{Permissions, RunContext, Tool, ToolExecutor}
+  alias Nous.{Hook, Permissions, RunContext, Tool, ToolExecutor}
 
   require Logger
 
@@ -308,6 +308,13 @@ defmodule Nous.CodeMode do
   program never hits an undefined function and never gets to distinguish
   "denied" from "failed" by the shape of what it caught.
 
+  Granted tools are first run through `Nous.Permissions.enforce_approval/2`, so
+  the bound struct carries the same `requires_approval` flag the agent runner
+  would have computed for a model-direct call: `approval_required: [...]`,
+  `:strict` mode and the `:execute`-under-`:permissive` rule gate a sub-call
+  exactly as they gate a top-level call. Without this the bindings saw only the
+  tool's own flag, and a policy-gated tool ran unprompted from inside a program.
+
   ## Options
 
     * `:dispatch` — a `t:dispatch/0` replacing the default, `direct_dispatch/3`.
@@ -336,6 +343,7 @@ defmodule Nous.CodeMode do
       |> Enum.filter(&is_binary(&1.name))
       |> Enum.uniq_by(& &1.name)
       |> Map.new(fn tool ->
+        tool = Permissions.enforce_approval(tool, policy)
         {tool.name, binding_fun(tool, MapSet.member?(granted, tool.name), sub_ctx, dispatch)}
       end)
 
@@ -387,12 +395,40 @@ defmodule Nous.CodeMode do
   also owns is the two-writers hazard. The scheduler's own bookkeeping events
   are a different thing and do reach the session log, as `:log_event`
   operations on the update `Nous.Tools.RunCode` returns.
+
+  Hooks fire per sub-call, from the registry `run_ctx.hook_registry` carries
+  (the agent runner attaches it in `Nous.Agent.Context.to_run_context/2`; a
+  context built without one runs no hooks). `:pre_tool_use` sees
+  `%{tool_name:, tool_id: nil, arguments:}` and may `:deny` the call or
+  `{:modify, %{arguments: ...}}` it; `:post_tool_use` additionally sees
+  `result:` (the tool's value, not a rendered message) and may
+  `{:modify, %{result: ...}}` it. `tool_id` is `nil` because a provider
+  tool-call id exists only for the enclosing `run_code` call; the
+  `Nous.CodeMode.Scheduler` audit events carry that correlation instead.
   """
   @spec direct_dispatch(Tool.t(), map(), RunContext.t()) :: {:ok, term()} | {:error, map()}
   def direct_dispatch(%Tool{} = tool, args, %RunContext{} = run_ctx) do
+    payload = %{tool_name: tool.name, tool_id: nil, arguments: args}
+
+    case Hook.Runner.run(run_ctx.hook_registry, :pre_tool_use, payload) do
+      :deny ->
+        {:error, error_payload(tool.name, "tool call was denied by hook")}
+
+      {:deny, reason} ->
+        {:error, error_payload(tool.name, "tool call was denied by hook: #{reason}")}
+
+      {:modify, %{arguments: new_args}} ->
+        execute_sub_call(tool, new_args, run_ctx)
+
+      _allow ->
+        execute_sub_call(tool, args, run_ctx)
+    end
+  end
+
+  defp execute_sub_call(%Tool{} = tool, args, %RunContext{} = run_ctx) do
     case ToolExecutor.execute(tool, args, run_ctx) do
       {:ok, value} ->
-        {:ok, value}
+        {:ok, post_hook(tool, args, value, run_ctx)}
 
       {:ok, value, _context_update} ->
         Logger.warning(
@@ -400,10 +436,19 @@ defmodule Nous.CodeMode do
             "dropping it — a program has no agent context to merge into"
         )
 
-        {:ok, value}
+        {:ok, post_hook(tool, args, value, run_ctx)}
 
       {:error, reason} ->
         {:error, error_payload(tool.name, error_message(reason))}
+    end
+  end
+
+  defp post_hook(%Tool{name: name}, args, value, %RunContext{hook_registry: registry}) do
+    payload = %{tool_name: name, tool_id: nil, arguments: args, result: value}
+
+    case Hook.Runner.run(registry, :post_tool_use, payload) do
+      {:modify, %{result: new_value}} -> new_value
+      _ -> value
     end
   end
 

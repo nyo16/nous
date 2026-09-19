@@ -60,6 +60,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `:pre_tool_use` hook's `{:modify, %{arguments: ...}}` never reached the
+  tool.** `Nous.Hook.Runner` applied a blocking hook's modification to the
+  payload the *next* hook saw and then returned `:allow`, so the rewrite was
+  dropped at the end of the chain: the agent runner's "hook modified the
+  arguments" branch was unreachable and the documented path-sanitising hook
+  changed nothing. Blocking events now return `{:modify, changes}` (merged,
+  last writer wins) when every hook allowed, exactly like non-blocking events
+  already did. `:deny` still short-circuits regardless of earlier
+  modifications.
+
+- **Code Mode sub-call errors were always "tool call failed".**
+  `Nous.CodeMode.direct_dispatch/3` already reduces a failure to the
+  program-facing `%{"tool", "message"}` shape, and `Nous.CodeMode.Scheduler`
+  then treated that map as an untrusted internal and replaced its message with
+  the opaque one — so a program could not tell "file not found" from
+  "rejected by the approval handler". The scheduler now passes that exact
+  two-string shape through (clamped); every other map, tuple and struct stays
+  opaque.
+
 - **`Nous.Eval.Evaluators.FuzzyMatch` scored everything wrong.** Two off-by-one
   errors in the hand-rolled Levenshtein fold drove similarity negative; an exact
   match scored `0.333` and therefore *failed* the default `0.8` threshold.
@@ -82,6 +101,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   usually the right trade at the corpus sizes agent memory reaches, but is a scan.
 
 ### Security
+
+- **Code Mode sub-calls now honour policy-derived approval, and hooks fire per
+  sub-call.** `Nous.CodeMode.bindings/4` handed the raw `%Nous.Tool{}` to the
+  executor, whose gate honours only the struct's own `requires_approval` flag.
+  Everything the agent runner derives from `Nous.Permissions` for a
+  model-direct call — `approval_required: [...]`, `:strict` mode, and the
+  `:execute`-under-`:permissive` rule — was skipped for the same tool called
+  from inside a program, so a policy-gated tool ran unprompted from
+  `run_code`. The derivation now lives in `Nous.Permissions.enforce_approval/2`
+  (moved out of the runner; same semantics) and runs over every binding, so
+  the handler is consulted per sub-call with the real name and runtime
+  arguments, and a gated sub-call with no handler is refused. In the same
+  seam, `%Nous.RunContext{}` gains `:hook_registry` (attached by
+  `Nous.Agent.Context.to_run_context/2`) and `direct_dispatch/3` fires
+  `:pre_tool_use` / `:post_tool_use` around each sub-call with
+  `tool_id: nil`. **Behavioral change:** programs can no longer call
+  policy-gated tools unprompted, and hooks that previously saw only the
+  enclosing `run_code` call now see each sub-call too.
 
 - **mint floor raised to 1.10.** mint 1.9.3 carries CVE-2026-82729 and
   CVE-2026-82728 (HTTP/1 response-parsing memory exhaustion), reachable

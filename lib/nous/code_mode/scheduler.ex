@@ -666,9 +666,16 @@ defmodule Nous.CodeMode.Scheduler do
     _error -> @opaque_message
   end
 
-  # Tuples, maps, non-exception structs: whatever internals they hold, they were
-  # not written for the program to read. `inspect/1` here is exactly how a
-  # `%Nous.Errors.ToolError{original_error: ...}` would leak.
+  # The default dispatch, `Nous.CodeMode.direct_dispatch/3`, has ALREADY
+  # reduced the failure to the program-facing shape — two strings under
+  # "tool" and "message" — so that message passes through (clamped). Nothing
+  # else about it is trusted: the tool name is re-stamped by the caller.
+  defp message_for(%{"tool" => _, "message" => message}) when is_binary(message),
+    do: clamp(message)
+
+  # Tuples, other maps, non-exception structs: whatever internals they hold,
+  # they were not written for the program to read. `inspect/1` here is exactly
+  # how a `%Nous.Errors.ToolError{original_error: ...}` would leak.
   defp message_for(_reason), do: @opaque_message
 
   defp clamp(message) do

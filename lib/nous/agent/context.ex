@@ -551,13 +551,16 @@ defmodule Nous.Agent.Context do
     # `approval_gated?: true`: the runner has already run the full approval +
     # permission-policy pipeline (AgentRunner.ToolExecution.check_tool_approval/3)
     # for this call, so ToolExecutor must not prompt the operator a second time.
-    # The handler is still carried through so tools can see it.
+    # The handler is still carried through so tools can see it, and so is the
+    # hook registry: a tool that dispatches other tools (Code Mode) reopens the
+    # gate and re-runs both per sub-call.
     Nous.RunContext.new(ctx.deps,
       usage: ctx.usage,
       approval_handler: ctx.approval_handler,
       approval_gated?: true,
       sandbox: Keyword.get(opts, :sandbox),
-      permissions: Keyword.get(opts, :permissions)
+      permissions: Keyword.get(opts, :permissions),
+      hook_registry: ctx.hook_registry
     )
   end
 

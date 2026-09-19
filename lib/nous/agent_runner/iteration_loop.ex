@@ -230,7 +230,7 @@ defmodule Nous.AgentRunner.IterationLoop do
 
     # Enforce the permission policy: blocked tools are removed from the set the
     # model ever sees (and therefore can't be called). Approval is enforced
-    # separately at execution time (see ToolExecution.enforce_policy_approval/2).
+    # separately at execution time (see Nous.Permissions.enforce_approval/2).
     # Code Mode's `run_code` is injected after that filter — see
     # ToolExecution.visible_tools/2 for why it sits outside the restriction.
     all_tools = ToolExecution.visible_tools(agent, all_tools)

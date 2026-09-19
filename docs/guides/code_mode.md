@@ -74,11 +74,21 @@ There is one permission mechanism, not a second one inside Code Mode.
   muting it. It dispatches through the whole pipeline, so hooks and permission
   plugins can inspect the program text before it runs.
 - **Approval is per sub-call, not per program.** Approving a `run_code` call
-  approves running *that program*; every sub-call to a tool with
-  `requires_approval: true` consults your approval handler on its own, with the
-  real tool name and the real arguments. A program computes its arguments at
-  runtime, so the approved program text does not show them. With no handler in
-  the context, such a tool is refused rather than run.
+  approves running *that program*; every sub-call to a tool that requires
+  approval consults your approval handler on its own, with the real tool name
+  and the real arguments. "Requires approval" means the same thing it means
+  for a model-direct call: the tool's own `requires_approval: true` *or* what
+  the permission policy derives — `approval_required: [...]`, `:strict` mode,
+  and an `:execute`-category tool under `:permissive` without
+  `allow_unattended_execute`. A program computes its arguments at runtime, so
+  the approved program text does not show them. With no handler in the
+  context, such a tool is refused rather than run.
+- **Hooks fire per sub-call too.** `:pre_tool_use` sees each sub-call as
+  `%{tool_name:, tool_id: nil, arguments:}` and may deny or rewrite its
+  arguments; `:post_tool_use` may rewrite the value the program receives.
+  `tool_id` is `nil` because only the enclosing `run_code` call has a
+  provider tool-call id; the scheduler's session-log events carry the
+  `<call_id>:code:<seq>` correlation instead.
 - Under `mode: :code`, a model-direct call to any other tool is denied *before*
   pre-tool hooks run — a guard should never have to observe, or worse approve, a
   call that can only fail.

@@ -239,6 +239,35 @@ defmodule Nous.Permissions do
     do: requires_approval?(policy, tool_name)
 
   @doc """
+  Marks a tool `requires_approval: true` when the policy says so.
+
+  The per-tool flag and the policy compose: either one forces the approval
+  gate, and a tool that already carries the flag is returned unchanged. The
+  tool's `category` is passed through so an `:execute` tool keeps its gate
+  under `:permissive` unless the policy opts into `allow_unattended_execute`
+  (see `requires_approval?/3`). A `nil` policy leaves the tool alone; a `nil`
+  tool (an unresolved lookup) passes through so callers can pattern-match it.
+
+  This is the single place a policy turns into a struct flag. Every dispatch
+  path that later honours `requires_approval` — the agent runner and Code
+  Mode's per-sub-call bindings — must run tools through it first, otherwise
+  `approval_required: [...]`, `:strict` mode and the `:execute` rule apply to
+  model-direct calls only.
+  """
+  @spec enforce_approval(Nous.Tool.t() | nil, Policy.t() | nil) :: Nous.Tool.t() | nil
+  def enforce_approval(nil, _policy), do: nil
+  def enforce_approval(%Nous.Tool{} = tool, nil), do: tool
+  def enforce_approval(%Nous.Tool{requires_approval: true} = tool, _policy), do: tool
+
+  def enforce_approval(%Nous.Tool{} = tool, %Policy{} = policy) do
+    if requires_approval?(policy, tool.name, tool.category) do
+      %{tool | requires_approval: true}
+    else
+      tool
+    end
+  end
+
+  @doc """
   Filters a list of `Nous.Tool` structs, removing blocked tools.
 
   ## Examples

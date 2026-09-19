@@ -412,6 +412,212 @@ defmodule Nous.CodeModeTest do
     end
   end
 
+  # S-H3 (2026-09-19 audit): `bindings/4` handed the raw `%Tool{}` to the
+  # executor, whose approval check honours only the struct flag. Everything the
+  # runner derives from the permission policy for a model-direct call —
+  # `approval_required: [...]`, `:strict`, `:execute`-under-`:permissive` — was
+  # skipped for the same tool called from inside a program. (a)–(c) were red
+  # before `Permissions.enforce_approval/2` ran in `bindings/4`.
+  describe "policy-derived approval applies to sub-calls" do
+    setup do
+      configure_runtime(call: "deploy")
+      Nous.ModelDispatcher.put_dispatcher(__MODULE__.RunCodeDispatcher)
+      :ok
+    end
+
+    defp deploy_tool(test_pid, category \\ nil) do
+      tool =
+        tool("deploy", fn _ctx, args ->
+          send(test_pid, {:deploy_ran, args})
+          {:ok, "deployed"}
+        end)
+
+      %{tool | category: category}
+    end
+
+    defp recording_handler(test_pid, decision \\ :approve) do
+      fn %{name: name, arguments: args} ->
+        send(test_pid, {:approval_asked, name, args})
+        decision
+      end
+    end
+
+    test "a tool in approval_required consults the handler with the runtime-computed arguments" do
+      test_pid = self()
+
+      agent =
+        Agent.new("openai:test-model",
+          tools: [deploy_tool(test_pid)],
+          code_mode: :code,
+          permissions: Permissions.build_policy(approval_required: ["deploy"])
+        )
+
+      assert {:ok, result} =
+               AgentRunner.run(agent, "go", approval_handler: recording_handler(test_pid))
+
+      # The handler saw the SUB-CALL — real tool name, arguments the program
+      # computed — not just the enclosing run_code call.
+      assert_receive {:approval_asked, "deploy", %{"from" => "the program"}}
+      assert_receive {:deploy_ran, %{"from" => "the program"}}
+      assert tool_message(result) =~ "deployed"
+    end
+
+    test "a tool in approval_required with no handler is refused and the program sees the error" do
+      test_pid = self()
+
+      agent =
+        Agent.new("openai:test-model",
+          tools: [deploy_tool(test_pid)],
+          code_mode: :code,
+          permissions: Permissions.build_policy(approval_required: ["deploy"])
+        )
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      refute_receive {:deploy_ran, _}, 100
+      assert tool_message(result) =~ "requires approval but no approval handler"
+    end
+
+    test "a handler that rejects the sub-call keeps the tool from running" do
+      test_pid = self()
+
+      agent =
+        Agent.new("openai:test-model",
+          tools: [deploy_tool(test_pid)],
+          code_mode: :code,
+          permissions: Permissions.build_policy(approval_required: ["deploy"])
+        )
+
+      assert {:ok, result} =
+               AgentRunner.run(agent, "go",
+                 approval_handler: recording_handler(test_pid, :reject)
+               )
+
+      assert_receive {:approval_asked, "deploy", _}
+      refute_receive {:deploy_ran, _}, 100
+      assert tool_message(result) =~ "rejected by the approval handler"
+    end
+
+    test "an :execute tool under :permissive is gated unless allow_unattended_execute" do
+      test_pid = self()
+
+      agent =
+        Agent.new("openai:test-model",
+          tools: [deploy_tool(test_pid, :execute)],
+          code_mode: :code,
+          permissions: Permissions.build_policy(mode: :permissive)
+        )
+
+      assert {:ok, _result} =
+               AgentRunner.run(agent, "go", approval_handler: recording_handler(test_pid))
+
+      # run_code is itself :execute, so it is asked for first; the point is
+      # that the sub-call is asked for TOO, with its own name and arguments.
+      assert_receive {:approval_asked, "run_code", _}
+      assert_receive {:approval_asked, "deploy", %{"from" => "the program"}}
+      assert_receive {:deploy_ran, _}
+    end
+
+    test "control: a tool outside approval_required runs without prompting" do
+      test_pid = self()
+
+      agent =
+        Agent.new("openai:test-model",
+          tools: [deploy_tool(test_pid)],
+          code_mode: :code,
+          permissions: Permissions.build_policy(approval_required: ["something_else"])
+        )
+
+      assert {:ok, result} =
+               AgentRunner.run(agent, "go", approval_handler: recording_handler(test_pid))
+
+      refute_receive {:approval_asked, _, _}, 100
+      assert_receive {:deploy_ran, _}
+      assert tool_message(result) =~ "deployed"
+    end
+  end
+
+  # The runner fires :pre_tool_use / :post_tool_use around every model-direct
+  # call; `direct_dispatch/3` now does the same around every sub-call, from the
+  # registry `Agent.Context.to_run_context/2` threads into the RunContext.
+  describe "hooks fire per sub-call" do
+    setup do
+      configure_runtime(call: "alpha")
+      Nous.ModelDispatcher.put_dispatcher(__MODULE__.RunCodeDispatcher)
+      :ok
+    end
+
+    defp sub_call_hook(event, test_pid, decide) do
+      Nous.Hook.new(event,
+        handler: fn _event, payload ->
+          send(test_pid, {:hook_saw, event, payload})
+          decide.(payload)
+        end,
+        # Only sub-calls: the enclosing run_code call must pass so the program
+        # runs at all.
+        matcher: "alpha",
+        name: "sub-call-#{event}"
+      )
+    end
+
+    test "a pre_tool_use hook can deny a sub-call and the tool never runs" do
+      test_pid = self()
+
+      alpha =
+        tool("alpha", fn _ctx, _args ->
+          send(test_pid, :alpha_ran)
+          {:ok, "should never happen"}
+        end)
+
+      hook = sub_call_hook(:pre_tool_use, test_pid, fn _ -> {:deny, "not from a program"} end)
+      agent = Agent.new("openai:test-model", tools: [alpha], code_mode: :code, hooks: [hook])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      assert_receive {:hook_saw, :pre_tool_use, %{tool_name: "alpha", arguments: %{"from" => _}}}
+      refute_receive :alpha_ran, 100
+      assert tool_message(result) =~ "denied by hook: not from a program"
+    end
+
+    test "a pre_tool_use hook can rewrite the sub-call's arguments" do
+      test_pid = self()
+
+      alpha =
+        tool("alpha", fn _ctx, args ->
+          send(test_pid, {:alpha_ran, args})
+          {:ok, "ok"}
+        end)
+
+      hook =
+        sub_call_hook(:pre_tool_use, test_pid, fn %{arguments: args} ->
+          {:modify, %{arguments: Map.put(args, "from", "the hook")}}
+        end)
+
+      agent = Agent.new("openai:test-model", tools: [alpha], code_mode: :code, hooks: [hook])
+
+      assert {:ok, _result} = AgentRunner.run(agent, "go")
+
+      assert_receive {:alpha_ran, %{"from" => "the hook"}}
+    end
+
+    test "a post_tool_use hook can rewrite what the program receives" do
+      test_pid = self()
+
+      hook =
+        sub_call_hook(:post_tool_use, test_pid, fn %{result: result} ->
+          {:modify, %{result: "redacted(#{result})"}}
+        end)
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [hook])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      assert_receive {:hook_saw, :post_tool_use, %{tool_name: "alpha", result: "alpha ran"}}
+      assert tool_message(result) =~ "redacted(alpha ran)"
+    end
+  end
+
   describe "bindings are derived from the permission policy" do
     test "a granted tool becomes a real closure scoped to the caller" do
       test_pid = self()

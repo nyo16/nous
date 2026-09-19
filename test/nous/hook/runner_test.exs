@@ -87,7 +87,7 @@ defmodule Nous.Hook.RunnerTest do
       refute_received :hook_2_ran
     end
 
-    test "applies modifications and continues" do
+    test "applies modifications to later hooks and returns them to the caller" do
       hooks = [
         make_hook(
           :pre_tool_use,
@@ -110,7 +110,26 @@ defmodule Nous.Hook.RunnerTest do
       ]
 
       registry = Registry.from_hooks(hooks)
-      assert Runner.run(registry, :pre_tool_use, %{tool_name: "test", arguments: %{}}) == :allow
+
+      # Used to return :allow here, which silently dropped the rewrite: the
+      # agent runner's "hook modified the arguments" branch was unreachable
+      # and a sanitising pre_tool_use hook changed nothing.
+      assert Runner.run(registry, :pre_tool_use, %{tool_name: "test", arguments: %{}}) ==
+               {:modify, %{arguments: %{"modified" => true}}}
+    end
+
+    test "a later blocking hook still wins over an earlier modification" do
+      hooks = [
+        make_hook(:pre_tool_use, fn _, _ -> {:modify, %{arguments: %{"x" => 1}}} end,
+          priority: 1
+        ),
+        make_hook(:pre_tool_use, fn _, _ -> {:deny, "no"} end, priority: 2)
+      ]
+
+      registry = Registry.from_hooks(hooks)
+
+      assert Runner.run(registry, :pre_tool_use, %{tool_name: "test", arguments: %{}}) ==
+               {:deny, "no"}
     end
 
     test "errors fail open by default" do

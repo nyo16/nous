@@ -320,7 +320,7 @@ defmodule Nous.AgentRunner.ToolExecution do
     tool =
       tools
       |> Enum.find(fn t -> t.name == cleaned_name end)
-      |> enforce_policy_approval(agent.permissions)
+      |> Permissions.enforce_approval(agent.permissions)
 
     case check_tool_approval(tool, call, ctx) do
       :reject ->
@@ -412,7 +412,7 @@ defmodule Nous.AgentRunner.ToolExecution do
 
       {:modify, %{arguments: new_args}} ->
         # Hook modified the arguments — continue with modified call.
-        # Apply enforce_policy_approval here too (mirroring the :allow branch
+        # Apply Permissions.enforce_approval here too (mirroring the :allow branch
         # below): otherwise a tool gated ONLY by the permission policy (strict
         # mode / approval_required / execute-category) would execute UNGATED
         # whenever a pre_tool_use hook modifies arguments, since the bare tool
@@ -422,7 +422,7 @@ defmodule Nous.AgentRunner.ToolExecution do
         tool =
           tools
           |> Enum.find(fn t -> t.name == cleaned_name end)
-          |> enforce_policy_approval(agent.permissions)
+          |> Permissions.enforce_approval(agent.permissions)
 
         case check_tool_approval(tool, modified_call, acc_ctx) do
           :reject ->
@@ -467,7 +467,7 @@ defmodule Nous.AgentRunner.ToolExecution do
         tool =
           tools
           |> Enum.find(fn t -> t.name == cleaned_name end)
-          |> enforce_policy_approval(agent.permissions)
+          |> Permissions.enforce_approval(agent.permissions)
 
         case check_tool_approval(tool, call, acc_ctx) do
           :reject ->
@@ -760,23 +760,6 @@ defmodule Nous.AgentRunner.ToolExecution do
   # `Nous.Tool.ContextUpdate` — including the prepend-then-reverse append
   # optimisation and the reasoning behind it.
   defdelegate context_update_to_map(update), to: ContextUpdate, as: :to_deps
-
-  # Mark a tool as approval-required when the permission policy says so, so the
-  # per-tool flag and the policy compose (either one forces the approval gate).
-  def enforce_policy_approval(nil, _policy), do: nil
-  def enforce_policy_approval(%Tool{} = tool, nil), do: tool
-
-  def enforce_policy_approval(%Tool{requires_approval: true} = tool, _policy), do: tool
-
-  def enforce_policy_approval(%Tool{} = tool, %Permissions.Policy{} = policy) do
-    # Pass the tool's category so an :execute tool keeps its approval gate even
-    # under :permissive (unless the policy opts into allow_unattended_execute).
-    if Permissions.requires_approval?(policy, tool.name, tool.category) do
-      %{tool | requires_approval: true}
-    else
-      tool
-    end
-  end
 
   # The tool set one model request may see, in two layers and deliberately in
   # this order:
