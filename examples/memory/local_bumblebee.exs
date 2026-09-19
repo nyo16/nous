@@ -1,40 +1,43 @@
 # Local Semantic Search — Bumblebee + ETS
 #
-# Uses Bumblebee for local on-device embeddings (no API keys needed).
-# Requires: {:bumblebee, "~> 0.6"}, {:exla, "~> 0.9"}
+# Uses Bumblebee for local on-device embeddings (no API keys needed), through
+# the example provider in `examples/memory/bumblebee_embedding.ex` — a
+# `Nous.Memory.Embedding` implementation that lives outside Nous, the same way
+# yours would.
+#
+# Requires: {:bumblebee, "~> 0.6"}, {:exla, "~> 0.9"} in your deps.
 #
 # Run: mix run examples/memory/local_bumblebee.exs
 # Note: First run downloads the model (~1.2GB), subsequent runs use cache.
 
-alias Nous.Memory.{Entry, Store, Search, Embedding}
+unless Code.ensure_loaded?(Bumblebee) do
+  IO.puts("""
+  Skipping: Bumblebee is not available.
+
+  Add these to your app's deps (they are deliberately NOT declared by Nous —
+  Nx/EXLA are too heavy for a library dependency):
+
+      {:bumblebee, "~> 0.6"},
+      {:exla, "~> 0.9"},
+
+  then run `mix deps.get` and re-run this script.
+  """)
+
+  System.halt(0)
+end
+
+Code.require_file("bumblebee_embedding.ex", __DIR__)
+
+alias MyApp.Memory.Embedding.Bumblebee
+alias Nous.Memory.{Entry, Store, Search}
+
+# The provider's two processes — in an app these go in your supervision tree.
+{:ok, _} = Registry.start_link(keys: :unique, name: Bumblebee.Registry)
+{:ok, _} = Bumblebee.ServingSupervisor.start_link([])
 
 IO.puts("Initializing Bumblebee embedding model (first run downloads ~1.2GB)...")
 
-# Test embedding generation — this doubles as the dependency probe.
-embedding =
-  case Embedding.Bumblebee.embed("test query") do
-    {:ok, embedding} ->
-      embedding
-
-    {:error, reason} ->
-      IO.puts("""
-
-      Skipping: #{reason}
-
-      The bumblebee and exla dependencies ship commented out in this repo. Uncomment
-      both of these lines in mix.exs (under "Memory system embedding providers"):
-
-          {:bumblebee, "~> 0.6", optional: true},
-          {:exla, "~> 0.9", optional: true},
-
-      then run:
-
-          mix deps.get
-      """)
-
-      System.halt(0)
-  end
-
+{:ok, embedding} = Bumblebee.embed("test query")
 IO.puts("Embedding dimension: #{length(embedding)}")
 
 # Initialize store
@@ -51,7 +54,7 @@ memories = [
 
 store =
   Enum.reduce(memories, store, fn content, s ->
-    {:ok, emb} = Embedding.Bumblebee.embed(content)
+    {:ok, emb} = Bumblebee.embed(content)
     entry = Entry.new(%{content: content, embedding: emb, importance: 0.7})
     {:ok, s} = Store.ETS.store(s, entry)
     s
@@ -67,7 +70,7 @@ queries = [
 ]
 
 for query <- queries do
-  {:ok, results} = Search.search(Store.ETS, store, query, Embedding.Bumblebee, limit: 3)
+  {:ok, results} = Search.search(Store.ETS, store, query, Bumblebee, limit: 3)
 
   IO.puts("Query: \"#{query}\"")
 

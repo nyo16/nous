@@ -274,7 +274,7 @@ defmodule Nous.Hook.Runner do
   #
   # net_runner is `optional: true` in mix.exs, so a downstream app may compile
   # nous without it (NetRunner sits in `no_warn_undefined`). Runtime guard —
-  # not the compile-time Tyrex/Bumblebee conditional — so the real clause stays
+  # not the compile-time Tyrex conditional — so the real clause stays
   # compiled downstream and its helpers don't turn into "unused function"
   # warnings. The guard MUST sit before `confine_hook_argv/1`: with
   # `:sandbox_confine_command_hooks` on, the confine backends probe the sandbox

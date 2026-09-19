@@ -14,7 +14,7 @@ defmodule Nous.Memory.Embedding do
   @optional_callbacks [embed_batch: 2]
 
   # Per-text task timeout for the sequential fallback. Providers' own request
-  # timeouts are at most 60s (Bumblebee run_timeout; HTTP providers use 30s),
+  # timeouts are at most 60s (HTTP providers use 30s; the Bumblebee example provider 60s),
   # so this only fires if a provider hangs past its own deadline.
   @fallback_batch_timeout 60_000
 

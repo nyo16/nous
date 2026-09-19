@@ -29,7 +29,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application rather than in Nous — see the extension point below, which is where
   a backend with a heavy native dependency should have lived all along.
 
+- **`Nous.Memory.Embedding.Bumblebee` (and its `ServingSupervisor` /
+  `ServingHolder`) move out of `lib/` into
+  `examples/memory/bumblebee_embedding.ex`.** The module was an
+  `if Code.ensure_loaded?(Bumblebee)` ghost: bumblebee/exla were never in
+  `mix.exs`, so it never compiled or ran in Nous's own suite, and the
+  placeholder branch that shipped instead only ever returned an error.
+  Nx/EXLA are too heavy to be a library dependency and the extension point is
+  the `Nous.Memory.Embedding` behaviour, so the provider is now a worked
+  out-of-tree example (`MyApp.Memory.Embedding.Bumblebee`): copy it into your
+  app, add the two deps, start its `Registry` + `ServingSupervisor` in your
+  supervision tree. `Nous.Application` no longer conditionally starts those
+  two processes. **Migration:** replace `embedding: Nous.Memory.Embedding.Bumblebee`
+  with your copy of the example module.
+
 ### Added
+
+- **The SQLite, DuckDB and PromEx backends are now declared optional
+  dependencies, compile in-repo, and have tests.** `{:exqlite, "~> 0.27"}`,
+  `{:duckdbex, "~> 0.5"}`, `{:prom_ex, "~> 1.11"}` (plus `{:plug, ">= 1.16"}`,
+  which prom_ex 1.12's `PromEx.Plug` needs despite declaring it optional) are
+  `optional: true` in `mix.exs` — downstream apps still opt in explicitly,
+  but Nous's own build and CI now compile and exercise
+  `Nous.Memory.Store.SQLite`, `Nous.Memory.Store.DuckDB`,
+  `Nous.Decisions.Store.DuckDB` and `Nous.PromEx.Plugin`, which had been
+  `if Code.ensure_loaded?` ghosts since they were written. The first run
+  found what a ghost hides: the SQLite store called a removed exqlite API
+  (`Sqlite3.bind/3` → `bind/2`) and unwrapped `columns/2` wrongly, so it
+  could not store a single entry; the DuckDB memory store's text search
+  failed to bind its parameters and, once it did, scored every multi-word
+  query 0; and the DuckDB decisions store depended on the DuckPGQ community
+  extension without ever installing it, so `init/1` failed on a stock
+  duckdbex — its path/ancestor/descendant queries are now recursive CTEs in
+  plain SQL. Both memory backends run the shared
+  `Nous.Memory.Store.Conformance` battery (tagged `:sqlite` / `:duckdb`), the
+  decisions store's existing test file finally executes, and a
+  `Nous.PromEx.Plugin` test pins its metric groups; CI runs the three tags
+  as a named leg. `Tyrex` joins `no_warn_undefined` so a consumer without
+  tyrex no longer sees four "not available" warnings from
+  `Nous.CodeRuntime.JS.Session`. Verified: an app depending on nous with none
+  of the optional deps compiles `lib/nous/` with zero warnings.
 
 - **`Nous.Memory.Store` is a documented extension point, and a backend you write
   yourself is a first-class citizen.** This was already true and never written

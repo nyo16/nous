@@ -198,7 +198,7 @@ defmodule Nous.Tools.Bash do
   # net_runner is `optional: true` in mix.exs, so a downstream app may compile
   # nous without it (NetRunner is in mix.exs `no_warn_undefined` for exactly
   # this reason). The guard is a RUNTIME check — unlike the compile-time
-  # Tyrex/Bumblebee conditionals in Nous.Application — because wrapping the
+  # Tyrex conditional in Nous.Application — because wrapping the
   # real implementation in a compile-time branch would leave every private
   # helper below unreferenced in downstream builds, spraying "unused function"
   # warnings. The gate sits BEFORE `Sandbox.confine/2`, not just at the spawn

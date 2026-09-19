@@ -398,10 +398,6 @@ Currently hidden, do not call:
   module
 - `Nous.Util` — small shared helpers (atom coercion, option splitting) used
   across internals
-- `Nous.Memory.Embedding.Bumblebee.ServingSupervisor` and
-  `Nous.Memory.Embedding.Bumblebee.ServingHolder` — process plumbing behind the
-  public `Nous.Memory.Embedding.Bumblebee` provider, and only compiled when
-  Bumblebee is available
 
 Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
 `Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and

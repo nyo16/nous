@@ -17,12 +17,14 @@ defmodule Nous.MixProject do
       source_url: @source_url,
       package: package(),
       elixirc_paths: elixirc_paths(Mix.env()),
-      # hackney and net_runner are optional backends (see deps); without this,
-      # apps that depend on nous without them get ":hackney is not available" /
-      # "NetRunner is not available" warnings when compiling the dep. The
-      # NetRunner call sites that matter fail closed at runtime (see
-      # Nous.Hook.Runner and Nous.Tools.Bash).
-      elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool, NetRunner]],
+      # hackney, net_runner and tyrex are optional backends (see deps); without
+      # this, apps that depend on nous without them get ":hackney is not
+      # available" / "NetRunner is not available" / "Tyrex is not available"
+      # warnings when compiling the dep. The NetRunner call sites that matter
+      # fail closed at runtime (see Nous.Hook.Runner and Nous.Tools.Bash);
+      # Nous.CodeRuntime.JS.Session calls Tyrex directly and is only reachable
+      # once a code runtime is configured.
+      elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool, NetRunner, Tyrex]],
       # Coverage ratchet. `mix test --cover` defaults to a 90% threshold this
       # project has never met, and no CI job ran it, so the gate was purely
       # decorative. 59 is the current measured floor (60.05%, :llm/:llama
@@ -113,19 +115,27 @@ defmodule Nous.MixProject do
       # tyrex is not "mostly fine" — it is unusable for model-authored code.
       {:tyrex, "~> 0.4", optional: true},
 
-      # Memory system store backends (all optional — add to your app's deps to unlock)
-      # {:exqlite, "~> 0.27", optional: true},
-      # {:duckdbex, "~> 0.3", optional: true},
+      # Memory / decisions store backends. optional: true keeps the NIFs out
+      # of downstream builds unless the app opts in; declaring them here is
+      # what lets Nous compile AND test the code it ships for them — before
+      # this they were `if Code.ensure_loaded?` ghosts that never built
+      # in-repo (audit D-M2). CI runs them in the `optional_deps` job
+      # (`mix test --only sqlite --only duckdb --only prom_ex`).
+      {:exqlite, "~> 0.27", optional: true},
+      {:duckdbex, "~> 0.5", optional: true},
+      # Prometheus metrics via PromEx (`Nous.PromEx.Plugin`). Same story. plug
+      # rides along because prom_ex 1.12's `PromEx.Plug` compiles
+      # unconditionally against `Plug.Conn` even though prom_ex declares plug
+      # optional — without it prom_ex fails to build in :dev (test already
+      # has plug via bypass -> plug_cowboy).
+      {:prom_ex, "~> 1.11", optional: true},
+      {:plug, ">= 1.16.0", optional: true},
 
       # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
       # to unlock the LlamaCpp provider). optional: true keeps it out of
       # downstream apps' builds unless they opt in, while still being available
       # for Nous's own dev/test (e.g. the tagged llamacpp smoke test).
       {:llama_cpp_ex, "~> 0.8", optional: true},
-
-      # Memory system embedding providers (all optional — add to your app's deps to unlock)
-      # {:bumblebee, "~> 0.6", optional: true},
-      # {:exla, "~> 0.9", optional: true},
 
       # Process execution for command hooks and the Bash tool. A NIF-based
       # runner is used (over System.cmd/Port) for fine-grained process-tree
@@ -262,8 +272,6 @@ defmodule Nous.MixProject do
         "Nous.AgentRunner.ToolExecution",
         "Nous.Application",
         "Nous.JSON",
-        "Nous.Memory.Embedding.Bumblebee.ServingHolder",
-        "Nous.Memory.Embedding.Bumblebee.ServingSupervisor",
         "Nous.OutputSchema.UseMacro",
         "Nous.Persistence.ETS.TableOwner",
         "Nous.Util",
@@ -563,7 +571,6 @@ defmodule Nous.MixProject do
           Nous.Memory.Search,
           Nous.Memory.Tools,
           Nous.Memory.Embedding,
-          Nous.Memory.Embedding.Bumblebee,
           Nous.Memory.Embedding.OpenAI,
           Nous.Memory.Embedding.Local
         ],

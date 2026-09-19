@@ -112,7 +112,7 @@ Best for: analytics workloads, large-scale data, native array embeddings.
 Add to `mix.exs`:
 
 ```elixir
-{:duckdbex, "~> 0.3"}
+{:duckdbex, "~> 0.5"}
 ```
 
 Initialize:
@@ -319,18 +319,23 @@ config = %{
 
 Options: `:base_url` (default: `"http://localhost:11434/v1"`), `:model` (default: `"nomic-embed-text"`), `:dimension` (default: 768), `:api_key`.
 
-**Bumblebee** (on-device, 1024 dimensions):
+**Bumblebee** (on-device, 1024 dimensions) ships as a worked example rather
+than a built-in — Nx/EXLA are too heavy for a library dependency, and the
+extension point is the `Nous.Memory.Embedding` behaviour, not a module name.
+Copy `examples/memory/bumblebee_embedding.ex` into your app, add
+`{:bumblebee, "~> 0.6"}` and `{:exla, "~> 0.9"}` to its deps, start its
+`Registry` + `ServingSupervisor` in your supervision tree, and pass it as the
+provider:
 
 ```elixir
 # Zero API calls, fully offline. First run downloads the model (~1.2GB).
 config = %{
-  embedding: Nous.Memory.Embedding.Bumblebee
+  embedding: MyApp.Memory.Embedding.Bumblebee
 }
 ```
 
-Requires deps: `{:bumblebee, "~> 0.6"}` and `{:exla, "~> 0.9"}`. Default model: `Alibaba-NLP/gte-Qwen2-0.6B-instruct`.
-
-See `examples/memory/local_bumblebee.exs`.
+Default model: `Alibaba-NLP/gte-Qwen2-0.6B-instruct`. See
+`examples/memory/local_bumblebee.exs` for the end-to-end script.
 
 **Custom providers**: Implement the `Nous.Memory.Embedding` behaviour (`embed/2`, `dimension/0`, and optionally `embed_batch/2`).
 
@@ -650,7 +655,7 @@ Your embedding provider dimension must match your store's vector configuration. 
 |----------|-----------|
 | OpenAI `text-embedding-3-small` | 1536 |
 | Local / Ollama `nomic-embed-text` | 768 |
-| Bumblebee `gte-Qwen2-0.6B-instruct` | 1024 |
+| Bumblebee `gte-Qwen2-0.6B-instruct` (example provider) | 1024 |
 
 No shipped store takes an `embedding_dimension` option — none of them declare a vector width up front, and embeddings are persisted at whatever length the provider produced. The dimensions still have to agree: if you point a new provider at a store populated by an old one, `Store.SQLite` scores every length-mismatched row `0.0`, so old entries silently vanish from vector results rather than erroring. Re-embed the corpus when you change providers, or give each provider its own store.
 
@@ -697,7 +702,7 @@ Working examples are in the `examples/memory/` directory:
 | `sqlite_full.exs` | SQLite with FTS5 BM25 search |
 | `duckdb_full.exs` | DuckDB with native array embeddings |
 | `postgresql_full.exs` | A complete out-of-tree `Nous.Memory.Store` (PostgreSQL + pgvector) |
-| `local_bumblebee.exs` | On-device embeddings with Bumblebee |
+| `local_bumblebee.exs` | On-device embeddings via the out-of-tree Bumblebee example provider |
 | `cross_agent.exs` | Multi-agent shared memory with scoping |
 | `auto_update.exs` | Automatic memory updates after each run |
 

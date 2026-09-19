@@ -109,10 +109,10 @@ if Code.ensure_loaded?(Exqlite) do
       sql = "SELECT * FROM memories WHERE id = ?1"
 
       with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-           :ok <- Exqlite.Sqlite3.bind(conn, stmt, [id]) do
+           :ok <- Exqlite.Sqlite3.bind(stmt, [id]) do
         case Exqlite.Sqlite3.step(conn, stmt) do
           {:row, row} ->
-            columns = Exqlite.Sqlite3.columns(conn, stmt)
+            {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
             Exqlite.Sqlite3.release(conn, stmt)
             {:ok, row_to_entry(columns, row)}
 
@@ -321,7 +321,7 @@ if Code.ensure_loaded?(Exqlite) do
     # -- Private helpers --
 
     defp bind_and_step(conn, stmt, params) do
-      with :ok <- Exqlite.Sqlite3.bind(conn, stmt, params) do
+      with :ok <- Exqlite.Sqlite3.bind(stmt, params) do
         case Exqlite.Sqlite3.step(conn, stmt) do
           :done ->
             Exqlite.Sqlite3.release(conn, stmt)
@@ -340,8 +340,8 @@ if Code.ensure_loaded?(Exqlite) do
 
     defp query_all(conn, sql, params) do
       with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-           :ok <- Exqlite.Sqlite3.bind(conn, stmt, params) do
-        columns = Exqlite.Sqlite3.columns(conn, stmt)
+           :ok <- Exqlite.Sqlite3.bind(stmt, params) do
+        {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
         rows = fetch_rows(conn, stmt, [])
         Exqlite.Sqlite3.release(conn, stmt)
         {:ok, rows, columns}
@@ -389,8 +389,7 @@ if Code.ensure_loaded?(Exqlite) do
     defp memory_type("procedural"), do: :procedural
     defp memory_type(_other), do: :semantic
 
-    defp build_scope_clause(scope, param_offset) when map_size(scope) == 0,
-      do: {"", List.duplicate(nil, 0) |> then(fn _ -> [] end)}
+    defp build_scope_clause(scope, _param_offset) when map_size(scope) == 0, do: {"", []}
 
     defp build_scope_clause(scope, param_offset) do
       {clauses, params} =

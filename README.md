@@ -564,7 +564,7 @@ deps = %{memory_config: %{store: Nous.Memory.Store.ETS}}
 **Store backends:** ETS (zero deps), SQLite (FTS5 + cosine scan), DuckDB
 (ILIKE + cosine scan). `Nous.Memory.Store` is a public extension point — implement
 the behaviour in your own app to plug in any backend.
-**Embedding providers:** Bumblebee (local, offline), OpenAI, Local
+**Embedding providers:** OpenAI, Local
 (Ollama/vLLM). **Features:** Memory scoping (agent/user/session/global),
 temporal decay, importance weighting, RRF scoring, configurable
 auto-injection.
@@ -738,7 +738,7 @@ No clone, no `mix` — these open straight from the hex page and install Nous vi
 ### Memory Examples
 
 - [memory/basic_ets.exs](examples/memory/basic_ets.exs) - Simplest setup, ETS + keyword search
-- [memory/local_bumblebee.exs](examples/memory/local_bumblebee.exs) - Local semantic search, no API keys
+- [memory/local_bumblebee.exs](examples/memory/local_bumblebee.exs) - Local semantic search via the out-of-tree Bumblebee example provider, no API keys
 - [memory/sqlite_full.exs](examples/memory/sqlite_full.exs) - SQLite + FTS5 production setup
 - [memory/duckdb_full.exs](examples/memory/duckdb_full.exs) - DuckDB analytics-friendly setup
 - [memory/postgresql_full.exs](examples/memory/postgresql_full.exs) - Out-of-tree store: PostgreSQL + pgvector

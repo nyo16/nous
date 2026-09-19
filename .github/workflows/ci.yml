@@ -213,6 +213,14 @@ jobs:
       - run: mix deps.compile
       - run: mix compile
       - run: mix test
+      # The optional-dependency backends (SQLite, DuckDB, PromEx) are
+      # declared `optional: true` in mix.exs, so they compile and run in the
+      # step above too; this leg names them so a future default exclusion of
+      # the tags — or a NIF that stops building on one matrix OS — is a
+      # visible red rather than a silent skip. Before this, the modules were
+      # `if Code.ensure_loaded?` ghosts that never compiled in-repo.
+      - name: Optional-dependency backends
+        run: mix test --only sqlite --only duckdb --only prom_ex
 
   coverage:
     name: Coverage
