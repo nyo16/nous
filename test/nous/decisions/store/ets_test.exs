@@ -74,6 +74,32 @@ defmodule Nous.Decisions.Store.ETSTest do
       {:ok, edges} = ETS.get_edges(state, n2.id, :incoming)
       assert edges == []
     end
+
+    test "removes the edge from the surviving node's lookups in both directions", %{state: state} do
+      n1 = graph_node("n1", :goal)
+      n2 = graph_node("n2", :decision)
+      {:ok, state} = ETS.add_node(state, n1)
+      {:ok, state} = ETS.add_node(state, n2)
+      {:ok, state} = ETS.add_edge(state, edge("n1", "n2"))
+      {:ok, state} = ETS.add_edge(state, edge("n2", "n1"))
+
+      {:ok, state} = ETS.delete_node(state, "n2")
+
+      assert {:ok, []} = ETS.get_edges(state, "n1", :outgoing)
+      assert {:ok, []} = ETS.get_edges(state, "n1", :incoming)
+      assert {:ok, []} = ETS.get_edges(state, "n2", :outgoing)
+      assert {:ok, []} = ETS.get_edges(state, "n2", :incoming)
+    end
+
+    test "cascades a self-loop edge without error", %{state: state} do
+      {:ok, state} = ETS.add_node(state, graph_node("loop", :goal))
+      {:ok, state} = ETS.add_edge(state, edge("loop", "loop"))
+
+      {:ok, state} = ETS.delete_node(state, "loop")
+
+      assert {:ok, []} = ETS.get_edges(state, "loop", :outgoing)
+      assert {:ok, []} = ETS.get_edges(state, "loop", :incoming)
+    end
   end
 
   describe "add_edge/2 and get_edges/3" do
@@ -112,6 +138,59 @@ defmodule Nous.Decisions.Store.ETSTest do
 
       {:ok, edges} = ETS.get_edges(state, n1.id, :outgoing)
       assert edges == []
+    end
+
+    test "returns a node's edges in insertion order, ignoring unrelated edges", %{state: state} do
+      {:ok, state} = ETS.add_node(state, graph_node("goal", :goal))
+
+      # Interleave the goal's edges among the noise so a lookup that only
+      # worked by scanning a prefix/suffix of the table would still be caught.
+      {:ok, state} = add_unrelated_edges(state, 1..5_000)
+      {:ok, state} = ETS.add_edge(state, edge("goal", "d1"))
+      {:ok, state} = add_unrelated_edges(state, 5_001..10_000)
+      {:ok, state} = ETS.add_edge(state, edge("goal", "d2"))
+      {:ok, state} = ETS.add_edge(state, edge("goal", "d3"))
+
+      {:ok, outgoing} = ETS.get_edges(state, "goal", :outgoing)
+      assert Enum.map(outgoing, & &1.to_id) == ["d1", "d2", "d3"]
+
+      {:ok, incoming} = ETS.get_edges(state, "goal", :incoming)
+      assert incoming == []
+    end
+
+    test "re-adding an edge id with new endpoints drops the old endpoints", %{state: state} do
+      {:ok, state} =
+        ETS.add_edge(state, Edge.new(%{id: "e", from_id: "a", to_id: "b", edge_type: :leads_to}))
+
+      {:ok, state} =
+        ETS.add_edge(state, Edge.new(%{id: "e", from_id: "c", to_id: "d", edge_type: :leads_to}))
+
+      assert {:ok, []} = ETS.get_edges(state, "a", :outgoing)
+      assert {:ok, []} = ETS.get_edges(state, "b", :incoming)
+      assert {:ok, [%Edge{id: "e", to_id: "d"}]} = ETS.get_edges(state, "c", :outgoing)
+      assert {:ok, [%Edge{id: "e", from_id: "c"}]} = ETS.get_edges(state, "d", :incoming)
+    end
+
+    # Regression guard for audit finding P-M3: get_edges/3 used to tab2list the
+    # whole edge table per call, so lookup cost scaled with unrelated edges.
+    # Not a benchmark -- the 3x bound is loose on purpose; a scan-based lookup
+    # over 10k rows is two orders of magnitude slower than a keyed one.
+    test "lookup cost does not scale with unrelated edges" do
+      {:ok, small} = ETS.init([])
+      {:ok, small} = add_goal_edges(small)
+
+      {:ok, large} = ETS.init([])
+      {:ok, large} = add_unrelated_edges(large, 1..10_000)
+      {:ok, large} = add_goal_edges(large)
+
+      assert {:ok, edges} = ETS.get_edges(large, "goal", :outgoing)
+      assert length(edges) == 3
+
+      small_median = median_lookup_us(small)
+      large_median = median_lookup_us(large)
+
+      assert large_median < 3 * small_median,
+             "get_edges took #{large_median}us with 10k unrelated edges vs #{small_median}us without"
     end
   end
 
@@ -376,4 +455,36 @@ defmodule Nous.Decisions.Store.ETSTest do
 
   defp edge(from_id, to_id),
     do: Edge.new(%{from_id: from_id, to_id: to_id, edge_type: :leads_to})
+
+  defp add_unrelated_edges(state, range) do
+    Enum.reduce(range, {:ok, state}, fn i, {:ok, state} ->
+      ETS.add_edge(state, edge("noise_from_#{i}", "noise_to_#{i}"))
+    end)
+  end
+
+  defp add_goal_edges(state) do
+    Enum.reduce(["d1", "d2", "d3"], {:ok, state}, fn to, {:ok, state} ->
+      ETS.add_edge(state, edge("goal", to))
+    end)
+  end
+
+  # Median of 20 samples, each timing a batch of lookups so the measurement is
+  # well above :timer.tc's microsecond resolution and a single GC pause or
+  # scheduler hiccup cannot decide the outcome.
+  @lookup_samples 20
+  @lookups_per_sample 500
+
+  defp median_lookup_us(state) do
+    lookup = fn -> ETS.get_edges(state, "goal", :outgoing) end
+    # Warm up so code loading / first-touch costs land outside the samples.
+    lookup.()
+
+    samples =
+      for _ <- 1..@lookup_samples do
+        {us, _} = :timer.tc(fn -> for _ <- 1..@lookups_per_sample, do: lookup.() end)
+        us
+      end
+
+    samples |> Enum.sort() |> Enum.at(div(@lookup_samples, 2))
+  end
 end

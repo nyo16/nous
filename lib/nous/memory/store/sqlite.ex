@@ -297,7 +297,9 @@ if Code.ensure_loaded?(Exqlite) do
       scope = Keyword.get(opts, :scope, %{})
       {scope_sql, scope_params} = build_scope_clause(scope, 0)
 
-      sql = "SELECT * FROM memories #{scope_sql}"
+      sql =
+        "SELECT * FROM memories #{scope_sql}" <>
+          order_clause(Keyword.get(opts, :order)) <> limit_clause(Keyword.get(opts, :limit))
 
       case query_all(conn, sql, scope_params) do
         {:ok, rows, columns} ->
@@ -307,6 +309,14 @@ if Code.ensure_loaded?(Exqlite) do
           error
       end
     end
+
+    # `:order` / `:limit` are keyword atoms and integers from the caller, never
+    # strings, so interpolating them cannot inject.
+    defp order_clause(:newest), do: " ORDER BY created_at DESC"
+    defp order_clause(_), do: ""
+
+    defp limit_clause(limit) when is_integer(limit) and limit >= 0, do: " LIMIT #{limit}"
+    defp limit_clause(_), do: ""
 
     # -- Private helpers --
 

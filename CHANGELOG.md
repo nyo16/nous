@@ -532,6 +532,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
+- **`file_grep` output is bounded on both engines, and the pure-Elixir
+  fallback no longer walks build output or reads whole trees.** Ripgrep's
+  `--max-count` is per file, so a workspace with thousands of matching files
+  still returned megabytes; the tool now cuts either engine's result at the
+  same 1 MB ceiling `bash` uses, on a line boundary, and ends it with the
+  familiar `[Output truncated at 1000000 bytes]` marker. On the rg path the
+  cut happens before the per-path PathGuard re-validation — every surviving
+  line is a complete rg record with its path intact, filtering can only shrink
+  the result, and the validator's stat + symlink walk is bounded by the cap
+  instead of by the size of the tree. The fallback engine (used when `rg` is
+  not installed) previously `Path.wildcard`-ed the entire tree including
+  `_build`, `deps` and `node_modules`, read every file whole, and only then
+  applied the 250-result limit; it now walks lazily, prunes those directories
+  and hidden entries, skips files over 10 MB, streams files line by line, and
+  halts as soon as the limit is reached. Glob filtering keeps `Path.wildcard`
+  semantics relative to the search root.
+
+- **`file_read` streams the requested `offset`/`limit` window and refuses
+  files over 10 MB instead of loading the whole file.** The tool is on the
+  never-spill list, so its result goes straight into the tool-result path;
+  a window read of a 200 MB file still did `File.read!` on all of it and split
+  every line. The window is now taken from `File.stream!/2` in 64 KiB chunks,
+  dropping lines lazily up to `offset` and stopping after `limit`, so memory is
+  bounded by the window rather than the file. Files over 10 MB return an error
+  naming the cap and the file's size. Rendering is byte-identical to before —
+  including CRLF line endings — and an `offset` past EOF still returns an
+  empty result.
+
+- **`Nous.Decisions.Store.ETS.get_edges/3` no longer scans the whole edge
+  table on every call.** The store keeps a secondary `:bag` index keyed by
+  `{node_id, direction}`, maintained on `add_edge/2` and `delete_node/2`, so a
+  per-node edge lookup is a keyed ETS lookup whose cost is independent of how
+  many unrelated edges exist. `Nous.Decisions.ContextBuilder` calls it once
+  per active goal on every system-prompt build, which previously copied the
+  full edge table out of ETS once per goal per request. `delete_node/2`
+  cascades through the same index, and re-adding an edge id with different
+  endpoints drops the old endpoints from lookups. Edges for a node are now
+  returned in insertion order. The `Nous.Decisions.Store` behaviour is
+  unchanged.
+
+- **`Nous.Memory.Store.list/2` honours `:limit` (and a new `:order` `:newest`),
+  so `reflection_max_memories` actually bounds reflection.**
+  `Nous.Plugins.Memory` already passed `limit: reflection_max_memories`; the
+  ETS backend ignored it and the reflection prompt received every memory in
+  scope. The behaviour now documents both options as a contract a backend MUST
+  honour, the ETS/SQLite/DuckDB backends and the worked PostgreSQL example
+  implement them, the plugin asks for `order: :newest`, and the
+  `Nous.Memory.Store.Conformance` battery gains a case for it — an out-of-tree
+  backend that ignores `:limit` now fails its own conformance suite.
+
+- **The ETS memory store no longer downcases every row on every search.**
+  Rows carry a pre-downcased copy of `content` (a tuple element, not an
+  `Entry` field — the backend contract is unchanged), written once at
+  `store/2`/`update/3`; `search_text/3` compares against it. Conformance gains
+  a case-insensitivity case so the parity holds for every backend.
+
+- **`Nous.Memory.Embedding.embed_batch/3` checks `Code.ensure_loaded?/1`
+  before probing for a provider's `embed_batch/2`, and
+  `Nous.Memory.Embedding.Local` gained a native `embed_batch/2`.**
+  `function_exported?/3` answers false for a module that has not been loaded
+  yet, so a provider with a real batch endpoint could be routed through the
+  per-text fallback on the first call after boot. `Local` (Ollama/vLLM/LM
+  Studio and other OpenAI-compatible `/embeddings` servers) previously only
+  implemented `embed/2`; it now sends the whole list as an array `input` in
+  one request, orders results by the server-supplied `index`, short-circuits
+  an empty list without a request, and returns
+  `{:error, {:unexpected_response, data}}` on a vector-count mismatch.
+
+- **Code Mode's sub-call lane no longer waits forever on itself.**
+  `Nous.CodeMode.Scheduler` used `:infinity` for every client-side wait —
+  submitting a sub-call, reading its audit trail, awaiting a commit and
+  stopping the lane — so a lane wedged inside a call could hold a program, and
+  any direct caller, indefinitely. Every wait is now bounded by the run's own
+  patience, `Nous.CodeMode.await_timeout_ms/0`: under `run_code` the run is
+  cancelled and the lane torn down before it ever fires, and outside
+  `run_code` a sub-call returns the usual `%{"tool" => _, "message" => _}`
+  error and `stop/2` kills a lane that cannot reach `terminate/2`.
+  `Nous.Skill.Registry.match/2` no longer re-downcases and regex-splits every
+  skill description on every user turn — terms are tokenised once at
+  `register/2` and matched with a single multi-pattern scan — and the
+  group/tag/scope indexes are `MapSet`s instead of lists grown with `++`.
+  `Nous.Hook.Runner`'s command-hook payload sanitizer builds its map in one
+  pass instead of three. The remaining tail-append sites the audit listed
+  (`Agent.Context.tool_calls`, `Workflow.Trace.entries`, `Session.Inbox`, the
+  session log's indexed view) are left as-is: each is a public, ordered field
+  read or serialised in write order, so prepend-and-reverse would move the
+  cost to a more frequent read.
+
 - **Interactive `Nous.AgentServer` interrupts no longer stall the server.**
   Cancelling or steering an in-flight run called `Task.shutdown(task, 2-5s)`
   inside the GenServer handler, freezing every concurrent caller (`get_context`

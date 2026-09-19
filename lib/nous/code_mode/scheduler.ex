@@ -115,6 +115,7 @@ defmodule Nous.CodeMode.Scheduler do
   @crashed_message "tool call did not complete"
   @abandoned_message "code run is over; tool call abandoned"
   @gone_message "code run is over; scheduler is gone"
+  @unanswered_message "scheduler did not answer; tool call not submitted"
 
   @typedoc """
   A scheduler process.
@@ -221,6 +222,7 @@ defmodule Nous.CodeMode.Scheduler do
     case safe_call(scheduler, {:submit, tool, args, run_ctx, owner}) do
       {:ok, ref} -> {:ok, {ref, tool.name}}
       :gone -> {:error, error(tool.name, @gone_message)}
+      :timeout -> {:error, error(tool.name, @unanswered_message)}
     end
   end
 
@@ -228,13 +230,16 @@ defmodule Nous.CodeMode.Scheduler do
   Block until a submitted sub-call commits.
 
   Monitors the scheduler, so a lane that dies mid-call answers with an error
-  instead of blocking the program forever. `timeout` defaults to `:infinity`:
-  bounding a run is the runtime provider's job — its budgets are the deadline
-  that a program cannot ask to extend — and the scheduler must not invent a
-  second, shorter one.
+  instead of blocking the program forever. `timeout` defaults to the run's own
+  patience, `Nous.CodeMode.await_timeout_ms/0`: bounding a run is the runtime
+  provider's job — its budgets are the deadline that a program cannot ask to
+  extend — and the scheduler must not invent a second, shorter one, so it adopts
+  the caller's. Under `Nous.Tools.RunCode` the run is cancelled and the lane torn
+  down before this fires; it is the backstop for a lane that is alive, never
+  answers, and has nobody else bounding it.
   """
   @spec await(server(), ticket(), timeout()) :: outcome()
-  def await(scheduler, ticket, timeout \\ :infinity)
+  def await(scheduler, ticket, timeout \\ lane_timeout())
 
   def await(scheduler, {ref, tool_name}, timeout) when is_reference(ref) do
     monitor = Process.monitor(scheduler)
@@ -285,9 +290,14 @@ defmodule Nous.CodeMode.Scheduler do
 
   `messages` is untouched — that is the whole point of logging sub-dispatches as
   bookkeeping events.
+
+  Exits, like any `GenServer.call/3`, if the lane is gone or has not answered
+  within the run's patience: this is the read for a caller that owns the
+  `Nous.Agent.Context`, not for a program, so a lane that cannot answer a
+  bookkeeping call is a bug to surface rather than an error to hand back.
   """
   @spec context(server()) :: Context.t()
-  def context(scheduler), do: GenServer.call(scheduler, :context, :infinity)
+  def context(scheduler), do: GenServer.call(scheduler, :context, lane_timeout())
 
   @doc """
   The bookkeeping events this scheduler appended, as `{type, data}` pairs in
@@ -298,10 +308,11 @@ defmodule Nous.CodeMode.Scheduler do
   `Nous.Tool.ContextUpdate.log_event/3` operations, which is how a sub-dispatch
   reaches the real session log.
 
-  A scheduler that is already gone answers `[]` and says so at `warning` level.
-  Silently losing an audit trail is the one outcome this path exists to prevent;
-  it is unreachable while the caller still holds the link `start_link/1` made,
-  and loud if a future caller drops it.
+  A scheduler that is already gone, or that has not answered within the run's
+  patience, answers `[]` and says so at `warning` level. Silently losing an
+  audit trail is the one outcome this path exists to prevent; it is unreachable
+  while the caller still holds the link `start_link/1` made, and loud if a
+  future caller drops it.
   """
   @spec logged_events(server()) :: [{Nous.Session.Event.type(), map()}]
   def logged_events(scheduler) do
@@ -310,6 +321,15 @@ defmodule Nous.CodeMode.Scheduler do
         Logger.warning(
           "code-mode scheduler #{inspect(scheduler)} is gone; its sub-dispatch session " <>
             "events could not be collected and are lost"
+        )
+
+        []
+
+      :timeout ->
+        Logger.warning(
+          "code-mode scheduler #{inspect(scheduler)} did not answer within " <>
+            "#{lane_timeout()}ms; its sub-dispatch session events could not be " <>
+            "collected and are lost"
         )
 
         []
@@ -350,11 +370,17 @@ defmodule Nous.CodeMode.Scheduler do
   Queued sub-calls are abandoned, in-flight tasks are terminated, and a sub-call
   that already produced a result still delivers it — in submission order. Safe to
   call on a scheduler that is already gone.
+
+  A lane that does not reach `terminate/2` within the run's patience is alive but
+  stuck inside a call it never returned from. It lives and dies with one run, so
+  it is killed rather than left behind; a caller still blocked in `await/3` then
+  sees `:DOWN` and gets the usual error.
   """
   @spec stop(server(), term()) :: :ok
   def stop(scheduler, reason \\ :normal) do
-    GenServer.stop(scheduler, reason)
+    GenServer.stop(scheduler, reason, lane_timeout())
   catch
+    :exit, {:timeout, _call} -> kill(scheduler)
     :exit, _reason -> :ok
   end
 
@@ -755,9 +781,33 @@ defmodule Nous.CodeMode.Scheduler do
     {:error, {:contract, ":context must be a Nous.Agent.Context, got #{inspect(other)}"}}
   end
 
+  # How long a client waits on the lane — submit, context, logged_events, stop,
+  # and the default for await/3. The lane never runs a tool itself (those run
+  # in tasks), so only a wedged lane — a `concurrency_safe?/1` that never
+  # returns, a suspended process — takes anywhere near this long. The bound is
+  # the run's own patience rather than a shorter one of the scheduler's
+  # invention (see `await/3`), and it is a backstop: under `Nous.Tools.RunCode`
+  # the tool executor's kill reaches the lane through the link first.
+  defp lane_timeout, do: Nous.CodeMode.await_timeout_ms()
+
   defp safe_call(scheduler, message) do
-    GenServer.call(scheduler, message, :infinity)
+    GenServer.call(scheduler, message, lane_timeout())
   catch
+    :exit, {:timeout, _call} -> :timeout
     :exit, _reason -> :gone
+  end
+
+  # Unlink first: the starter is linked so the executor's kill reaches the lane,
+  # and that same link would carry this kill straight back to the starter.
+  defp kill(scheduler) do
+    case GenServer.whereis(scheduler) do
+      pid when is_pid(pid) ->
+        Process.unlink(pid)
+        Process.exit(pid, :kill)
+        :ok
+
+      _gone ->
+        :ok
+    end
   end
 end

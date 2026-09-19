@@ -32,6 +32,12 @@ defmodule Nous.Tools.FileGrep do
 
   @default_limit 250
 
+  # Total bytes either engine may hand back. Same ceiling and marker as
+  # `Nous.Tools.Bash`: `--max-count` bounds matches per FILE, so a tree with
+  # thousands of matching files still produced megabytes.
+  @max_output_size 1_000_000
+  @truncation_marker "\n\n[Output truncated at #{@max_output_size} bytes]"
+
   tool "file_grep",
     description: "Search file contents using regex patterns. Uses ripgrep when available.",
     category: :search do
@@ -106,9 +112,42 @@ defmodule Nous.Tools.FileGrep do
     # rather than `scrubbed/0`: `System.cmd/3`'s `:env` merges into the inherited
     # environment, and `{name, false}` is the only way to remove a variable.
     case System.cmd(rg, args, stderr_to_stdout: true, env: Nous.Tools.Env.scrubbed_overrides()) do
-      {output, 0} -> {:ok, output |> String.trim() |> filter_rg_output(output_mode, ctx)}
-      {_output, 1} -> {:ok, "No matches found"}
-      {output, _} -> {:error, "rg failed: #{String.trim(output)}"}
+      {output, 0} ->
+        # Cut BEFORE re-validation: the cut lands on a line boundary, so every
+        # line the validator sees is a complete rg record with its path intact,
+        # and bounding the input here also bounds the stat + PathGuard walk per
+        # unique path (thousands of files otherwise). Filtering only removes
+        # lines, so the result stays within the cap; the marker goes on last.
+        {output, truncated?} = output |> String.trim() |> truncate_lines()
+        result = filter_rg_output(output, output_mode, ctx)
+        {:ok, if(truncated?, do: result <> @truncation_marker, else: result)}
+
+      {_output, 1} ->
+        {:ok, "No matches found"}
+
+      {output, _} ->
+        {:error, "rg failed: #{String.trim(output)}"}
+    end
+  end
+
+  # Trim `text` to @max_output_size bytes on a line boundary. Returns the
+  # prefix and whether anything was dropped; callers append @truncation_marker
+  # themselves because the rg path filters between the cut and the marker.
+  defp truncate_lines(text) when byte_size(text) <= @max_output_size, do: {text, false}
+
+  defp truncate_lines(text) do
+    prefix = binary_part(text, 0, @max_output_size)
+
+    # Drop the partial last line. A single line longer than the cap has no
+    # boundary to cut at; keep the raw prefix — the path sits at its head, so
+    # re-validation still sees it whole.
+    case :binary.matches(prefix, "\n") do
+      [] ->
+        {prefix, true}
+
+      matches ->
+        {pos, _} = List.last(matches)
+        {binary_part(prefix, 0, pos), true}
     end
   end
 
@@ -157,83 +196,208 @@ defmodule Nous.Tools.FileGrep do
   # (The preferred rg engine is immune; this only guards the fallback path.)
   @elixir_grep_timeout 5_000
 
+  # Directories the fallback never descends into. rg gets the same effect from
+  # .gitignore; the fallback has no ignore-file support, and build output plus
+  # vendored deps is where an unbounded walk actually spends its time. Hidden
+  # entries (`.git`, `.elixir_ls`, dotfiles) are dropped by `skip_entry?/1`'s
+  # dot rule, matching both rg's default and `Path.wildcard`'s `match_dot: false`.
+  @skip_dirs ~w(_build deps node_modules)
+
+  # Per-file ceiling (10 MB). Files are streamed line by line, but a minified
+  # bundle or data dump is one line the size of the file; skip it rather than
+  # let a single file eat the timeout budget and the output cap.
+  @max_file_bytes 10 * 1024 * 1024
+
   defp run_elixir_grep(pattern, path, glob, output_mode, ctx) do
+    with {:ok, regex} <- compile_regex(pattern),
+         {:ok, glob_regex} <- compile_glob(glob) do
+      task =
+        Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
+          path
+          |> find_files(glob_regex, ctx)
+          |> collect_matches(regex, output_mode)
+          |> Enum.join("\n")
+        end)
+
+      case Task.yield(task, @elixir_grep_timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, ""} ->
+          {:ok, "No matches found"}
+
+        {:ok, result} ->
+          {:ok, cap_output(result)}
+
+        {:exit, reason} ->
+          {:error, "search failed: the search task crashed (#{inspect(reason)})"}
+
+        nil ->
+          {:error,
+           "search timed out after #{@elixir_grep_timeout}ms (the pattern may be " <>
+             "pathological); install ripgrep for a fast, ReDoS-immune engine"}
+      end
+    end
+  end
+
+  defp cap_output(text) do
+    case truncate_lines(text) do
+      {text, false} -> text
+      {prefix, true} -> prefix <> @truncation_marker
+    end
+  end
+
+  defp compile_regex(pattern) do
     case Regex.compile(pattern) do
-      {:ok, regex} ->
-        task =
-          Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-            files = find_files(path, glob, ctx)
-            results = search_files(files, regex, output_mode)
-            Enum.join(results, "\n")
-          end)
-
-        case Task.yield(task, @elixir_grep_timeout) || Task.shutdown(task, :brutal_kill) do
-          {:ok, result} ->
-            {:ok, if(result == "", do: "No matches found", else: result)}
-
-          {:exit, reason} ->
-            {:error, "search failed: the search task crashed (#{inspect(reason)})"}
-
-          nil ->
-            {:error,
-             "search timed out after #{@elixir_grep_timeout}ms (the pattern may be " <>
-               "pathological); install ripgrep for a fast, ReDoS-immune engine"}
-        end
-
-      {:error, {reason, _}} ->
-        {:error, "Invalid regex: #{reason}"}
+      {:ok, regex} -> {:ok, regex}
+      {:error, {reason, _}} -> {:error, "Invalid regex: #{reason}"}
     end
   end
 
-  # Re-validate every matched file against the workspace root (mirrors
-  # Nous.Tools.FileGlob). `Path.wildcard` follows directory symlinks and the
-  # `glob` arg is LLM-controlled, so a wildcard result can otherwise resolve
-  # outside the root.
-  defp find_files(path, nil, ctx) do
+  defp compile_glob(nil), do: {:ok, nil}
+
+  defp compile_glob(glob) do
+    case Regex.compile("^" <> glob_source(glob, 0) <> "$") do
+      {:ok, regex} -> {:ok, regex}
+      {:error, {reason, _}} -> {:error, "Invalid glob: #{reason}"}
+    end
+  end
+
+  # `Path.wildcard` semantics, matched against the path relative to the search
+  # root (so `*.ex` is top-level only and `**/*.ex` recurses, exactly as the
+  # `Path.wildcard(Path.join(path, glob))` this replaces): `*` and `?` stop at
+  # `/`, `**` spans directories, `{a,b}` alternates, `[...]` is a character
+  # class. Everything else is literal. Second arg is the open-brace depth, so
+  # a comma outside braces stays literal.
+  defp glob_source(<<>>, _depth), do: ""
+  defp glob_source(<<"**/", rest::binary>>, depth), do: "(?:.*/)?" <> glob_source(rest, depth)
+  defp glob_source(<<"**", rest::binary>>, depth), do: ".*" <> glob_source(rest, depth)
+  defp glob_source(<<"*", rest::binary>>, depth), do: "[^/]*" <> glob_source(rest, depth)
+  defp glob_source(<<"?", rest::binary>>, depth), do: "[^/]" <> glob_source(rest, depth)
+  defp glob_source(<<"{", rest::binary>>, depth), do: "(?:" <> glob_source(rest, depth + 1)
+
+  defp glob_source(<<"}", rest::binary>>, depth) when depth > 0,
+    do: ")" <> glob_source(rest, depth - 1)
+
+  defp glob_source(<<",", rest::binary>>, depth) when depth > 0,
+    do: "|" <> glob_source(rest, depth)
+
+  defp glob_source(<<"[", rest::binary>>, depth) do
+    case :binary.match(rest, "]") do
+      {pos, 1} ->
+        class = binary_part(rest, 0, pos + 1)
+        after_class = binary_part(rest, pos + 1, byte_size(rest) - pos - 1)
+        "[" <> class <> glob_source(after_class, depth)
+
+      :nomatch ->
+        "\\[" <> glob_source(rest, depth)
+    end
+  end
+
+  defp glob_source(<<c, rest::binary>>, depth),
+    do: Regex.escape(<<c>>) <> glob_source(rest, depth)
+
+  # Lazy depth-first walk so `collect_matches/3` can halt at the limit without
+  # the whole tree being listed first. Symlinked directories are not descended
+  # (`lstat`), which also rules out symlink cycles; a symlinked file is still
+  # emitted and then resolved through PathGuard by `within_workspace?/2`, so
+  # every file opened has been re-validated against the workspace root.
+  defp find_files(path, glob_regex, ctx) do
     if File.regular?(path) do
-      [path]
+      # An explicit file target is searched as given; the glob filters a walk.
+      Stream.filter([path], &within_workspace?(&1, ctx))
     else
-      Path.wildcard(Path.join(path, "**/*"))
-      |> Enum.filter(&within_workspace?(&1, ctx))
+      path
+      |> children()
+      |> Stream.unfold(&next_file/1)
+      |> Stream.filter(&glob_match?(&1, path, glob_regex))
+      |> Stream.filter(&within_workspace?(&1, ctx))
+      |> Stream.filter(&searchable_size?/1)
     end
   end
 
-  defp find_files(path, glob, ctx) do
-    Path.wildcard(Path.join(path, glob))
-    |> Enum.filter(&within_workspace?(&1, ctx))
+  defp next_file([]), do: nil
+
+  defp next_file([entry | rest]) do
+    case File.lstat(entry) do
+      {:ok, %File.Stat{type: :directory}} -> next_file(children(entry) ++ rest)
+      _ -> {entry, rest}
+    end
   end
+
+  # Sorted so output order is stable across runs, like `Path.wildcard`'s.
+  defp children(dir) do
+    case File.ls(dir) do
+      {:ok, names} ->
+        names |> Enum.reject(&skip_entry?/1) |> Enum.sort() |> Enum.map(&Path.join(dir, &1))
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp skip_entry?("." <> _), do: true
+  defp skip_entry?(name), do: name in @skip_dirs
+
+  defp glob_match?(_file, _root, nil), do: true
+  defp glob_match?(file, root, regex), do: Regex.match?(regex, Path.relative_to(file, root))
 
   defp within_workspace?(file, ctx) do
     File.regular?(file) and match?({:ok, _}, Nous.Tools.PathGuard.validate(file, ctx))
   end
 
-  defp search_files(files, regex, output_mode) do
+  defp searchable_size?(file) do
+    match?({:ok, %File.Stat{size: size}} when size <= @max_file_bytes, File.stat(file))
+  end
+
+  # Stops at @default_limit output lines, so a match-heavy tree is neither
+  # walked nor read past what the caller can receive.
+  defp collect_matches(files, regex, output_mode) do
     files
-    |> Enum.flat_map(fn file ->
-      case File.read(file) do
-        {:ok, content} ->
-          lines = String.split(content, "\n")
-
-          matches =
-            lines
-            |> Enum.with_index(1)
-            |> Enum.filter(fn {line, _} -> Regex.match?(regex, line) end)
-
-          case output_mode do
-            "files_with_matches" ->
-              if matches != [], do: [file], else: []
-
-            "count" ->
-              if matches != [], do: ["#{file}:#{length(matches)}"], else: []
-
-            _ ->
-              Enum.map(matches, fn {line, num} -> "#{file}:#{num}:#{line}" end)
-          end
-
-        _ ->
-          []
-      end
+    |> Enum.reduce_while({[], @default_limit}, fn file, {acc, remaining} ->
+      lines = search_file(file, regex, output_mode, remaining)
+      remaining = remaining - length(lines)
+      acc = Enum.reverse(lines, acc)
+      if remaining > 0, do: {:cont, {acc, remaining}}, else: {:halt, {acc, 0}}
     end)
-    |> Enum.take(@default_limit)
+    |> elem(0)
+    |> Enum.reverse()
+  end
+
+  # Streamed by line rather than read whole: files-with-matches stops at the
+  # first hit and content mode stops at `remaining`, so a large file costs no
+  # more than the part actually needed. An unreadable file is skipped, as
+  # before. A killed task (timeout) closes the port with the process.
+  defp search_file(file, regex, output_mode, remaining) do
+    case File.open(file, [:read, :binary, :read_ahead]) do
+      {:ok, device} ->
+        try do
+          device
+          |> IO.binstream(:line)
+          |> Stream.map(&String.trim_trailing(&1, "\n"))
+          |> matches(regex, output_mode, file, remaining)
+        after
+          File.close(device)
+        end
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp matches(lines, regex, "files_with_matches", file, _remaining) do
+    if Enum.any?(lines, &Regex.match?(regex, &1)), do: [file], else: []
+  end
+
+  defp matches(lines, regex, "count", file, _remaining) do
+    case Enum.count(lines, &Regex.match?(regex, &1)) do
+      0 -> []
+      n -> ["#{file}:#{n}"]
+    end
+  end
+
+  defp matches(lines, regex, _content, file, remaining) do
+    lines
+    |> Stream.with_index(1)
+    |> Stream.filter(fn {line, _} -> Regex.match?(regex, line) end)
+    |> Stream.map(fn {line, num} -> "#{file}:#{num}:#{line}" end)
+    |> Enum.take(remaining)
   end
 end

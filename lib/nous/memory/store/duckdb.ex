@@ -232,7 +232,10 @@ if Code.ensure_loaded?(Duckdbex) do
       {scope_sql, scope_params, _next_idx} = build_scope_clause(scope, 1)
 
       where = if scope_sql == "", do: "", else: "WHERE " <> scope_sql
-      sql = "SELECT * FROM memories #{where}"
+
+      sql =
+        "SELECT * FROM memories #{where}" <>
+          order_clause(Keyword.get(opts, :order)) <> limit_clause(Keyword.get(opts, :limit))
 
       case Duckdbex.query(conn, sql, scope_params) do
         {:ok, result} ->
@@ -244,6 +247,14 @@ if Code.ensure_loaded?(Duckdbex) do
           {:error, reason}
       end
     end
+
+    # `:order` / `:limit` are keyword atoms and integers from the caller, never
+    # strings, so interpolating them cannot inject.
+    defp order_clause(:newest), do: " ORDER BY created_at DESC"
+    defp order_clause(_), do: ""
+
+    defp limit_clause(limit) when is_integer(limit) and limit >= 0, do: " LIMIT #{limit}"
+    defp limit_clause(_), do: ""
 
     # -- Private helpers --
 

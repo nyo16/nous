@@ -33,7 +33,7 @@ defmodule Nous.Memory.Embedding do
   """
   @spec embed_batch(module(), [String.t()], keyword()) :: {:ok, [[float()]]} | {:error, term()}
   def embed_batch(provider, texts, opts \\ []) when is_atom(provider) do
-    if function_exported?(provider, :embed_batch, 2) do
+    if batch_supported?(provider) do
       provider.embed_batch(texts, opts)
     else
       # async_stream_nolink under Nous.TaskSupervisor (the in-tree convention
@@ -62,6 +62,16 @@ defmodule Nous.Memory.Embedding do
           {:error, reason}
       end
     end
+  end
+
+  # Code.ensure_loaded?/1 FIRST: function_exported?/3 answers false for a
+  # module that merely has not been loaded yet (interactive code loading),
+  # which silently drops a provider WITH a native batch endpoint — one
+  # round-trip for the whole list — into the per-text fallback above: N
+  # requests, max concurrency 4. Same shape as
+  # Nous.KnowledgeBase.Workflows.bulk_counts_supported?/1.
+  defp batch_supported?(provider) do
+    Code.ensure_loaded?(provider) and function_exported?(provider, :embed_batch, 2)
   end
 
   @doc """

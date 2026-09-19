@@ -478,12 +478,13 @@ defmodule Nous.Hook.Runner do
     end
   end
 
-  # Remove non-serializable values from payload before JSON encoding
+  # Remove non-serializable values from payload before JSON encoding. One pass:
+  # the filter, the key/value rewrite and the rebuild used to be three, each
+  # materialising an intermediate list of the whole payload.
   defp sanitize_payload(payload) when is_map(payload) do
-    payload
-    |> Enum.reject(fn {_k, v} -> is_function(v) or is_pid(v) or is_reference(v) end)
-    |> Enum.map(fn {k, v} -> {to_string(k), sanitize_value(v)} end)
-    |> Map.new()
+    for {k, v} <- payload, not (is_function(v) or is_pid(v) or is_reference(v)), into: %{} do
+      {to_string(k), sanitize_value(v)}
+    end
   end
 
   defp sanitize_value(v) when is_map(v), do: sanitize_payload(v)

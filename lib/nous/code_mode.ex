@@ -472,7 +472,9 @@ defmodule Nous.CodeMode do
 
   This is the caller's patience, not a budget the program can ask for: real
   budgets — wall clock, memory, instruction count — are provider configuration,
-  validated when the provider is configured.
+  validated when the provider is configured. `Nous.CodeMode.Scheduler` uses the
+  same value to bound every wait on its lane (submit, await, audit read, stop),
+  so a wedged lane fails with a timeout error instead of holding a caller forever.
   """
   @spec await_timeout_ms() :: pos_integer()
   def await_timeout_ms do
