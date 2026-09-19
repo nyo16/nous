@@ -83,6 +83,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **mint floor raised to 1.10.** mint 1.9.3 carries CVE-2026-82729 and
+  CVE-2026-82728 (HTTP/1 response-parsing memory exhaustion), reachable
+  through `Nous.Tools.WebFetch` from a hostile server — the vulnerable states
+  buffer inside the connection before any `{:data, _}` event, so the 5 MB
+  collector cap is not a mitigation. `{:mint, "~> 1.10"}` is now declared
+  directly in `mix.exs` (the backends already match `%Mint.TransportError{}`,
+  and finch's own `~> 1.8` floor admits 1.9.3), so a consumer's resolver
+  refuses the vulnerable line. Consumers pinned to mint 1.9.3 must
+  `mix deps.update mint`. The test-only cowlib/cowboy pair moves to
+  2.20.0/2.19.0 in the same lock bump (fixes CVE-2026-43971); the two
+  remaining unpatched cowlib advisories are acknowledged in
+  `mix.exs`/`ci.yml` with their ids and reach the build only via `bypass`.
+
 - **Confinement and execution policy now inherit across sub-agent delegation.**
   `Nous.Plugins.SubAgent`'s safe-by-default deps policy (forward no data deps)
   had a hole: it also withheld the parent's `:workspace_root`/`:session_id`,

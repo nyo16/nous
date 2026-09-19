@@ -126,22 +126,26 @@ jobs:
       # Known-vulnerability scan of mix.lock against the GitHub-sourced
       # advisory DB (mirego/elixir-security-advisories).
       #
-      # Ignored advisories — three cowlib issues with NO patched release yet:
+      # Ignored advisories — two cowlib issues with NO patched release
+      # (cowlib 2.20.0 fixed only EEF-CVE-2026-43971, which is no longer
+      # listed here):
       #   EEF-CVE-2026-43966  structured-fields header CRLF injection
-      #                       (cow_http_struct_hd response splitting)
-      #   EEF-CVE-2026-43971  Link-header directive smuggling (cow_link:link/1)
+      #                       (cow_http_struct_hd response splitting; GitHub
+      #                       mirror id GHSA-w4f7-4cxr-rv3c)
       #   EEF-CVE-2026-43969  Cookie request-header injection
       #                       (cow_cookie:cookie/1; GitHub mirror id
       #                       GHSA-g2wm-735q-3f56, ignored under both ids)
       # Exposure is test-only: cowlib reaches this project exclusively through
       # bypass -> plug_cowboy -> cowboy, and bypass is `only: :test` (see
-      # mix.exs) — nothing nous ships depends on it. Drop these ignores as soon
-      # as a patched cowlib release exists and the lock is bumped.
+      # mix.exs, whose `hex: [ignore_advisories: ...]` carries the same two
+      # ids for the `mix hex.audit` step above). Drop these ignores as soon
+      # as a patched cowlib release exists and the lock is bumped. Never add
+      # a runtime dependency here — that is what this gate exists to catch.
       - name: Audit dependencies for known vulnerabilities
         run: >-
           mix deps.audit
           --ignore-advisory-ids
-          EEF-CVE-2026-43966,EEF-CVE-2026-43971,EEF-CVE-2026-43969,GHSA-g2wm-735q-3f56
+          EEF-CVE-2026-43966,GHSA-w4f7-4cxr-rv3c,EEF-CVE-2026-43969,GHSA-g2wm-735q-3f56
 
   docs:
     name: Docs

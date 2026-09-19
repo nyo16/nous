@@ -35,6 +35,17 @@ defmodule Nous.MixProject do
       # `test_coverage: [threshold: n]` is silently ignored and you keep the
       # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
       test_coverage: [summary: [threshold: 59]],
+      # `mix hex.audit` acknowledgements. Two cowlib advisories have no patched
+      # release (2.20.0 fixed only CVE-2026-43971):
+      #   CVE-2026-43966  structured-fields header CRLF injection
+      #   CVE-2026-43969  cookie request-header injection (GHSA-g2wm-735q-3f56)
+      # Exposure is test-only: cowlib reaches this project exclusively through
+      # bypass -> plug_cowboy -> cowboy, and bypass is `only: :test`. hex.audit
+      # warns when an entry no longer matches the lock, so a patched cowlib
+      # bump surfaces the stale ignore by itself. The `deps.audit` CI step
+      # carries the same two ids (see .github/workflows/ci.yml). Never add a
+      # runtime dep here — that is exactly what the gate exists to catch.
+      hex: [ignore_advisories: ["CVE-2026-43966", "CVE-2026-43969"]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix, :ex_unit]
@@ -78,6 +89,13 @@ defmodule Nous.MixProject do
       # and slated for removal, so the call sites use the new shape and the
       # constraint floor moves with them.
       {:req, "~> 0.7"},
+      # Direct dep, not just transitive via finch: the backends match
+      # `%Mint.TransportError{}` (Nous.HTTP.Backend.Req, Nous.Providers.HTTP),
+      # and finch's own `~> 1.8` floor still admits 1.9.3, which is vulnerable
+      # to CVE-2026-82729 / CVE-2026-82728 (HTTP/1 response-parsing DoS,
+      # reachable through Nous.Tools.WebFetch from a hostile server). This
+      # floor is what makes a consumer's resolver refuse the vulnerable line.
+      {:mint, "~> 1.10"},
       {:hackney, "~> 4.0", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
