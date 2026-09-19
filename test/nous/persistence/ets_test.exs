@@ -87,15 +87,20 @@ defmodule Nous.Persistence.ETSTest do
   end
 
   describe "table ownership" do
-    test "save/load operate against the supervised owner's protected table" do
+    test "save/load operate against the supervised owner's table" do
       assert :ok = ETS.save("test", %{version: 1})
       assert {:ok, %{version: 1}} = ETS.load("test")
       assert :ets.whereis(:nous_persistence) != :undefined
     end
 
-    test "table is :protected (not writable by arbitrary processes)" do
-      # A foreign process must not be able to write/delete directly.
-      assert :protected = :ets.info(:nous_persistence, :protection)
+    test "the table is owned by the supervised owner, not the writer" do
+      # Writes happen in the caller (:public table), so the invariant that
+      # matters is ownership: a writer exiting must not take the table with it.
+      task = Task.async(fn -> ETS.save("from_task", %{version: 1}) end)
+      assert :ok = Task.await(task)
+
+      assert :ets.info(:nous_persistence, :owner) == Process.whereis(ETS.TableOwner)
+      assert {:ok, %{version: 1}} = ETS.load("from_task")
     end
   end
 
@@ -111,6 +116,8 @@ defmodule Nous.Persistence.ETSTest do
 
       for i <- 1..20, do: :ok = ETS.save("new_#{i}", %{version: 1})
 
+      # The cap is enforced by the owner off the caller's path; wait for it.
+      :ok = ETS.sync()
       assert :ets.info(:nous_persistence, :size) <= 20
 
       for i <- 1..5 do
