@@ -604,6 +604,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inserts from the caller, and `sync/0` exists for callers that need the
   size-cap check to have run.
 
+- **The default SSE parser no longer rescans the whole incomplete event on
+  every chunk.** `Nous.HTTP.Buffer` threaded a resumable `scan_state` for
+  custom `:stream_parser` modules, but its own SSE path ignored it and split
+  the accumulated buffer from byte 0 each time, so a single large event —
+  a big tool-call argument or thinking block — cost O(size × chunks)
+  (audit P-M11). The SSE scan state is now the byte offset already searched;
+  each chunk resumes 3 bytes before it (a `\r\n\r\n` may straddle the
+  boundary). Measured: one 8 MB event in 1 KB chunks went from 27 s
+  (9 µs → 6.5 ms per chunk) to 17 ms. The buffer-overflow cap is still
+  checked on the whole buffer.
+
 - **`file_grep` output is bounded on both engines, and the pure-Elixir
   fallback no longer walks build output or reads whole trees.** Ripgrep's
   `--max-count` is per file, so a workspace with thousands of matching files
