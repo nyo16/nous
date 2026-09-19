@@ -42,6 +42,8 @@ defmodule Nous.Permissions do
 
   alias Nous.Permissions.Policy
 
+  require Logger
+
   @doc """
   Returns the default permission policy.
 
@@ -268,6 +270,39 @@ defmodule Nous.Permissions do
   end
 
   @doc """
+  Ask an approval handler about one tool call and normalise its answer.
+
+  `info` is the `%{name:, id:, arguments:, tool:}` payload every handler
+  receives (see `t:Nous.RunContext.approval_handler/0`). Returns exactly
+  `:approve`, `:reject` or `{:edit, arguments}`; any other return is logged and
+  treated as `:reject`, so a handler bug fails closed. This is the ONE place
+  that decision is interpreted — the agent runner and `Nous.ToolExecutor` both
+  route through it, so they cannot drift on what "approved" means.
+  """
+  @spec consult_handler(Nous.RunContext.approval_handler(), map()) ::
+          :approve | :reject | {:edit, map()}
+  def consult_handler(handler, %{name: name} = info) when is_function(handler, 1) do
+    case handler.(info) do
+      :approve ->
+        :approve
+
+      :reject ->
+        :reject
+
+      {:edit, new_args} when is_map(new_args) ->
+        {:edit, new_args}
+
+      other ->
+        Logger.warning(
+          "Approval handler for tool '#{name}' returned #{inspect(other)}; " <>
+            "expected :approve | :reject | {:edit, map}. Treating as :reject."
+        )
+
+        :reject
+    end
+  end
+
+  @doc """
   Filters a list of `Nous.Tool` structs, removing blocked tools.
 
   ## Examples
@@ -278,7 +313,9 @@ defmodule Nous.Permissions do
       # Returns [read_tool, write_tool]
 
   """
-  @spec filter_tools(Policy.t(), [Nous.Tool.t()]) :: [Nous.Tool.t()]
+  @spec filter_tools(Policy.t() | nil, [Nous.Tool.t()]) :: [Nous.Tool.t()]
+  def filter_tools(nil, tools) when is_list(tools), do: tools
+
   def filter_tools(%Policy{} = policy, tools) when is_list(tools) do
     Enum.reject(tools, fn tool ->
       blocked?(policy, tool.name)

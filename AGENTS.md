@@ -398,6 +398,9 @@ Currently hidden, do not call:
   module
 - `Nous.Util` — small shared helpers (atom coercion, option splitting) used
   across internals
+- `Nous.CodeRuntime.JS.Bridge`, `Nous.CodeRuntime.JS.Prelude`,
+  `Nous.CodeRuntime.JS.Session` — the tyrex-facing internals behind the public
+  `Nous.CodeRuntime.JS` provider
 
 Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
 `Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and

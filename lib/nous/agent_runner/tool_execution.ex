@@ -4,7 +4,19 @@ defmodule Nous.AgentRunner.ToolExecution do
   # execution pipelines, pre/post hooks, approval and permission-policy
   # enforcement, and tool result recording. Internal to the runner.
 
-  alias Nous.{CodeMode, Message, Messages, OutputSchema, Permissions, Spill, Tool, ToolExecutor}
+  alias Nous.{
+    CodeMode,
+    Errors,
+    Message,
+    Messages,
+    OutputSchema,
+    Permissions,
+    Spill,
+    Tool,
+    ToolCall,
+    ToolExecutor
+  }
+
   alias Nous.Agent.{Behaviour, Callbacks, Context}
   alias Nous.Tool.ContextUpdate
   alias Nous.Hook
@@ -45,7 +57,7 @@ defmodule Nous.AgentRunner.ToolExecution do
       # Separate synthetic structured output calls from real tool calls
       {_synthetic_calls, real_calls} =
         Enum.split_with(tool_calls, fn call ->
-          name = get_tool_field(call, :name)
+          name = ToolCall.field(call, :name)
           OutputSchema.synthetic_tool_name?(name || "")
         end)
 
@@ -57,7 +69,7 @@ defmodule Nous.AgentRunner.ToolExecution do
         # Update usage to track tool calls
         ctx = Context.add_usage(ctx, %{tool_calls: length(real_calls)})
 
-        tool_names = Enum.map_join(real_calls, ", ", &get_tool_field(&1, :name))
+        tool_names = Enum.map_join(real_calls, ", ", &ToolCall.field(&1, :name))
         Logger.debug("Detected #{length(real_calls)} tool call(s): #{tool_names}")
 
         # Build run context for tool execution. This is the single construction
@@ -93,9 +105,9 @@ defmodule Nous.AgentRunner.ToolExecution do
 
     {results, ctx} =
       Enum.reduce(real_calls, {[], ctx}, fn call, {results, acc_ctx} ->
-        call_name = get_tool_field(call, :name)
-        call_id = get_tool_field(call, :id)
-        call_arguments = get_tool_field(call, :arguments)
+        call_name = ToolCall.field(call, :name)
+        call_id = ToolCall.field(call, :id)
+        call_arguments = ToolCall.field(call, :arguments)
 
         # Execute callback before tool
         Callbacks.execute(acc_ctx, :on_tool_call, %{
@@ -104,7 +116,7 @@ defmodule Nous.AgentRunner.ToolExecution do
           arguments: call_arguments
         })
 
-        cleaned_name = clean_tool_name(call_name)
+        cleaned_name = ToolCall.clean_name(call_name)
 
         # Short-circuit on a tool_call whose arguments JSON failed to parse.
         # The provider marshalling tagged it with "_invalid_arguments" so we
@@ -174,7 +186,7 @@ defmodule Nous.AgentRunner.ToolExecution do
       |> Task.Supervisor.async_stream_nolink(
         approved,
         fn call ->
-          {get_tool_field(call, :id), execute_single_tool(tools, call, run_ctx, agent)}
+          {ToolCall.field(call, :id), execute_single_tool(tools, call, run_ctx, agent)}
         end,
         timeout: call_timeout,
         # Kill a task that blows the ceiling instead of blocking on it, so the
@@ -189,10 +201,10 @@ defmodule Nous.AgentRunner.ToolExecution do
           {call_id, {result_msg, context_updates}}
 
         {:exit, {call, :timeout}} ->
-          {get_tool_field(call, :id), timed_out_tool_result(call, call_timeout)}
+          {ToolCall.field(call, :id), timed_out_tool_result(call, call_timeout)}
 
         {:exit, {call, reason}} ->
-          {get_tool_field(call, :id), crashed_tool_result(call, reason)}
+          {ToolCall.field(call, :id), crashed_tool_result(call, reason)}
       end)
 
     {results, ctx} =
@@ -201,7 +213,7 @@ defmodule Nous.AgentRunner.ToolExecution do
           {[result_msg | results], acc_ctx}
 
         {:execute, call}, {results, acc_ctx} ->
-          {result_msg, context_updates} = Map.fetch!(executed_by_id, get_tool_field(call, :id))
+          {result_msg, context_updates} = Map.fetch!(executed_by_id, ToolCall.field(call, :id))
 
           {result_msg, acc_ctx} =
             record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx)
@@ -222,7 +234,7 @@ defmodule Nous.AgentRunner.ToolExecution do
   end
 
   def call_timeout_budget(call, tools) do
-    name = clean_tool_name(get_tool_field(call, :name))
+    name = ToolCall.clean_name(ToolCall.field(call, :name))
 
     case Enum.find(tools, fn t -> t.name == name end) do
       %Tool{timeout: timeout, retries: retries} when is_integer(timeout) and timeout > 0 ->
@@ -247,8 +259,8 @@ defmodule Nous.AgentRunner.ToolExecution do
   # never got to raise its own ToolTimeout. Surface a readable per-call timeout
   # the model can route around, keeping this call's attribution intact.
   def timed_out_tool_result(call, timeout_ms) do
-    call_id = get_tool_field(call, :id)
-    cleaned_name = clean_tool_name(get_tool_field(call, :name))
+    call_id = ToolCall.field(call, :id)
+    cleaned_name = ToolCall.clean_name(ToolCall.field(call, :name))
 
     Logger.error("Tool '#{cleaned_name}' exceeded the #{timeout_ms}ms parallel execution ceiling")
 
@@ -268,10 +280,10 @@ defmodule Nous.AgentRunner.ToolExecution do
   # approval rejection) or {:execute, call} with final (possibly hook/approval
   # edited) arguments.
   def pre_stage_decision(call, tools, agent, ctx) do
-    call_name = get_tool_field(call, :name)
-    call_id = get_tool_field(call, :id)
-    call_arguments = get_tool_field(call, :arguments)
-    cleaned_name = clean_tool_name(call_name)
+    call_name = ToolCall.field(call, :name)
+    call_id = ToolCall.field(call, :id)
+    call_arguments = ToolCall.field(call, :arguments)
+    cleaned_name = ToolCall.clean_name(call_name)
 
     Callbacks.execute(ctx, :on_tool_call, %{
       id: call_id,
@@ -307,7 +319,7 @@ defmodule Nous.AgentRunner.ToolExecution do
              Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
 
           {:modify, %{arguments: new_args}} ->
-            modified_call = put_tool_field(call, :arguments, new_args)
+            modified_call = ToolCall.put_field(call, :arguments, new_args)
             approval_decision(modified_call, call_id, cleaned_name, tools, agent, ctx)
 
           _ ->
@@ -331,7 +343,7 @@ defmodule Nous.AgentRunner.ToolExecution do
 
       {:edit, new_args} ->
         Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
-        {:execute, put_tool_field(call, :arguments, new_args)}
+        {:execute, ToolCall.put_field(call, :arguments, new_args)}
 
       :approve ->
         {:execute, call}
@@ -342,8 +354,8 @@ defmodule Nous.AgentRunner.ToolExecution do
   # already converts in-tool crashes to {:error, _}) becomes a per-call tool
   # error so one dead task never sinks the whole turn.
   def crashed_tool_result(call, reason) do
-    call_id = get_tool_field(call, :id)
-    cleaned_name = clean_tool_name(get_tool_field(call, :name))
+    call_id = ToolCall.field(call, :id)
+    cleaned_name = ToolCall.clean_name(ToolCall.field(call, :name))
 
     Logger.error("Tool '#{cleaned_name}' task exited: #{inspect(reason)}")
 
@@ -417,7 +429,7 @@ defmodule Nous.AgentRunner.ToolExecution do
         # mode / approval_required / execute-category) would execute UNGATED
         # whenever a pre_tool_use hook modifies arguments, since the bare tool
         # struct's requires_approval flag may be false.
-        modified_call = put_tool_field(call, :arguments, new_args)
+        modified_call = ToolCall.put_field(call, :arguments, new_args)
 
         tool =
           tools
@@ -434,7 +446,7 @@ defmodule Nous.AgentRunner.ToolExecution do
             {[result_msg | results], acc_ctx}
 
           {:edit, edited_args} ->
-            edited_call = put_tool_field(modified_call, :arguments, edited_args)
+            edited_call = ToolCall.put_field(modified_call, :arguments, edited_args)
 
             {result_msg, acc_ctx} =
               execute_and_record_tool(
@@ -482,7 +494,7 @@ defmodule Nous.AgentRunner.ToolExecution do
 
           {:edit, new_args} ->
             Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
-            edited_call = put_tool_field(call, :arguments, new_args)
+            edited_call = ToolCall.put_field(call, :arguments, new_args)
 
             {result_msg, acc_ctx} =
               execute_and_record_tool(
@@ -521,10 +533,10 @@ defmodule Nous.AgentRunner.ToolExecution do
   # `%Nous.Agent.Context{}`, and therefore the only place a `:log_event`
   # operation can reach a session log.
   def record_tool_result(call, result_msg, context_update, behaviour, agent, acc_ctx) do
-    call_name = get_tool_field(call, :name)
-    call_id = get_tool_field(call, :id)
-    call_arguments = get_tool_field(call, :arguments)
-    cleaned_name = clean_tool_name(call_name)
+    call_name = ToolCall.field(call, :name)
+    call_id = ToolCall.field(call, :id)
+    call_arguments = ToolCall.field(call, :arguments)
+    cleaned_name = ToolCall.clean_name(call_name)
 
     # Run post_tool_use hooks (can modify result)
     result_msg =
@@ -562,10 +574,10 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   def execute_single_tool(tools, call, run_ctx, agent) do
     # Clean up tool name - Claude sometimes adds XML-like syntax
-    call_name = get_tool_field(call, :name)
-    call_id = get_tool_field(call, :id)
-    call_arguments = get_tool_field(call, :arguments)
-    cleaned_name = clean_tool_name(call_name)
+    call_name = ToolCall.field(call, :name)
+    call_id = ToolCall.field(call, :id)
+    call_arguments = ToolCall.field(call, :arguments)
+    cleaned_name = ToolCall.clean_name(call_name)
 
     tool = Enum.find(tools, fn t -> t.name == cleaned_name end)
 
@@ -612,7 +624,7 @@ defmodule Nous.AgentRunner.ToolExecution do
 
           {:error, error} ->
             # Preserve structured error information for better debugging and handling
-            error_details = format_tool_error(error, cleaned_name)
+            error_details = Errors.ToolError.format_for_model(error, cleaned_name)
             Logger.error("Tool '#{cleaned_name}' execution failed: #{error_details.summary}")
             {error_details.response, %{}}
         end
@@ -675,40 +687,6 @@ defmodule Nous.AgentRunner.ToolExecution do
   # crash a tool call that otherwise succeeded.
   defp spill_owner(%{deps: %{session_id: session_id}}) when is_binary(session_id), do: session_id
   defp spill_owner(_run_ctx), do: nil
-
-  # Format tool errors to preserve structured information while providing LLM-friendly response
-  @spec format_tool_error(term(), String.t()) :: %{summary: String.t(), response: String.t()}
-  def format_tool_error(error, tool_name) do
-    case error do
-      %Nous.Errors.ToolError{} = tool_error ->
-        # Extract structured information from ToolError
-        summary = Exception.message(tool_error)
-
-        # Create detailed response for LLM that includes context
-        response =
-          """
-          Tool execution failed: #{tool_name}
-          Error: #{tool_error.message}
-          Attempts: #{tool_error.attempt || 1}
-          #{if tool_error.original_error, do: "Original cause: #{inspect(tool_error.original_error)}", else: ""}
-
-          Please try a different approach or tool if available.
-          """
-          |> String.trim()
-
-        %{summary: summary, response: response}
-
-      error when is_exception(error) ->
-        summary = Exception.message(error)
-        response = "Tool execution failed: #{tool_name} - #{summary}"
-        %{summary: summary, response: response}
-
-      error ->
-        summary = "Tool execution failed with: #{inspect(error)}"
-        response = "Tool execution failed: #{tool_name} - #{summary}"
-        %{summary: summary, response: response}
-    end
-  end
 
   # Apply a tool's context update to the accumulating agent context.
   #
@@ -777,16 +755,13 @@ defmodule Nous.AgentRunner.ToolExecution do
   # tool the program itself calls is filtered by the same policy through
   # `Nous.CodeMode.bindings/4`.
   def visible_tools(agent, tools) do
-    granted = maybe_filter_by_policy(agent.permissions, tools)
+    granted = Permissions.filter_tools(agent.permissions, tools)
 
     CodeMode.visible_tools(CodeMode.resolve(agent), tools, granted, policy: agent.permissions)
   end
 
-  def maybe_filter_by_policy(nil, tools), do: tools
-
-  def maybe_filter_by_policy(%Permissions.Policy{} = policy, tools) do
-    Permissions.filter_tools(policy, tools)
-  end
+  # The policy filter itself lives in Nous.Permissions (nil-tolerant); what
+  # stays here is only the composition with Code Mode's injection above.
 
   # Under `mode: :code` the model was shown exactly one tool, so a call to any
   # other one can only fail. Refusing it here — before the pre_tool_use hook —
@@ -803,32 +778,27 @@ defmodule Nous.AgentRunner.ToolExecution do
   # `ctx.approval_handler` is REJECTED, not approved. The previous behaviour
   # auto-approved in this case, which made the requires_approval flag a
   # silent no-op for the default Agent setup - one prompt-injected document
-  # away from RCE on tools like Bash/FileWrite.
+  # away from RCE on tools like Bash/FileWrite. The handler's answer is
+  # interpreted by `Nous.Permissions.consult_handler/2`, the same place
+  # `Nous.ToolExecutor` uses, so the two gates cannot drift.
   def check_tool_approval(nil, _call, _ctx), do: :approve
 
   def check_tool_approval(%Tool{requires_approval: true} = tool, call, %Context{
         approval_handler: handler
       })
       when is_function(handler, 1) do
-    tool_call_info = %{
-      name: get_tool_field(call, :name),
-      id: get_tool_field(call, :id),
-      arguments: get_tool_field(call, :arguments),
+    Permissions.consult_handler(handler, %{
+      name: ToolCall.field(call, :name),
+      id: ToolCall.field(call, :id),
+      arguments: ToolCall.field(call, :arguments),
       tool: tool
-    }
-
-    case handler.(tool_call_info) do
-      :approve -> :approve
-      :reject -> :reject
-      {:edit, new_args} when is_map(new_args) -> {:edit, new_args}
-      _ -> :reject
-    end
+    })
   end
 
   def check_tool_approval(%Tool{requires_approval: true} = tool, call, _ctx) do
     Logger.warning(
       "Tool '#{tool.name}' has requires_approval: true but no :approval_handler is configured " <>
-        "in ctx. Rejecting call (id=#{inspect(get_tool_field(call, :id))}). " <>
+        "in ctx. Rejecting call (id=#{inspect(ToolCall.field(call, :id))}). " <>
         "Wire an approval_handler to allow these tools."
     )
 
@@ -836,24 +806,4 @@ defmodule Nous.AgentRunner.ToolExecution do
   end
 
   def check_tool_approval(_tool, _call, _ctx), do: :approve
-
-  # Tool call fields arrive with atom OR string keys depending on the
-  # provider; Nous.ToolCall resolves both without coalescing falsy values.
-  def get_tool_field(call, field), do: Nous.ToolCall.field(call, field)
-
-  def put_tool_field(call, field, value), do: Nous.ToolCall.put_field(call, field, value)
-
-  # Clean tool names - Claude sometimes uses XML-like syntax.
-  # L-9: tolerate nil/non-binary input - some providers emit malformed
-  # function-call responses with no name; without these clauses
-  # clean_tool_name/1 would crash the entire agent run with FunctionClauseError.
-  def clean_tool_name(nil), do: ""
-  def clean_tool_name(name) when not is_binary(name), do: ""
-
-  def clean_tool_name(name) when is_binary(name) do
-    name
-    |> String.split("\"")
-    |> List.first()
-    |> String.trim()
-  end
 end

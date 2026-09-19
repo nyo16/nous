@@ -67,7 +67,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Nous.PromEx.Plugin` test pins its metric groups; CI runs the three tags
   as a named leg. `Tyrex` joins `no_warn_undefined` so a consumer without
   tyrex no longer sees four "not available" warnings from
-  `Nous.CodeRuntime.JS.Session`. Verified: an app depending on nous with none
+  the JS runtime session. Verified: an app depending on nous with none
   of the optional deps compiles `lib/nous/` with zero warnings.
 
 - **`Nous.Memory.Store` is a documented extension point, and a backend you write
@@ -143,7 +143,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`Nous.Plugins.SubAgent` bounds what the model may spawn.** The
   `delegate_task` / `spawn_agents` arguments are LLM-controlled, and nothing
-  bounded them: an inline `model` argument became `Agent.new/2` verbatim (a
+  bounded them: an inline `model` argument became `Nous.Agent.new/2` verbatim (a
   prompt injection could route a task to any provider the parent had keys
   for), a `tasks` array of any length fanned out, and a sub-agent whose
   template carried the plugin could delegate without limit. Three deps now
@@ -643,7 +643,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   including CRLF line endings — and an `offset` past EOF still returns an
   empty result.
 
-- **`Nous.Decisions.Store.ETS.get_edges/3` no longer scans the whole edge
+- **`Nous.Decisions.Store.ETS`'s `get_edges/3` no longer scans the whole edge
   table on every call.** The store keeps a secondary `:bag` index keyed by
   `{node_id, direction}`, maintained on `add_edge/2` and `delete_node/2`, so a
   per-node edge lookup is a keyed ETS lookup whose cost is independent of how
@@ -655,7 +655,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned in insertion order. The `Nous.Decisions.Store` behaviour is
   unchanged.
 
-- **`Nous.Memory.Store.list/2` honours `:limit` (and a new `:order` `:newest`),
+- **`c:Nous.Memory.Store.list/2` honours `:limit` (and a new `:order` `:newest`),
   so `reflection_max_memories` actually bounds reflection.**
   `Nous.Plugins.Memory` already passed `limit: reflection_max_memories`; the
   ETS backend ignored it and the reflection prompt received every memory in
@@ -914,9 +914,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   touching.
 
 - **`Nous.Agent.Behaviour` no longer hardcodes `Nous.Agents.BasicAgent`.**
-  `Behaviour.default_module/0` is removed; the default is applied by
+  `default_module/0` is removed; the default is applied by
   `Nous.Agent.new/2` (as a runtime reference, not a struct default, so it is
-  not a compile-time edge either), and `Behaviour.get_module/1` matches on
+  not a compile-time edge either), and `get_module/1` matches on
   the `:behaviour_module` field rather than the `%Nous.Agent{}` struct. A
   hand-built struct that skipped `new/2` and has `behaviour_module: nil` now
   raises a clear `ArgumentError` at run time instead of silently getting
@@ -924,6 +924,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   basic_agent` dependency cycle (audit A-M2) down to the 2-node
   `Nous.Agent ↔ Nous.AgentRunner` facade pair; the behaviour, the iteration
   loop, tool execution and `BasicAgent` are no longer in any cycle.
+
+- **Policy left the tool pipeline; every public module has a docs group.**
+  `Nous.Permissions` now owns the whole approval/visibility vocabulary:
+  `enforce_approval/2` (from the runner), a `nil`-tolerant `filter_tools/2`,
+  and `consult_handler/2` — the one place an approval handler's answer is
+  interpreted, shared by `Nous.AgentRunner` and `Nous.ToolExecutor` so the
+  two gates cannot drift (audit A-M4). Tool-name cleaning moved to
+  `Nous.ToolCall.clean_name/1` and model-facing error rendering to
+  `Nous.Errors.ToolError.format_for_model/2`. `Nous.Sandbox.RunnerFailureRule`
+  has its own file. `mix docs` groups the 29 modules that shipped ungrouped
+  since #75 (`Nous.CodeMode.*`, `Nous.CodeRuntime.*`, `Nous.Sandbox.*`,
+  `Nous.Session.*`, `Nous.Spill.*`, `Nous.Plugins.LoopGuard`,
+  `Nous.Usage.Pricing`) under "Code Mode", "Permissions & Security",
+  "Session" and "Tool Result Spill", and lists the three hidden JS-runtime
+  internals in `skip_code_autolink_to` and `AGENTS.md`;
+  `mix docs --warnings-as-errors` is clean.
 
 - **BREAKING: `net_runner` is now an optional dependency.** It is required
   only by `Nous.Tools.Bash` and `:command` hooks. Apps that use either —

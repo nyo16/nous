@@ -271,6 +271,9 @@ defmodule Nous.MixProject do
         "Nous.AgentRunner.Streaming",
         "Nous.AgentRunner.ToolExecution",
         "Nous.Application",
+        "Nous.CodeRuntime.JS.Bridge",
+        "Nous.CodeRuntime.JS.Prelude",
+        "Nous.CodeRuntime.JS.Session",
         "Nous.JSON",
         "Nous.OutputSchema.UseMacro",
         "Nous.Persistence.ETS.TableOwner",
@@ -442,7 +445,8 @@ defmodule Nous.MixProject do
         ],
         "Data Types": [
           Nous.Types,
-          Nous.Usage
+          Nous.Usage,
+          Nous.Usage.Pricing
         ],
         Infrastructure: [
           Nous.Telemetry,
@@ -534,6 +538,7 @@ defmodule Nous.MixProject do
           Nous.Plugins.Memory,
           Nous.Plugins.SubAgent,
           Nous.Plugins.Summarization,
+          Nous.Plugins.LoopGuard,
           Nous.Plugins.Decisions,
           Nous.Plugins.TeamTools
         ],
@@ -595,14 +600,45 @@ defmodule Nous.MixProject do
           Nous.Research.Report
         ],
         Session: [
+          Nous.Session,
           Nous.Session.Config,
-          Nous.Session.Guardrails
+          Nous.Session.Guardrails,
+          Nous.Session.Log,
+          Nous.Session.Event,
+          Nous.Session.Inbox,
+          Nous.Session.Invariant,
+          Nous.Session.Invariant.Violation,
+          Nous.Session.Recovery
+        ],
+        "Code Mode": [
+          Nous.CodeMode,
+          Nous.CodeMode.RunCodeTool,
+          Nous.CodeMode.Scheduler,
+          Nous.CodeMode.Sdk,
+          Nous.CodeRuntime,
+          Nous.CodeRuntime.JS,
+          Nous.CodeRuntime.Binding,
+          Nous.CodeRuntime.Request,
+          Nous.CodeRuntime.Result,
+          Nous.CodeRuntime.Failure
         ],
         "Permissions & Security": [
           Nous.Permissions,
           Nous.Permissions.Policy,
           Nous.PathGuard,
-          Nous.UrlGuard
+          Nous.UrlGuard,
+          Nous.Sandbox,
+          Nous.Sandbox.Policy,
+          Nous.Sandbox.Confined,
+          Nous.Sandbox.RunnerFailureRule,
+          Nous.Sandbox.Seatbelt,
+          Nous.Sandbox.Bwrap,
+          Nous.Sandbox.Unavailable
+        ],
+        "Tool Result Spill": [
+          Nous.Spill,
+          Nous.Spill.Local,
+          Nous.Spill.Locator
         ],
         "Knowledge Base": [
           Nous.KnowledgeBase,
