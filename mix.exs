@@ -271,6 +271,7 @@ defmodule Nous.MixProject do
         "Nous.AgentRunner.RequestDispatch",
         "Nous.AgentRunner.Streaming",
         "Nous.AgentRunner.ToolExecution",
+        "Nous.AgentRunner.ToolInvocation",
         "Nous.Application",
         "Nous.CodeRuntime.JS.Bridge",
         "Nous.CodeRuntime.JS.Prelude",
