@@ -119,10 +119,10 @@ defmodule Nous.Hook.RunnerTest do
     end
 
     test "a later blocking hook still wins over an earlier modification" do
+      modify = fn _, _ -> {:modify, %{arguments: %{"x" => 1}}} end
+
       hooks = [
-        make_hook(:pre_tool_use, fn _, _ -> {:modify, %{arguments: %{"x" => 1}}} end,
-          priority: 1
-        ),
+        make_hook(:pre_tool_use, modify, priority: 1),
         make_hook(:pre_tool_use, fn _, _ -> {:deny, "no"} end, priority: 2)
       ]
 
