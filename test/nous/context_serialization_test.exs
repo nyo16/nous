@@ -45,6 +45,16 @@ defmodule Nous.Agent.ContextSerializationTest do
       assert length(Nous.Session.Log.events(restored.log)) == 3
     end
 
+    test "a v3 blob without :events is an error tuple, not a raise" do
+      # v3 has no messages copy to fall back on, so a missing event list is a
+      # broken blob. The loader raises internally and do_deserialize/2's
+      # boundary rescue turns that into the documented {:error, _}.
+      assert {:error, reason} = Context.deserialize(%{version: 3, system_prompt: "x"})
+      assert reason =~ ":events"
+
+      assert {:error, _} = Context.deserialize(%{"version" => 3, "events" => "nope"})
+    end
+
     test "a snapshotted context serializes smaller and round-trips with its seqs" do
       ctx =
         Context.new(messages: [Message.user("one"), Message.user("two"), Message.user("three")])

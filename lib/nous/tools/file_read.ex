@@ -9,6 +9,10 @@ defmodule Nous.Tools.FileRead do
   use Nous.Tool.Schema
 
   @default_limit 2000
+  # Most lines one call may return. At the 10 MB file cap a 1-byte-per-line
+  # file has ~10M lines; without this a `limit: 10_000_000` request is legal
+  # and lands the whole file in context.
+  @max_limit 20_000
 
   # Whole-file byte cap. `file_read` is on the `@never_spill_tools` list in
   # Nous.AgentRunner.ToolExecution, so whatever it returns lands in the tool
@@ -36,7 +40,10 @@ defmodule Nous.Tools.FileRead do
   @impl true
   def execute(ctx, %{"file_path" => file_path} = args) do
     offset = Map.get(args, "offset", 1) |> max(1)
-    limit = Map.get(args, "limit", @default_limit)
+    # Both are model-supplied. A negative `limit` would turn `Enum.take/2` into
+    # "last N lines" and materialise the whole window to get there; the cap
+    # keeps a "read everything" request bounded (the tool is never spilled).
+    limit = Map.get(args, "limit", @default_limit) |> max(0) |> min(@max_limit)
 
     with {:ok, safe_path} <- Nous.PathGuard.validate(file_path, ctx),
          {:ok, %File.Stat{size: size}} <- File.stat(safe_path),

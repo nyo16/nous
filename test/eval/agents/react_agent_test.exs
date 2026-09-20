@@ -272,17 +272,18 @@ defmodule Nous.Eval.Agents.ReActAgentTest do
           parameters: %{"type" => "object", "properties" => %{}}
         )
 
-      agent =
-        Nous.ReActAgent.new(context[:model],
-          tools: [static_tool],
+      agent = Nous.ReActAgent.new(context[:model], tools: [static_tool])
+
+      # Run option, not an agent option (see 6.7 in error_handling_test).
+      {:ok, result} =
+        Nous.ReActAgent.run(
+          agent,
+          """
+          Call static_tool once.
+          Then provide your final answer about what it returned.
+          """,
           max_iterations: 5
         )
-
-      {:ok, result} =
-        Nous.ReActAgent.run(agent, """
-        Call static_tool once.
-        Then provide your final answer about what it returned.
-        """)
 
       IO.puts("\n[ReAct 7.9] Output: #{inspect(result.output)}")
 

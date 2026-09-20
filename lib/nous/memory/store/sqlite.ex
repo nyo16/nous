@@ -110,16 +110,23 @@ if Code.ensure_loaded?(Exqlite) do
 
       with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
            :ok <- Exqlite.Sqlite3.bind(stmt, [id]) do
-        case Exqlite.Sqlite3.step(conn, stmt) do
-          {:row, row} ->
-            {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
-            Exqlite.Sqlite3.release(conn, stmt)
-            {:ok, row_to_entry(columns, row)}
+        # step/2 also returns {:error, reason} (e.g. :busy); the statement is
+        # released on every branch so an error cannot leak it.
+        result =
+          case Exqlite.Sqlite3.step(conn, stmt) do
+            {:row, row} ->
+              {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
+              {:ok, row_to_entry(columns, row)}
 
-          :done ->
-            Exqlite.Sqlite3.release(conn, stmt)
-            {:error, :not_found}
-        end
+            :done ->
+              {:error, :not_found}
+
+            {:error, _} = error ->
+              error
+          end
+
+        Exqlite.Sqlite3.release(conn, stmt)
+        result
       end
     end
 
@@ -342,16 +349,21 @@ if Code.ensure_loaded?(Exqlite) do
       with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
            :ok <- Exqlite.Sqlite3.bind(stmt, params) do
         {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
-        rows = fetch_rows(conn, stmt, [])
+        result = fetch_rows(conn, stmt, [])
         Exqlite.Sqlite3.release(conn, stmt)
-        {:ok, rows, columns}
+
+        case result do
+          {:ok, rows} -> {:ok, rows, columns}
+          {:error, _} = error -> error
+        end
       end
     end
 
     defp fetch_rows(conn, stmt, acc) do
       case Exqlite.Sqlite3.step(conn, stmt) do
         {:row, row} -> fetch_rows(conn, stmt, [row | acc])
-        :done -> Enum.reverse(acc)
+        :done -> {:ok, Enum.reverse(acc)}
+        {:error, _} = error -> error
       end
     end
 

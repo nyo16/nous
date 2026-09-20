@@ -335,6 +335,11 @@ defmodule Nous.CodeMode do
           [Binding.t()]
   def bindings(tools, policy, %RunContext{} = run_ctx, opts \\ []) when is_list(tools) do
     dispatch = Keyword.get(opts, :dispatch) || (&direct_dispatch/3)
+    # The runner passes the agent's policy explicitly; a direct caller that
+    # omits it still gets the one the run context carries (attached by the
+    # runner alongside :sandbox). `nil` here must mean "no policy", never
+    # "forgot to pass the policy".
+    policy = policy || run_ctx.permissions
     granted = policy |> filter_tools(tools) |> MapSet.new(& &1.name)
     sub_ctx = reopen_approval_gate(run_ctx)
 

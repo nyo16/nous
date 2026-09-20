@@ -180,14 +180,15 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
           parameters: %{"type" => "object", "properties" => %{}}
         )
 
+      # `max_iterations` is a run option, not an agent option: `Nous.new/2`
+      # silently drops it and the default of 10 applies.
       agent =
         Nous.new(context[:model],
           tools: [loop_tool],
-          max_iterations: 3,
           instructions: "Keep calling loop_tool until you get a good answer."
         )
 
-      result = Nous.run(agent, "Keep trying with loop_tool")
+      result = Nous.run(agent, "Keep trying with loop_tool", max_iterations: 3)
 
       case result do
         {:error, %Nous.Errors.MaxIterationsExceeded{max_iterations: max}} ->

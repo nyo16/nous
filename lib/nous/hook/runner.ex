@@ -467,7 +467,7 @@ defmodule Nous.Hook.Runner do
         :allow
 
       {:ok, %{"result" => "modify", "changes" => changes}} when is_map(changes) ->
-        {:modify, changes}
+        {:modify, normalize_changes(changes)}
 
       {:ok, _} ->
         :allow
@@ -476,6 +476,28 @@ defmodule Nous.Hook.Runner do
         # Non-JSON output treated as allow
         :allow
     end
+  end
+
+  # A command hook's `changes` arrive from JSON with string keys, while every
+  # consumer (`Nous.AgentRunner.ToolExecution`, `Nous.CodeMode.direct_dispatch/3`,
+  # the workflow engine) matches the atom keys a function hook returns —
+  # `%{arguments: …}`, `%{result: …}`. Left as-is, `Map.merge(payload, changes)`
+  # added a string-keyed sibling and the documented path-sanitising command
+  # hook never took effect. Only the payload keys the runner defines are
+  # translated (a literal allow-list — never `String.to_atom/1` on hook
+  # output); anything else stays a string and is ignored downstream.
+  @change_keys %{
+    "arguments" => :arguments,
+    "result" => :result,
+    "tool_name" => :tool_name,
+    "state" => :state,
+    "messages" => :messages,
+    "settings" => :settings,
+    "response" => :response
+  }
+
+  defp normalize_changes(changes) do
+    Map.new(changes, fn {key, value} -> {Map.get(@change_keys, key, key), value} end)
   end
 
   # Remove non-serializable values from payload before JSON encoding. One pass:

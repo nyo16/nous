@@ -284,4 +284,32 @@ defmodule Nous.Hook.RunnerTest do
       assert Runner.run_hooks([], :pre_tool_use, %{}) == :allow
     end
   end
+
+  describe "command hooks" do
+    # A command hook's stdout is JSON, so its `changes` arrive string-keyed;
+    # every consumer matches `%{arguments: …}` / `%{result: …}`. Before the
+    # parser normalised them, `Map.merge(payload, changes)` added a
+    # string-keyed sibling and the documented path-sanitising command hook
+    # (docs/guides/hooks.md) silently changed nothing.
+    test "a modify reply is returned with the atom keys consumers match on" do
+      json = ~s({"result":"modify","changes":{"arguments":{"path":"/safe/path"},"custom":1}})
+
+      hook = %Nous.Hook{
+        event: :pre_tool_use,
+        type: :command,
+        handler: ["/bin/sh", "-c", "cat >/dev/null; printf '%s' '#{json}'"],
+        name: "sanitizer",
+        timeout: 10_000
+      }
+
+      registry = Registry.from_hooks([hook])
+      payload = %{tool_name: "file_read", tool_id: "c1", arguments: %{"path" => "../etc"}}
+
+      assert {:modify, changes} = Runner.run(registry, :pre_tool_use, payload)
+      assert changes[:arguments] == %{"path" => "/safe/path"}
+      refute Map.has_key?(changes, "arguments")
+      # Unknown keys are not atomised (never String.to_atom on hook output).
+      assert changes["custom"] == 1
+    end
+  end
 end

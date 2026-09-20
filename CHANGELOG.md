@@ -100,14 +100,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **A `:pre_tool_use` hook's `{:modify, %{arguments: ...}}` never reached the
-  tool.** `Nous.Hook.Runner` applied a blocking hook's modification to the
-  payload the *next* hook saw and then returned `:allow`, so the rewrite was
-  dropped at the end of the chain: the agent runner's "hook modified the
-  arguments" branch was unreachable and the documented path-sanitising hook
-  changed nothing. Blocking events now return `{:modify, changes}` (merged,
-  last writer wins) when every hook allowed, exactly like non-blocking events
-  already did. `:deny` still short-circuits regardless of earlier
-  modifications.
+  tool.** Two defects, one per hook type. `Nous.Hook.Runner` applied a blocking
+  hook's modification to the payload the *next* hook saw and then returned
+  `:allow`, so the rewrite was dropped at the end of the chain: the agent
+  runner's "hook modified the arguments" branch was unreachable. Blocking
+  events now return `{:modify, changes}` (merged, last writer wins) when every
+  hook allowed, exactly like non-blocking events already did; `:deny` still
+  short-circuits regardless of earlier modifications. And a **command** hook's
+  `changes` arrived straight from `JSON.decode` with string keys
+  (`"arguments"`), while every consumer matches the atom key a function hook
+  returns, so `Map.merge/2` added an ignored sibling and the documented
+  path-sanitising command hook (`docs/guides/hooks.md`) still changed nothing.
+  The parser now translates the runner-defined payload keys (`arguments`,
+  `result`, `tool_name`, `state`, …) through a literal allow-list — never
+  `String.to_atom/1` on hook output; unknown keys stay strings.
 
 - **Code Mode sub-call errors were always "tool call failed".**
   `Nous.CodeMode.direct_dispatch/3` already reduces a failure to the
