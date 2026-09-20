@@ -122,6 +122,41 @@ defmodule Nous.Memory.Store.Conformance do
         assert Enum.map(entries, & &1.id) == [mine.id]
       end
 
+      test "list/2 honours :limit and :order (newest first)", %{state: state} do
+        # Distinct created_at values so :newest has something to order by;
+        # inserted oldest-first so backend insertion order is NOT the answer.
+        base = ~U[2026-01-01 00:00:00Z]
+
+        state =
+          Enum.reduce(1..5, state, fn i, acc ->
+            entry =
+              Entry.new(%{content: "memory #{i}", created_at: DateTime.add(base, i, :minute)})
+
+            {:ok, acc} = @store.store(acc, entry)
+            acc
+          end)
+
+        assert {:ok, entries} = @store.list(state, order: :newest, limit: 2)
+        assert Enum.map(entries, & &1.content) == ["memory 5", "memory 4"]
+
+        assert {:ok, entries} = @store.list(state, limit: 3)
+        assert length(entries) == 3
+
+        assert {:ok, entries} = @store.list(state, limit: 0)
+        assert entries == []
+      end
+
+      test "search_text/3 is case-insensitive on both sides", %{state: state} do
+        {state, upper} = put(state, %{content: "ELIXIR CONCURRENCY WITH OTP"})
+        {state, _} = put(state, %{content: "completely unrelated cooking recipe"})
+
+        assert {:ok, [{top, _} | _]} = @store.search_text(state, "elixir otp", limit: 10)
+        assert top.id == upper.id
+
+        assert {:ok, [{top, _} | _]} = @store.search_text(state, "ELIXIR OTP", limit: 10)
+        assert top.id == upper.id
+      end
+
       test "search_text/3 returns {entry, score} tuples ranked by relevance", %{state: state} do
         {state, _} = put(state, %{content: "elixir concurrency with otp"})
         {state, _} = put(state, %{content: "completely unrelated cooking recipe"})

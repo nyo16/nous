@@ -1,7 +1,7 @@
 # DuckDB Memory Store
 #
 # Uses DuckDB with FTS and vector similarity search.
-# Requires: {:duckdbex, "~> 0.3"}
+# Requires: {:duckdbex, "~> 0.5"}
 #
 # Run: mix run examples/memory/duckdb_full.exs
 
@@ -22,14 +22,13 @@ store =
 
       Skipping: #{reason}
 
-      The duckdbex dependency ships commented out in this repo. Uncomment this line
-      in mix.exs (under "Memory system store backends"):
+      duckdbex is an optional dependency of Nous — declared in Nous's own
+      mix.exs so it builds and tests here, but not pulled into your app unless
+      you add it. In your app's mix.exs:
 
-          {:duckdbex, "~> 0.3", optional: true},
+          {:duckdbex, "~> 0.5"},
 
-      then run:
-
-          mix deps.get
+      then run `mix deps.get`.
       """)
 
       System.halt(0)

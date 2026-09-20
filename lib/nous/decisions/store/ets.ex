@@ -2,8 +2,9 @@ defmodule Nous.Decisions.Store.ETS do
   @moduledoc """
   ETS-backed decision graph store.
 
-  Uses two unnamed ETS tables (one for nodes, one for edges) so multiple
-  instances can coexist. Graph queries use in-memory BFS traversal.
+  Uses three unnamed ETS tables (nodes, edges, and an edge index keyed by
+  endpoint) so multiple instances can coexist. Graph queries use in-memory BFS
+  traversal.
 
   ## Ownership & lifetime
 
@@ -31,7 +32,7 @@ defmodule Nous.Decisions.Store.ETS do
 
   @impl true
   @doc """
-  Create two ETS tables for nodes and edges.
+  Create the ETS tables for nodes, edges, and the edge endpoint index.
 
   ## Options
 
@@ -39,14 +40,21 @@ defmodule Nous.Decisions.Store.ETS do
   """
   @spec init(keyword()) :: {:ok, map()}
   def init(_opts) do
-    # read_concurrency only: both tables are read far more than written — every
+    # read_concurrency only: all tables are read far more than written — every
     # traversal rebuilds the adjacency index from `edges` and does a `nodes`
     # lookup per visited neighbour, while writes are one-off graph construction.
     # write_concurrency is deliberately omitted: it costs a per-scheduler lock
     # stripe of memory and slows the single-writer inserts these stores do.
     nodes = :ets.new(:decision_nodes, [:set, :public, read_concurrency: true])
     edges = :ets.new(:decision_edges, [:set, :public, read_concurrency: true])
-    {:ok, %{nodes: nodes, edges: edges}}
+
+    # Secondary index `{{node_id, direction}, edge_id}` so `get_edges/3` is a
+    # keyed lookup instead of a scan of the whole edge table. The context
+    # builder calls it once per active goal on every system-prompt build, so
+    # a scan made prompt cost O(goals * edges).
+    edge_index = :ets.new(:decision_edge_index, [:bag, :public, read_concurrency: true])
+
+    {:ok, %{nodes: nodes, edges: edges, edge_index: edge_index}}
   end
 
   @impl true
@@ -82,40 +90,43 @@ defmodule Nous.Decisions.Store.ETS do
 
   @impl true
   @spec delete_node(map(), String.t()) :: {:ok, map()}
-  def delete_node(%{nodes: nodes, edges: edges} = state, id) do
+  def delete_node(%{nodes: nodes} = state, id) do
     :ets.delete(nodes, id)
 
-    # Remove edges that reference this node
-    edges
-    |> all_edges()
-    |> Enum.each(fn edge ->
-      if edge.from_id == id || edge.to_id == id do
-        :ets.delete(edges, edge.id)
-      end
-    end)
+    # Cascade to every edge touching this node, found through the index rather
+    # than by scanning the edge table.
+    for direction <- [:outgoing, :incoming], edge_id <- index_lookup(state, id, direction) do
+      remove_edge(state, edge_id)
+    end
 
     {:ok, state}
   end
 
   @impl true
   @spec add_edge(map(), Edge.t()) :: {:ok, map()}
-  def add_edge(%{edges: edges} = state, %Edge{} = edge) do
+  def add_edge(%{edges: edges, edge_index: index} = state, %Edge{} = edge) do
+    # `edges` is a :set, so re-adding an id replaces the row. Drop the old
+    # row's index entries first or its former endpoints keep answering lookups.
+    remove_edge(state, edge.id)
+
     :ets.insert(edges, {edge.id, edge})
+
+    :ets.insert(index, [
+      {{edge.from_id, :outgoing}, edge.id},
+      {{edge.to_id, :incoming}, edge.id}
+    ])
+
     {:ok, state}
   end
 
   @impl true
   @spec get_edges(map(), String.t(), :outgoing | :incoming) :: {:ok, [Edge.t()]}
-  def get_edges(%{edges: edges}, node_id, direction) do
+  def get_edges(%{edges: edges} = state, node_id, direction)
+      when direction in [:outgoing, :incoming] do
     results =
-      edges
-      |> all_edges()
-      |> Enum.filter(fn edge ->
-        case direction do
-          :outgoing -> edge.from_id == node_id
-          :incoming -> edge.to_id == node_id
-        end
-      end)
+      for edge_id <- index_lookup(state, node_id, direction),
+          [{^edge_id, edge}] <- [:ets.lookup(edges, edge_id)],
+          do: edge
 
     {:ok, results}
   end
@@ -174,6 +185,27 @@ defmodule Nous.Decisions.Store.ETS do
 
   defp all_edges(table) do
     :ets.tab2list(table) |> Enum.map(fn {_id, edge} -> edge end)
+  end
+
+  # Edge ids indexed under `{node_id, direction}`, in insertion order (a :bag
+  # preserves it per key).
+  defp index_lookup(%{edge_index: index}, node_id, direction) do
+    for {_key, edge_id} <- :ets.lookup(index, {node_id, direction}), do: edge_id
+  end
+
+  # Delete an edge row and both of its index entries. A no-op for unknown ids,
+  # which also makes it safe to hit the same edge twice while cascading a
+  # self-loop from delete_node/2.
+  defp remove_edge(%{edges: edges, edge_index: index}, edge_id) do
+    case :ets.lookup(edges, edge_id) do
+      [{^edge_id, edge}] ->
+        :ets.delete(edges, edge_id)
+        :ets.delete_object(index, {{edge.from_id, :outgoing}, edge_id})
+        :ets.delete_object(index, {{edge.to_id, :incoming}, edge_id})
+
+      [] ->
+        :ok
+    end
   end
 
   # BFS to find a path between two nodes, returning nodes along the path.

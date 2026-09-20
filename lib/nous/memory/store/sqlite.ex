@@ -109,17 +109,24 @@ if Code.ensure_loaded?(Exqlite) do
       sql = "SELECT * FROM memories WHERE id = ?1"
 
       with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-           :ok <- Exqlite.Sqlite3.bind(conn, stmt, [id]) do
-        case Exqlite.Sqlite3.step(conn, stmt) do
-          {:row, row} ->
-            columns = Exqlite.Sqlite3.columns(conn, stmt)
-            Exqlite.Sqlite3.release(conn, stmt)
-            {:ok, row_to_entry(columns, row)}
+           :ok <- Exqlite.Sqlite3.bind(stmt, [id]) do
+        # step/2 also returns {:error, reason} (e.g. :busy); the statement is
+        # released on every branch so an error cannot leak it.
+        result =
+          case Exqlite.Sqlite3.step(conn, stmt) do
+            {:row, row} ->
+              {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
+              {:ok, row_to_entry(columns, row)}
 
-          :done ->
-            Exqlite.Sqlite3.release(conn, stmt)
-            {:error, :not_found}
-        end
+            :done ->
+              {:error, :not_found}
+
+            {:error, _} = error ->
+              error
+          end
+
+        Exqlite.Sqlite3.release(conn, stmt)
+        result
       end
     end
 
@@ -297,7 +304,9 @@ if Code.ensure_loaded?(Exqlite) do
       scope = Keyword.get(opts, :scope, %{})
       {scope_sql, scope_params} = build_scope_clause(scope, 0)
 
-      sql = "SELECT * FROM memories #{scope_sql}"
+      sql =
+        "SELECT * FROM memories #{scope_sql}" <>
+          order_clause(Keyword.get(opts, :order)) <> limit_clause(Keyword.get(opts, :limit))
 
       case query_all(conn, sql, scope_params) do
         {:ok, rows, columns} ->
@@ -308,10 +317,18 @@ if Code.ensure_loaded?(Exqlite) do
       end
     end
 
+    # `:order` / `:limit` are keyword atoms and integers from the caller, never
+    # strings, so interpolating them cannot inject.
+    defp order_clause(:newest), do: " ORDER BY created_at DESC"
+    defp order_clause(_), do: ""
+
+    defp limit_clause(limit) when is_integer(limit) and limit >= 0, do: " LIMIT #{limit}"
+    defp limit_clause(_), do: ""
+
     # -- Private helpers --
 
     defp bind_and_step(conn, stmt, params) do
-      with :ok <- Exqlite.Sqlite3.bind(conn, stmt, params) do
+      with :ok <- Exqlite.Sqlite3.bind(stmt, params) do
         case Exqlite.Sqlite3.step(conn, stmt) do
           :done ->
             Exqlite.Sqlite3.release(conn, stmt)
@@ -330,18 +347,23 @@ if Code.ensure_loaded?(Exqlite) do
 
     defp query_all(conn, sql, params) do
       with {:ok, stmt} <- Exqlite.Sqlite3.prepare(conn, sql),
-           :ok <- Exqlite.Sqlite3.bind(conn, stmt, params) do
-        columns = Exqlite.Sqlite3.columns(conn, stmt)
-        rows = fetch_rows(conn, stmt, [])
+           :ok <- Exqlite.Sqlite3.bind(stmt, params) do
+        {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
+        result = fetch_rows(conn, stmt, [])
         Exqlite.Sqlite3.release(conn, stmt)
-        {:ok, rows, columns}
+
+        case result do
+          {:ok, rows} -> {:ok, rows, columns}
+          {:error, _} = error -> error
+        end
       end
     end
 
     defp fetch_rows(conn, stmt, acc) do
       case Exqlite.Sqlite3.step(conn, stmt) do
         {:row, row} -> fetch_rows(conn, stmt, [row | acc])
-        :done -> Enum.reverse(acc)
+        :done -> {:ok, Enum.reverse(acc)}
+        {:error, _} = error -> error
       end
     end
 
@@ -354,7 +376,7 @@ if Code.ensure_loaded?(Exqlite) do
       %Entry{
         id: map["id"],
         content: map["content"],
-        type: String.to_existing_atom(map["type"]),
+        type: memory_type(map["type"]),
         importance: map["importance"] || 0.5,
         evergreen: int_to_bool(map["evergreen"]),
         embedding: decode_embedding(map["embedding"]),
@@ -370,8 +392,16 @@ if Code.ensure_loaded?(Exqlite) do
       }
     end
 
-    defp build_scope_clause(scope, param_offset) when map_size(scope) == 0,
-      do: {"", List.duplicate(nil, 0) |> then(fn _ -> [] end)}
+    # Stored rows are not trusted input: decode the column through the literal
+    # `Nous.Memory.Entry.memory_type/0` set, never `String.to_existing_atom/1`
+    # (which accepts any atom the VM happens to hold). Unknown → the struct's
+    # own default.
+    defp memory_type("semantic"), do: :semantic
+    defp memory_type("episodic"), do: :episodic
+    defp memory_type("procedural"), do: :procedural
+    defp memory_type(_other), do: :semantic
+
+    defp build_scope_clause(scope, _param_offset) when map_size(scope) == 0, do: {"", []}
 
     defp build_scope_clause(scope, param_offset) do
       {clauses, params} =

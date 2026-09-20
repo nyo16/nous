@@ -26,6 +26,18 @@ defmodule Nous.Session.Log do
   replace — plus the event count, so an ordinary append extends the cached list
   instead of rebuilding it, and a replace invalidates it exactly once.
 
+  ## Bounding the log: `snapshot/1`
+
+  A replace shadows events; it does not remove them, so a long-running session
+  that is summarised again and again keeps every original event plus every
+  superseded summary, and its persisted blob grows with the number of
+  compactions. `snapshot/1` drops every shadowed event and keeps the rest with
+  their seqs intact, so the log becomes O(live history). It is a deliberate,
+  explicit trade: after a snapshot the shadowed history is gone from this log,
+  so fork/rewind past that point is no longer possible. Nothing calls it
+  implicitly; `Nous.Plugins.Summarization` does so only with
+  `snapshot_log: true`.
+
   ## What is *not* in the log
 
   The system prompt **rewrite** performed per request by
@@ -132,7 +144,9 @@ defmodule Nous.Session.Log do
   `events/1` reverses the whole list, which is fine for a one-off read and wrong
   for anything on the append path — publishing newly committed events runs on
   every append, and so does a consumer catching up from a known seq. Because
-  events are stored newest-first, taking the tail walks only what is new.
+  events are stored newest-first, walking while `event.seq >= seq` touches only
+  what is new — and, unlike counting, stays correct after a `snapshot/1` has
+  left gaps in the seq sequence.
 
   `seq` at or beyond the end returns `[]`.
 
@@ -148,15 +162,65 @@ defmodule Nous.Session.Log do
 
   """
   @spec since(t(), non_neg_integer()) :: [Event.t()]
-  def since(%__MODULE__{events: events, next_seq: next_seq}, seq)
-      when is_integer(seq) and seq >= 0 do
+  def since(%__MODULE__{events: events}, seq) when is_integer(seq) and seq >= 0 do
     events
-    |> Enum.take(max(next_seq - seq, 0))
+    |> Enum.take_while(&(&1.seq >= seq))
     |> Enum.reverse()
   end
 
   @doc """
-  The number of events, shadowed ones included.
+  Restore an event with the seq it was persisted under.
+
+  `append/4` numbers events itself; this is for rebuilding a log from persisted
+  events, where the seqs must survive verbatim — a `{:replace, start, stop}`
+  names positions, and after a `snapshot/1` the persisted seqs legitimately
+  have gaps. `seq` must be at or past the next seq: restoring behind the head
+  would either duplicate a seq or reorder history, and is rejected.
+  """
+  @spec append_at(t(), non_neg_integer(), Event.type(), map(), DateTime.t() | nil) ::
+          {:ok, t()} | {:error, term()}
+  def append_at(%__MODULE__{next_seq: next_seq} = log, seq, type, data, time)
+      when is_integer(seq) and seq >= next_seq and is_map(data) do
+    case Event.new(seq, type, data, time) do
+      {:ok, event} -> {:ok, put_event(%{log | next_seq: seq}, event)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def append_at(%__MODULE__{next_seq: next_seq}, seq, _type, _data, _time)
+      when is_integer(seq) do
+    {:error, {:seq_behind_head, seq, next_seq}}
+  end
+
+  @doc """
+  Drop every shadowed event, keeping the survivors' seqs.
+
+  The surface (`surface/1`, `derive_messages/1`) is unchanged — a shadowed event
+  contributes nothing to it by definition — so the memoized fold survives too.
+  `count/1` keeps counting from the original head: seqs are never reused.
+
+  ## Examples
+
+      iex> log = Nous.Session.Log.new()
+      iex> {:ok, log} = Nous.Session.Log.append(log, :user_message, %{content: "one"})
+      iex> {:ok, log} = Nous.Session.Log.append(log, :user_message, %{content: "two"})
+      iex> {:ok, log} = Nous.Session.Log.append(log, :system_message, %{content: "[summary]", surface_op: {:replace, 0, 1}})
+      iex> log = Nous.Session.Log.snapshot(log)
+      iex> Enum.map(Nous.Session.Log.events(log), & &1.seq)
+      [2]
+      iex> Nous.Session.Log.count(log)
+      3
+
+  """
+  @spec snapshot(t()) :: t()
+  def snapshot(%__MODULE__{events: events} = log) do
+    shadowed = events |> Enum.reverse() |> shadowed_seqs()
+    %{log | events: Enum.reject(events, &MapSet.member?(shadowed, &1.seq))}
+  end
+
+  @doc """
+  The number of events ever appended — shadowed ones, and ones a `snapshot/1`
+  has dropped, included. Equivalently, the next seq.
   """
   @spec count(t()) :: non_neg_integer()
   def count(%__MODULE__{next_seq: next_seq}), do: next_seq

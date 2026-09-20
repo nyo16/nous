@@ -9,7 +9,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
     also keeps content and tool calls when a stream degenerates into a
     single complete response object.
 
-    Requires optional dep: `{:llama_cpp_ex, "~> 0.6.5"}`
+    Requires optional dep: `{:llama_cpp_ex, "~> 0.8"}`
     """
 
     @behaviour Nous.StreamNormalizer
@@ -65,7 +65,7 @@ else
     @moduledoc """
     Stream normalizer for LlamaCppEx `%ChatCompletionChunk{}` structs.
 
-    **Not available** - add `{:llama_cpp_ex, "~> 0.6.5"}` to your mix.exs deps.
+    **Not available** - add `{:llama_cpp_ex, "~> 0.8"}` to your mix.exs deps.
     """
 
     @behaviour Nous.StreamNormalizer

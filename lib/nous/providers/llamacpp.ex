@@ -6,7 +6,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
     Runs GGUF models directly in-process via `llama_cpp_ex` NIF bindings.
     No HTTP server needed.
 
-    Requires optional dep: `{:llama_cpp_ex, "~> 0.6.5"}`
+    Requires optional dep: `{:llama_cpp_ex, "~> 0.8"}`
 
     ## Usage
 
@@ -332,12 +332,12 @@ else
     @moduledoc """
     LlamaCpp NIF-based provider for local LLM inference.
 
-    **Not available** - add `{:llama_cpp_ex, "~> 0.6.5"}` to your mix.exs deps.
+    **Not available** - add `{:llama_cpp_ex, "~> 0.8"}` to your mix.exs deps.
     """
 
     @behaviour Nous.Provider
 
-    @not_available "LlamaCppEx is not available. Add {:llama_cpp_ex, \"~> 0.6.5\"} to your mix.exs deps."
+    @not_available "LlamaCppEx is not available. Add {:llama_cpp_ex, \"~> 0.8\"} to your mix.exs deps."
 
     @impl true
     def provider_id, do: :llamacpp

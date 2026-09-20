@@ -1,7 +1,7 @@
-defmodule Nous.Tools.UrlGuardTest do
+defmodule Nous.UrlGuardTest do
   use ExUnit.Case, async: true
 
-  alias Nous.Tools.UrlGuard
+  alias Nous.UrlGuard
 
   describe "validate/2" do
     test "accepts a public https URL" do
@@ -85,6 +85,13 @@ defmodule Nous.Tools.UrlGuardTest do
 
     test "rejects NAT64-embedded metadata (64:ff9b::169.254.169.254)" do
       assert {:error, reason} = UrlGuard.validate("http://[64:ff9b::a9fe:a9fe]/")
+      assert reason =~ "private/loopback/link-local"
+    end
+
+    test "rejects 6to4-embedded metadata (2002:a9fe:a9fe::)" do
+      # 2002::/16 embeds a v4 address in the next 32 bits; a9fe:a9fe is
+      # 169.254.169.254, so this must trip the v4 blocklist.
+      assert {:error, reason} = UrlGuard.validate("http://[2002:a9fe:a9fe::]/")
       assert reason =~ "private/loopback/link-local"
     end
 

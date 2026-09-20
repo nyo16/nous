@@ -58,4 +58,34 @@ defmodule Nous.ToolCall do
       Map.put(call, Atom.to_string(key), value)
     end
   end
+
+  @doc """
+  The tool name a model actually meant, with provider noise stripped.
+
+  Some models wrap the name in XML-ish syntax (`search"…`); some providers emit
+  a malformed call with no name at all. Anything after a `"` is dropped and a
+  missing or non-binary name becomes `""`, so a bad call fails lookup instead
+  of crashing the run with a `FunctionClauseError`.
+
+  ## Examples
+
+      iex> Nous.ToolCall.clean_name("search")
+      "search"
+
+      iex> Nous.ToolCall.clean_name(~s(search" foo))
+      "search"
+
+      iex> Nous.ToolCall.clean_name(nil)
+      ""
+
+  """
+  @spec clean_name(term()) :: String.t()
+  def clean_name(name) when is_binary(name) do
+    name
+    |> String.split("\"")
+    |> List.first()
+    |> String.trim()
+  end
+
+  def clean_name(_name), do: ""
 end

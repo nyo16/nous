@@ -30,7 +30,7 @@ defmodule Nous.CodeMode do
   behaves as `:native` rather than showing the model a `run_code` that can only
   fail, since the native path is right there. `:code` is *not* degraded — an
   operator who asked for code mode gets `run_code`, and calling it without a
-  provider returns an actionable error (see `Nous.Tools.RunCode`) instead of
+  provider returns an actionable error (see `Nous.CodeMode.RunCodeTool`) instead of
   silently reverting to a mode they turned off.
 
   Configure a provider with:
@@ -62,7 +62,7 @@ defmodule Nous.CodeMode do
 
   alias Nous.CodeMode.Sdk
   alias Nous.CodeRuntime.Binding
-  alias Nous.{Permissions, RunContext, Tool, ToolExecutor}
+  alias Nous.{Hook, Permissions, RunContext, Tool, ToolExecutor}
 
   require Logger
 
@@ -229,14 +229,14 @@ defmodule Nous.CodeMode do
   """
   @spec run_code_tool([Tool.t()], [Tool.t()], keyword()) :: Tool.t()
   def run_code_tool(all_tools, granted, opts \\ []) do
-    tool = Tool.from_module(Nous.Tools.RunCode, retries: 0, timeout: tool_timeout_ms())
+    tool = Tool.from_module(Nous.CodeMode.RunCodeTool, retries: 0, timeout: tool_timeout_ms())
     policy = Keyword.get(opts, :policy)
 
     %{
       tool
       | description: "#{tool.description}\n\n#{Sdk.render(language(), granted)}",
         function: fn ctx, args ->
-          Nous.Tools.RunCode.run(ctx, args, tools: all_tools, policy: policy)
+          Nous.CodeMode.RunCodeTool.run(ctx, args, tools: all_tools, policy: policy)
         end
     }
   end
@@ -308,6 +308,13 @@ defmodule Nous.CodeMode do
   program never hits an undefined function and never gets to distinguish
   "denied" from "failed" by the shape of what it caught.
 
+  Granted tools are first run through `Nous.Permissions.enforce_approval/2`, so
+  the bound struct carries the same `requires_approval` flag the agent runner
+  would have computed for a model-direct call: `approval_required: [...]`,
+  `:strict` mode and the `:execute`-under-`:permissive` rule gate a sub-call
+  exactly as they gate a top-level call. Without this the bindings saw only the
+  tool's own flag, and a policy-gated tool ran unprompted from inside a program.
+
   ## Options
 
     * `:dispatch` — a `t:dispatch/0` replacing the default, `direct_dispatch/3`.
@@ -317,7 +324,7 @@ defmodule Nous.CodeMode do
 
   `direct_dispatch/3` is the default because it is the only thing a caller who
   owns no `Nous.Agent.Context` can honestly do — but it is *not* what the
-  shipped Code Mode path uses. `Nous.Tools.RunCode` starts a
+  shipped Code Mode path uses. `Nous.CodeMode.RunCodeTool` starts a
   `Nous.CodeMode.Scheduler` for each run and passes
   `Nous.CodeMode.Scheduler.dispatch_fun/1` here, so a real program's sub-calls
   are ordered by one lane and audited into the session log. Calling `bindings/4`
@@ -328,6 +335,11 @@ defmodule Nous.CodeMode do
           [Binding.t()]
   def bindings(tools, policy, %RunContext{} = run_ctx, opts \\ []) when is_list(tools) do
     dispatch = Keyword.get(opts, :dispatch) || (&direct_dispatch/3)
+    # The runner passes the agent's policy explicitly; a direct caller that
+    # omits it still gets the one the run context carries (attached by the
+    # runner alongside :sandbox). `nil` here must mean "no policy", never
+    # "forgot to pass the policy".
+    policy = policy || run_ctx.permissions
     granted = policy |> filter_tools(tools) |> MapSet.new(& &1.name)
     sub_ctx = reopen_approval_gate(run_ctx)
 
@@ -336,6 +348,7 @@ defmodule Nous.CodeMode do
       |> Enum.filter(&is_binary(&1.name))
       |> Enum.uniq_by(& &1.name)
       |> Map.new(fn tool ->
+        tool = Permissions.enforce_approval(tool, policy)
         {tool.name, binding_fun(tool, MapSet.member?(granted, tool.name), sub_ctx, dispatch)}
       end)
 
@@ -386,13 +399,41 @@ defmodule Nous.CodeMode do
   update: applying those from concurrent sub-calls into a context the runner
   also owns is the two-writers hazard. The scheduler's own bookkeeping events
   are a different thing and do reach the session log, as `:log_event`
-  operations on the update `Nous.Tools.RunCode` returns.
+  operations on the update `Nous.CodeMode.RunCodeTool` returns.
+
+  Hooks fire per sub-call, from the registry `run_ctx.hook_registry` carries
+  (the agent runner attaches it in `Nous.Agent.Context.to_run_context/2`; a
+  context built without one runs no hooks). `:pre_tool_use` sees
+  `%{tool_name:, tool_id: nil, arguments:}` and may `:deny` the call or
+  `{:modify, %{arguments: ...}}` it; `:post_tool_use` additionally sees
+  `result:` (the tool's value, not a rendered message) and may
+  `{:modify, %{result: ...}}` it. `tool_id` is `nil` because a provider
+  tool-call id exists only for the enclosing `run_code` call; the
+  `Nous.CodeMode.Scheduler` audit events carry that correlation instead.
   """
   @spec direct_dispatch(Tool.t(), map(), RunContext.t()) :: {:ok, term()} | {:error, map()}
   def direct_dispatch(%Tool{} = tool, args, %RunContext{} = run_ctx) do
+    payload = %{tool_name: tool.name, tool_id: nil, arguments: args}
+
+    case Hook.Runner.run(run_ctx.hook_registry, :pre_tool_use, payload) do
+      :deny ->
+        {:error, error_payload(tool.name, "tool call was denied by hook")}
+
+      {:deny, reason} ->
+        {:error, error_payload(tool.name, "tool call was denied by hook: #{reason}")}
+
+      {:modify, %{arguments: new_args}} ->
+        execute_sub_call(tool, new_args, run_ctx)
+
+      _allow ->
+        execute_sub_call(tool, args, run_ctx)
+    end
+  end
+
+  defp execute_sub_call(%Tool{} = tool, args, %RunContext{} = run_ctx) do
     case ToolExecutor.execute(tool, args, run_ctx) do
       {:ok, value} ->
-        {:ok, value}
+        {:ok, post_hook(tool, args, value, run_ctx)}
 
       {:ok, value, _context_update} ->
         Logger.warning(
@@ -400,10 +441,19 @@ defmodule Nous.CodeMode do
             "dropping it — a program has no agent context to merge into"
         )
 
-        {:ok, value}
+        {:ok, post_hook(tool, args, value, run_ctx)}
 
       {:error, reason} ->
         {:error, error_payload(tool.name, error_message(reason))}
+    end
+  end
+
+  defp post_hook(%Tool{name: name}, args, value, %RunContext{hook_registry: registry}) do
+    payload = %{tool_name: name, tool_id: nil, arguments: args, result: value}
+
+    case Hook.Runner.run(registry, :post_tool_use, payload) do
+      {:modify, %{result: new_value}} -> new_value
+      _ -> value
     end
   end
 
@@ -427,7 +477,9 @@ defmodule Nous.CodeMode do
 
   This is the caller's patience, not a budget the program can ask for: real
   budgets — wall clock, memory, instruction count — are provider configuration,
-  validated when the provider is configured.
+  validated when the provider is configured. `Nous.CodeMode.Scheduler` uses the
+  same value to bound every wait on its lane (submit, await, audit read, stop),
+  so a wedged lane fails with a timeout error instead of holding a caller forever.
   """
   @spec await_timeout_ms() :: pos_integer()
   def await_timeout_ms do

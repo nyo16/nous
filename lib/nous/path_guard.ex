@@ -1,4 +1,4 @@
-defmodule Nous.Tools.PathGuard do
+defmodule Nous.PathGuard do
   @moduledoc """
   Path-traversal & symlink-escape protection for filesystem tools.
 
@@ -195,7 +195,7 @@ defmodule Nous.Tools.PathGuard do
 
   ## Examples
 
-      iex> {:ok, real} = Nous.Tools.PathGuard.resolve_real(System.tmp_dir!())
+      iex> {:ok, real} = Nous.PathGuard.resolve_real(System.tmp_dir!())
       iex> Path.type(real)
       :absolute
 

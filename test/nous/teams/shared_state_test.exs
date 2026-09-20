@@ -263,9 +263,12 @@ defmodule Nous.Teams.SharedStateTest do
           id: :"disc_inf_#{team_id}"
         )
 
+      # No fixed sleep: `Process.send_after/3` raises on an `:infinity` delay,
+      # so if the server scheduled an expiry timer at all this call would
+      # crash it. The `:ok` plus the state check IS the proof; a 300 ms wait
+      # only ever proved the timer was not shorter than 300 ms.
       :ok = SharedState.share_discovery(pid, "alice", %{topic: "A", content: "First"})
-      Process.sleep(300)
-
+      assert %{discovery_ttl: :infinity} = :sys.get_state(pid)
       assert [%{topic: "A"}] = SharedState.get_discoveries(pid)
     end
   end

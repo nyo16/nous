@@ -31,7 +31,7 @@ defmodule Nous.Tools.FileEdit do
       ) do
     replace_all = Map.get(args, "replace_all", false)
 
-    with {:ok, safe_path} <- Nous.Tools.PathGuard.validate(file_path, ctx),
+    with {:ok, safe_path} <- Nous.PathGuard.validate(file_path, ctx),
          {:ok, content} <- File.read(safe_path) do
       occurrences = count_occurrences(content, old_string)
 

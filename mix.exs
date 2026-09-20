@@ -17,22 +17,38 @@ defmodule Nous.MixProject do
       source_url: @source_url,
       package: package(),
       elixirc_paths: elixirc_paths(Mix.env()),
-      # hackney is an optional backend (see deps); without this, apps that
-      # depend on nous without hackney get ":hackney is not available"
-      # warnings when compiling the dep.
-      elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool]],
+      # hackney, net_runner and tyrex are optional backends (see deps); without
+      # this, apps that depend on nous without them get ":hackney is not
+      # available" / "NetRunner is not available" / "Tyrex is not available"
+      # warnings when compiling the dep. The NetRunner call sites that matter
+      # fail closed at runtime (see Nous.Hook.Runner and Nous.Tools.Bash);
+      # Nous.CodeRuntime.JS.Session calls Tyrex directly and is only reachable
+      # once a code runtime is configured.
+      elixirc_options: [no_warn_undefined: [:hackney, :hackney_pool, NetRunner, Tyrex]],
       # Coverage ratchet. `mix test --cover` defaults to a 90% threshold this
       # project has never met, and no CI job ran it, so the gate was purely
-      # decorative. 59 is the current measured floor (60.05%, :llm/:llama
-      # excluded as in CI) with ~1pp of headroom, enforced by the `coverage`
+      # decorative. 66 is the current measured floor (67.75%, :llm/:llama
+      # excluded as in CI) with ~1.75pp of headroom, enforced by the `coverage`
       # job in .github/workflows/ci.yml. Raise it as coverage improves; never
       # lower it. History: 56.80% at the audit, 57 after the perf wave, 59 once
-      # the provider/web_fetch/prompt_template suites landed.
+      # the provider/web_fetch/prompt_template suites landed, 66 after the
+      # 2026-09 remediation (ghost backends + Store.Results + Code Mode gates).
       #
       # :threshold MUST be nested under :summary — a bare
       # `test_coverage: [threshold: n]` is silently ignored and you keep the
       # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
-      test_coverage: [summary: [threshold: 59]],
+      test_coverage: [summary: [threshold: 66]],
+      # `mix hex.audit` acknowledgements. Two cowlib advisories have no patched
+      # release (2.20.0 fixed only CVE-2026-43971):
+      #   CVE-2026-43966  structured-fields header CRLF injection
+      #   CVE-2026-43969  cookie request-header injection (GHSA-g2wm-735q-3f56)
+      # Exposure is test-only: cowlib reaches this project exclusively through
+      # bypass -> plug_cowboy -> cowboy, and bypass is `only: :test`. hex.audit
+      # warns when an entry no longer matches the lock, so a patched cowlib
+      # bump surfaces the stale ignore by itself. The `deps.audit` CI step
+      # carries the same two ids (see .github/workflows/ci.yml). Never add a
+      # runtime dep here — that is exactly what the gate exists to catch.
+      hex: [ignore_advisories: ["CVE-2026-43966", "CVE-2026-43969"]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix, :ex_unit]
@@ -76,6 +92,13 @@ defmodule Nous.MixProject do
       # and slated for removal, so the call sites use the new shape and the
       # constraint floor moves with them.
       {:req, "~> 0.7"},
+      # Direct dep, not just transitive via finch: the backends match
+      # `%Mint.TransportError{}` (Nous.HTTP.Backend.Req, Nous.Providers.HTTP),
+      # and finch's own `~> 1.8` floor still admits 1.9.3, which is vulnerable
+      # to CVE-2026-82729 / CVE-2026-82728 (HTTP/1 response-parsing DoS,
+      # reachable through Nous.Tools.WebFetch from a hostile server). This
+      # floor is what makes a consumer's resolver refuse the vulnerable line.
+      {:mint, "~> 1.10"},
       {:hackney, "~> 4.0", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
@@ -93,9 +116,21 @@ defmodule Nous.MixProject do
       # tyrex is not "mostly fine" — it is unusable for model-authored code.
       {:tyrex, "~> 0.4", optional: true},
 
-      # Memory system store backends (all optional — add to your app's deps to unlock)
-      # {:exqlite, "~> 0.27", optional: true},
-      # {:duckdbex, "~> 0.3", optional: true},
+      # Memory / decisions store backends. optional: true keeps the NIFs out
+      # of downstream builds unless the app opts in; declaring them here is
+      # what lets Nous compile AND test the code it ships for them — before
+      # this they were `if Code.ensure_loaded?` ghosts that never built
+      # in-repo (audit D-M2). CI runs them in the `optional_deps` job
+      # (`mix test --only sqlite --only duckdb --only prom_ex`).
+      {:exqlite, "~> 0.27", optional: true},
+      {:duckdbex, "~> 0.5", optional: true},
+      # Prometheus metrics via PromEx (`Nous.PromEx.Plugin`). Same story. plug
+      # rides along because prom_ex 1.12's `PromEx.Plug` compiles
+      # unconditionally against `Plug.Conn` even though prom_ex declares plug
+      # optional — without it prom_ex fails to build in :dev (test already
+      # has plug via bypass -> plug_cowboy).
+      {:prom_ex, "~> 1.11", optional: true},
+      {:plug, ">= 1.16.0", optional: true},
 
       # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
       # to unlock the LlamaCpp provider). optional: true keeps it out of
@@ -103,16 +138,15 @@ defmodule Nous.MixProject do
       # for Nous's own dev/test (e.g. the tagged llamacpp smoke test).
       {:llama_cpp_ex, "~> 0.8", optional: true},
 
-      # Memory system embedding providers (all optional — add to your app's deps to unlock)
-      # {:bumblebee, "~> 0.6", optional: true},
-      # {:exla, "~> 0.9", optional: true},
-
       # Process execution for command hooks and the Bash tool. A NIF-based
       # runner is used (over System.cmd/Port) for fine-grained process-tree
       # control and reliable kill-on-timeout of child processes. `~> 1.0` (not
       # the tighter `~> 1.0.4`) so downstream apps can pick up 1.x fixes without
-      # waiting on a nous release.
-      {:net_runner, "~> 1.0"},
+      # waiting on a nous release. optional: true keeps the NIF out of
+      # downstream builds that use neither the Bash tool nor :command hooks;
+      # both paths fail closed (refuse to run, never execute unconfined) when
+      # net_runner is absent — see Nous.Hook.Runner and Nous.Tools.Bash.
+      {:net_runner, "~> 1.0", optional: true},
 
       # Telemetry
       {:telemetry, "~> 1.2"},
@@ -125,6 +159,10 @@ defmodule Nous.MixProject do
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      # Security audit of mix.lock against the GitHub-sourced advisory DB —
+      # run by the deps_audit CI job (`mix deps.audit`, alongside the built-in
+      # `mix hex.audit` retirement check).
+      {:mix_audit, "~> 2.1", only: [:dev, :test], runtime: false},
       # optional (not only: :test) so the `~> 2.1` constraint reaches downstream
       # resolvers — Nous.PubSub integrates with phoenix_pubsub at runtime (guarded
       # by Code.ensure_loaded?), and apps that bring their own copy should see a
@@ -233,10 +271,12 @@ defmodule Nous.MixProject do
         "Nous.AgentRunner.RequestDispatch",
         "Nous.AgentRunner.Streaming",
         "Nous.AgentRunner.ToolExecution",
+        "Nous.AgentRunner.ToolInvocation",
         "Nous.Application",
+        "Nous.CodeRuntime.JS.Bridge",
+        "Nous.CodeRuntime.JS.Prelude",
+        "Nous.CodeRuntime.JS.Session",
         "Nous.JSON",
-        "Nous.Memory.Embedding.Bumblebee.ServingHolder",
-        "Nous.Memory.Embedding.Bumblebee.ServingSupervisor",
         "Nous.OutputSchema.UseMacro",
         "Nous.Persistence.ETS.TableOwner",
         "Nous.Util",
@@ -392,8 +432,6 @@ defmodule Nous.MixProject do
           Nous.Tools.FileGlob,
           Nous.Tools.FileGrep,
           Nous.Tools.TodoTools,
-          Nous.Tools.PathGuard,
-          Nous.Tools.UrlGuard,
           Nous.Tools.Env
         ],
         "Utility Tools": [
@@ -409,7 +447,8 @@ defmodule Nous.MixProject do
         ],
         "Data Types": [
           Nous.Types,
-          Nous.Usage
+          Nous.Usage,
+          Nous.Usage.Pricing
         ],
         Infrastructure: [
           Nous.Telemetry,
@@ -501,6 +540,7 @@ defmodule Nous.MixProject do
           Nous.Plugins.Memory,
           Nous.Plugins.SubAgent,
           Nous.Plugins.Summarization,
+          Nous.Plugins.LoopGuard,
           Nous.Plugins.Decisions,
           Nous.Plugins.TeamTools
         ],
@@ -536,7 +576,6 @@ defmodule Nous.MixProject do
           Nous.Memory.Search,
           Nous.Memory.Tools,
           Nous.Memory.Embedding,
-          Nous.Memory.Embedding.Bumblebee,
           Nous.Memory.Embedding.OpenAI,
           Nous.Memory.Embedding.Local
         ],
@@ -563,12 +602,45 @@ defmodule Nous.MixProject do
           Nous.Research.Report
         ],
         Session: [
+          Nous.Session,
           Nous.Session.Config,
-          Nous.Session.Guardrails
+          Nous.Session.Guardrails,
+          Nous.Session.Log,
+          Nous.Session.Event,
+          Nous.Session.Inbox,
+          Nous.Session.Invariant,
+          Nous.Session.Invariant.Violation,
+          Nous.Session.Recovery
         ],
-        Permissions: [
+        "Code Mode": [
+          Nous.CodeMode,
+          Nous.CodeMode.RunCodeTool,
+          Nous.CodeMode.Scheduler,
+          Nous.CodeMode.Sdk,
+          Nous.CodeRuntime,
+          Nous.CodeRuntime.JS,
+          Nous.CodeRuntime.Binding,
+          Nous.CodeRuntime.Request,
+          Nous.CodeRuntime.Result,
+          Nous.CodeRuntime.Failure
+        ],
+        "Permissions & Security": [
           Nous.Permissions,
-          Nous.Permissions.Policy
+          Nous.Permissions.Policy,
+          Nous.PathGuard,
+          Nous.UrlGuard,
+          Nous.Sandbox,
+          Nous.Sandbox.Policy,
+          Nous.Sandbox.Confined,
+          Nous.Sandbox.RunnerFailureRule,
+          Nous.Sandbox.Seatbelt,
+          Nous.Sandbox.Bwrap,
+          Nous.Sandbox.Unavailable
+        ],
+        "Tool Result Spill": [
+          Nous.Spill,
+          Nous.Spill.Local,
+          Nous.Spill.Locator
         ],
         "Knowledge Base": [
           Nous.KnowledgeBase,

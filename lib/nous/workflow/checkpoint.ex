@@ -149,14 +149,19 @@ defmodule Nous.Workflow.Checkpoint.ETS do
     end
   end
 
+  # `is_binary` guard: an atom argument like `:_` or `:"$1"` interpolated into
+  # the matchspec pattern would act as an ETS wildcard/match variable and list
+  # every workflow's checkpoints instead of none.
   @impl true
-  def list(workflow_id) do
+  def list(workflow_id) when is_binary(workflow_id) do
     ensure_table()
 
+    # Partial-map matchspec: ETS does the workflow_id filtering instead of
+    # copying the whole table out (same pattern as the decisions/kb stores).
     checkpoints =
-      :ets.tab2list(@table)
+      @table
+      |> :ets.select([{{:_, %{workflow_id: workflow_id}}, [], [:"$_"]}])
       |> Enum.map(fn {_id, cp} -> cp end)
-      |> Enum.filter(&(&1.workflow_id == workflow_id))
       |> Enum.sort_by(& &1.created_at, {:desc, DateTime})
 
     {:ok, checkpoints}

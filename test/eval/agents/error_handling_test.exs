@@ -51,7 +51,17 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
 
   describe "Provider Connection Errors" do
     test "6.3 unreachable provider returns error", _context do
-      # Configure with unreachable endpoint using custom provider
+      # Allow the loopback base_url through SSRF validation so the request
+      # actually reaches the (closed) port instead of failing at config time.
+      previous = Application.get_env(:nous, :custom)
+      Application.put_env(:nous, :custom, allow_private_hosts: true)
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:nous, :custom, previous),
+          else: Application.delete_env(:nous, :custom)
+      end)
+
       agent =
         Nous.new("custom:test-model",
           instructions: "Test",
@@ -59,15 +69,14 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
         )
 
       result = Nous.run(agent, "Hello")
+      IO.puts("\n[Error 6.3] Got connection error: #{inspect(result)}")
 
-      case result do
-        {:error, error} ->
-          IO.puts("\n[Error 6.3] Got connection error: #{inspect(error)}")
-          assert true
-
-        {:ok, _} ->
-          flunk("Expected connection error for unreachable provider")
-      end
+      assert {:error,
+              %Nous.Errors.ProviderError{
+                provider: :custom,
+                status_code: nil,
+                details: %Req.TransportError{reason: :econnrefused}
+              }} = result
     end
   end
 
@@ -91,18 +100,15 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
           instructions: "Use the failing_tool when asked."
         )
 
-      result = Nous.run(agent, "Please call the failing_tool")
+      # A raising tool must not sink the run: the exception is reported back to
+      # the model as a tool error message and the loop continues to an answer.
+      assert {:ok, result} = Nous.run(agent, "Please call the failing_tool")
+      IO.puts("\n[Error 6.4] Agent response: #{inspect(result.output)}")
 
-      case result do
-        {:error, error} ->
-          IO.puts("\n[Error 6.4] Tool exception handled: #{inspect(error)}")
-          assert true
-
-        {:ok, result} ->
-          # Agent might recover or not call the tool
-          IO.puts("\n[Error 6.4] Agent response: #{inspect(result.output)}")
-          assert true
-      end
+      failure = Enum.find(result.all_messages, &(&1.role == :tool and &1.name == "failing_tool"))
+      assert failure, "Expected failing_tool to be called and its error recorded"
+      assert failure.content =~ "Tool execution failed: failing_tool"
+      assert failure.content =~ "Intentional test failure!"
     end
 
     test "6.5 tool returns error tuple", context do
@@ -174,27 +180,27 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
           parameters: %{"type" => "object", "properties" => %{}}
         )
 
+      # `max_iterations` is a run option, not an agent option: `Nous.new/2`
+      # silently drops it and the default of 10 applies.
       agent =
         Nous.new(context[:model],
           tools: [loop_tool],
-          max_iterations: 3,
           instructions: "Keep calling loop_tool until you get a good answer."
         )
 
-      result = Nous.run(agent, "Keep trying with loop_tool")
+      result = Nous.run(agent, "Keep trying with loop_tool", max_iterations: 3)
 
       case result do
-        {:error, %Nous.Errors.MaxIterationsExceeded{}} ->
+        {:error, %Nous.Errors.MaxIterationsExceeded{max_iterations: max}} ->
           IO.puts("\n[Error 6.7] Correctly hit max iterations limit")
-          assert true
-
-        {:error, error} ->
-          IO.puts("\n[Error 6.7] Got different error: #{inspect(error)}")
-          assert true
+          assert max == 3
 
         {:ok, result} ->
           IO.puts("\n[Error 6.7] Agent completed within limits: #{inspect(result.output)}")
-          assert true
+          assert result.iterations <= 3
+
+        {:error, error} ->
+          flunk("Expected MaxIterationsExceeded or completion, got: #{inspect(error)}")
       end
     end
   end
@@ -234,30 +240,6 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
 
       IO.puts("\n[Error 6.8] Cancellation result: #{inspect(result)}")
       assert result != nil
-    end
-
-    test "6.9 task shutdown", context do
-      skip_if_unavailable(context)
-
-      agent =
-        Nous.new(context[:model],
-          instructions: "Be verbose. Write long responses."
-        )
-
-      task =
-        Task.async(fn ->
-          Nous.run(agent, "Explain quantum physics in extreme detail")
-        end)
-
-      # Give it a moment to start
-      Process.sleep(200)
-
-      # Shutdown the task
-      result = Task.shutdown(task, :brutal_kill)
-
-      IO.puts("\n[Error 6.9] Task shutdown result: #{inspect(result)}")
-      # Should be nil or {:exit, :killed}
-      assert true
     end
   end
 
@@ -323,16 +305,19 @@ defmodule Nous.Eval.Agents.ErrorHandlingTest do
           instructions: "You have two tools. Use good_tool first."
         )
 
-      result = Nous.run(agent, "Test the good_tool please")
+      assert {:ok, r} = Nous.run(agent, "Test the good_tool please")
+      IO.puts("\n[Error 6.12] Got result: #{inspect(r.output)}")
 
-      case result do
-        {:ok, r} ->
-          IO.puts("\n[Error 6.12] Got result: #{inspect(r.output)}")
-          assert true
+      tool_messages = Enum.filter(r.all_messages, &(&1.role == :tool))
 
-        {:error, e} ->
-          IO.puts("\n[Error 6.12] Got error: #{inspect(e)}")
-          assert true
+      assert Enum.any?(
+               tool_messages,
+               &(&1.name == "good_tool" and &1.content == "Success from good tool")
+             ),
+             "Expected good_tool result in transcript, got: #{inspect(tool_messages)}"
+
+      for %{name: "bad_tool"} = msg <- tool_messages do
+        assert msg.content =~ "Failure from bad tool"
       end
     end
   end

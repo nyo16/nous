@@ -296,7 +296,14 @@ defmodule Nous.Agent.Behaviour do
   @doc """
   Get the behaviour module for an agent.
 
-  Returns the configured behaviour module, or the default BasicAgent.
+  The default (`Nous.Agents.BasicAgent`) is applied by `Nous.Agent.new/2`, so
+  this module never names a concrete implementation — a behaviour that
+  hardcodes one of its implementers is the cycle the arch audit flagged
+  (A-M2). It also pattern-matches on the field rather than the
+  `%Nous.Agent{}` struct for the same reason: the behaviour must not depend
+  on the struct that depends on the runner that depends on the behaviour. An
+  agent whose `behaviour_module` is `nil` (a hand-built struct that skipped
+  `Nous.Agent.new/2`) is a caller bug and raises.
 
   ## Examples
 
@@ -310,21 +317,15 @@ defmodule Nous.Agent.Behaviour do
 
   """
   @spec get_module(Nous.Agent.t()) :: module()
-  def get_module(%Nous.Agent{} = agent) do
-    Map.get(agent, :behaviour_module) || default_module()
+  def get_module(%{behaviour_module: module}) when is_atom(module) and module != nil,
+    do: module
+
+  def get_module(%{behaviour_module: other}) do
+    raise ArgumentError,
+          "agent.behaviour_module must be a module implementing Nous.Agent.Behaviour " <>
+            "(build the agent with Nous.Agent.new/2 or set :behaviour_module), got: " <>
+            inspect(other)
   end
-
-  @doc """
-  Get the default behaviour module.
-
-  ## Examples
-
-      iex> Behaviour.default_module()
-      Nous.Agents.BasicAgent
-
-  """
-  @spec default_module() :: module()
-  def default_module, do: Nous.Agents.BasicAgent
 
   @doc """
   Call a behaviour callback, using default if not implemented.

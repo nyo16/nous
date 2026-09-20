@@ -174,7 +174,10 @@ defmodule Nous.LLM do
   @doc """
   Stream text from a model.
 
-  Returns `{:ok, stream}` where `stream` yields text chunks as strings.
+  Returns `{:ok, stream}` where `stream` yields text chunks as strings. If an
+  underlying LLM call fails mid-stream (after all fallbacks), the stream emits
+  one final `{:error, reason}` tuple before terminating — consumers that write
+  chunks verbatim should match on binaries.
 
   ## Parameters
 
@@ -322,12 +325,15 @@ defmodule Nous.LLM do
   end
 
   defp aggregate_stream_turn(stream) do
-    initial = %{chunks: [], tool_acc: ToolCallAccumulator.new(), content: ""}
+    initial = %{chunks: [], tool_acc: ToolCallAccumulator.new()}
 
     result =
       Enum.reduce(stream, initial, fn
         {:text_delta, text}, acc ->
-          %{acc | chunks: [text | acc.chunks], content: acc.content <> text}
+          # Prepend each chunk (O(1)); reversed once below. Content is built
+          # a single time from the reversed chunks instead of accumulating a
+          # second copy via O(n²) binary concatenation.
+          %{acc | chunks: [text | acc.chunks]}
 
         {:tool_call_delta, fragment}, acc ->
           # Tool-call deltas are PARTIAL provider-specific fragments (OpenAI
@@ -346,7 +352,8 @@ defmodule Nous.LLM do
       |> ToolCallAccumulator.finalize()
       |> Enum.map(&ensure_tool_call_id/1)
 
-    {Enum.reverse(result.chunks), tool_calls, result.content}
+    chunks = Enum.reverse(result.chunks)
+    {chunks, tool_calls, IO.iodata_to_binary(chunks)}
   end
 
   defp ensure_tool_call_id(call) do

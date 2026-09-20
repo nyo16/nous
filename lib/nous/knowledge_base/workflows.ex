@@ -312,10 +312,10 @@ defmodule Nous.KnowledgeBase.Workflows do
         issues:
           Enum.map(issues, fn issue ->
             %{
-              type: String.to_existing_atom(issue["type"] || "gap"),
+              type: issue_type(issue["type"]),
               entry_id: issue["entry_id"],
               description: issue["description"] || "",
-              severity: String.to_existing_atom(issue["severity"] || "low"),
+              severity: issue_severity(issue["severity"]),
               suggested_action: issue["suggested_action"] || ""
             }
           end)
@@ -323,6 +323,26 @@ defmodule Nous.KnowledgeBase.Workflows do
 
     %{state | data: Map.put(state.data, :health_report, report)}
   end
+
+  # `issue["type"]` / `issue["severity"]` come from LLM-authored JSON. A
+  # literal allow-list (the vocabulary the audit prompt declares, mirrored by
+  # `Nous.KnowledgeBase.HealthReport`'s types) is the only safe decoding: the
+  # previous `String.to_existing_atom/1` raised on an unknown word and, worse,
+  # accepted ANY atom the VM happened to have — `"self"`, `"nil"`, a module
+  # name — as an issue type. Unknown values fall back to the conservative
+  # default rather than being rescued into a foreign atom.
+  defp issue_type("stale"), do: :stale
+  defp issue_type("inconsistent"), do: :inconsistent
+  defp issue_type("orphan"), do: :orphan
+  defp issue_type("gap"), do: :gap
+  defp issue_type("low_confidence"), do: :low_confidence
+  defp issue_type("duplicate"), do: :duplicate
+  defp issue_type(_other), do: :gap
+
+  defp issue_severity("low"), do: :low
+  defp issue_severity("medium"), do: :medium
+  defp issue_severity("high"), do: :high
+  defp issue_severity(_other), do: :low
 
   defp select_relevant_entries(state) do
     config = state.data.kb_config
@@ -346,13 +366,26 @@ defmodule Nous.KnowledgeBase.Workflows do
       if embedding do
         entries = parse_entries_from_output(state.data.compile_entries)
 
+        texts = Enum.map(entries, & &1.content)
+
         embedded =
-          Enum.map(entries, fn entry ->
-            case Nous.Memory.Embedding.embed(embedding, entry.content, embedding_opts) do
-              {:ok, emb} -> %{entry | embedding: emb}
-              {:error, _} -> entry
-            end
-          end)
+          case Nous.Memory.Embedding.embed_batch(embedding, texts, embedding_opts) do
+            {:ok, vectors} when length(vectors) == length(entries) ->
+              Enum.zip_with(entries, vectors, fn entry, emb -> %{entry | embedding: emb} end)
+
+            _error_or_mismatch ->
+              # `{:error, _}` — or a buggy provider returning the wrong number
+              # of vectors, which zip_with would otherwise silently drop
+              # entries over. Fail-open per entry, matching the previous
+              # per-entry loop: a failed embed leaves that entry unembedded
+              # but keeps the rest.
+              Enum.map(entries, fn entry ->
+                case Nous.Memory.Embedding.embed(embedding, entry.content, embedding_opts) do
+                  {:ok, emb} -> %{entry | embedding: emb}
+                  {:error, _} -> entry
+                end
+              end)
+          end
 
         %{state | data: Map.put(state.data, :compiled_entries, embedded)}
       else

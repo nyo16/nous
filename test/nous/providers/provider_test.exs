@@ -128,6 +128,11 @@ defmodule Nous.ProviderTest do
     end
   end
 
+  # `TEST_PROVIDER_API_KEY` is read by nothing outside this module, and ExUnit
+  # runs the tests of one module serially even under `async: true` — so the
+  # put/delete pairs below cannot race with each other or with any other file.
+  # Do NOT reuse this variable name in another test module; that is what
+  # would make this block need `async: false`.
   describe "api_key/1" do
     test "returns nil when no API key is configured" do
       # Ensure env var is not set

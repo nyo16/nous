@@ -341,7 +341,16 @@ defmodule PostgresStore do
     {scope_clause, scope_params, _next_idx} = build_scope_clause(scope, 1)
 
     where = if scope_clause == "", do: "", else: "WHERE 1=1 #{scope_clause}"
-    sql = "SELECT * FROM memories #{where} ORDER BY created_at DESC"
+
+    # :limit is an integer from the caller (never a string), so interpolating
+    # it is safe; the store MUST honour it — see Nous.Memory.Store.list/2.
+    limit =
+      case Keyword.get(opts, :limit) do
+        n when is_integer(n) and n >= 0 -> " LIMIT #{n}"
+        _ -> ""
+      end
+
+    sql = "SELECT * FROM memories #{where} ORDER BY created_at DESC" <> limit
 
     case Postgrex.query(conn, sql, scope_params) do
       {:ok, %{rows: rows, columns: cols}} ->

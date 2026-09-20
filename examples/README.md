@@ -100,7 +100,7 @@ Persistent agent memory with hybrid search:
 | File | Description |
 |------|-------------|
 | [memory/basic_ets.exs](memory/basic_ets.exs) | Simplest setup — ETS store, keyword search, zero deps |
-| [memory/local_bumblebee.exs](memory/local_bumblebee.exs) | Local semantic search via Bumblebee, no API keys |
+| [memory/local_bumblebee.exs](memory/local_bumblebee.exs) | Local semantic search via the out-of-tree Bumblebee example provider, no API keys |
 | [memory/sqlite_full.exs](memory/sqlite_full.exs) | SQLite + FTS5, single-file production setup |
 | [memory/duckdb_full.exs](memory/duckdb_full.exs) | DuckDB with ILIKE text search + cosine-similarity vector scan |
 | [memory/postgresql_full.exs](memory/postgresql_full.exs) | PostgreSQL + tsvector + pgvector, full Store implementation |

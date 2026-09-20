@@ -21,16 +21,21 @@ defmodule Nous.Memory.Store.ETS do
     {:ok, table}
   end
 
+  # Rows are `{id, entry, content_down}`: the downcased content is stored once
+  # at write time so search_text/3 does not `String.downcase/1` every row on
+  # every query (it was the dominant per-row cost of the jaro scan). It is a
+  # tuple element, not an Entry field, so the backend contract is unchanged
+  # and nothing outside this module sees it.
   @impl true
   def store(table, %Entry{} = entry) do
-    :ets.insert(table, {entry.id, entry})
+    :ets.insert(table, row(entry))
     {:ok, table}
   end
 
   @impl true
   def fetch(table, id) do
     case :ets.lookup(table, id) do
-      [{^id, entry}] -> {:ok, entry}
+      [{^id, entry, _content_down}] -> {:ok, entry}
       [] -> {:error, :not_found}
     end
   end
@@ -47,7 +52,7 @@ defmodule Nous.Memory.Store.ETS do
       {:ok, entry} ->
         now = DateTime.utc_now()
         updated = struct(entry, Map.put(updates, :updated_at, now))
-        :ets.insert(table, {id, updated})
+        :ets.insert(table, row(updated))
         {:ok, table}
 
       error ->
@@ -55,21 +60,23 @@ defmodule Nous.Memory.Store.ETS do
     end
   end
 
+  defp row(%Entry{} = entry), do: {entry.id, entry, String.downcase(entry.content)}
+
   @impl true
   def search_text(table, query, opts) do
     scope = Keyword.get(opts, :scope, %{})
     limit = Keyword.get(opts, :limit, 10)
     min_score = Keyword.get(opts, :min_score, 0.0)
 
-    # Downcase the query ONCE, not once per row (it is loop-invariant).
+    # Downcase the query ONCE, not once per row (it is loop-invariant); the
+    # rows carry their own downcased content (see store/2).
     query_down = String.downcase(query)
 
     results =
       table
-      |> scoped_entries(scope)
-      |> Enum.map(fn entry ->
-        score = String.jaro_distance(query_down, String.downcase(entry.content))
-        {entry, score}
+      |> scoped_rows(scope)
+      |> Enum.map(fn {_id, entry, content_down} ->
+        {entry, String.jaro_distance(query_down, content_down)}
       end)
       |> Enum.filter(fn {_entry, score} -> score > min_score end)
       |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
@@ -84,10 +91,19 @@ defmodule Nous.Memory.Store.ETS do
 
     entries =
       table
-      |> scoped_entries(scope)
+      |> scoped_rows(scope)
+      |> Enum.map(fn {_id, entry, _content_down} -> entry end)
+      |> order(Keyword.get(opts, :order))
+      |> take(Keyword.get(opts, :limit))
 
     {:ok, entries}
   end
+
+  defp order(entries, :newest), do: Enum.sort_by(entries, & &1.created_at, {:desc, DateTime})
+  defp order(entries, _unspecified), do: entries
+
+  defp take(entries, limit) when is_integer(limit) and limit >= 0, do: Enum.take(entries, limit)
+  defp take(entries, _no_limit), do: entries
 
   # Push the scope filter INTO ETS via a partial-map matchspec, so we only copy
   # (and later jaro-score) the matching rows instead of tab2list-copying the
@@ -100,19 +116,16 @@ defmodule Nous.Memory.Store.ETS do
   # requires the key to exist on the struct), so we fall back to copy+filter to
   # stay behavior-identical.
   # A non-map scope (e.g. :global) means "no scope" — return everything.
-  defp scoped_entries(table, scope) when not is_map(scope), do: all_entries(table)
+  defp scoped_rows(table, scope) when not is_map(scope), do: :ets.tab2list(table)
 
-  defp scoped_entries(table, scope) when map_size(scope) == 0, do: all_entries(table)
+  defp scoped_rows(table, scope) when map_size(scope) == 0, do: :ets.tab2list(table)
 
-  defp scoped_entries(table, scope) do
+  defp scoped_rows(table, scope) do
     if scope_pushable?(scope) do
-      pattern = {:_, Map.put(scope, :__struct__, Entry)}
-
-      table
-      |> :ets.select([{pattern, [], [:"$_"]}])
-      |> Enum.map(fn {_id, entry} -> entry end)
+      pattern = {:_, Map.put(scope, :__struct__, Entry), :_}
+      :ets.select(table, [{pattern, [], [:"$_"]}])
     else
-      table |> all_entries() |> filter_by_scope(scope)
+      table |> :ets.tab2list() |> filter_by_scope(scope)
     end
   end
 
@@ -121,14 +134,10 @@ defmodule Nous.Memory.Store.ETS do
     Enum.all?(Map.keys(scope), &(&1 in entry_fields))
   end
 
-  defp all_entries(table) do
-    :ets.tab2list(table) |> Enum.map(fn {_id, entry} -> entry end)
-  end
-
   # Fallback path only — reached when scope is non-empty AND has a non-Entry
-  # key (scoped_entries/2 short-circuits the empty-scope case).
-  defp filter_by_scope(entries, scope) do
-    Enum.filter(entries, fn entry ->
+  # key (scoped_rows/2 short-circuits the empty-scope case).
+  defp filter_by_scope(rows, scope) do
+    Enum.filter(rows, fn {_id, entry, _content_down} ->
       Enum.all?(scope, fn {key, value} ->
         Map.get(entry, key) == value
       end)

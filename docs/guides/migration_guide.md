@@ -156,7 +156,7 @@ Where the error actually fires depends on the provider's base-URL mode:
 - `lmstudio:`, `vllm:` and `sglang:` resolve `:base_url`, then
   `LMSTUDIO_BASE_URL` / `VLLM_BASE_URL` / `SGLANG_BASE_URL`, then the provider's
   built-in localhost default — so they only fail when the URL you supplied is
-  rejected by `Nous.Tools.UrlGuard.validate/2` (bad scheme, unresolvable host,
+  rejected by `Nous.UrlGuard.validate/2` (bad scheme, unresolvable host,
   SSRF-blocked target).
 
 Per-provider settings live under a provider key, not in a `providers:` map:
@@ -485,7 +485,8 @@ delegating to internal (`@moduledoc false`) submodules:
 | `Nous.AgentRunner.PromptAssembly` | Prompt and settings assembly |
 | `Nous.AgentRunner.Streaming` | Stream wrapping and consumption |
 | `Nous.AgentRunner.RequestDispatch` | Fallback chains, rate limiting, provider settings |
-| `Nous.AgentRunner.ToolExecution` | Sequential/parallel tool execution, hooks, approval and policy enforcement |
+| `Nous.AgentRunner.ToolExecution` | Sequential/parallel tool pipeline: pre-stage (hooks, approval), fan-out, post-stage |
+| `Nous.AgentRunner.ToolInvocation` | One tool call → one result message: executor dispatch, error formatting, spilling |
 
 The public API — `Nous.AgentRunner.run/2,3`, `run_with_context/2,3`,
 `run_stream/2,3` — and every telemetry event are unchanged. `Nous.AgentRunner`

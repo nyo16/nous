@@ -1,5 +1,7 @@
 defmodule Nous.AgentFunctionalTest do
-  use ExUnit.Case
+  # async: false — every test here talks to the one local LM Studio server;
+  # running them concurrently with the other :llm files just contends for it.
+  use ExUnit.Case, async: false
 
   alias Nous.{Agent, Tool}
 

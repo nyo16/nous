@@ -55,7 +55,9 @@ defmodule Nous.RunContext do
           usage: Usage.t(),
           approval_handler: approval_handler() | nil,
           approval_gated?: boolean(),
-          sandbox: Nous.Sandbox.Policy.t() | nil
+          sandbox: Nous.Sandbox.Policy.t() | nil,
+          permissions: Nous.Permissions.Policy.t() | nil,
+          hook_registry: Nous.Hook.Registry.t() | nil
         }
 
   @type t :: t(any())
@@ -67,7 +69,9 @@ defmodule Nous.RunContext do
     usage: %Usage{},
     approval_handler: nil,
     approval_gated?: false,
-    sandbox: nil
+    sandbox: nil,
+    permissions: nil,
+    hook_registry: nil
   ]
 
   @doc """
@@ -87,6 +91,16 @@ defmodule Nous.RunContext do
       which treats this field as the session-level override: it wins over
       `deps[:workspace_root]` and over the `:sandbox_mode` application setting.
       `nil` (the default) means unset — resolution falls back to app config.
+    * `:permissions` - Optional `Nous.Permissions.Policy` in force for this
+      run. The agent runner attaches the agent's effective policy here so
+      tools that delegate (e.g. `Nous.Plugins.SubAgent`) can inherit it;
+      enforcement itself happens in the runner/`Nous.Permissions`, not in
+      `Nous.ToolExecutor`.
+    * `:hook_registry` - Optional `Nous.Hook.Registry` for this run. The agent
+      runner attaches the context's registry so a tool that dispatches other
+      tools itself (Code Mode's `run_code`) can fire `:pre_tool_use` /
+      `:post_tool_use` per sub-call, the way the runner does for a
+      model-direct call. `Nous.ToolExecutor` does not consult it.
 
   ## Examples
 
@@ -111,7 +125,9 @@ defmodule Nous.RunContext do
       usage: Keyword.get(opts, :usage, Usage.new()),
       approval_handler: Keyword.get(opts, :approval_handler),
       approval_gated?: Keyword.get(opts, :approval_gated?, false),
-      sandbox: Keyword.get(opts, :sandbox)
+      sandbox: Keyword.get(opts, :sandbox),
+      permissions: Keyword.get(opts, :permissions),
+      hook_registry: Keyword.get(opts, :hook_registry)
     }
   end
 end

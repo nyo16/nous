@@ -1,4 +1,8 @@
 defmodule Nous.CodeRuntime.JSTest do
+  # Sync: every run borrows a tyrex isolate on the VM-wide dirty CPU scheduler
+  # pool, and the thread-leak test below deliberately kills more runaways than
+  # the host has dirty schedulers. A concurrent file would see those kills as
+  # its own runs stalling.
   use ExUnit.Case, async: false
 
   alias Nous.CodeRuntime
@@ -142,6 +146,9 @@ defmodule Nous.CodeRuntime.JSTest do
     end
 
     describe "deadline" do
+      # `:slow` marks tests that wait out a wall-clock deadline or saturate the
+      # scheduler pool. Local runs can `mix test --exclude slow`; CI keeps them.
+      @tag :slow
       test "a runaway loop is terminated, not merely abandoned" do
         started = System.monotonic_time(:millisecond)
         result = run("while (true) {}", config: [timeout_ms: 700])
@@ -155,6 +162,7 @@ defmodule Nous.CodeRuntime.JSTest do
         assert elapsed < 2_500, "took #{elapsed}ms to stop a runaway under a 700ms deadline"
       end
 
+      @tag :slow
       test "the deadline covers time spent inside tool calls" do
         # The substrate's own eval timeout does NOT cover this: an allowlisted
         # bridge call runs inline on the runtime's message loop, so a program
@@ -170,6 +178,7 @@ defmodule Nous.CodeRuntime.JSTest do
         assert elapsed < 3_000, "the deadline did not cover tool time (#{elapsed}ms)"
       end
 
+      @tag :slow
       test "terminated runs do not leak the runtime's OS thread" do
         # More runaways than this host has dirty CPU schedulers, all killed. If
         # termination abandoned the worker thread instead of reclaiming it, the
@@ -182,6 +191,7 @@ defmodule Nous.CodeRuntime.JSTest do
         assert run("return 42;").value == 42
       end
 
+      @tag :slow
       test "a program that only sleeps is still killed" do
         result =
           run("await new Promise(r => setTimeout(r, 60000)); return 1;",
@@ -264,6 +274,7 @@ defmodule Nous.CodeRuntime.JSTest do
         assert List.last(result.logs) == "line 299"
       end
 
+      @tag :slow
       test "logs survive a killed run" do
         result =
           run(

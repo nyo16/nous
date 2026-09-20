@@ -59,6 +59,15 @@ Then run:
 mix deps.get
 ```
 
+Some features are unlocked by optional dependencies. In particular, the `Bash`
+tool and `:command` hooks execute through
+[`net_runner`](https://hex.pm/packages/net_runner), which is optional — without
+it both refuse to run (fail closed) rather than executing unconfined:
+
+```elixir
+{:net_runner, "~> 1.0"}  # required only for Nous.Tools.Bash and :command hooks
+```
+
 ## Quick Start
 
 ### One-shot text generation
@@ -530,11 +539,12 @@ deps = %{
   )
 ```
 
-Sub-agents run in their own context but inherit parent deps automatically
-(excluding plugin-internal keys). Configure `parallel_max_concurrency`,
-`parallel_timeout`, and restrict shared deps with
-`sub_agent_shared_deps: [:key1, :key2]` (default `[]` is correct for
-security).
+Sub-agents run in their own context. **Data deps are not forwarded by
+default** — opt in with `sub_agent_shared_deps: [:key1, :key2]` (or `:all`).
+Confinement and execution policy (`workspace_root`/`session_id`, sandbox,
+permissions, approval handler) always inherit and can only be narrowed by a
+template, never widened. Tune parallelism with `parallel_max_concurrency`
+and `parallel_timeout`.
 
 ### Agent Memory
 
@@ -554,7 +564,7 @@ deps = %{memory_config: %{store: Nous.Memory.Store.ETS}}
 **Store backends:** ETS (zero deps), SQLite (FTS5 + cosine scan), DuckDB
 (ILIKE + cosine scan). `Nous.Memory.Store` is a public extension point — implement
 the behaviour in your own app to plug in any backend.
-**Embedding providers:** Bumblebee (local, offline), OpenAI, Local
+**Embedding providers:** OpenAI, Local
 (Ollama/vLLM). **Features:** Memory scoping (agent/user/session/global),
 temporal decay, importance weighting, RRF scoring, configurable
 auto-injection.
@@ -728,7 +738,7 @@ No clone, no `mix` — these open straight from the hex page and install Nous vi
 ### Memory Examples
 
 - [memory/basic_ets.exs](examples/memory/basic_ets.exs) - Simplest setup, ETS + keyword search
-- [memory/local_bumblebee.exs](examples/memory/local_bumblebee.exs) - Local semantic search, no API keys
+- [memory/local_bumblebee.exs](examples/memory/local_bumblebee.exs) - Local semantic search via the out-of-tree Bumblebee example provider, no API keys
 - [memory/sqlite_full.exs](examples/memory/sqlite_full.exs) - SQLite + FTS5 production setup
 - [memory/duckdb_full.exs](examples/memory/duckdb_full.exs) - DuckDB analytics-friendly setup
 - [memory/postgresql_full.exs](examples/memory/postgresql_full.exs) - Out-of-tree store: PostgreSQL + pgvector

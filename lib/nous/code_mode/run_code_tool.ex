@@ -1,4 +1,4 @@
-defmodule Nous.Tools.RunCode do
+defmodule Nous.CodeMode.RunCodeTool do
   @moduledoc """
   Code Mode's transport tool: runs a model-authored program that calls tools.
 
@@ -69,6 +69,14 @@ defmodule Nous.Tools.RunCode do
   gate it through `Nous.Permissions` (it is an `:execute`-category tool) rather
   than here, because every tool the program calls is *also* gated, and a second
   unconditional prompt in front of the first buys nothing.
+
+  Every sub-call is gated the way a model-direct call is: the bound tool
+  carries both its own `requires_approval` flag and the *policy-derived* one
+  (`Nous.Permissions.enforce_approval/2` — `approval_required: [...]`,
+  `:strict` mode, and the `:execute`-under-`:permissive` rule), and the
+  approval handler is consulted per sub-call with the real tool name and the
+  arguments the program computed at runtime. With no handler in the context a
+  gated sub-call is refused, not run.
   """
 
   use Nous.Tool.Schema

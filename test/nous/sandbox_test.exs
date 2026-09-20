@@ -6,7 +6,7 @@ defmodule Nous.SandboxTest do
 
   alias Nous.Sandbox
   alias Nous.Sandbox.{Bwrap, Confined, Policy, RunnerFailureRule, Seatbelt, Unavailable}
-  alias Nous.Tools.PathGuard
+  alias Nous.PathGuard
 
   doctest Nous.Sandbox
 

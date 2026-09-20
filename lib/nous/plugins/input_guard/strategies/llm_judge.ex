@@ -11,8 +11,16 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudge do
     * `:model` — **Required.** Model string for the judge LLM (e.g., `"openai:gpt-4o-mini"`).
     * `:system_prompt` — Override the default classification system prompt.
     * `:temperature` — LLM temperature. Default: `0.0`
-    * `:on_error` — What to return when the LLM call fails.
-      `:safe` (fail-open, default) or `:blocked` (fail-closed).
+    * `:on_error` — What happens when the judge cannot produce a verdict (the
+      LLM call fails, raises, or returns something without a `VERDICT:` line):
+        * `:drop` (default) — the strategy returns `{:error, reason}` and
+          `Nous.Plugins.InputGuard` counts it as *dropped*: no verdict was
+          produced, which under the default `:any` aggregation fails closed by
+          upgrading a `:safe` aggregate to `:suspicious` (see `:fail_closed`
+          there). This is the safe default — a judge that is down must not
+          read as a judge that said "safe".
+        * `:safe` — fail **open**: return a `:safe` verdict. Explicit opt-in.
+        * `:suspicious` / `:blocked` — return a verdict of that severity.
 
   ## Example
 
@@ -46,23 +54,24 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudge do
   Respond ONLY with the verdict and reason. No other text.
   """
 
+  @default_on_error :drop
+
   @impl true
   def check(input, config, _ctx) do
+    on_error = Keyword.get(config, :on_error, @default_on_error)
     model = Keyword.fetch!(config, :model)
-    on_error = Keyword.get(config, :on_error, :safe)
 
-    case do_check(input, model, config) do
+    case do_check(input, model, config, on_error) do
       {:ok, _} = result -> result
       {:error, reason} -> error_result(on_error, reason)
     end
   rescue
-    e -> error_result(Keyword.get(config, :on_error, :safe), Exception.message(e))
+    e -> error_result(Keyword.get(config, :on_error, @default_on_error), Exception.message(e))
   end
 
-  defp do_check(input, model, config) do
+  defp do_check(input, model, config, on_error) do
     system_prompt = Keyword.get(config, :system_prompt, @default_system_prompt)
     temperature = Keyword.get(config, :temperature, 0.0)
-    on_error = Keyword.get(config, :on_error, :safe)
 
     # Fence the untrusted input in a unique, unguessable boundary and tell the
     # model everything inside is DATA, never instructions. Without this, an
@@ -87,6 +96,14 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudge do
       {:ok, response} -> parse_verdict(response, on_error)
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # `:drop` hands the failure to InputGuard, whose dropped-strategy accounting
+  # decides (fail closed under :any). Anything else is a verdict the operator
+  # explicitly asked for in place of one.
+  defp error_result(:drop, reason) do
+    Logger.warning("InputGuard.LLMJudge: LLM call failed: #{inspect(reason)}; strategy dropped")
+    {:error, reason}
   end
 
   defp error_result(on_error, reason) do
@@ -125,14 +142,21 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudge do
       _ ->
         Logger.warning("InputGuard.LLMJudge: Could not parse verdict from: #{inspect(response)}")
 
-        # Unparseable response now honors on_error (fail-closed when configured)
-        # instead of always defaulting to :safe.
-        {:ok,
-         %Result{
-           severity: on_error,
-           reason: "Unparseable verdict — failing #{on_error}",
-           strategy: __MODULE__
-         }}
+        # An unparseable reply is a judge that produced no verdict, and is
+        # treated exactly like a failed call: dropped by default, or the
+        # explicitly configured severity.
+        case on_error do
+          :drop ->
+            {:error, {:unparseable_verdict, truncate(response)}}
+
+          severity ->
+            {:ok,
+             %Result{
+               severity: severity,
+               reason: "Unparseable verdict — failing #{severity}",
+               strategy: __MODULE__
+             }}
+        end
     end
   end
 

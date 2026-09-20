@@ -7,6 +7,12 @@ defmodule Nous.Persistence.ETS do
   so the table outlives transient callers - previously the table died
   with whichever process happened to call save/load first.
 
+  Reads AND writes go straight to ETS from the calling process; the owner
+  exists to keep the table alive, sweep expired sessions, and enforce the
+  size cap. Routing every `save/2` through the owner as a `GenServer.call`
+  used to copy a serialized context three times (caller → owner mailbox →
+  ETS) and serialise all writers behind one process.
+
   Data does not survive node restarts. Useful for development, testing,
   and short-lived sessions.
 
@@ -59,10 +65,23 @@ defmodule Nous.Persistence.ETS do
       table =
         case :ets.whereis(@table) do
           :undefined ->
-            # :protected — only this owner process writes; any process may read.
-            # Previously :public let any in-node process read/overwrite another
-            # session's serialized context (and persisted deps).
-            :ets.new(@table, [:named_table, :set, :protected, read_concurrency: true])
+            # :public so save/delete/clear insert from the CALLER (one copy,
+            # straight into ETS) instead of a GenServer.call that copies the
+            # serialized context into this process's mailbox first and then
+            # into ETS, with every writer queued behind one owner. This does
+            # not widen the trust boundary: the API itself has no per-session
+            # authorisation, so any in-node process could already overwrite
+            # another session through `save/2` — :protected only ever stopped
+            # a direct `:ets.insert`, which the same process could reach by
+            # calling the public function. write_concurrency because the
+            # writers really are concurrent now (one per agent process).
+            :ets.new(@table, [
+              :named_table,
+              :set,
+              :public,
+              read_concurrency: true,
+              write_concurrency: true
+            ])
 
           _ref ->
             @table
@@ -82,26 +101,19 @@ defmodule Nous.Persistence.ETS do
       {:ok, state}
     end
 
+    # The cap check is an O(1) :ets.info(size) unless the table is over the
+    # cap, so a cast per save is cheap; it keeps the trim off the caller's
+    # critical path and serialises the (rare) O(n) eviction in one process.
     @impl true
-    def handle_call({:save, session_id, data}, _from, %{table: table} = state) do
-      # :ets.insert/2 into this owner's validated :protected table cannot fail in
-      # normal operation (it only raises on a bad table reference). Don't wrap it
-      # in try/rescue — that would mask a genuine bug (wrong table) as a confusing
-      # {:ets_insert_failed, _}. Let it crash so the supervisor restarts clean.
-      true = :ets.insert(table, {session_id, data, System.monotonic_time(:millisecond)})
+    def handle_cast(:enforce_max_entries, state) do
       enforce_max_entries(state)
-      {:reply, :ok, state}
+      {:noreply, state}
     end
 
-    def handle_call({:delete, session_id}, _from, %{table: table} = state) do
-      :ets.delete(table, session_id)
-      {:reply, :ok, state}
-    end
-
-    def handle_call(:clear, _from, %{table: table} = state) do
-      :ets.delete_all_objects(table)
-      {:reply, :ok, state}
-    end
+    # `sync/0` exists so callers that need "every cast before this point has
+    # been processed" (tests asserting on the cap) can wait for it.
+    @impl true
+    def handle_call(:sync, _from, state), do: {:reply, :ok, state}
 
     @impl true
     def handle_info(:sweep, state) do
@@ -163,7 +175,13 @@ defmodule Nous.Persistence.ETS do
 
   @impl true
   def save(session_id, data) when is_binary(session_id) and is_map(data) do
-    GenServer.call(owner(), {:save, session_id, data})
+    owner = owner()
+    # :ets.insert/2 into the owner's :public table cannot fail in normal
+    # operation (it only raises on a bad table reference). Don't rescue —
+    # that would mask a genuine bug as a confusing error tuple.
+    true = :ets.insert(@table, {session_id, data, System.monotonic_time(:millisecond)})
+    GenServer.cast(owner, :enforce_max_entries)
+    :ok
   end
 
   @impl true
@@ -178,7 +196,9 @@ defmodule Nous.Persistence.ETS do
 
   @impl true
   def delete(session_id) when is_binary(session_id) do
-    GenServer.call(owner(), {:delete, session_id})
+    ensure_table()
+    :ets.delete(@table, session_id)
+    :ok
   end
 
   @impl true
@@ -189,13 +209,22 @@ defmodule Nous.Persistence.ETS do
   end
 
   @doc """
-  Remove all persisted sessions. Routed through the owner (the table is
-  `:protected`, so only the owner may write). Useful for tests.
+  Remove all persisted sessions. Useful for tests.
   """
   @spec clear() :: :ok
   def clear do
-    GenServer.call(owner(), :clear)
+    ensure_table()
+    :ets.delete_all_objects(@table)
+    :ok
   end
+
+  @doc """
+  Block until the owner has processed every size-cap check queued before
+  this call. Only needed by callers that want to observe the cap
+  synchronously (tests); `save/2` itself never waits for it.
+  """
+  @spec sync() :: :ok
+  def sync, do: GenServer.call(owner(), :sync)
 
   # The table is owned by the supervised TableOwner (started in
   # Nous.Application). Resolve it, starting one on demand for ad-hoc callers

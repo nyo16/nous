@@ -529,6 +529,9 @@ defmodule Nous.Agent.Context do
     * `:sandbox` - `Nous.Sandbox.Policy` to carry onto the run context as the
       session-level sandbox override. The agent runner passes `agent.sandbox`
       here; `nil` leaves resolution to application config.
+    * `:permissions` - `Nous.Permissions.Policy` to carry onto the run context
+      so delegating tools can inherit the effective policy. The agent runner
+      passes `agent.permissions` here; enforcement stays in the runner.
 
   ## Examples
 
@@ -548,12 +551,16 @@ defmodule Nous.Agent.Context do
     # `approval_gated?: true`: the runner has already run the full approval +
     # permission-policy pipeline (AgentRunner.ToolExecution.check_tool_approval/3)
     # for this call, so ToolExecutor must not prompt the operator a second time.
-    # The handler is still carried through so tools can see it.
+    # The handler is still carried through so tools can see it, and so is the
+    # hook registry: a tool that dispatches other tools (Code Mode) reopens the
+    # gate and re-runs both per sub-call.
     Nous.RunContext.new(ctx.deps,
       usage: ctx.usage,
       approval_handler: ctx.approval_handler,
       approval_gated?: true,
-      sandbox: Keyword.get(opts, :sandbox)
+      sandbox: Keyword.get(opts, :sandbox),
+      permissions: Keyword.get(opts, :permissions),
+      hook_registry: ctx.hook_registry
     )
   end
 
@@ -649,20 +656,24 @@ defmodule Nous.Agent.Context do
   @doc """
   Serialize context to a JSON-encodable map.
 
-  Version 2 persists the **event log**. `messages` is still emitted, because it
-  is what a v1 reader (or a human) consumes, but it is a projection of the
-  events, not the source of truth.
+  Version 3 persists the **event log** only. `messages` is a projection of the
+  events — `deserialize/1` re-derives it — so writing it too doubled the size
+  of every blob for nothing a v3 reader uses. Version 2 blobs (events plus a
+  `messages` copy) and version 1 blobs (messages only) still load.
 
-  Persists messages, usage, metadata. Never persists functions, PIDs, or
+  Persists events, usage, metadata. Never persists functions, PIDs, or
   modules. The assembled system-prompt overlay is runtime state and is not
   persisted either; it is re-derived on the next run.
+
+  A snapshotted log (see `snapshot/1`) serializes as it is: the surviving
+  events keep their seqs, and the loader restores them verbatim.
 
   ## Examples
 
       iex> ctx = Context.new(system_prompt: "Be helpful", max_iterations: 5)
       iex> data = Context.serialize(ctx)
       iex> data.version
-      2
+      3
       iex> data.system_prompt
       "Be helpful"
 
@@ -670,9 +681,8 @@ defmodule Nous.Agent.Context do
   @spec serialize(t()) :: map()
   def serialize(%Context{} = ctx) do
     %{
-      version: 2,
+      version: 3,
       events: Enum.map(Log.events(ctx.log), &serialize_event/1),
-      messages: Enum.map(ctx.messages, &serialize_message/1),
       tool_calls: ctx.tool_calls,
       system_prompt: ctx.system_prompt,
       deps: serialize_deps(ctx.deps),
@@ -686,12 +696,24 @@ defmodule Nous.Agent.Context do
   end
 
   @doc """
+  Drop every shadowed event from the log, so the context — and its serialized
+  form — is O(live history) rather than O(everything that ever happened).
+
+  `messages` is unchanged: a shadowed event contributes nothing to the surface.
+  What is lost is the ability to fork or rewind to a point inside the dropped
+  history, which is why nothing calls this implicitly. See
+  `Nous.Session.Log.snapshot/1`.
+  """
+  @spec snapshot(t()) :: t()
+  def snapshot(%Context{} = ctx), do: put_log(ctx, Log.snapshot(ctx.log))
+
+  @doc """
   Deserialize a map back into a Context struct.
 
-  Reads both versions, which is what makes v1 → v2 a migration rather than a
-  break: a v2 blob rebuilds the log from its events, and a v1 blob seeds one
-  from its flat message list. Functions, PIDs, and callbacks are not restored
-  and will use defaults.
+  Reads every version, which is what makes each bump a migration rather than a
+  break: a v3 or v2 blob rebuilds the log from its events, and a v1 blob seeds
+  one from its flat message list. Functions, PIDs, and callbacks are not
+  restored and will use defaults.
 
   A v1 blob folds back to its original messages, but every message is stamped
   with the restore time: v1 never persisted `created_at`, so the original
@@ -709,6 +731,16 @@ defmodule Nous.Agent.Context do
 
   """
   @spec deserialize(map()) :: {:ok, t()} | {:error, term()}
+  def deserialize(%{version: 3} = data) do
+    do_deserialize(data, :v3)
+  end
+
+  def deserialize(%{"version" => 3} = data) do
+    data
+    |> atomize_keys()
+    |> do_deserialize(:v3)
+  end
+
   def deserialize(%{version: 2} = data) do
     do_deserialize(data, :v2)
   end
@@ -788,6 +820,14 @@ defmodule Nous.Agent.Context do
   # `Nous.run(agent, messages: [...])` does.
   defp restore_log(:v1, data), do: data |> persisted_messages() |> Log.seed()
 
+  # v3 has only events: a blob without them is broken, not old.
+  defp restore_log(:v3, data) do
+    case data[:events] do
+      events when is_list(events) -> rebuild_log(events)
+      other -> raise ArgumentError, "v3 blob carries #{inspect(other)} for :events"
+    end
+  end
+
   defp restore_log(:v2, data) do
     case data[:events] do
       events when is_list(events) ->
@@ -807,14 +847,24 @@ defmodule Nous.Agent.Context do
     (data[:messages] || []) |> Enum.map(&deserialize_message/1)
   end
 
+  # Seqs are restored verbatim (`Log.append_at/5`): a `{:replace, start, stop}`
+  # names positions, and after `snapshot/1` the persisted seqs legitimately have
+  # gaps. What is NOT legitimate is a seq behind the head — a duplicate or an
+  # out-of-order event — which the log rejects and we log and skip. An event
+  # without a seq (hand-built or pre-seq blob) is appended at the head.
   defp rebuild_log(events) do
     Enum.reduce(events, Log.new(), fn raw, log ->
       raw = atomize_keys(raw)
 
       case deserialize_event_type(raw[:type]) do
         {:ok, type} ->
-          warn_seq_shift(log, raw[:seq])
-          append_event(log, type, deserialize_event_data(raw[:data]), event_time(raw[:time]))
+          restore_event(
+            log,
+            raw[:seq],
+            type,
+            deserialize_event_data(raw[:data]),
+            event_time(raw[:time])
+          )
 
         :error ->
           Logger.warning(
@@ -827,30 +877,27 @@ defmodule Nous.Agent.Context do
     end)
   end
 
-  # `seq` is assigned by the log and equals the event's index, so a persisted seq
-  # that does not match the next one is the signal that an earlier event was
-  # dropped — which silently shifts every replace range after it.
-  defp warn_seq_shift(log, seq) when is_integer(seq) do
-    if seq != Log.count(log) do
-      Logger.warning(
-        "Nous.Agent.Context: persisted event seq #{seq} does not match the rebuilt " <>
-          "seq #{Log.count(log)}; the log lost an event and replace ranges may be off"
-      )
+  defp restore_event(log, seq, type, data, time) when is_integer(seq) do
+    case Log.append_at(log, seq, type, data, time) do
+      {:ok, log} ->
+        log
+
+      {:error, {:seq_behind_head, ^seq, head}} ->
+        Logger.warning(
+          "Nous.Agent.Context: persisted event seq #{seq} is behind the rebuilt head #{head} " <>
+            "(duplicate or out of order); dropping it"
+        )
+
+        log
+
+      {:error, _reason} ->
+        # Same recovery as a live append: metadata is the only field with an
+        # open shape, so it is the one that can fail serializability.
+        append_event(log, type, data, time)
     end
   end
 
-  defp warn_seq_shift(_log, _seq), do: :ok
-
-  defp serialize_message(%Message{} = msg) do
-    %{
-      role: msg.role,
-      content: msg.content,
-      tool_calls: msg.tool_calls,
-      tool_call_id: msg.tool_call_id,
-      name: msg.name,
-      metadata: msg.metadata
-    }
-  end
+  defp restore_event(log, _no_seq, type, data, time), do: append_event(log, type, data, time)
 
   # Known message fields - any other key in the persisted map is logged as
   # a warning so a forward-compatibility issue (a future Message field that

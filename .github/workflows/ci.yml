@@ -93,6 +93,60 @@ jobs:
       - run: mix deps.get
       - run: mix credo --strict
 
+  deps_audit:
+    name: Deps Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Cache deps & build
+        uses: actions/cache@v5
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-
+
+      - run: mix deps.get
+      # deps.audit is a Mix task shipped by the mix_audit dep, so the dep must
+      # be compiled before the task exists.
+      - run: mix deps.compile
+
+      # Retired-package check (built into Hex): fails if mix.lock pins a
+      # package version its maintainers have retired on hex.pm.
+      - run: mix hex.audit
+
+      # Known-vulnerability scan of mix.lock against the GitHub-sourced
+      # advisory DB (mirego/elixir-security-advisories).
+      #
+      # Ignored advisories — two cowlib issues with NO patched release
+      # (cowlib 2.20.0 fixed only EEF-CVE-2026-43971, which is no longer
+      # listed here):
+      #   EEF-CVE-2026-43966  structured-fields header CRLF injection
+      #                       (cow_http_struct_hd response splitting; GitHub
+      #                       mirror id GHSA-w4f7-4cxr-rv3c)
+      #   EEF-CVE-2026-43969  Cookie request-header injection
+      #                       (cow_cookie:cookie/1; GitHub mirror id
+      #                       GHSA-g2wm-735q-3f56, ignored under both ids)
+      # Exposure is test-only: cowlib reaches this project exclusively through
+      # bypass -> plug_cowboy -> cowboy, and bypass is `only: :test` (see
+      # mix.exs, whose `hex: [ignore_advisories: ...]` carries the same two
+      # ids for the `mix hex.audit` step above). Drop these ignores as soon
+      # as a patched cowlib release exists and the lock is bumped. Never add
+      # a runtime dependency here — that is what this gate exists to catch.
+      - name: Audit dependencies for known vulnerabilities
+        run: >-
+          mix deps.audit
+          --ignore-advisory-ids
+          EEF-CVE-2026-43966,GHSA-w4f7-4cxr-rv3c,EEF-CVE-2026-43969,GHSA-g2wm-735q-3f56
+
   docs:
     name: Docs
     runs-on: ubuntu-latest
@@ -159,6 +213,14 @@ jobs:
       - run: mix deps.compile
       - run: mix compile
       - run: mix test
+      # The optional-dependency backends (SQLite, DuckDB, PromEx) are
+      # declared `optional: true` in mix.exs, so they compile and run in the
+      # step above too; this leg names them so a future default exclusion of
+      # the tags — or a NIF that stops building on one matrix OS — is a
+      # visible red rather than a silent skip. Before this, the modules were
+      # `if Code.ensure_loaded?` ghosts that never compiled in-repo.
+      - name: Optional-dependency backends
+        run: mix test --only sqlite --only duckdb --only prom_ex
 
   coverage:
     name: Coverage
@@ -234,7 +296,7 @@ jobs:
   publish:
     name: Publish to Hex
     runs-on: ubuntu-latest
-    needs: [compile, format, credo, docs, test, coverage, dialyzer]
+    needs: [compile, format, credo, deps_audit, docs, test, coverage, dialyzer]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v6
