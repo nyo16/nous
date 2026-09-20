@@ -485,7 +485,8 @@ delegating to internal (`@moduledoc false`) submodules:
 | `Nous.AgentRunner.PromptAssembly` | Prompt and settings assembly |
 | `Nous.AgentRunner.Streaming` | Stream wrapping and consumption |
 | `Nous.AgentRunner.RequestDispatch` | Fallback chains, rate limiting, provider settings |
-| `Nous.AgentRunner.ToolExecution` | Sequential/parallel tool execution, hooks, approval and policy enforcement |
+| `Nous.AgentRunner.ToolExecution` | Sequential/parallel tool pipeline: pre-stage (hooks, approval), fan-out, post-stage |
+| `Nous.AgentRunner.ToolInvocation` | One tool call → one result message: executor dispatch, error formatting, spilling |
 
 The public API — `Nous.AgentRunner.run/2,3`, `run_with_context/2,3`,
 `run_stream/2,3` — and every telemetry event are unchanged. `Nous.AgentRunner`

@@ -7,7 +7,7 @@ defmodule Nous.SpillWiringTest do
 
   import ExUnit.CaptureLog
 
-  alias Nous.AgentRunner.ToolExecution
+  alias Nous.AgentRunner.ToolInvocation
   alias Nous.Sandbox
   alias Nous.Sandbox.Confined
   alias Nous.Spill.Locator
@@ -273,7 +273,7 @@ defmodule Nous.SpillWiringTest do
       agent = Nous.Agent.new("openai:test-model", name: "spill_wiring_agent")
 
       {message, _updates} =
-        ToolExecution.execute_single_tool([Tool.from_module(Bash)], call, ctx, agent)
+        ToolInvocation.invoke([Tool.from_module(Bash)], call, ctx, agent)
 
       assert_receive {:saved, locator, _saved}, 5_000
       refute_receive {:saved, _locator, _saved}
@@ -337,7 +337,7 @@ defmodule Nous.SpillWiringTest do
     call = %{"id" => "call_1", "name" => tool_name, "arguments" => %{}}
     agent = Nous.Agent.new("openai:test-model", name: "spill_wiring_agent")
 
-    ToolExecution.execute_single_tool([tool], call, RunContext.new(deps), agent)
+    ToolInvocation.invoke([tool], call, RunContext.new(deps), agent)
   end
 
   defp bash_ctx(deps), do: RunContext.new(deps, approval_gated?: true)

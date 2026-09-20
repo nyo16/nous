@@ -938,7 +938,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interpreted, shared by `Nous.AgentRunner` and `Nous.ToolExecutor` so the
   two gates cannot drift (audit A-M4). Tool-name cleaning moved to
   `Nous.ToolCall.clean_name/1` and model-facing error rendering to
-  `Nous.Errors.ToolError.format_for_model/2`. `Nous.Sandbox.RunnerFailureRule`
+  `Nous.Errors.ToolError.format_for_model/2`. The sequential tool path was a
+  hand-expanded copy of the parallel path's pre-stage — four near-identical
+  approval branches — and now runs the same `pre_stage_decision/5`, so a fix
+  to hook or approval handling lands in both modes once. Running one call and
+  shaping its result (executor dispatch, legacy `__update_context__`
+  stripping, error formatting, spilling, and the timeout / crash shapes a
+  parallel batch can produce) is the new internal
+  `Nous.AgentRunner.ToolInvocation`; `ToolExecution` keeps only the
+  pipeline, at 455 lines and 13 outgoing edges from 859 and 16.
+  `Nous.Sandbox.RunnerFailureRule`
   has its own file. `mix docs` groups the 29 modules that shipped ungrouped
   since #75 (`Nous.CodeMode.*`, `Nous.CodeRuntime.*`, `Nous.Sandbox.*`,
   `Nous.Session.*`, `Nous.Spill.*`, `Nous.Plugins.LoopGuard`,
