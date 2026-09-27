@@ -22,7 +22,7 @@ defmodule Nous.ToolExecutor do
   does not redact, to preserve debuggability for trusted handlers.
   """
 
-  alias Nous.{Tool, RunContext, Errors}
+  alias Nous.{Errors, Permissions, RunContext, Tool}
   alias Nous.Tool.{ContextUpdate, Validator}
 
   require Logger
@@ -110,23 +110,16 @@ defmodule Nous.ToolExecutor do
     # Same payload shape the runner hands its handler, so one handler serves
     # both paths. `:id` is nil here: a provider tool-call id only exists inside
     # the runner loop.
-    decision = handler.(%{name: tool.name, id: nil, arguments: arguments, tool: tool})
+    info = %{name: tool.name, id: nil, arguments: arguments, tool: tool}
 
-    case decision do
+    case Permissions.consult_handler(handler, info) do
       :approve ->
         {:ok, arguments}
 
-      {:edit, new_args} when is_map(new_args) ->
+      {:edit, new_args} ->
         {:ok, new_args}
 
-      other ->
-        if other != :reject do
-          Logger.warning(
-            "Approval handler for tool '#{tool.name}' returned #{inspect(other)}; " <>
-              "expected :approve | :reject | {:edit, map}. Treating as :reject."
-          )
-        end
-
+      :reject ->
         {:error,
          Errors.ToolError.exception(
            tool_name: tool.name,

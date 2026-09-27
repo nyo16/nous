@@ -198,7 +198,7 @@ Best for development, testing, and ephemeral agents. No configuration:
 {:ok, state} = Nous.Decisions.Store.ETS.init([])
 ```
 
-It creates two unnamed ETS tables (one for nodes, one for edges) so multiple instances can coexist. The tables are `:public` so the several processes that share a session's `state` — the agent loop plus tool tasks — can all write. Type/status predicates (such as `:active_goals`) are pushed into ETS via a partial-map match spec rather than copying the whole table and filtering in Elixir. Graph queries build an adjacency index once per traversal and then run BFS, giving O(V+E) per traversal.
+It creates three unnamed ETS tables (nodes, edges, and an edge index keyed by `{node_id, direction}`) so multiple instances can coexist. The tables are `:public` so the several processes that share a session's `state` — the agent loop plus tool tasks — can all write. Type/status predicates (such as `:active_goals`) are pushed into ETS via a partial-map match spec rather than copying the whole table and filtering in Elixir. `get_edges/3` is a keyed lookup on the edge index, so its cost does not grow with the number of unrelated edges. Graph queries build an adjacency index once per traversal and then run BFS, giving O(V+E) per traversal.
 
 **Ownership and lifetime:** this store is intentionally *run-scoped*. `init/1` hands the table references back in `state`; the caller threads them through `ctx` for the session; the tables are reclaimed when the owning process exits. There is no supervised owner and no cross-run persistence — that is the design, not a leak. If you need cross-write atomicity or a lifetime longer than the session, put a serializing owner process in front of it.
 

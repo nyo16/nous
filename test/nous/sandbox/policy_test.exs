@@ -7,7 +7,7 @@ defmodule Nous.Sandbox.PolicyTest do
 
   alias Nous.RunContext
   alias Nous.Sandbox.Policy
-  alias Nous.Tools.PathGuard
+  alias Nous.PathGuard
 
   doctest Nous.Sandbox.Policy
 
@@ -183,7 +183,7 @@ defmodule Nous.Sandbox.PolicyTest do
       # A NUL truncates the SBPL profile mid-string, which happens to fail
       # closed (`sandbox-exec` exits 65 on the unterminated string) by luck, not
       # design — and the port layer truncates argv at a NUL outright. Reject it
-      # explicitly, the way `Nous.Tools.PathGuard` does for paths.
+      # explicitly, the way `Nous.PathGuard` does for paths.
       Application.put_env(:nous, :sandbox_mode, :workspace_write)
 
       assert_raise ArgumentError, ~r/NUL/, fn ->
@@ -316,7 +316,7 @@ defmodule Nous.Sandbox.PolicyTest do
       assert Policy.resolve(%{deps: %{}}).workspace_root == canonical!(File.cwd!())
       assert Policy.resolve(nil).workspace_root == canonical!(File.cwd!())
 
-      # `deps[:workspace_root]` is where Nous.Tools.PathGuard reads it from too,
+      # `deps[:workspace_root]` is where Nous.PathGuard reads it from too,
       # so the fence and the sandbox agree on the root by construction.
       assert Policy.resolve(RunContext.new(%{workspace_root: root})).workspace_root ==
                canonical_root

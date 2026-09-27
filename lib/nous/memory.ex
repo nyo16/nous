@@ -45,9 +45,12 @@ defmodule Nous.Memory do
 
   | Provider | Description | Deps |
   |----------|-------------|------|
-  | `Embedding.Bumblebee` | Local on-device (Qwen 0.6B) | `bumblebee`, `exla` |
   | `Embedding.OpenAI` | OpenAI text-embedding-3-small | None (uses Req) |
   | `Embedding.Local` | Ollama / vLLM / LMStudio | None (uses Req) |
+
+  On-device embeddings via Bumblebee are a worked example of an out-of-tree
+  provider — `examples/memory/bumblebee_embedding.ex` — because Nx/EXLA are
+  too heavy to be a library dependency. Copy it into your app.
 
   No embedding configured = keyword-only search. The system never fails
   if no embedding provider is set.

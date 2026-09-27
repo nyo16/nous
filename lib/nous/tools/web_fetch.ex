@@ -135,7 +135,7 @@ if Code.ensure_loaded?(Floki) do
     end
 
     defp do_get(url, depth, max_bytes) do
-      with {:ok, uri, pin_ip} <- Nous.Tools.UrlGuard.validate_pinned(url),
+      with {:ok, uri, pin_ip} <- Nous.UrlGuard.validate_pinned(url),
            {:ok, {request_url, connect_opts}} <- pin_connection(url, uri, pin_ip) do
         case Req.get(request_url,
                connect_options: connect_opts,

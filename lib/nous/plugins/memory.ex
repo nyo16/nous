@@ -251,11 +251,13 @@ defmodule Nous.Plugins.Memory do
     # 1. Format recent conversation messages (skip system messages)
     conversation_text = format_conversation(ctx.messages, max_messages)
 
-    # 2. Fetch existing memories
+    # 2. Fetch existing memories — the newest `max_memories`. The store honours
+    # :limit (see Nous.Memory.Store.list/2); without :order the bound would
+    # keep an arbitrary N, which is worse than useless for reflection.
     scope = build_memory_scope(config)
 
     existing_memories =
-      case store_mod.list(store_state, scope: scope, limit: max_memories) do
+      case store_mod.list(store_state, scope: scope, order: :newest, limit: max_memories) do
         {:ok, entries} -> entries
         _ -> []
       end

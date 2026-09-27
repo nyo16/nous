@@ -18,9 +18,12 @@ defmodule Nous.Persistence do
 
         @impl true
         def load(session_id) do
+          # Decode to string keys; `Nous.Agent.Context.deserialize/1` accepts
+          # them. Never `String.to_existing_atom/1` over stored keys — the
+          # store's contents are not trusted input.
           case Redix.command(:redix, ["GET", "nous:#{session_id}"]) do
             {:ok, nil} -> {:error, :not_found}
-            {:ok, json} -> {:ok, json |> JSON.decode!() |> Map.new(fn {k, v} -> {String.to_existing_atom(k), v} end)}
+            {:ok, json} -> {:ok, JSON.decode!(json)}
           end
         end
 

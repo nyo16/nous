@@ -157,7 +157,10 @@ defmodule Nous.Session do
   Copied events keep their original `seq`. That is not cosmetic: a
   `{:replace, start, stop}` names a range by position, and renumbering the
   prefix would silently move every compaction range in it. It also means
-  `seed_length` cleanly separates inherited history from the fork's own.
+  `seed_length` cleanly separates inherited history from the fork's own. Seqs
+  are not assumed contiguous: a log that has been through
+  `Nous.Session.Log.snapshot/1` has gaps, and both the boundary and the copy
+  are resolved by seq, not by index.
 
   ## Why an open turn is an error
 
@@ -190,8 +193,7 @@ defmodule Nous.Session do
   def fork(session, boundary \\ :last)
 
   def fork(%__MODULE__{} = session, boundary) do
-    with {:ok, take} <- resolve(session.log, boundary),
-         prefix = Enum.take(Log.events(session.log), take),
+    with {:ok, prefix} <- prefix_through(session.log, boundary),
          :ok <- reject_open_turn(prefix),
          {:ok, log} <- copy(prefix) do
       {:ok, new(log: log, parent: %{session_id: session.id, seed_length: length(prefix)})}
@@ -200,17 +202,23 @@ defmodule Nous.Session do
 
   # ---------------------------------------------------------------------------
 
-  # `take` is an exclusive count, `boundary` an inclusive seq. They differ by one
-  # because `seq` equals the index, which is also why `seed_length` doubles as
-  # the inherited/own dividing line.
-  defp resolve(%Log{} = log, :last), do: {:ok, Log.count(log)}
+  # The prefix is every event whose seq is <= boundary. Selecting by seq rather
+  # than taking `seq + 1` events is what keeps this correct after a snapshot:
+  # with live seqs [2, 3, 4], `fork(_, 2)` must inherit one event, not three.
+  # A boundary is legal when it names a seq that was ever assigned (< count),
+  # even if a snapshot has since dropped that exact event — the prefix is then
+  # whatever survives up to it.
+  defp prefix_through(%Log{} = log, :last), do: {:ok, Log.events(log)}
 
-  defp resolve(%Log{} = log, seq) when is_integer(seq) and seq >= 0 do
+  defp prefix_through(%Log{} = log, seq) when is_integer(seq) and seq >= 0 do
     count = Log.count(log)
-    if seq < count, do: {:ok, seq + 1}, else: {:error, {:boundary_out_of_range, seq, count}}
+
+    if seq < count,
+      do: {:ok, Enum.take_while(Log.events(log), &(&1.seq <= seq))},
+      else: {:error, {:boundary_out_of_range, seq, count}}
   end
 
-  defp resolve(%Log{}, other), do: {:error, {:invalid_boundary, other}}
+  defp prefix_through(%Log{}, other), do: {:error, {:invalid_boundary, other}}
 
   defp reject_open_turn(prefix) do
     case Recovery.open_turns(prefix) do
@@ -219,14 +227,16 @@ defmodule Nous.Session do
     end
   end
 
-  # Replaying the prefix through `append/4` re-runs validation and rebuilds the
-  # replace generation, and — because the prefix starts at seq 0 and `seq` is
-  # contiguous — reassigns exactly the seqs the events already had. An event that
-  # will not append is reported rather than skipped: dropping one would shift
-  # every seq after it and corrupt the ranges this copy exists to preserve.
+  # Replaying the prefix through `append_at/5` re-runs validation and rebuilds
+  # the replace generation while keeping each event's own seq — including any
+  # gaps a snapshot left, which is why this is not `append/4`. An event that will
+  # not append is reported rather than skipped: dropping one would leave a
+  # `{:replace, …}` range pointing at nothing. The fork's head is one past the
+  # last inherited seq, so its own first event never collides with anything
+  # in the prefix.
   defp copy(events) do
     Enum.reduce_while(events, {:ok, Log.new()}, fn event, {:ok, log} ->
-      case Log.append(log, event.type, event.data, event.time) do
+      case Log.append_at(log, event.seq, event.type, event.data, event.time) do
         {:ok, log} -> {:cont, {:ok, log}}
         {:error, reason} -> {:halt, {:error, {:uncopyable_event, event.seq, reason}}}
       end

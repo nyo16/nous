@@ -97,7 +97,7 @@ defmodule Nous.Spill.Local do
   Tell the model how to open this locator: the concrete path, and the tool.
 
   The hint names `file_read`, which is fenced to the workspace root by
-  `Nous.Tools.PathGuard`. A spill `:root` outside that workspace therefore
+  `Nous.PathGuard`. A spill `:root` outside that workspace therefore
   produces a path the model **cannot** read, and the hint does not pretend
   otherwise — it states where the content is and which tool opens it, and leaves
   reachability to the operator who chose the root. Keeping the spill root inside

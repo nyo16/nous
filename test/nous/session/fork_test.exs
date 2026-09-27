@@ -125,6 +125,46 @@ defmodule Nous.Session.ForkTest do
 
       assert second.parent == %{session_id: first.id, seed_length: 7}
     end
+
+    # Log.snapshot/1 drops shadowed events and leaves seq gaps. fork/2 used to
+    # take `seq + 1` events and renumber via append/4, so after a snapshot a
+    # boundary inherited the wrong prefix and every replace range moved.
+    test "a snapshotted log forks by seq, not by index" do
+      log =
+        Log.new()
+        |> append!(:user_message, %{content: "one"})
+        |> append!(:assistant_message, %{content: "two"})
+        |> append!(:system_message, %{content: "summary", surface_op: {:replace, 0, 1}})
+        |> append!(:user_message, %{content: "three"})
+        |> append!(:assistant_message, %{content: "four"})
+        |> Log.snapshot()
+
+      # Live seqs are [2, 3, 4]; 0 and 1 were shadowed and dropped.
+      assert Enum.map(Log.events(log), & &1.seq) == [2, 3, 4]
+      parent = Session.new(id: "p", log: log)
+
+      # Boundary 2 inherits ONE event (the summary), not three.
+      {:ok, fork} = Session.fork(parent, 2)
+      assert fork.parent.seed_length == 1
+      assert Enum.map(Log.events(fork.log), & &1.seq) == [2]
+      assert Enum.map(Log.derive_messages(fork.log), & &1.content) == ["summary"]
+
+      # Boundary 3 inherits the summary and "three", keeping their seqs.
+      {:ok, fork} = Session.fork(parent, 3)
+      assert Enum.map(Log.events(fork.log), & &1.seq) == [2, 3]
+      assert Enum.map(Log.derive_messages(fork.log), & &1.content) == ["summary", "three"]
+
+      # A boundary that names a snapshotted-away seq is still legal: the
+      # prefix is whatever survives up to it (here nothing).
+      {:ok, fork} = Session.fork(parent, 1)
+      assert fork.parent.seed_length == 0
+
+      # And the fork's own numbering starts past what it inherited, never on
+      # a seq the prefix still holds.
+      {:ok, fork} = Session.fork(parent, :last)
+      log = Log.append!(fork.log, :user_message, %{content: "mine"})
+      assert List.last(Log.events(log)).seq == 5
+    end
   end
 
   describe "fork/2 refuses a boundary inside an open turn" do

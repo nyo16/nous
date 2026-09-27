@@ -25,7 +25,7 @@ defmodule Nous.Tools.FileGlob do
   def execute(ctx, %{"pattern" => pattern} = args) do
     base = Map.get(args, "path", ".")
 
-    case Nous.Tools.PathGuard.validate(base, ctx) do
+    case Nous.PathGuard.validate(base, ctx) do
       {:ok, safe_base} ->
         full_pattern = Path.join(safe_base, pattern)
 
@@ -35,7 +35,7 @@ defmodule Nous.Tools.FileGlob do
           # Keep regular files inside the workspace (rejects directories,
           # special files, and matches that escaped the workspace via symlink).
           |> Enum.filter(fn f ->
-            File.regular?(f) and match?({:ok, _}, Nous.Tools.PathGuard.validate(f, ctx))
+            File.regular?(f) and match?({:ok, _}, Nous.PathGuard.validate(f, ctx))
           end)
           |> sort_by_mtime()
           |> Enum.take(@default_limit)

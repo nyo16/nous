@@ -46,7 +46,24 @@ defmodule MyApp.Memory.Store.PlainMap do
 
   @impl true
   def list(state, opts) do
-    {:ok, state.entries |> Map.values() |> in_scope(Keyword.get(opts, :scope, %{}))}
+    entries =
+      state.entries
+      |> Map.values()
+      |> in_scope(Keyword.get(opts, :scope, %{}))
+      |> then(fn entries ->
+        case Keyword.get(opts, :order) do
+          :newest -> Enum.sort_by(entries, & &1.created_at, {:desc, DateTime})
+          _ -> entries
+        end
+      end)
+      |> then(fn entries ->
+        case Keyword.get(opts, :limit) do
+          n when is_integer(n) -> Enum.take(entries, n)
+          _ -> entries
+        end
+      end)
+
+    {:ok, entries}
   end
 
   # Naive substring relevance — enough to be a real backend, small enough to read.

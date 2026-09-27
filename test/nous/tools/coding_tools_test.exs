@@ -136,7 +136,7 @@ defmodule Nous.Tools.CodingToolsTest do
     # AGENTS.md invariant 3: file tools enforce a workspace root via PathGuard.
     # FileRead's escape test is at the top of this file; a *write* escape is
     # strictly worse, so both the absolute and the relative-traversal form are
-    # pinned here. Deleting the `Nous.Tools.PathGuard.validate/2` call in
+    # pinned here. Deleting the `Nous.PathGuard.validate/2` call in
     # lib/nous/tools/file_write.ex fails both.
     test "rejects an absolute path outside the workspace root and writes nothing" do
       target =
@@ -237,7 +237,7 @@ defmodule Nous.Tools.CodingToolsTest do
       assert msg =~ "not found"
     end
 
-    # As for FileWrite: deleting the `Nous.Tools.PathGuard.validate/2` call in
+    # As for FileWrite: deleting the `Nous.PathGuard.validate/2` call in
     # lib/nous/tools/file_edit.ex fails all three of these. The sentinel files
     # live outside the workspace root, so an unguarded FileEdit would rewrite
     # them and the content assertions would catch it.

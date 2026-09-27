@@ -23,14 +23,13 @@ store =
 
       Skipping: #{reason}
 
-      The exqlite dependency ships commented out in this repo. Uncomment this line
-      in mix.exs (under "Memory system store backends"):
+      exqlite is an optional dependency of Nous — declared in Nous's own
+      mix.exs so it builds and tests here, but not pulled into your app unless
+      you add it. In your app's mix.exs:
 
-          {:exqlite, "~> 0.27", optional: true},
+          {:exqlite, "~> 0.27"},
 
-      then run:
-
-          mix deps.get
+      then run `mix deps.get`.
       """)
 
       System.halt(0)

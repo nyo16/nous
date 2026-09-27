@@ -23,6 +23,12 @@ defmodule Nous.HTTP.Buffer do
   O(n²) when a single object spans hundreds of chunks. Support is probed
   with `function_exported?/3`; parsers that only export `parse_buffer/1`
   keep working unchanged and simply always get `nil` back.
+
+  The default SSE parser is itself resumable: its scan state is the byte
+  offset into the remaining buffer that has already been searched for an
+  event delimiter. Each chunk is scanned from `offset - 3` (a `\\r\\n\\r\\n`
+  may straddle the boundary), so an 8 MB event arriving in 1 KB chunks
+  costs O(8 MB) in total rather than O(8 MB × 8 000 chunks).
   """
 
   require Logger
@@ -67,16 +73,24 @@ defmodule Nous.HTTP.Buffer do
   def parse_sse_buffer(nil), do: {[], ""}
   def parse_sse_buffer(_), do: {[], ""}
 
-  defp do_parse_sse_buffer(buffer) when is_binary(buffer) do
-    # Split on the SSE event separator (blank line). Use `:binary.split` with a
-    # precompiled pattern instead of a regex: on a large buffer that holds an
-    # incomplete event (big tool-call args / thinking block spanning many
-    # chunks) this is re-run per chunk, and the Boyer-Moore binary matcher is
-    # dramatically cheaper than the regex engine. The two patterns cover the
-    # only real SSE separators — `\r\n\r\n` contains no `\n\n` substring, so
-    # there is no ambiguous overlap. (A stateful tail-only rescan would also
-    # cut the cumulative O(n²), but that needs call-site scan-offset tracking.)
-    parts = :binary.split(buffer, ["\r\n\r\n", "\n\n"], [:global])
+  defp do_parse_sse_buffer(buffer, offset \\ 0) when is_binary(buffer) do
+    # Split on the SSE event separator (blank line). `:binary.split` with a
+    # precompiled pattern instead of a regex: the Boyer-Moore binary matcher
+    # is dramatically cheaper than the regex engine. The two patterns cover
+    # the only real SSE separators — `\r\n\r\n` contains no `\n\n` substring,
+    # so there is no ambiguous overlap.
+    #
+    # `offset` is how much of the buffer's head was already scanned by a
+    # previous call and found delimiter-free; scanning resumes 3 bytes
+    # before it so a delimiter straddling the old end is still found. This
+    # is what makes a large event that spans many chunks O(n) overall.
+    size = byte_size(buffer)
+    start = max(offset - 3, 0)
+
+    parts =
+      if start >= size,
+        do: [buffer],
+        else: :binary.split(buffer, ["\r\n\r\n", "\n\n"], [:global, scope: {start, size - start}])
 
     case parts do
       [incomplete] ->
@@ -143,11 +157,21 @@ defmodule Nous.HTTP.Buffer do
   """
   @spec parse_stream_buffer(String.t(), module() | nil, scan_state()) ::
           {list(), String.t(), scan_state()}
-  def parse_stream_buffer(buffer, nil, _scan_state) do
-    case parse_sse_buffer(buffer) do
-      {:error, :buffer_overflow} -> {[{:stream_error, %{reason: :buffer_overflow}}], "", nil}
-      {events, remaining} -> {events, remaining, nil}
+  def parse_stream_buffer(buffer, nil, scan_state) when is_binary(buffer) do
+    # Overflow is checked on the whole buffer; only the SCAN resumes.
+    if byte_size(buffer) > @max_buffer_size do
+      Logger.error("SSE buffer exceeded max size (#{@max_buffer_size} bytes), aborting stream")
+      {[{:stream_error, %{reason: :buffer_overflow}}], "", nil}
+    else
+      {events, remaining} = do_parse_sse_buffer(buffer, sse_offset(scan_state))
+      # Everything now in `remaining` has been searched; resume past it.
+      {events, remaining, byte_size(remaining)}
     end
+  end
+
+  def parse_stream_buffer(buffer, nil, _scan_state) do
+    {events, remaining} = parse_sse_buffer(buffer)
+    {events, remaining, nil}
   end
 
   def parse_stream_buffer(buffer, parser_mod, scan_state) do
@@ -183,11 +207,11 @@ defmodule Nous.HTTP.Buffer do
   """
   @spec flush_stream_buffer(String.t(), module() | nil, scan_state()) ::
           {list(), String.t(), scan_state()}
-  def flush_stream_buffer(buffer, nil, _scan_state) do
+  def flush_stream_buffer(buffer, nil, scan_state) do
     if byte_size(buffer) > @max_buffer_size do
       {[{:stream_error, %{reason: :buffer_overflow}}], "", nil}
     else
-      {events, remaining} = do_parse_sse_buffer(buffer <> "\n\n")
+      {events, remaining} = do_parse_sse_buffer(buffer <> "\n\n", sse_offset(scan_state))
       {events, remaining, nil}
     end
   end
@@ -195,6 +219,11 @@ defmodule Nous.HTTP.Buffer do
   def flush_stream_buffer(buffer, parser_mod, scan_state) do
     parse_stream_buffer(buffer, parser_mod, scan_state)
   end
+
+  # The SSE scan state is a byte offset; anything else (nil, or a token left
+  # by a custom parser the stream switched away from) means "from the start".
+  defp sse_offset(offset) when is_integer(offset) and offset >= 0, do: offset
+  defp sse_offset(_), do: 0
 
   # Probe the optional resumable arity. `function_exported?/3` reports
   # false for a not-yet-loaded module; that is safe — we fall back to the

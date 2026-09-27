@@ -668,6 +668,51 @@ defmodule Nous.Plugins.SummarizationTest do
     end
   end
 
+  describe "snapshot_log" do
+    setup do
+      Nous.ModelDispatcher.put_dispatcher(RecordingDispatcher)
+
+      messages = [
+        Message.system("sys"),
+        Message.user("Q1"),
+        Message.assistant("A1"),
+        Message.user("Q2"),
+        Message.assistant("A2")
+      ]
+
+      %{messages: messages}
+    end
+
+    test "off by default: every shadowed event stays in the log", %{
+      agent: agent,
+      messages: messages
+    } do
+      ctx = compaction_ctx(agent, messages, keep_recent: 2)
+      {result_ctx, _} = Summarization.before_request(agent, ctx, [])
+
+      # 5 originals + 1 summary; the surface shrank, the log did not.
+      assert length(Nous.Session.Log.events(result_ctx.log)) == 6
+      assert length(result_ctx.messages) < length(messages)
+    end
+
+    test "on: the shadowed events are dropped and the surface is unchanged", %{
+      agent: agent,
+      messages: messages
+    } do
+      ctx = compaction_ctx(agent, messages, keep_recent: 2, snapshot_log: true)
+      {result_ctx, _} = Summarization.before_request(agent, ctx, [])
+
+      {plain_ctx, _} =
+        Summarization.before_request(agent, compaction_ctx(agent, messages, keep_recent: 2), [])
+
+      assert Enum.map(result_ctx.messages, & &1.content) ==
+               Enum.map(plain_ctx.messages, & &1.content)
+
+      assert length(Nous.Session.Log.events(result_ctx.log)) < 6
+      assert Enum.all?(Nous.Session.Log.events(result_ctx.log), &Nous.Session.Event.surface?/1)
+    end
+  end
+
   describe "system message preservation" do
     test "system messages are preserved separately from conversation", %{agent: agent} do
       # Create a context with system and conversation messages

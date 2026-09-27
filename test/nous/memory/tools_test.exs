@@ -121,6 +121,25 @@ defmodule Nous.Memory.ToolsTest do
       assert length(result.memories) <= 2
     end
 
+    # `limit` is LLM-supplied: an unbounded value used to hand the model the
+    # whole store; a non-integer crashed the search.
+    test "clamps an oversized limit to 50 and a non-integer to the default", %{ctx: ctx} do
+      ctx =
+        Enum.reduce(1..60, ctx, fn i, acc ->
+          {:ok, _, update} = Tools.remember(acc, %{"content" => "Memory number #{i}"})
+          ContextUpdate.apply(update, acc)
+        end)
+
+      {:ok, result, _} = Tools.recall(ctx, %{"query" => "Memory", "limit" => 10_000_000})
+      assert result.count == 50
+
+      {:ok, result, _} = Tools.recall(ctx, %{"query" => "Memory", "limit" => "lots"})
+      assert result.count == 5
+
+      {:ok, result, _} = Tools.recall(ctx, %{"query" => "Memory", "limit" => 0})
+      assert result.count == 1
+    end
+
     test "returns error when memory system not initialized" do
       ctx = Context.new(deps: %{})
 

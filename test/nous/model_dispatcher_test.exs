@@ -158,21 +158,32 @@ defmodule Nous.ModelDispatcherTest do
     end
 
     test "concurrent owners each see their own override" do
-      [a, b] =
-        Task.await_many([
-          Task.async(fn ->
-            ModelDispatcher.put_dispatcher(AppEnvDispatcher)
-            Process.sleep(20)
-            ModelDispatcher.resolve()
-          end),
-          Task.async(fn ->
-            ModelDispatcher.put_dispatcher(ProcessDispatcher)
-            Process.sleep(20)
-            ModelDispatcher.resolve()
-          end)
-        ])
+      test_pid = self()
 
-      assert {a, b} == {AppEnvDispatcher, ProcessDispatcher}
+      owner = fn dispatcher ->
+        Task.async(fn ->
+          ModelDispatcher.put_dispatcher(dispatcher)
+          send(test_pid, {:ready, self()})
+
+          receive do
+            :go -> ModelDispatcher.resolve()
+          end
+        end)
+      end
+
+      task_a = owner.(AppEnvDispatcher)
+      task_b = owner.(ProcessDispatcher)
+
+      # Both overrides are provably in place before either task resolves, so
+      # the two owners genuinely overlap.
+      assert_receive {:ready, _}, 1_000
+      assert_receive {:ready, _}, 1_000
+
+      send(task_a.pid, :go)
+      send(task_b.pid, :go)
+
+      assert {Task.await(task_a), Task.await(task_b)} ==
+               {AppEnvDispatcher, ProcessDispatcher}
     end
   end
 

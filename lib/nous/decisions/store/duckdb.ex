@@ -1,10 +1,13 @@
 if Code.ensure_loaded?(Duckdbex) do
   defmodule Nous.Decisions.Store.DuckDB do
     @moduledoc """
-    DuckDB-backed decision graph store using DuckPGQ for graph queries.
+    DuckDB-backed decision graph store.
 
-    Uses DuckDB tables for nodes and edges, with a DuckPGQ property graph
-    overlay for efficient path traversal, ancestor, and descendant queries.
+    Nodes and edges live in two DuckDB tables; path, ancestor and descendant
+    queries are recursive CTEs over the edge table (plain SQL — no DuckPGQ or
+    other extension to install, so the store works on a stock `duckdbex`).
+    Traversals are bounded (10 hops for a path, 100 for ancestors/descendants)
+    and cycle-safe via a visited-path check.
 
     ## Options
 
@@ -47,15 +50,6 @@ if Code.ensure_loaded?(Duckdbex) do
     )
     """
 
-    @create_graph """
-    CREATE OR REPLACE PROPERTY GRAPH decisions
-      VERTEX TABLES (decision_nodes)
-      EDGE TABLES (
-        decision_edges SOURCE KEY (from_id) REFERENCES decision_nodes (id)
-                       DESTINATION KEY (to_id) REFERENCES decision_nodes (id)
-      )
-    """
-
     @impl true
     @spec init(keyword()) :: {:ok, map()} | {:error, term()}
     def init(opts) do
@@ -64,8 +58,7 @@ if Code.ensure_loaded?(Duckdbex) do
       with {:ok, db} <- Duckdbex.open(path),
            {:ok, conn} <- Duckdbex.connection(db),
            {:ok, _} <- Duckdbex.query(conn, @create_nodes),
-           {:ok, _} <- Duckdbex.query(conn, @create_edges),
-           {:ok, _} <- Duckdbex.query(conn, @create_graph) do
+           {:ok, _} <- Duckdbex.query(conn, @create_edges) do
         {:ok, %{db: db, conn: conn}}
       end
     end
@@ -206,6 +199,11 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    # Traversal bounds. The recursive CTEs carry the visited-vertex list so a
+    # cycle cannot extend a walk twice through the same node.
+    @max_path_hops 10
+    @max_traversal_hops 100
+
     @impl true
     @spec query(map(), atom(), keyword()) :: {:ok, [Node.t()]}
     def query(%{conn: conn}, :active_goals, _opts) do
@@ -239,34 +237,32 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    # Shortest path (by hop count) from $1 to $2, at most @max_path_hops hops.
+    # `$1::VARCHAR` is required: DuckDB cannot infer a bare parameter's type in
+    # a recursive anchor and refuses the statement.
+
     def query(%{conn: conn} = state, :path_between, opts) do
       from_id = Keyword.fetch!(opts, :from_id)
       to_id = Keyword.fetch!(opts, :to_id)
 
       sql = """
-      FROM GRAPH_TABLE (decisions
-        MATCH p = (a:decision_nodes WHERE a.id = $1)-[e:decision_edges]->{1,10}(b:decision_nodes WHERE b.id = $2)
-        COLUMNS (a.id AS src_id, b.id AS dst_id, path_length(p) AS path_len,
-                 vertices(p) AS path_vertices)
+      WITH RECURSIVE walk(node_id, path, hops) AS (
+        SELECT $1::VARCHAR, [$1::VARCHAR], 0
+        UNION ALL
+        SELECT e.to_id, list_append(w.path, e.to_id), w.hops + 1
+        FROM walk w JOIN decision_edges e ON e.from_id = w.node_id
+        WHERE w.hops < #{@max_path_hops}
+          AND NOT list_contains(w.path, e.to_id)
       )
-      ORDER BY path_len
-      LIMIT 1
+      SELECT path FROM walk WHERE node_id = $2 AND hops > 0
+      ORDER BY hops LIMIT 1
       """
 
       case Duckdbex.query(conn, sql, [from_id, to_id]) do
         {:ok, result} ->
-          columns = Duckdbex.columns(result)
-          rows = Duckdbex.fetch_all(result)
-
-          case rows do
-            [row] ->
-              vertex_idx = Enum.find_index(columns, &(&1 == "path_vertices"))
-              vertex_ids = Enum.at(row, vertex_idx) || []
-              nodes = fetch_nodes_by_ids(state, vertex_ids)
-              {:ok, nodes}
-
-            [] ->
-              {:ok, []}
+          case Duckdbex.fetch_all(result) do
+            [[vertex_ids]] -> {:ok, fetch_nodes_by_ids(state, vertex_ids)}
+            [] -> {:ok, []}
           end
 
         {:error, _} ->
@@ -274,64 +270,48 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
-    def query(%{conn: conn} = state, :descendants, opts) do
-      node_id = Keyword.fetch!(opts, :node_id)
-
-      sql = """
-      FROM GRAPH_TABLE (decisions
-        MATCH (a:decision_nodes WHERE a.id = $1)-[e:decision_edges]->{1,100}(b:decision_nodes)
-        COLUMNS (b.id AS descendant_id)
-      )
-      """
-
-      case Duckdbex.query(conn, sql, [node_id]) do
-        {:ok, result} ->
-          columns = Duckdbex.columns(result)
-          rows = Duckdbex.fetch_all(result)
-          id_idx = Enum.find_index(columns, &(&1 == "descendant_id"))
-
-          ids =
-            rows
-            |> Enum.map(&Enum.at(&1, id_idx))
-            |> Enum.uniq()
-
-          {:ok, fetch_nodes_by_ids(state, ids)}
-
-        {:error, _} ->
-          {:ok, []}
-      end
+    def query(state, :descendants, opts) do
+      reachable(state, Keyword.fetch!(opts, :node_id), :outgoing)
     end
 
-    def query(%{conn: conn} = state, :ancestors, opts) do
-      node_id = Keyword.fetch!(opts, :node_id)
-
-      sql = """
-      FROM GRAPH_TABLE (decisions
-        MATCH (a:decision_nodes)-[e:decision_edges]->{1,100}(b:decision_nodes WHERE b.id = $1)
-        COLUMNS (a.id AS ancestor_id)
-      )
-      """
-
-      case Duckdbex.query(conn, sql, [node_id]) do
-        {:ok, result} ->
-          columns = Duckdbex.columns(result)
-          rows = Duckdbex.fetch_all(result)
-          id_idx = Enum.find_index(columns, &(&1 == "ancestor_id"))
-
-          ids =
-            rows
-            |> Enum.map(&Enum.at(&1, id_idx))
-            |> Enum.uniq()
-
-          {:ok, fetch_nodes_by_ids(state, ids)}
-
-        {:error, _} ->
-          {:ok, []}
-      end
+    def query(state, :ancestors, opts) do
+      reachable(state, Keyword.fetch!(opts, :node_id), :incoming)
     end
 
     def query(_state, _query_type, _opts) do
       {:ok, []}
+    end
+
+    # Every node reachable from $1 by following edges in `direction`, up to
+    # @max_traversal_hops away. The path list is the cycle guard; distinct
+    # ids are collapsed in SQL so the per-id hydration below runs once each.
+    defp reachable(%{conn: conn} = state, node_id, direction) do
+      {follow, next} =
+        case direction do
+          :outgoing -> {"e.from_id", "e.to_id"}
+          :incoming -> {"e.to_id", "e.from_id"}
+        end
+
+      sql = """
+      WITH RECURSIVE walk(node_id, path, hops) AS (
+        SELECT $1::VARCHAR, [$1::VARCHAR], 0
+        UNION ALL
+        SELECT #{next}, list_append(w.path, #{next}), w.hops + 1
+        FROM walk w JOIN decision_edges e ON #{follow} = w.node_id
+        WHERE w.hops < #{@max_traversal_hops}
+          AND NOT list_contains(w.path, #{next})
+      )
+      SELECT DISTINCT node_id FROM walk WHERE hops > 0 AND node_id <> $1
+      """
+
+      case Duckdbex.query(conn, sql, [node_id]) do
+        {:ok, result} ->
+          ids = result |> Duckdbex.fetch_all() |> Enum.map(fn [id] -> id end)
+          {:ok, fetch_nodes_by_ids(state, ids)}
+
+        {:error, _} ->
+          {:ok, []}
+      end
     end
 
     # -- Private helpers --
@@ -358,9 +338,9 @@ if Code.ensure_loaded?(Duckdbex) do
 
       %Node{
         id: map["id"],
-        type: String.to_existing_atom(map["node_type"]),
+        type: node_type(map["node_type"]),
         label: map["label"],
-        status: String.to_existing_atom(map["status"]),
+        status: node_status(map["status"]),
         confidence: map["confidence"],
         rationale: map["rationale"],
         metadata: decode_json(map["metadata_json"]),
@@ -376,11 +356,41 @@ if Code.ensure_loaded?(Duckdbex) do
         id: map["id"],
         from_id: map["from_id"],
         to_id: map["to_id"],
-        edge_type: String.to_existing_atom(map["edge_type"]),
+        edge_type: edge_type(map["edge_type"]),
         metadata: decode_json(map["metadata_json"]),
         created_at: parse_datetime(map["created_at"])
       }
     end
+
+    # Stored rows are not trusted input: decode each enum column through the
+    # literal set its struct declares (`Nous.Decisions.Node.node_type/0`,
+    # `status/0`, `Nous.Decisions.Edge.edge_type/0`), never
+    # `String.to_existing_atom/1`. Unknown values fall back to the least
+    # consequential member — `:observation` / `:rejected` / `:leads_to` — so
+    # a corrupted row can neither crash the read nor become a live decision.
+    defp node_type("goal"), do: :goal
+    defp node_type("decision"), do: :decision
+    defp node_type("option"), do: :option
+    defp node_type("action"), do: :action
+    defp node_type("outcome"), do: :outcome
+    defp node_type("observation"), do: :observation
+    defp node_type("revisit"), do: :revisit
+    defp node_type(_other), do: :observation
+
+    defp node_status("active"), do: :active
+    defp node_status("completed"), do: :completed
+    defp node_status("superseded"), do: :superseded
+    defp node_status("rejected"), do: :rejected
+    defp node_status(_other), do: :rejected
+
+    defp edge_type("leads_to"), do: :leads_to
+    defp edge_type("chosen"), do: :chosen
+    defp edge_type("rejected"), do: :rejected
+    defp edge_type("requires"), do: :requires
+    defp edge_type("blocks"), do: :blocks
+    defp edge_type("enables"), do: :enables
+    defp edge_type("supersedes"), do: :supersedes
+    defp edge_type(_other), do: :leads_to
 
     defp field_to_column(:type), do: "node_type"
     defp field_to_column(:metadata), do: "metadata_json"
@@ -420,7 +430,7 @@ else
     @moduledoc """
     DuckDB-backed decision graph store (stub).
 
-    Add `{:duckdbex, "~> 0.3"}` to your dependencies to enable this store.
+    Add `{:duckdbex, "~> 0.5"}` to your dependencies to enable this store.
     """
 
     @behaviour Nous.Decisions.Store
@@ -436,7 +446,7 @@ else
                query: 3}
 
     @error {:error,
-            "Duckdbex is not available. Add {:duckdbex, \"~> 0.3\"} to your dependencies."}
+            "Duckdbex is not available. Add {:duckdbex, \"~> 0.5\"} to your dependencies."}
 
     @impl true
     def init(_opts), do: @error

@@ -145,6 +145,20 @@ defmodule Nous.Memory.Store do
   @callback search_vector(state :: term(), embedding :: [float()], opts :: keyword()) ::
               {:ok, [{Entry.t(), float()}]}
 
+  @doc """
+  Every entry matching `:scope`, optionally ordered and truncated.
+
+  Options:
+
+    * `:scope` — map of `Nous.Memory.Entry` fields to filter on.
+    * `:order` — `:newest` returns entries by `created_at` descending. Omitted
+      means backend order (unspecified).
+    * `:limit` — at most this many entries. A backend MUST honour it: callers
+      such as `Nous.Plugins.Memory`'s reflection pass it to bound how much of
+      the store lands in a prompt, and an ignored limit silently turns
+      `reflection_max_memories` into "all of them". Combine with `:order` —
+      without it, "the first N" is whatever the backend happens to return.
+  """
   @callback list(state :: term(), opts :: keyword()) :: {:ok, [Entry.t()]}
 
   @optional_callbacks [search_vector: 3]

@@ -108,6 +108,39 @@ defmodule Nous.Errors do
         if(tool_name, do: " (#{tool_name})", else: "") <>
         if(attempt, do: " after #{attempt} attempt(s)", else: "")
     end
+
+    @doc """
+    Render any tool failure for the model: a one-line `summary` for logs and
+    telemetry, and a `response` that goes back as the tool result.
+
+    A `ToolError` keeps its structure (attempt count, original cause); any
+    other exception contributes its message; anything else is inspected.
+    """
+    @spec format_for_model(term(), String.t()) :: %{summary: String.t(), response: String.t()}
+    def format_for_model(%__MODULE__{} = tool_error, tool_name) do
+      response =
+        """
+        Tool execution failed: #{tool_name}
+        Error: #{tool_error.message}
+        Attempts: #{tool_error.attempt || 1}
+        #{if tool_error.original_error, do: "Original cause: #{inspect(tool_error.original_error)}", else: ""}
+
+        Please try a different approach or tool if available.
+        """
+        |> String.trim()
+
+      %{summary: Exception.message(tool_error), response: response}
+    end
+
+    def format_for_model(error, tool_name) when is_exception(error) do
+      summary = Exception.message(error)
+      %{summary: summary, response: "Tool execution failed: #{tool_name} - #{summary}"}
+    end
+
+    def format_for_model(error, tool_name) do
+      summary = "Tool execution failed with: #{inspect(error)}"
+      %{summary: summary, response: "Tool execution failed: #{tool_name} - #{summary}"}
+    end
   end
 
   defmodule ToolTimeout do

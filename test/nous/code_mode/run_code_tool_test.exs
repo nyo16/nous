@@ -1,4 +1,4 @@
-defmodule Nous.Tools.RunCodeTest do
+defmodule Nous.CodeMode.RunCodeToolTest do
   # Sync: the "no provider configured" and timeout tests read/write
   # application-wide code-runtime settings.
   use ExUnit.Case, async: false
@@ -6,7 +6,7 @@ defmodule Nous.Tools.RunCodeTest do
   alias Nous.CodeRuntime.{Failure, Request, Result}
   alias Nous.Tool.ContextUpdate
   alias Nous.{Permissions, RunContext, Tool, ToolExecutor}
-  alias Nous.Tools.RunCode
+  alias Nous.CodeMode.RunCodeTool, as: RunCode
 
   @sink :run_code_test_sink
 

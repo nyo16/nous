@@ -447,6 +447,28 @@ defmodule Nous.Plugins.InputGuardTest do
       assert warning.content =~ "flagged as suspicious"
     end
 
+    # The Strategy contract allows `{:error, reason}` (LLMJudge's default when
+    # the judge is down). It used to have no clause in run_strategies/5 and
+    # crashed the guard; now it is a drop like a raise or a timeout.
+    test "a strategy returning {:error, reason} counts as dropped and fails closed" do
+      for short_circuit <- [true, false] do
+        ctx =
+          build_ctx("safe input", %{
+            strategies: [
+              {__MODULE__.ErrorTupleStrategy, []},
+              {__MODULE__.SafeStrategy, []}
+            ],
+            short_circuit: short_circuit
+          })
+
+        ctx = InputGuard.init(dummy_agent(), ctx)
+        {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
+
+        assert [_user, %{role: :system, content: content}] = result_ctx.messages
+        assert content =~ "flagged as suspicious"
+      end
+    end
+
     test "all strategies dropped blocks when policy escalates suspicious" do
       ctx =
         build_ctx("any input", %{
@@ -609,6 +631,12 @@ defmodule Nous.Plugins.InputGuardTest do
     @behaviour Nous.Plugins.InputGuard.Strategy
     @impl true
     def check(_input, _config, _ctx), do: raise("strategy error")
+  end
+
+  defmodule ErrorTupleStrategy do
+    @behaviour Nous.Plugins.InputGuard.Strategy
+    @impl true
+    def check(_input, _config, _ctx), do: {:error, :judge_unavailable}
   end
 
   defmodule SleepStrategy do

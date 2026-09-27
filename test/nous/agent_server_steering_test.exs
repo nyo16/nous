@@ -314,6 +314,59 @@ defmodule Nous.AgentServerSteeringTest do
       # not cause one of its own once the run finished.
       refute_receive {:model_request, 3, _messages}, 300
     end
+
+    test "a prompt after an inbox-driven run is not spuriously cancelled" do
+      # Regression: the :inbox run path sets a generation-scoped
+      # cancellation_check closure on the Context struct. If that closure
+      # survived into the persisted session context (strip_run_seam), the next
+      # prompt run — two generation bumps later — would throw {:cancelled, _}
+      # at its first check and the user's message would be answered with
+      # {:agent_cancelled, _} instead of a response.
+      Recorder.install(self(), [
+        {:tool_call, "hold"},
+        "first answer",
+        "second answer",
+        "third answer"
+      ])
+
+      pid = start_agent(tools: [holding_tool(self())])
+
+      AgentServer.send_message(pid, "start working")
+      assert_receive {:model_request, 1, _messages}, 2_000
+      assert_receive {:tool_running, tool_pid}, 2_000
+
+      # Queue a followup so the run's end starts an :inbox run (the path that
+      # installs the closure on the context struct).
+      AgentServer.followup(pid, "then do the other thing")
+      _ = AgentServer.get_context(pid)
+      Kernel.send(tool_pid, :release)
+
+      assert_receive {:model_request, 2, _messages}, 2_000
+      assert_receive {:model_request, 3, _messages}, 2_000
+
+      # The inbox run's context is persisted (strip_run_seam) once its answer
+      # lands — only then is the poisoned-closure window armed.
+      assert eventually(fn ->
+               Enum.any?(
+                 AgentServer.get_context(pid).messages,
+                 &(&1.role == :assistant and &1.content == "second answer")
+               )
+             end)
+
+      AgentServer.send_message(pid, "and one more thing")
+
+      # Pre-fix this run threw {:cancelled, _} before (or right after) its
+      # model request; the answer never reached the session context.
+      assert_receive {:model_request, 4, fourth_messages}, 2_000
+      assert "and one more thing" in user_contents(fourth_messages)
+
+      assert eventually(fn ->
+               Enum.any?(
+                 AgentServer.get_context(pid).messages,
+                 &(&1.role == :assistant and &1.content == "third answer")
+               )
+             end)
+    end
   end
 
   # ── helpers ─────────────────────────────────────────────────────────────────

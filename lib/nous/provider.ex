@@ -607,7 +607,7 @@ defmodule Nous.Provider do
             System.get_env(unquote(base_env)) ||
             base_url(opts)
 
-        case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: true) do
+        case Nous.UrlGuard.validate(base, allow_private_hosts: true) do
           {:ok, _uri} ->
             {:ok, base}
 
@@ -647,7 +647,7 @@ defmodule Nous.Provider do
               get_in(Application.get_env(:nous, unquote(id), []), [:allow_private_hosts]) ||
               false
 
-          case Nous.Tools.UrlGuard.validate(base, allow_private_hosts: allow_private) do
+          case Nous.UrlGuard.validate(base, allow_private_hosts: allow_private) do
             {:ok, _uri} ->
               {:ok, base}
 

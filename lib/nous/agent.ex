@@ -58,6 +58,12 @@ defmodule Nous.Agent do
   defstruct [
     :model,
     :deps_type,
+    # nil only for a hand-built struct that skipped new/2; new/2 always sets
+    # it. The default lives in new/2, not on the struct or in
+    # Nous.Agent.Behaviour: a struct default or attribute would be a
+    # compile-time reference from this module to one implementation, and the
+    # behaviour naming one of its implementers is the cycle the arch audit
+    # flagged (A-M2).
     :behaviour_module,
     fallback: [],
     output_type: :string,
@@ -102,7 +108,7 @@ defmodule Nous.Agent do
     * `:skills` - List of skill modules, directory paths, `Nous.Skill` structs, or `{:group, atom()}`
     * `:skill_dirs` - List of directory paths to scan for `.md` skill files (convenience for `:skills`)
     * `:end_strategy` - How to handle tool calls (`:early` or `:exhaustive`)
-    * `:behaviour_module` - Custom agent behaviour module (default: BasicAgent)
+    * `:behaviour_module` - Agent behaviour module (default: `Nous.Agents.BasicAgent`)
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
       when the primary model fails with a provider/model error
     * `:permissions` - Optional `Nous.Permissions.Policy` enforced at runtime:
@@ -187,7 +193,7 @@ defmodule Nous.Agent do
       skills:
         merge_skill_dirs(Keyword.get(opts, :skills, []), Keyword.get(opts, :skill_dirs, [])),
       end_strategy: Keyword.get(opts, :end_strategy, :early),
-      behaviour_module: Keyword.get(opts, :behaviour_module),
+      behaviour_module: Keyword.get(opts, :behaviour_module) || default_behaviour(),
       permissions: Keyword.get(opts, :permissions),
       sandbox: normalize_sandbox(Keyword.get(opts, :sandbox)),
       code_mode: normalize_code_mode(Keyword.get(opts, :code_mode)),
@@ -407,6 +413,11 @@ defmodule Nous.Agent do
   @spec normalize_sandbox(term()) :: Nous.Sandbox.Policy.t() | nil
   defp normalize_sandbox(nil), do: nil
   defp normalize_sandbox(sandbox), do: Nous.Sandbox.Policy.new(sandbox)
+
+  # A function, not an attribute: a module alias evaluated in the module body
+  # is a compile-time dependency on Nous.Agents.BasicAgent; inside a function
+  # it is a runtime one, which is all a default needs.
+  defp default_behaviour, do: Nous.Agents.BasicAgent
 
   # Same contract as :sandbox — `nil` defers to application config at run time,
   # anything else is normalized eagerly so a typo raises here and not three

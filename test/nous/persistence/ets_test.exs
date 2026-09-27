@@ -3,6 +3,22 @@ defmodule Nous.Persistence.ETSTest do
 
   alias Nous.Persistence.ETS
 
+  # Poll until `fun` returns truthy (the ttl sweep runs on a timer, so tests
+  # wait for it rather than guessing a fixed sleep).
+  defp eventually(fun, retries \\ 50, delay \\ 20) do
+    cond do
+      fun.() ->
+        true
+
+      retries == 0 ->
+        false
+
+      true ->
+        Process.sleep(delay)
+        eventually(fun, retries - 1, delay)
+    end
+  end
+
   setup do
     # Clean up the ETS table between tests via the owner (table is :protected).
     ETS.clear()
@@ -71,15 +87,20 @@ defmodule Nous.Persistence.ETSTest do
   end
 
   describe "table ownership" do
-    test "save/load operate against the supervised owner's protected table" do
+    test "save/load operate against the supervised owner's table" do
       assert :ok = ETS.save("test", %{version: 1})
       assert {:ok, %{version: 1}} = ETS.load("test")
       assert :ets.whereis(:nous_persistence) != :undefined
     end
 
-    test "table is :protected (not writable by arbitrary processes)" do
-      # A foreign process must not be able to write/delete directly.
-      assert :protected = :ets.info(:nous_persistence, :protection)
+    test "the table is owned by the supervised owner, not the writer" do
+      # Writes happen in the caller (:public table), so the invariant that
+      # matters is ownership: a writer exiting must not take the table with it.
+      task = Task.async(fn -> ETS.save("from_task", %{version: 1}) end)
+      assert :ok = Task.await(task)
+
+      assert :ets.info(:nous_persistence, :owner) == Process.whereis(ETS.TableOwner)
+      assert {:ok, %{version: 1}} = ETS.load("from_task")
     end
   end
 
@@ -95,6 +116,8 @@ defmodule Nous.Persistence.ETSTest do
 
       for i <- 1..20, do: :ok = ETS.save("new_#{i}", %{version: 1})
 
+      # The cap is enforced by the owner off the caller's path; wait for it.
+      :ok = ETS.sync()
       assert :ets.info(:nous_persistence, :size) <= 20
 
       for i <- 1..5 do
@@ -110,10 +133,8 @@ defmodule Nous.Persistence.ETSTest do
       :ok = ETS.save("stale", %{version: 1})
       assert {:ok, %{version: 1}} = ETS.load("stale")
 
-      # ttl plus several sweep intervals.
-      Process.sleep(250)
-
-      assert {:error, :not_found} == ETS.load("stale")
+      # ttl is 100ms with 30ms sweeps; poll instead of guessing a fixed sleep.
+      assert eventually(fn -> ETS.load("stale") == {:error, :not_found} end)
 
       :ok = ETS.save("fresh", %{version: 1})
       assert {:ok, %{version: 1}} = ETS.load("fresh")

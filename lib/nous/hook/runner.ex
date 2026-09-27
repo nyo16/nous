@@ -14,7 +14,9 @@ defmodule Nous.Hook.Runner do
 
   - `:function` — Calls the function directly with `(event, payload)`
   - `:module` — Calls `module.handle(event, payload)`
-  - `:command` — Executes shell command via `NetRunner.run/2` with JSON on stdin
+  - `:command` — Executes shell command via `NetRunner.run/2` with JSON on stdin.
+    Requires the optional `:net_runner` dependency; without it every `:command`
+    hook fails closed (denies the event) rather than silently passing.
 
   ## Sandbox
 
@@ -34,7 +36,10 @@ defmodule Nous.Hook.Runner do
   enforce the requested mode, the hook does **not** run unconfined: a warning
   is logged and an `{:error, _}` result is returned, which follows the hook's
   existing `fail_closed` semantics — `:deny` when `fail_closed: true`,
-  otherwise the run continues to the next hook.
+  otherwise the run continues to the next hook. Security-gating hooks should
+  therefore pair the flag with `fail_closed: true`: under the default
+  `fail_closed: false`, a confine error skips the hook rather than denying
+  the event (the command itself never runs unconfined either way).
 
   The flag alone is not enough. `:sandbox_mode` must also be set: an unset
   mode resolves to `:danger_full_access`, which means the flag is on and hooks
@@ -93,10 +98,17 @@ defmodule Nous.Hook.Runner do
     end
   end
 
-  # For blocking events, short-circuit on first :deny
-  defp run_blocking([], _event, _payload), do: :allow
+  # For blocking events, short-circuit on first :deny. Modifications are
+  # applied to the payload the NEXT hook sees AND accumulated, so the caller
+  # gets `{:modify, changes}` back when every hook allowed — without that the
+  # documented `{:modify, %{arguments: ...}}` rewrite reached later hooks and
+  # nobody else.
+  defp run_blocking(hooks, event, payload), do: run_blocking(hooks, event, payload, %{})
 
-  defp run_blocking([hook | rest], event, payload) do
+  defp run_blocking([], _event, _payload, changes) when map_size(changes) == 0, do: :allow
+  defp run_blocking([], _event, _payload, changes), do: {:modify, changes}
+
+  defp run_blocking([hook | rest], event, payload, changes) do
     start_time = System.monotonic_time()
 
     :telemetry.execute(
@@ -116,7 +128,7 @@ defmodule Nous.Hook.Runner do
 
     case result do
       :allow ->
-        run_blocking(rest, event, payload)
+        run_blocking(rest, event, payload, changes)
 
       :deny ->
         Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}")
@@ -140,10 +152,10 @@ defmodule Nous.Hook.Runner do
 
         denied
 
-      {:modify, changes} ->
+      {:modify, new_changes} ->
         # Apply modification to payload, continue with remaining hooks
-        updated_payload = Map.merge(payload, changes)
-        run_blocking(rest, event, updated_payload)
+        updated_payload = Map.merge(payload, new_changes)
+        run_blocking(rest, event, updated_payload, Map.merge(changes, new_changes))
 
       {:error, reason} ->
         Logger.warning(
@@ -167,7 +179,7 @@ defmodule Nous.Hook.Runner do
 
           {:deny, "hook errored (fail_closed): #{inspect(reason)}"}
         else
-          run_blocking(rest, event, payload)
+          run_blocking(rest, event, payload, changes)
         end
     end
   end
@@ -259,19 +271,42 @@ defmodule Nous.Hook.Runner do
 
   # Execute a command hook via NetRunner. The argv list is passed
   # directly - no shell, no expansion.
+  #
+  # net_runner is `optional: true` in mix.exs, so a downstream app may compile
+  # nous without it (NetRunner sits in `no_warn_undefined`). Runtime guard —
+  # not the compile-time Tyrex conditional — so the real clause stays
+  # compiled downstream and its helpers don't turn into "unused function"
+  # warnings. The guard MUST sit before `confine_hook_argv/1`: with
+  # `:sandbox_confine_command_hooks` on, the confine backends probe the sandbox
+  # via `NetRunner.run/2` themselves, and the resulting UndefinedFunctionError
+  # would be rescued by `contained/2` into a generic `{:error, _}` that fails
+  # OPEN unless `fail_closed` is set. Without NetRunner a :command hook cannot
+  # run at all, and a hook that never ran must not be able to permit the event
+  # — the same reasoning as the confined nonzero-exit branch below — so it
+  # fails closed regardless of `fail_closed`.
   defp execute_command_hook(argv, event, payload, timeout, fail_closed) do
-    json_input =
-      JSON.encode!(%{
-        event: event,
-        payload: sanitize_payload(payload)
-      })
+    if Code.ensure_loaded?(NetRunner) do
+      json_input =
+        JSON.encode!(%{
+          event: event,
+          payload: sanitize_payload(payload)
+        })
 
-    contained("Command hook", fn ->
-      case confine_hook_argv(argv) do
-        {:ok, confined} -> run_command_hook(confined, json_input, timeout, fail_closed)
-        {:error, reason} -> {:error, reason}
-      end
-    end)
+      contained("Command hook", fn ->
+        case confine_hook_argv(argv) do
+          {:ok, confined} -> run_command_hook(confined, json_input, timeout, fail_closed)
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+    else
+      Logger.warning(
+        "Command hook NOT run: the optional :net_runner dependency is not available: " <>
+          "#{inspect(argv)}. Add {:net_runner, \"~> 1.0\"} to your deps to " <>
+          "enable :command hooks. Denying the event (fail closed)."
+      )
+
+      {:deny, "command hook not run: the optional :net_runner dependency is not available"}
+    end
   end
 
   # Off by default: hooks are operator-authored, and one that cannot write
@@ -345,6 +380,10 @@ defmodule Nous.Hook.Runner do
   # classification would need the hook's *stderr alone* captured, e.g. wrapping
   # the argv as `sh -c 'exec "$@" 2>"$0"' <tmpfile> …` and classifying that file
   # after the run. Until then, confinement is handled by failing closed below.
+  #
+  # NetRunner availability is guaranteed here: `execute_command_hook/5` gates
+  # on `Code.ensure_loaded?(NetRunner)` before any confine call and denies the
+  # event when the optional dep is missing.
   defp run_command_hook(%Confined{} = confined, json_input, timeout, fail_closed) do
     case NetRunner.run(confined.argv, input: json_input, timeout: timeout) do
       {:error, :timeout} ->
@@ -428,7 +467,7 @@ defmodule Nous.Hook.Runner do
         :allow
 
       {:ok, %{"result" => "modify", "changes" => changes}} when is_map(changes) ->
-        {:modify, changes}
+        {:modify, normalize_changes(changes)}
 
       {:ok, _} ->
         :allow
@@ -439,12 +478,35 @@ defmodule Nous.Hook.Runner do
     end
   end
 
-  # Remove non-serializable values from payload before JSON encoding
+  # A command hook's `changes` arrive from JSON with string keys, while every
+  # consumer (`Nous.AgentRunner.ToolExecution`, `Nous.CodeMode.direct_dispatch/3`,
+  # the workflow engine) matches the atom keys a function hook returns —
+  # `%{arguments: …}`, `%{result: …}`. Left as-is, `Map.merge(payload, changes)`
+  # added a string-keyed sibling and the documented path-sanitising command
+  # hook never took effect. Only the payload keys the runner defines are
+  # translated (a literal allow-list — never `String.to_atom/1` on hook
+  # output); anything else stays a string and is ignored downstream.
+  @change_keys %{
+    "arguments" => :arguments,
+    "result" => :result,
+    "tool_name" => :tool_name,
+    "state" => :state,
+    "messages" => :messages,
+    "settings" => :settings,
+    "response" => :response
+  }
+
+  defp normalize_changes(changes) do
+    Map.new(changes, fn {key, value} -> {Map.get(@change_keys, key, key), value} end)
+  end
+
+  # Remove non-serializable values from payload before JSON encoding. One pass:
+  # the filter, the key/value rewrite and the rebuild used to be three, each
+  # materialising an intermediate list of the whole payload.
   defp sanitize_payload(payload) when is_map(payload) do
-    payload
-    |> Enum.reject(fn {_k, v} -> is_function(v) or is_pid(v) or is_reference(v) end)
-    |> Enum.map(fn {k, v} -> {to_string(k), sanitize_value(v)} end)
-    |> Map.new()
+    for {k, v} <- payload, not (is_function(v) or is_pid(v) or is_reference(v)), into: %{} do
+      {to_string(k), sanitize_value(v)}
+    end
   end
 
   defp sanitize_value(v) when is_map(v), do: sanitize_payload(v)

@@ -82,6 +82,29 @@ defmodule Nous.AgentCancellationTest do
     def count_tokens(_messages), do: 50
   end
 
+  defmodule StubbornDispatcher do
+    @moduledoc false
+    # Parks the run inside the model call like BlockingDispatcher, but also
+    # SURVIVES a graceful shutdown: trap_exit is set before the ready signal,
+    # so the server's `:shutdown` exit is trapped and ignored — the shape of a
+    # task wedged in a slow HTTP call that outlives its grace period. Under an
+    # in-handler Task.shutdown/2 every interrupt against this task pays the
+    # full grace timeout. Only an untrappable :kill or an explicit :die
+    # message (the deterministic release used by these tests) ends it.
+
+    def request(_model, _messages, _settings) do
+      Process.flag(:trap_exit, true)
+      Stub.request_started()
+
+      receive do
+        :die -> exit(:shutdown)
+      end
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 50
+  end
+
   setup do
     original = Application.get_env(:nous, :model_dispatcher)
     Stub.register(self())
@@ -113,6 +136,23 @@ defmodule Nous.AgentCancellationTest do
         id: {AgentServer, session_id}
       )
     )
+  end
+
+  # Bounded poll for state the server only updates via handle_info (the
+  # draining reap below) — same rationale as the identical helper in
+  # agent_cancellation_extended_test.exs: it hides no race, it bounds one.
+  defp eventually(fun, retries \\ 200, delay \\ 5) do
+    cond do
+      fun.() ->
+        true
+
+      retries == 0 ->
+        false
+
+      true ->
+        Process.sleep(delay)
+        eventually(fun, retries - 1, delay)
+    end
   end
 
   describe "cancellation via cancellation_check" do
@@ -203,6 +243,8 @@ defmodule Nous.AgentCancellationTest do
       first_task = :sys.get_state(pid).current_task
       assert first_task.pid == first_task_pid
 
+      first_task_ref = Process.monitor(first_task_pid)
+
       AgentServer.send_message(pid, "Second message")
       assert_receive {:model_request_started, second_task_pid}, 1_000
 
@@ -210,9 +252,99 @@ defmodule Nous.AgentCancellationTest do
       assert second_task.ref != first_task.ref
       assert second_task.pid == second_task_pid
 
-      # handle_cast shuts the previous task down synchronously before spawning
-      # its replacement, so by the time the new run signals, the old one is dead.
-      refute Process.alive?(first_task_pid)
+      # The interrupt demotes the previous task and shuts it down
+      # asynchronously — the handler no longer blocks in Task.shutdown — so
+      # its death is observed via a monitor rather than asserted inline.
+      assert_receive {:DOWN, ^first_task_ref, :process, ^first_task_pid, _}, 1_000
+    end
+  end
+
+  describe "AgentServer interrupt latency" do
+    # These three tests pin the fix for the in-handler `Task.shutdown/2`
+    # stalls: cancel/interrupt used to hold the server for the task's full
+    # 2-5 s grace period whenever the task did not die instantly. The server
+    # now demotes the task into `draining` and replies immediately, so every
+    # bound here sits far below the old grace period while staying generous
+    # for a loaded CI machine.
+
+    test "cancel_execution replies while the task is still winding down" do
+      use_dispatcher(StubbornDispatcher)
+      pid = start_agent()
+
+      AgentServer.send_message(pid, "Test")
+      assert_receive {:model_request_started, task_pid}, 1_000
+
+      task_ref = Process.monitor(task_pid)
+
+      {us, reply} = :timer.tc(fn -> AgentServer.cancel_execution(pid) end)
+
+      assert reply == {:ok, :cancelled}
+      # Old code: Task.shutdown(task, 5_000) against a shutdown-resistant
+      # task consumed the full grace period and timed the caller out.
+      assert us < 500_000
+
+      # The reply beat the task's death: it is *still* winding down.
+      assert Process.alive?(task_pid)
+
+      state = :sys.get_state(pid)
+      assert state.current_task == nil
+      assert :atomics.get(state.cancelled_ref, 1) == 0
+      assert map_size(state.draining) == 1
+
+      # Release the stubborn task and check the server reaps it: the
+      # draining entry must go away on :DOWN, not leak.
+      send(task_pid, :die)
+      assert_receive {:DOWN, ^task_ref, :process, ^task_pid, _}, 1_000
+      assert eventually(fn -> :sys.get_state(pid).draining == %{} end)
+    end
+
+    test "a user_message interrupt does not stall a concurrent get_context" do
+      use_dispatcher(StubbornDispatcher)
+      pid = start_agent()
+
+      AgentServer.send_message(pid, "First")
+      assert_receive {:model_request_started, first_task_pid}, 1_000
+
+      # The cast and the call are both sent from this process, so the call
+      # queues directly behind the interrupt handler; its latency measures
+      # exactly how long that handler held the server.
+      AgentServer.send_message(pid, "Second")
+      assert {us, %Agent.Context{}} = :timer.tc(fn -> AgentServer.get_context(pid) end)
+
+      # Old code held the server for Task.shutdown's full 2 s grace period.
+      # 500 ms keeps 4x headroom below the pinned 2 s regression while
+      # tolerating scheduler stalls under CI load.
+      assert us < 500_000
+
+      # The interrupt really replaced the run, not just returned quickly.
+      assert %Task{pid: new_pid} = :sys.get_state(pid).current_task
+      refute new_pid == first_task_pid
+
+      # Demote the replacement into draining too, so teardown's terminate/2
+      # kills it outright instead of waiting on a graceful shutdown.
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
+    end
+
+    test "rapid double-interrupt does not serialize multi-second stalls" do
+      use_dispatcher(StubbornDispatcher)
+      pid = start_agent()
+
+      AgentServer.send_message(pid, "First")
+      assert_receive {:model_request_started, _}, 1_000
+
+      {us, _ctx} =
+        :timer.tc(fn ->
+          AgentServer.send_message(pid, "Second")
+          AgentServer.send_message(pid, "Third")
+          AgentServer.get_context(pid)
+        end)
+
+      # Old code paid one full Task.shutdown grace period per interrupt,
+      # back to back, inside the two handlers this call queued behind.
+      assert us < 500_000
+
+      assert %Task{} = :sys.get_state(pid).current_task
+      assert {:ok, :cancelled} = AgentServer.cancel_execution(pid)
     end
   end
 end

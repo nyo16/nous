@@ -458,6 +458,26 @@ defmodule Nous.CodeMode.SchedulerTest do
       assert String.ends_with?(error["message"], "… (truncated)")
     end
 
+    test "the default dispatch's already-sanitised payload reaches the program intact" do
+      # `Nous.CodeMode.direct_dispatch/3` returns `{:error, %{"tool", "message"}}`;
+      # with the shipped scheduler in front of it every tool error used to
+      # collapse to the opaque "tool call failed", so a program could not react
+      # to "file not found" vs "rejected by the approval handler".
+      failing = %{tool("query") | function: fn _ctx, _args -> {:error, "file not found"} end}
+      sched = start_scheduler(dispatch: &Nous.CodeMode.direct_dispatch/3)
+
+      assert {:error, error} =
+               Scheduler.call(
+                 sched,
+                 failing,
+                 %{},
+                 Nous.RunContext.new(%{}, approval_gated?: true)
+               )
+
+      assert error == %{"tool" => "query", "message" => "file not found"}
+      assert_only_name_and_message(error)
+    end
+
     test "a killed sub-call fails its own call and leaves the lane usable" do
       sched =
         start_scheduler(

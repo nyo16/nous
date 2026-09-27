@@ -27,7 +27,7 @@ defmodule Nous.Application do
         # a supervised owner, suspended workflows could vanish whenever the
         # process that saved them exited.
         Nous.Workflow.Checkpoint.ETS
-      ] ++ optional_bumblebee_children() ++ optional_code_runtime_children()
+      ] ++ optional_code_runtime_children()
 
     # Tuned restart limits to match AgentDynamicSupervisor - default 3-in-5
     # would cascade to take Nous.AgentRegistry + the dynamic supervisor down
@@ -40,21 +40,6 @@ defmodule Nous.Application do
     ]
 
     Supervisor.start_link(children, opts)
-  end
-
-  # Bumblebee is an optional dep. When loaded, the embedding provider
-  # uses a Registry + DynamicSupervisor to keep one ServingHolder
-  # GenServer per model_name (M-7). When not loaded, no children are
-  # added and the placeholder Bumblebee module returns errors at runtime.
-  if Code.ensure_loaded?(Bumblebee) do
-    defp optional_bumblebee_children do
-      [
-        {Registry, keys: :unique, name: Nous.Memory.Embedding.Bumblebee.Registry},
-        Nous.Memory.Embedding.Bumblebee.ServingSupervisor
-      ]
-    end
-  else
-    defp optional_bumblebee_children, do: []
   end
 
   # tyrex is an optional dep behind `Nous.CodeRuntime.JS`. Two children, both

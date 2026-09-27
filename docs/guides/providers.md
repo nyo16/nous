@@ -88,7 +88,7 @@ Nous.new("vllm:meta-llama/Llama-3-8B-Instruct", base_url: "http://localhost:8000
 
 The guard is a literal check for the `:base_url` key in the options. Setting `VLLM_BASE_URL` or `config :nous, :vllm, base_url: ...` does **not** satisfy it — those are only read later, at request time.
 
-**2. A `base_url` that is present but invalid returns an error tuple.** `vllm`, `sglang`, and `lmstudio` resolve their URL through the `:local` strategy in `Nous.Provider`, which validates via `Nous.Tools.UrlGuard.validate/2` with `allow_private_hosts: true`. Loopback and private addresses are therefore fine; a URL with no host, no scheme, or a blocked scheme (`file`, `gopher`, `ftp`, `ldap`, `dict`, `ssh`) is not. Nothing raises here — the request returns an error tuple:
+**2. A `base_url` that is present but invalid returns an error tuple.** `vllm`, `sglang`, and `lmstudio` resolve their URL through the `:local` strategy in `Nous.Provider`, which validates via `Nous.UrlGuard.validate/2` with `allow_private_hosts: true`. Loopback and private addresses are therefore fine; a URL with no host, no scheme, or a blocked scheme (`file`, `gopher`, `ftp`, `ldap`, `dict`, `ssh`) is not. Nothing raises here — the request returns an error tuple:
 
 ```elixir
 # base_url: "localhost:8000/v1" — no scheme, so URI parsing finds no host

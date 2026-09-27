@@ -23,13 +23,17 @@ defmodule Nous.Skill.Registry do
 
   @type t :: %Registry{
           skills: %{optional(String.t()) => Skill.t()},
-          groups: %{optional(atom()) => [String.t()]},
-          tags: %{optional(atom()) => [String.t()]},
-          scopes: %{optional(Skill.scope()) => [String.t()]},
-          active: term()
+          terms: %{optional(String.t()) => [String.t()]},
+          groups: %{optional(atom()) => MapSet.t(String.t())},
+          tags: %{optional(atom()) => MapSet.t(String.t())},
+          scopes: %{optional(Skill.scope()) => MapSet.t(String.t())},
+          active: MapSet.t(String.t())
         }
 
   defstruct skills: %{},
+            # Per skill, its description downcased and tokenised once, so
+            # match/2 does not redo that for every skill on every user turn.
+            terms: %{},
             groups: %{},
             tags: %{},
             scopes: %{},
@@ -49,6 +53,7 @@ defmodule Nous.Skill.Registry do
     %{
       registry
       | skills: Map.put(registry.skills, skill.name, skill),
+        terms: Map.put(registry.terms, skill.name, description_terms(skill.description)),
         groups: add_to_index(registry.groups, skill.group, skill.name),
         tags: Enum.reduce(skill.tags, registry.tags, &add_to_index(&2, &1, skill.name)),
         scopes: add_to_index(registry.scopes, skill.scope, skill.name)
@@ -193,10 +198,8 @@ defmodule Nous.Skill.Registry do
   @spec activate_group(t(), atom(), Nous.Agent.t(), Nous.Agent.Context.t()) ::
           {[{String.t(), [Nous.Tool.t()]}], t()}
   def activate_group(%Registry{} = registry, group, agent, ctx) do
-    names = Map.get(registry.groups, group, [])
-
     {results, updated_registry} =
-      Enum.reduce(names, {[], registry}, fn name, {acc, reg} ->
+      Enum.reduce(index_names(registry.groups, group), {[], registry}, fn name, {acc, reg} ->
         {instructions, tools, reg} = activate(reg, name, agent, ctx)
         {[{instructions, tools} | acc], reg}
       end)
@@ -209,8 +212,7 @@ defmodule Nous.Skill.Registry do
   """
   @spec deactivate_group(t(), atom()) :: t()
   def deactivate_group(%Registry{} = registry, group) do
-    names = Map.get(registry.groups, group, [])
-    Enum.reduce(names, registry, &deactivate(&2, &1))
+    Enum.reduce(index_names(registry.groups, group), registry, &deactivate(&2, &1))
   end
 
   @doc """
@@ -218,7 +220,7 @@ defmodule Nous.Skill.Registry do
   """
   @spec by_group(t(), atom()) :: [Skill.t()]
   def by_group(%Registry{} = registry, group) do
-    resolve_names(registry, Map.get(registry.groups, group, []))
+    resolve_names(registry, index_names(registry.groups, group))
   end
 
   @doc """
@@ -226,7 +228,7 @@ defmodule Nous.Skill.Registry do
   """
   @spec by_tag(t(), atom()) :: [Skill.t()]
   def by_tag(%Registry{} = registry, tag) do
-    resolve_names(registry, Map.get(registry.tags, tag, []))
+    resolve_names(registry, index_names(registry.tags, tag))
   end
 
   @doc """
@@ -257,11 +259,10 @@ defmodule Nous.Skill.Registry do
           fun.(input)
 
         _ ->
-          # Fallback: check if description keywords appear in input
-          skill.description != "" and
-            String.downcase(skill.description)
-            |> String.split(~r/\s+/)
-            |> Enum.any?(&String.contains?(input_lower, &1))
+          # Fallback: any description keyword appears in the input. The terms
+          # were tokenised at register/2; a list pattern is one scan of the
+          # input, not one per term.
+          String.contains?(input_lower, Map.get(registry.terms, skill.name, []))
       end
     end)
     |> Enum.sort_by(& &1.priority)
@@ -335,9 +336,18 @@ defmodule Nous.Skill.Registry do
   defp add_to_index(index, nil, _name), do: index
 
   defp add_to_index(index, key, name) do
-    Map.update(index, key, [name], fn names ->
-      if name in names, do: names, else: names ++ [name]
-    end)
+    Map.update(index, key, MapSet.new([name]), &MapSet.put(&1, name))
+  end
+
+  defp index_names(index, key), do: Map.get(index, key, MapSet.new())
+
+  # Downcased, whitespace-tokenised, de-duplicated. An empty description yields
+  # no terms, so it matches nothing — an empty pattern would match everything.
+  defp description_terms(description) do
+    description
+    |> String.downcase()
+    |> String.split()
+    |> Enum.uniq()
   end
 
   # Resolve skill names from an index to their structs, dropping stale names.

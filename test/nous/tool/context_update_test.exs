@@ -241,8 +241,8 @@ defmodule Nous.Tool.ContextUpdateTest do
   end
 
   describe "to_deps/2 — the one reducer the runner also uses" do
-    # `Nous.AgentRunner.ToolExecution.context_update_to_map/1` used to be a
-    # second, independent fold starting from an empty map. These pin the two
+    # `Nous.AgentRunner.ToolExecution` used to keep a second, independent fold
+    # starting from an empty map. These pin the two
     # cases the prepend optimisation could get wrong, against a reference
     # implementation of the pre-optimisation `++` semantics.
     test "set of a list then append is byte-identical to the old ++ fold" do

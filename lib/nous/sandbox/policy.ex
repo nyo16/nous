@@ -19,7 +19,7 @@ defmodule Nous.Sandbox.Policy do
   Note what *no* mode does: neither in-tree provider restricts **reads**.
   Seatbelt's profile is `(allow default) (deny file-write*)` and bwrap binds
   `/` read-only, so both are write fences. Read confinement remains
-  `Nous.Tools.PathGuard`'s job.
+  `Nous.PathGuard`'s job.
 
   ## Where the mode comes from
 
@@ -65,7 +65,7 @@ defmodule Nous.Sandbox.Policy do
   """
 
   alias __MODULE__
-  alias Nous.Tools.PathGuard
+  alias Nous.PathGuard
 
   require Logger
 
@@ -94,7 +94,7 @@ defmodule Nous.Sandbox.Policy do
   Build a policy from a mode, a keyword list, a map, or another policy.
 
   `:workspace_root` defaults to the current working directory, matching
-  `Nous.Tools.PathGuard`.
+  `Nous.PathGuard`.
 
   ## Examples
 
@@ -135,7 +135,7 @@ defmodule Nous.Sandbox.Policy do
   `nil`). `opts` may override `:mode`, `:workspace_root` and `:session_id`.
 
   The workspace root falls back to `ctx.deps[:workspace_root]` — the same place
-  `Nous.Tools.PathGuard` reads it from — and then to the current directory.
+  `Nous.PathGuard` reads it from — and then to the current directory.
   """
   @spec resolve(Nous.RunContext.t() | map() | nil, keyword()) :: t()
   def resolve(ctx, opts \\ []) do
@@ -175,7 +175,7 @@ defmodule Nous.Sandbox.Policy do
 
   @doc """
   Canonicalise a path: absolute, with every existing symlink component
-  dereferenced, via `Nous.Tools.PathGuard.resolve_real/1`.
+  dereferenced, via `Nous.PathGuard.resolve_real/1`.
 
   This is why policy construction, not `Nous.Sandbox.confine/2`, is where the
   filesystem is touched. It matters for enforcement, not tidiness: on macOS

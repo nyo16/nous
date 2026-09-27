@@ -175,9 +175,10 @@ defmodule Nous.Plugins.InputGuard do
   end
 
   # Both variants return {results, dropped_count}. A "dropped" strategy is one
-  # that errored or timed out — it produced no verdict, which must not be
-  # mistaken for a :safe verdict (see apply_fail_closed/3). Strategies skipped
-  # by short-circuiting after a :blocked result are NOT drops.
+  # that errored, timed out, or returned `{:error, reason}` — it produced no
+  # verdict, which must not be mistaken for a :safe verdict (see
+  # apply_fail_closed/3). Strategies skipped by short-circuiting after a
+  # :blocked result are NOT drops.
   defp run_strategies(strategies, input, ctx, true = _short_circuit, _timeout) do
     {results, dropped} =
       Enum.reduce_while(strategies, {[], 0}, fn {mod, opts}, {acc, dropped} ->
@@ -260,8 +261,18 @@ defmodule Nous.Plugins.InputGuard do
     end
   end
 
+  # Normalises every way a strategy can fail to produce a verdict — raise,
+  # throw/exit, or the contract's own `{:error, reason}` — to `:error`, so the
+  # two run_strategies/5 variants count all of them as dropped.
   defp safe_check(mod, input, opts, ctx) do
-    mod.check(input, opts, ctx)
+    case mod.check(input, opts, ctx) do
+      {:ok, %Result{}} = ok ->
+        ok
+
+      {:error, reason} ->
+        Logger.warning("InputGuard: Strategy #{inspect(mod)} dropped: #{inspect(reason)}")
+        :error
+    end
   rescue
     e ->
       Logger.warning("InputGuard: Strategy #{inspect(mod)} failed: #{Exception.message(e)}")

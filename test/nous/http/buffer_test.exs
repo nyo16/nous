@@ -52,9 +52,55 @@ defmodule Nous.HTTP.BufferTest do
   end
 
   describe "parse_stream_buffer/3" do
-    test "yields a nil scan_state for the SSE path" do
+    test "the SSE path resumes: scan_state is the searched length of the remainder" do
       assert Buffer.parse_stream_buffer("data: {\"a\":1}\n\n", nil, nil) ==
-               {[%{"a" => 1}], "", nil}
+               {[%{"a" => 1}], "", 0}
+
+      assert {[], "data: {\"a\":", 11} = Buffer.parse_stream_buffer("data: {\"a\":", nil, nil)
+    end
+
+    test "a delimiter straddling the resume boundary is still found" do
+      # First chunk ends in the middle of "\r\n\r\n"; the offset it hands back
+      # covers the partial delimiter, and the rescan must step back over it.
+      first = "data: {\"a\":1}\r\n"
+      {[], ^first, offset} = Buffer.parse_stream_buffer(first, nil, nil)
+      assert offset == byte_size(first)
+
+      buffer = first <> "\r\ndata: {\"b\":2}"
+
+      assert {[%{"a" => 1}], "data: {\"b\":2}", 13} =
+               Buffer.parse_stream_buffer(buffer, nil, offset)
+    end
+
+    test "feeding one event chunk-by-chunk yields it exactly once and stays linear" do
+      # Exactly 512 KiB so the 1 KiB binary comprehension drops no tail.
+      payload = "data: " <> String.duplicate("x", 512 * 1024 - 8) <> "\n\n"
+      chunks = for <<c::binary-size(1024) <- payload>>, do: c
+
+      {events, "", _offset, per_chunk} =
+        Enum.reduce(chunks, {[], "", nil, []}, fn c, {acc, buf, st, times} ->
+          buf = buf <> c
+          {us, {evs, rem, st}} = :timer.tc(fn -> Buffer.parse_stream_buffer(buf, nil, st) end)
+          {acc ++ evs, rem, st, [us | times]}
+        end)
+
+      # The payload is not JSON, so the single event surfaces as one parse error.
+      assert [{:parse_error, _}] = events
+
+      # Regression guard for the O(n²) rescan: the last chunks must not cost
+      # meaningfully more than the first ones. 20× is generous; the old code
+      # was ~500× here. (The final chunk pays for parsing the event itself, so
+      # compare the second-to-last chunk.)
+      [_final, last | _] = per_chunk
+      first = List.last(per_chunk)
+      assert last < max(first, 20) * 20, "per-chunk cost grew: #{first}us -> #{last}us"
+    end
+
+    test "an integer scan_state from a custom parser is ignored by a resumable parser and vice versa" do
+      # A stale SSE offset handed to the SSE path after a parser switch is
+      # harmless: it only ever narrows the scan window from a delimiter-free prefix.
+      assert Buffer.parse_stream_buffer("data: {\"a\":1}\n\n", nil, {7, :partial}) ==
+               {[%{"a" => 1}], "", 0}
     end
 
     test "yields a nil scan_state for a parser that only exports parse_buffer/1" do

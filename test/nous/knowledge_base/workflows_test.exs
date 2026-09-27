@@ -14,6 +14,37 @@ defmodule Nous.KnowledgeBase.WorkflowsTest do
     defdelegate outlinks(state, entry_id), to: ETS
   end
 
+  # A deliberately buggy embedding provider: embed_batch/2 returns a single
+  # vector regardless of input size. embed/2 is deterministic per text, so the
+  # per-entry fallback path is observable in the result.
+  defmodule MismatchEmbedding do
+    @behaviour Nous.Memory.Embedding
+
+    @impl true
+    def embed(text, _opts), do: {:ok, [String.length(text) * 1.0]}
+
+    @impl true
+    def embed_batch(_texts, _opts), do: {:ok, [[0.0]]}
+
+    @impl true
+    def dimension, do: 1
+  end
+
+  # A well-behaved batch provider whose embed/2 answers differ from
+  # embed_batch/2, so the test can tell which path produced the vectors.
+  defmodule BatchEmbedding do
+    @behaviour Nous.Memory.Embedding
+
+    @impl true
+    def embed(_text, _opts), do: {:ok, [-1.0]}
+
+    @impl true
+    def embed_batch(texts, _opts), do: {:ok, Enum.map(texts, &[String.length(&1) * 1.0])}
+
+    @impl true
+    def dimension, do: 1
+  end
+
   setup do
     {:ok, kb} = ETS.init([])
 
@@ -60,6 +91,49 @@ defmodule Nous.KnowledgeBase.WorkflowsTest do
     end
   end
 
+  describe "ingest pipeline :embed_entries node" do
+    test "a batch result with the wrong number of vectors falls back per entry, dropping none" do
+      state = embed_entries(MismatchEmbedding)
+
+      # "alpha" -> [5.0], "beta" -> [4.0]: both entries kept, embedded via
+      # the per-entry fallback rather than zipped against the short batch.
+      assert Enum.map(state.data.compiled_entries, & &1.embedding) == [[5.0], [4.0]]
+    end
+
+    test "a batch result with matching length is zipped in order" do
+      state = embed_entries(BatchEmbedding)
+
+      assert Enum.map(state.data.compiled_entries, & &1.embedding) == [[5.0], [4.0]]
+    end
+  end
+
+  describe "health check :build_report node" do
+    # The issue type/severity come from LLM-authored JSON. They used to go
+    # through String.to_existing_atom/1, which raised on an unknown word and
+    # accepted ANY existing atom ("self", "nil", a module name) as an issue
+    # type. Now: literal allow-list, conservative default.
+    test "decodes known types and severities, defaults the rest" do
+      audit_json =
+        JSON.encode!([
+          %{"type" => "stale", "severity" => "high", "entry_id" => "a"},
+          %{"type" => "duplicate", "severity" => "medium", "entry_id" => "b"},
+          %{"type" => "self", "severity" => "nil", "entry_id" => "c"},
+          %{"type" => "Elixir.System", "severity" => "critical", "entry_id" => "d"},
+          %{"entry_id" => "e"}
+        ])
+
+      report = build_report(audit_json)
+
+      assert Enum.map(report.issues, &{&1.entry_id, &1.type, &1.severity}) == [
+               {"a", :stale, :high},
+               {"b", :duplicate, :medium},
+               {"c", :gap, :low},
+               {"d", :gap, :low},
+               {"e", :gap, :low}
+             ]
+    end
+  end
+
   # The :gather_stats node holds a capture of the private transform, which is
   # the only way to exercise it without running the LLM audit step behind it.
   defp gather_stats(store_mod, kb_state) do
@@ -75,9 +149,37 @@ defmodule Nous.KnowledgeBase.WorkflowsTest do
     )
   end
 
+  defp build_report(audit_json) do
+    transform_fn =
+      Workflows.build_health_check_pipeline()
+      |> Map.fetch!(:nodes)
+      |> Map.fetch!("build_report")
+      |> Map.fetch!(:config)
+      |> Map.fetch!(:transform_fn)
+
+    stats = %{total_entries: 5, total_links: 0, total_documents: 0}
+
+    transform_fn.(
+      State.new(%{kb_config: %{kb_id: "kb1"}, stats: stats, audit_entries: audit_json})
+    ).data.health_report
+  end
+
   defp summaries(state) do
     state.data.entry_summaries
     |> Enum.map(&{&1.slug, &1.link_count})
     |> Enum.sort()
+  end
+
+  @embed_entries_json ~s([{"title":"A","slug":"a","content":"alpha"},{"title":"B","slug":"b","content":"beta"}])
+
+  defp embed_entries(provider) do
+    transform_fn =
+      Workflows.build_ingest_pipeline(embedding: provider)
+      |> Map.fetch!(:nodes)
+      |> Map.fetch!("embed_entries")
+      |> Map.fetch!(:config)
+      |> Map.fetch!(:transform_fn)
+
+    transform_fn.(State.new(%{compile_entries: @embed_entries_json}))
   end
 end

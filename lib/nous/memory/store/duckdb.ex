@@ -146,41 +146,64 @@ if Code.ensure_loaded?(Duckdbex) do
     def search_text(%{conn: conn} = _state, query, opts) do
       scope = Keyword.get(opts, :scope, %{})
       limit = Keyword.get(opts, :limit, 10)
+      min_score = Keyword.get(opts, :min_score, 0.0)
 
       {scope_sql, scope_params, next_idx} = build_scope_clause(scope, 1)
 
-      # Use ILIKE for basic text search
-      search_clause = "WHERE content ILIKE '%' || $#{next_idx} || '%'"
-      scope_and = if scope_sql == "", do: "", else: " AND " <> scope_sql
+      # One bound `%term%` pattern PER TERM (LIKE wildcards in the term
+      # escaped), OR-ed so a row matching any term is a candidate; relevance is
+      # then scored in Elixir. Bound patterns rather than `'%' || $n || '%'`:
+      # DuckDB cannot infer a parameter's type inside the concatenation and
+      # rejects the statement as unbound.
+      terms = String.split(query, ~r/\s+/, trim: true)
 
-      sql = """
-      SELECT * FROM memories
-      #{search_clause}#{scope_and}
-      LIMIT $#{next_idx + 1}
-      """
+      if terms == [] do
+        {:ok, []}
+      else
+        {term_clauses, term_params} =
+          terms
+          |> Enum.with_index(next_idx)
+          |> Enum.map(fn {term, idx} ->
+            {"content ILIKE $#{idx} ESCAPE '\\'", like_pattern(term)}
+          end)
+          |> Enum.unzip()
 
-      params = scope_params ++ [query, limit]
+        limit_idx = next_idx + length(terms)
+        scope_and = if scope_sql == "", do: "", else: " AND " <> scope_sql
 
-      case Duckdbex.query(conn, sql, params) do
-        {:ok, result} ->
-          columns = Duckdbex.columns(result)
-          rows = Duckdbex.fetch_all(result)
+        sql = """
+        SELECT * FROM memories
+        WHERE (#{Enum.join(term_clauses, " OR ")})#{scope_and}
+        LIMIT $#{limit_idx}
+        """
 
-          entries_with_scores =
-            rows
-            |> Enum.map(fn row ->
-              entry = row_to_entry(columns, row)
-              # Basic relevance: case-insensitive match score
-              score = text_relevance_score(entry.content, query)
-              {entry, score}
-            end)
-            |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
+        params = scope_params ++ term_params ++ [limit]
 
-          {:ok, entries_with_scores}
+        case Duckdbex.query(conn, sql, params) do
+          {:ok, result} ->
+            columns = Duckdbex.columns(result)
+            rows = Duckdbex.fetch_all(result)
 
-        {:error, reason} ->
-          {:error, reason}
+            entries_with_scores =
+              rows
+              |> Enum.map(fn row ->
+                entry = row_to_entry(columns, row)
+                {entry, text_relevance_score(entry.content, query)}
+              end)
+              |> Enum.filter(fn {_entry, score} -> score > min_score end)
+              |> Enum.sort_by(fn {_entry, score} -> score end, :desc)
+
+            {:ok, entries_with_scores}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
       end
+    end
+
+    defp like_pattern(term) do
+      escaped = String.replace(term, ["\\", "%", "_"], fn c -> "\\" <> c end)
+      "%" <> escaped <> "%"
     end
 
     @impl true
@@ -232,7 +255,10 @@ if Code.ensure_loaded?(Duckdbex) do
       {scope_sql, scope_params, _next_idx} = build_scope_clause(scope, 1)
 
       where = if scope_sql == "", do: "", else: "WHERE " <> scope_sql
-      sql = "SELECT * FROM memories #{where}"
+
+      sql =
+        "SELECT * FROM memories #{where}" <>
+          order_clause(Keyword.get(opts, :order)) <> limit_clause(Keyword.get(opts, :limit))
 
       case Duckdbex.query(conn, sql, scope_params) do
         {:ok, result} ->
@@ -245,6 +271,14 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    # `:order` / `:limit` are keyword atoms and integers from the caller, never
+    # strings, so interpolating them cannot inject.
+    defp order_clause(:newest), do: " ORDER BY created_at DESC"
+    defp order_clause(_), do: ""
+
+    defp limit_clause(limit) when is_integer(limit) and limit >= 0, do: " LIMIT #{limit}"
+    defp limit_clause(_), do: ""
+
     # -- Private helpers --
 
     defp row_to_entry(columns, row) do
@@ -256,7 +290,7 @@ if Code.ensure_loaded?(Duckdbex) do
       %Entry{
         id: map["id"],
         content: map["content"],
-        type: String.to_existing_atom(map["type"]),
+        type: memory_type(map["type"]),
         importance: map["importance"] || 0.5,
         evergreen: to_bool(map["evergreen"]),
         embedding: map["embedding"],
@@ -271,6 +305,15 @@ if Code.ensure_loaded?(Duckdbex) do
         last_accessed_at: parse_datetime(map["last_accessed_at"])
       }
     end
+
+    # Stored rows are not trusted input: decode the column through the literal
+    # `Nous.Memory.Entry.memory_type/0` set, never `String.to_existing_atom/1`
+    # (which accepts any atom the VM happens to hold). Unknown → the struct's
+    # own default.
+    defp memory_type("semantic"), do: :semantic
+    defp memory_type("episodic"), do: :episodic
+    defp memory_type("procedural"), do: :procedural
+    defp memory_type(_other), do: :semantic
 
     defp build_scope_clause(scope, start_idx) when map_size(scope) == 0,
       do: {"", [], start_idx}
@@ -356,19 +399,18 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    # Fraction of query terms present in the content (case-insensitive). This
+    # matches the candidate SQL above, which selects a row when ANY term
+    # matches: a row must never be a candidate and then score 0 — the old
+    # whole-phrase `String.split(content, query)` did exactly that for any
+    # multi-word query, so every such search returned nothing.
     defp text_relevance_score(content, query) do
       content_lower = String.downcase(content)
-      query_lower = String.downcase(query)
+      terms = query |> String.downcase() |> String.split(~r/\s+/, trim: true)
 
-      # Count occurrences and normalize by content length
-      parts = String.split(content_lower, query_lower)
-      count = length(parts) - 1
-
-      if count > 0 do
-        # Score based on frequency relative to content length
-        min(1.0, count / max(1, String.length(content_lower) / String.length(query_lower) / 10))
-      else
-        0.0
+      case terms do
+        [] -> 0.0
+        _ -> Enum.count(terms, &String.contains?(content_lower, &1)) / length(terms)
       end
     end
   end
@@ -377,7 +419,7 @@ else
     @moduledoc """
     DuckDB-backed memory store (stub).
 
-    Add `{:duckdbex, "~> 0.3"}` to your dependencies to enable this store.
+    Add `{:duckdbex, "~> 0.5"}` to your dependencies to enable this store.
     """
 
     @behaviour Nous.Memory.Store
@@ -393,7 +435,7 @@ else
                list: 2}
 
     @error {:error,
-            "Duckdbex is not available. Add {:duckdbex, \"~> 0.3\"} to your dependencies."}
+            "Duckdbex is not available. Add {:duckdbex, \"~> 0.5\"} to your dependencies."}
 
     @impl true
     def init(_opts), do: @error

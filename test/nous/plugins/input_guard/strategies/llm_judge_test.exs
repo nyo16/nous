@@ -100,10 +100,20 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudgeTest do
       assert result.reason =~ "Unparseable verdict"
     end
 
-    test "an unparseable response fails open by default", %{ctx: ctx, config: config} do
+    test "an unparseable response is dropped by default, not read as a verdict", ctx_config do
+      %{ctx: ctx, config: config} = ctx_config
       ScriptedDispatcher.script("I'm not sure what you mean.")
 
-      assert {:ok, result} = LLMJudge.check("hello", config, ctx)
+      assert {:error, {:unparseable_verdict, "I'm not sure what you mean."}} =
+               LLMJudge.check("hello", config, ctx)
+    end
+
+    test "an unparseable response fails open only with an explicit on_error: :safe", %{ctx: ctx} do
+      ScriptedDispatcher.script("I'm not sure what you mean.")
+
+      assert {:ok, result} =
+               LLMJudge.check("hello", [model: "openai:judge", on_error: :safe], ctx)
+
       assert result.severity == :safe
       assert result.reason =~ "Unparseable verdict"
     end
@@ -138,10 +148,22 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudgeTest do
   end
 
   describe "error handling" do
-    test "a dispatcher error fails open by default", %{ctx: ctx, config: config} do
+    # A judge that is down must not read as a judge that said "safe": the
+    # default hands the failure to InputGuard as a dropped strategy (see the
+    # integration test in input_guard_test.exs), and :safe is an explicit
+    # opt-in.
+    test "a dispatcher error is dropped by default", %{ctx: ctx, config: config} do
       ScriptedDispatcher.script({:error, :judge_unavailable})
 
-      assert {:ok, result} = LLMJudge.check("hello", config, ctx)
+      assert {:error, :judge_unavailable} = LLMJudge.check("hello", config, ctx)
+    end
+
+    test "a dispatcher error fails open only with an explicit on_error: :safe", %{ctx: ctx} do
+      ScriptedDispatcher.script({:error, :judge_unavailable})
+
+      assert {:ok, result} =
+               LLMJudge.check("hello", [model: "openai:judge", on_error: :safe], ctx)
+
       assert result.severity == :safe
       assert result.reason == "LLM judge error (fail-safe)"
     end
@@ -156,10 +178,9 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudgeTest do
       assert result.reason == "LLM judge error (fail-blocked)"
     end
 
-    test "a missing :model config falls back to the fail-open default", %{ctx: ctx} do
-      assert {:ok, result} = LLMJudge.check("hello", [], ctx)
-      assert result.severity == :safe
-      assert result.reason == "LLM judge error (fail-safe)"
+    test "a missing :model config is dropped by default", %{ctx: ctx} do
+      assert {:error, reason} = LLMJudge.check("hello", [], ctx)
+      assert reason =~ ":model"
     end
 
     test "a missing :model config still honours on_error: :blocked", %{ctx: ctx} do

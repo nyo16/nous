@@ -1,5 +1,7 @@
 defmodule Nous.VisionTest do
-  use ExUnit.Case
+  # async: false — every test here talks to the one local LM Studio server;
+  # running them concurrently with the other :llm files just contends for it.
+  use ExUnit.Case, async: false
 
   # These tests require a vision-capable LLM (LM Studio with qwen3-vl)
   # Run with: mix test --include llm --include vision

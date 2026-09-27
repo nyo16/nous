@@ -87,7 +87,7 @@ defmodule Nous.Hook.RunnerTest do
       refute_received :hook_2_ran
     end
 
-    test "applies modifications and continues" do
+    test "applies modifications to later hooks and returns them to the caller" do
       hooks = [
         make_hook(
           :pre_tool_use,
@@ -110,7 +110,26 @@ defmodule Nous.Hook.RunnerTest do
       ]
 
       registry = Registry.from_hooks(hooks)
-      assert Runner.run(registry, :pre_tool_use, %{tool_name: "test", arguments: %{}}) == :allow
+
+      # Used to return :allow here, which silently dropped the rewrite: the
+      # agent runner's "hook modified the arguments" branch was unreachable
+      # and a sanitising pre_tool_use hook changed nothing.
+      assert Runner.run(registry, :pre_tool_use, %{tool_name: "test", arguments: %{}}) ==
+               {:modify, %{arguments: %{"modified" => true}}}
+    end
+
+    test "a later blocking hook still wins over an earlier modification" do
+      modify = fn _, _ -> {:modify, %{arguments: %{"x" => 1}}} end
+
+      hooks = [
+        make_hook(:pre_tool_use, modify, priority: 1),
+        make_hook(:pre_tool_use, fn _, _ -> {:deny, "no"} end, priority: 2)
+      ]
+
+      registry = Registry.from_hooks(hooks)
+
+      assert Runner.run(registry, :pre_tool_use, %{tool_name: "test", arguments: %{}}) ==
+               {:deny, "no"}
     end
 
     test "errors fail open by default" do
@@ -263,6 +282,34 @@ defmodule Nous.Hook.RunnerTest do
   describe "run_hooks/3 direct" do
     test "handles empty list" do
       assert Runner.run_hooks([], :pre_tool_use, %{}) == :allow
+    end
+  end
+
+  describe "command hooks" do
+    # A command hook's stdout is JSON, so its `changes` arrive string-keyed;
+    # every consumer matches `%{arguments: …}` / `%{result: …}`. Before the
+    # parser normalised them, `Map.merge(payload, changes)` added a
+    # string-keyed sibling and the documented path-sanitising command hook
+    # (docs/guides/hooks.md) silently changed nothing.
+    test "a modify reply is returned with the atom keys consumers match on" do
+      json = ~s({"result":"modify","changes":{"arguments":{"path":"/safe/path"},"custom":1}})
+
+      hook = %Nous.Hook{
+        event: :pre_tool_use,
+        type: :command,
+        handler: ["/bin/sh", "-c", "cat >/dev/null; printf '%s' '#{json}'"],
+        name: "sanitizer",
+        timeout: 10_000
+      }
+
+      registry = Registry.from_hooks([hook])
+      payload = %{tool_name: "file_read", tool_id: "c1", arguments: %{"path" => "../etc"}}
+
+      assert {:modify, changes} = Runner.run(registry, :pre_tool_use, payload)
+      assert changes[:arguments] == %{"path" => "/safe/path"}
+      refute Map.has_key?(changes, "arguments")
+      # Unknown keys are not atomised (never String.to_atom on hook output).
+      assert changes["custom"] == 1
     end
   end
 end

@@ -206,6 +206,15 @@ at all), opt into the Hackney stream backend via
 `NOUS_HTTP_STREAM_BACKEND=hackney`, or the per-call `stream_backend:` option.
 See `docs/benchmarks/http_backend.md`.
 
+## Optional dependency: net_runner
+
+`net_runner` is `optional: true`. It is required only by `Nous.Tools.Bash`
+and `:command` hooks — both fail closed without it (Bash returns a
+"Refusing to run" error; command hooks return `{:deny, ...}` regardless of
+`fail_closed`, because a hook that never ran must not permit the event).
+If your app uses either, add `{:net_runner, "~> 1.0"}` to your own deps;
+nothing else in Nous needs it.
+
 ## Critical rules (security & correctness)
 
 These are project-wide and non-negotiable. If you write code that breaks
@@ -237,10 +246,20 @@ these, it will be rejected.
 6. **`PromptTemplate` rejects `<% ... %>` blocks** — only `<%= @var %>`
    substitution is allowed. Don't try to enable EEx evaluation on
    LLM-touched templates; it's an RCE vector.
-7. **Sub-agent deps don't auto-forward.** If you spawn a sub-agent via
-   `Nous.Plugins.SubAgent`, declare which deps it sees with
-   `:sub_agent_shared_deps, [:key1, :key2]`. The default `[]` is correct
-   for security.
+7. **Sub-agent *data* deps don't auto-forward; confinement and execution
+   policy always do.** If you spawn a sub-agent via `Nous.Plugins.SubAgent`,
+   declare which data deps it sees with `:sub_agent_shared_deps, [:key1, :key2]`
+   — the default (share nothing) is correct for security, because secrets in
+   parent deps are one prompt-injected sub-agent task away from exfiltration.
+   Independently of that list, the parent's `:workspace_root`/`:session_id`
+   deps, sandbox policy, permission policy, and approval handler ALWAYS
+   inherit: withholding them would *widen* what a delegated agent may do, not
+   protect anything. A template may only narrow inherited policy, never
+   weaken it. The model's own arguments are bounded too: an inline `model`
+   must be in `:sub_agent_allowed_models` (default: the parent's model),
+   `spawn_agents` may carry at most `:sub_agent_max_tasks` (10), and
+   delegation stops at `:sub_agent_max_depth` (2) — each refuses rather than
+   substituting, and all three inherit downward like confinement.
 
 ## Common workflows
 
@@ -379,10 +398,9 @@ Currently hidden, do not call:
   module
 - `Nous.Util` — small shared helpers (atom coercion, option splitting) used
   across internals
-- `Nous.Memory.Embedding.Bumblebee.ServingSupervisor` and
-  `Nous.Memory.Embedding.Bumblebee.ServingHolder` — process plumbing behind the
-  public `Nous.Memory.Embedding.Bumblebee` provider, and only compiled when
-  Bumblebee is available
+- `Nous.CodeRuntime.JS.Bridge`, `Nous.CodeRuntime.JS.Prelude`,
+  `Nous.CodeRuntime.JS.Session` — the tyrex-facing internals behind the public
+  `Nous.CodeRuntime.JS` provider
 
 Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
 `Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and
