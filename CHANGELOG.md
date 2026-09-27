@@ -220,6 +220,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remaining unpatched cowlib advisories are acknowledged in
   `mix.exs`/`ci.yml` with their ids and reach the build only via `bypass`.
 
+- **mint floor raised to 1.10.1.** mint 1.10.0 carries CVE-2026-82672
+  (GHSA-rj5m-69wp-cxq9): an unvalidated chunk-size line tail in the HTTP/1
+  client enables response smuggling against strict intermediaries on pooled
+  connections, reachable through `Nous.Tools.WebFetch`. The requirement is now
+  `{:mint, "~> 1.10 and >= 1.10.1"}`; consumers locked to 1.10.0 must
+  `mix deps.update mint`.
+
 - **Confinement and execution policy now inherit across sub-agent delegation.**
   `Nous.Plugins.SubAgent`'s safe-by-default deps policy (forward no data deps)
   had a hole: it also withheld the parent's `:workspace_root`/`:session_id`,

@@ -374,7 +374,6 @@ defmodule Nous.LLM do
     attrs =
       case content do
         "" -> attrs
-        nil -> attrs
         text -> Map.put(attrs, :content, text)
       end
 

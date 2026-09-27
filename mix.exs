@@ -94,11 +94,13 @@ defmodule Nous.MixProject do
       {:req, "~> 0.7"},
       # Direct dep, not just transitive via finch: the backends match
       # `%Mint.TransportError{}` (Nous.HTTP.Backend.Req, Nous.Providers.HTTP),
-      # and finch's own `~> 1.8` floor still admits 1.9.3, which is vulnerable
-      # to CVE-2026-82729 / CVE-2026-82728 (HTTP/1 response-parsing DoS,
-      # reachable through Nous.Tools.WebFetch from a hostile server). This
-      # floor is what makes a consumer's resolver refuse the vulnerable line.
-      {:mint, "~> 1.10"},
+      # and finch's own `~> 1.8` floor still admits vulnerable releases:
+      # 1.9.3 (CVE-2026-82729 / CVE-2026-82728, HTTP/1 response-parsing DoS)
+      # and 1.10.0 (CVE-2026-82672, chunk-size response smuggling on pooled
+      # connections) — both reachable through Nous.Tools.WebFetch from a
+      # hostile server. This floor is what makes a consumer's resolver refuse
+      # the vulnerable line.
+      {:mint, "~> 1.10 and >= 1.10.1"},
       {:hackney, "~> 4.0", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
