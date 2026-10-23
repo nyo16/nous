@@ -74,10 +74,13 @@ defmodule Nous.Providers.Anthropic do
   end
 
   defp build_headers(api_key, opts) do
-    HTTP.json_headers() ++
-      [{"anthropic-version", @api_version}] ++
-      HTTP.api_key_header(api_key, "x-api-key") ++
-      anthropic_beta_headers(opts)
+    HTTP.merge_headers(
+      HTTP.json_headers() ++
+        [{"anthropic-version", @api_version}] ++
+        HTTP.api_key_header(api_key, "x-api-key") ++
+        anthropic_beta_headers(opts),
+      Keyword.get(opts, :headers)
+    )
   end
 
   # Collect long-context and custom beta features into `anthropic-beta`

@@ -93,6 +93,8 @@ defmodule Nous.Agent do
     * `opts` - Configuration options
 
   ## Options
+    * Model options (`:base_url`, `:api_key`, `:receive_timeout`, `:headers`, …)
+      are passed to `Nous.Model.parse/2`; see `Nous.Model.new/3`
     * `:output_type` - Expected output type (`:string`, Ecto schema, schemaless map, JSON schema, or guided mode tuple)
     * `:structured_output` - Structured output options (`mode:`, `max_retries:`)
     * `:instructions` - Static instructions or function returning instructions

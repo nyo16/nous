@@ -377,21 +377,31 @@ defmodule Nous.Provider do
       defp error_status(%{status: status}) when is_integer(status), do: status
       defp error_status(_), do: nil
 
-      # Build provider options from model config
+      # Build provider options from model config. The provider-scoped options
+      # (`:organization`/`:project` for OpenAI, `:enable_long_context`/`:beta`
+      # for Anthropic) are only added when set; providers that do not read
+      # them ignore them.
       defp build_provider_opts(model) do
         opts = [
           base_url: model.base_url,
           api_key: model.api_key,
           timeout: model.receive_timeout,
-          finch_name: Application.get_env(:nous, :finch, Nous.Finch)
+          finch_name: Application.get_env(:nous, :finch, Nous.Finch),
+          headers: model.headers
         ]
 
-        # Add organization if present
-        if model.organization do
-          Keyword.put(opts, :organization, model.organization)
-        else
-          opts
-        end
+        scoped =
+          Enum.reject(
+            [
+              organization: model.organization,
+              project: model.project,
+              enable_long_context: model.enable_long_context,
+              beta: model.beta
+            ],
+            fn {_key, value} -> value in [nil, false] end
+          )
+
+        opts ++ scoped
       end
 
       # Build request parameters - can be overridden by specific providers
@@ -667,8 +677,11 @@ defmodule Nous.Provider do
   # nil / empty / "not-needed", so the local-server "not-needed" sentinel is kept.
   defp build_headers_ast(:bearer) do
     quote do
-      defp chat_build_headers(api_key, _opts) do
-        Nous.Providers.HTTP.json_headers() ++ Nous.Providers.HTTP.bearer_auth_header(api_key)
+      defp chat_build_headers(api_key, opts) do
+        Nous.Providers.HTTP.merge_headers(
+          Nous.Providers.HTTP.json_headers() ++ Nous.Providers.HTTP.bearer_auth_header(api_key),
+          Keyword.get(opts, :headers)
+        )
       end
     end
   end
@@ -677,9 +690,12 @@ defmodule Nous.Provider do
   defp build_headers_ast(:bearer_org) do
     quote do
       defp chat_build_headers(api_key, opts) do
-        Nous.Providers.HTTP.json_headers() ++
-          Nous.Providers.HTTP.bearer_auth_header(api_key) ++
-          Nous.Providers.HTTP.organization_header(Keyword.get(opts, :organization))
+        Nous.Providers.HTTP.merge_headers(
+          Nous.Providers.HTTP.json_headers() ++
+            Nous.Providers.HTTP.bearer_auth_header(api_key) ++
+            Nous.Providers.HTTP.organization_header(Keyword.get(opts, :organization)),
+          Keyword.get(opts, :headers)
+        )
       end
     end
   end

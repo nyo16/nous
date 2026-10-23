@@ -45,6 +45,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`:headers` model option: extra HTTP headers on every provider request.**
+  `Nous.new/2`, `Nous.Model.parse/2`, `Nous.Model.new/3` and the string-model
+  forms of `Nous.LLM.generate_text/3` / `stream_text/3` accept
+  `headers: [{name, value}]` (or a map). They are sent on chat and streaming
+  requests by every HTTP provider — the OpenAI-compatible family (`custom:`,
+  `openai_compatible:`, `vllm:`, `sglang:`, `lmstudio:`, `ollama:`, `groq:`,
+  `openrouter:`, `together:`, `mistral:`), `openai:`, `anthropic:`, `gemini:`
+  and `vertex_ai:` — applied after the headers Nous builds, so a header of the
+  same name (case-insensitive) replaces the built one instead of being sent
+  twice. This is what an AI gateway in front of the provider needs
+  (`cf-aig-gateway-id`, `cf-aig-authorization`, `cf-aig-metadata`, Helicone /
+  Portkey auth); previously a `custom:` endpoint could only carry
+  `authorization` and `openai-organization`. Names must be HTTP tokens and
+  values free of CR/LF/NUL — `Model.new/3` raises `ArgumentError` otherwise,
+  without echoing the value. `%Nous.Model{}` now excludes `:headers` from
+  `inspect/1`, like `:api_key`. New helper: `Nous.Providers.HTTP.merge_headers/2`.
+  `:llamacpp` ignores the option (no HTTP request).
+
+- **`:project`, `:enable_long_context` and `:beta` model options.**
+  `Nous.Providers.OpenAI` already sent `openai-project` from `opts[:project]`,
+  and `Nous.Providers.Anthropic` already honoured `:enable_long_context` /
+  `:beta`, but `%Nous.Model{}` had no field for any of them, so they were only
+  reachable by calling `chat/2` directly. `Nous.new/2`, `Nous.Model.parse/2`
+  and `Nous.Model.new/3` now accept them; `build_provider_opts/1` passes them
+  (and `:organization`) to the provider only when set. `:beta` must be a
+  string or a list of strings — `Model.new/3` raises `ArgumentError` otherwise.
+
 - **The SQLite, DuckDB and PromEx backends are now declared optional
   dependencies, compile in-repo, and have tests.** `{:exqlite, "~> 0.27"}`,
   `{:duckdbex, "~> 0.5"}`, `{:prom_ex, "~> 1.11"}` (plus `{:plug, ">= 1.16"}`,
@@ -98,6 +125,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       both directions.
 
 ### Fixed
+
+- **`mint` floor raised to `~> 1.11`.** mint 1.10.1 is affected by
+  CVE-2026-94194 (chunked framing applied when chunked is not the final
+  transfer coding — response smuggling), CVE-2026-91043 (HPACK-indexed cookie
+  fields bypass `max_header_list_size`) and CVE-2026-92103 (HTTP/2 frames
+  buffered up to 16 MiB before `max_frame_size` is enforced), all reachable
+  through `Nous.Tools.WebFetch` from a hostile server. The lock also moves
+  `decimal` to 3.2.0 (CVE-2026-97853) and `plug_crypto` to 2.2.1
+  (CVE-2026-105963).
+
+- **`Nous.LLM.generate_text/3` and `stream_text/3` with a model string
+  dropped model options.** The string was parsed with only `:base_url`,
+  `:api_key`, `:llamacpp_model` and `:receive_timeout`, so `:organization` and
+  `:stream_normalizer` were silently ignored. Every `Nous.Model` option is now
+  forwarded, including `:headers`, `:project`, `:enable_long_context` and
+  `:beta`.
 
 - **A `:pre_tool_use` hook's `{:modify, %{arguments: ...}}` never reached the
   tool.** Two defects, one per hook type. `Nous.Hook.Runner` applied a blocking

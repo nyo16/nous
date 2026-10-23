@@ -72,6 +72,29 @@ defmodule Nous.Providers.LMStudioTest do
     end
   end
 
+  describe "Model :headers" do
+    test "reach the upstream on a streamed request built from the model", %{
+      bypass: bypass,
+      base: base
+    } do
+      Bypass.expect_once(bypass, "POST", "/v1/chat/completions", fn conn ->
+        assert Plug.Conn.get_req_header(conn, "x-tenant") == ["acme"]
+
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "text/event-stream")
+        |> Plug.Conn.resp(
+          200,
+          "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+        )
+      end)
+
+      model = Nous.Model.new(:lmstudio, "m", base_url: base, headers: [{"x-tenant", "acme"}])
+
+      assert {:ok, stream} = LMStudio.request_stream(model, [Nous.Message.user("hi")], %{})
+      assert {:text_delta, "hi"} in Enum.to_list(stream)
+    end
+  end
+
   describe "base_url precedence" do
     test "opts wins over env var", %{bypass: bypass, base: base} do
       System.put_env("LMSTUDIO_BASE_URL", "http://127.0.0.1:9/decoy/v1")

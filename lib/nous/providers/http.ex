@@ -383,6 +383,33 @@ defmodule Nous.Providers.HTTP do
   def openai_project_header(project) when is_binary(project), do: [{"openai-project", project}]
   def openai_project_header(_), do: []
 
+  @doc """
+  Apply caller-supplied extra headers (`Nous.Model` `:headers`, passed to
+  providers as the `:headers` option) on top of the headers a provider built.
+
+  An extra header replaces every built header of the same name, compared
+  case-insensitively, so a caller can override a default (`anthropic-version`,
+  `authorization`) instead of sending it twice. Extra headers keep their order
+  and come last.
+
+      iex> Nous.Providers.HTTP.merge_headers(
+      ...>   [{"content-type", "application/json"}, {"authorization", "Bearer a"}],
+      ...>   [{"Authorization", "Bearer b"}, {"cf-aig-gateway-id", "gw"}]
+      ...> )
+      [{"content-type", "application/json"}, {"Authorization", "Bearer b"}, {"cf-aig-gateway-id", "gw"}]
+  """
+  @spec merge_headers(list(), list() | nil) :: list()
+  def merge_headers(headers, nil), do: headers
+  def merge_headers(headers, []), do: headers
+
+  def merge_headers(headers, extra) when is_list(extra) do
+    overridden = MapSet.new(extra, fn {name, _} -> String.downcase(to_string(name)) end)
+
+    Enum.reject(headers, fn {name, _} ->
+      MapSet.member?(overridden, String.downcase(to_string(name)))
+    end) ++ extra
+  end
+
   @doc false
   # Public for stream-backend reuse. Ensures the request carries
   # `content-type: application/json` and `accept: text/event-stream`

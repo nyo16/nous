@@ -166,6 +166,48 @@ defmodule Nous.Providers.AnthropicTest do
     end
   end
 
+  describe "Model :headers" do
+    test "reach the upstream and replace a built header instead of duplicating it", %{
+      bypass: bypass,
+      base: base
+    } do
+      Bypass.expect_once(bypass, fn conn ->
+        assert Plug.Conn.get_req_header(conn, "cf-aig-metadata") == [~s({"user":"u1"})]
+        assert Plug.Conn.get_req_header(conn, "anthropic-version") == ["2099-01-01"]
+        assert Plug.Conn.get_req_header(conn, "x-api-key") == [@api_key]
+        respond_json(conn, 200, text_response("ok"))
+      end)
+
+      model = %{
+        model(base)
+        | headers: [{"cf-aig-metadata", ~s({"user":"u1"})}, {"anthropic-version", "2099-01-01"}]
+      }
+
+      assert {:ok, _} = Anthropic.request(model, [Message.user("hi")], %{})
+    end
+
+    test "the model's :enable_long_context and :beta reach the upstream", %{
+      bypass: bypass,
+      base: base
+    } do
+      Bypass.expect_once(bypass, fn conn ->
+        betas =
+          conn
+          |> Plug.Conn.get_req_header("anthropic-beta")
+          |> Enum.join(",")
+          |> String.split(",")
+          |> Enum.map(&String.trim/1)
+
+        assert betas == ["context-1m-2025-08-07", "pdfs-2024-09-25"]
+        respond_json(conn, 200, text_response("ok"))
+      end)
+
+      model = %{model(base) | enable_long_context: true, beta: "pdfs-2024-09-25"}
+
+      assert {:ok, _} = Anthropic.request(model, [Message.user("hi")], %{})
+    end
+  end
+
   describe "chat_stream/2" do
     test "forces stream: true in the body and consumes the SSE events", %{
       bypass: bypass,

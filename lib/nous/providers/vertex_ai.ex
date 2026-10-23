@@ -207,7 +207,7 @@ defmodule Nous.Providers.VertexAI do
     with {:ok, token} <- resolve_token(opts),
          {:ok, url_base} <- resolve_base_url(opts, model) do
       url = build_url(url_base, model, :generate)
-      headers = build_headers(token)
+      headers = build_headers(token, opts)
       timeout = Keyword.get(opts, :timeout, @default_timeout)
 
       Logger.debug("Vertex AI chat request: url=#{url}, model=#{model}")
@@ -226,7 +226,7 @@ defmodule Nous.Providers.VertexAI do
     with {:ok, token} <- resolve_token(opts),
          {:ok, url_base} <- resolve_base_url(opts, model) do
       url = build_url(url_base, model, :stream)
-      headers = build_headers(token)
+      headers = build_headers(token, opts)
       timeout = Keyword.get(opts, :timeout, @default_timeout)
       finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
 
@@ -340,8 +340,11 @@ defmodule Nous.Providers.VertexAI do
     "#{base_url}/publishers/google/models/#{model}:streamGenerateContent?alt=sse"
   end
 
-  defp build_headers(token) do
-    HTTP.json_headers() ++ HTTP.bearer_auth_header(token)
+  defp build_headers(token, opts) do
+    HTTP.merge_headers(
+      HTTP.json_headers() ++ HTTP.bearer_auth_header(token),
+      Keyword.get(opts, :headers)
+    )
   end
 
   @doc false
@@ -449,7 +452,8 @@ defmodule Nous.Providers.VertexAI do
       base_url: model.base_url,
       api_key: model.api_key,
       timeout: model.receive_timeout,
-      finch_name: Application.get_env(:nous, :finch, Nous.Finch)
+      finch_name: Application.get_env(:nous, :finch, Nous.Finch),
+      headers: model.headers
     ]
 
     # Pass goth name from model's default_settings if present

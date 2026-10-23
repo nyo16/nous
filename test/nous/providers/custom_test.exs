@@ -70,4 +70,31 @@ defmodule Nous.Providers.CustomTest do
                )
     end
   end
+
+  describe "extra headers" do
+    test "are sent after the built headers and replace same-named ones", %{
+      bypass: bypass,
+      base: base
+    } do
+      Bypass.expect_once(bypass, "POST", "/v1/chat/completions", fn conn ->
+        assert Plug.Conn.get_req_header(conn, "cf-aig-gateway-id") == ["gw"]
+        # Replaced, not sent twice.
+        assert Plug.Conn.get_req_header(conn, "openai-organization") == ["org-override"]
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer key"]
+
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "application/json")
+        |> Plug.Conn.resp(200, ~s({"id": "x"}))
+      end)
+
+      assert {:ok, %{"id" => "x"}} =
+               Custom.chat(%{"model" => "m", "messages" => []},
+                 base_url: base,
+                 api_key: "key",
+                 organization: "org-default",
+                 allow_private_hosts: true,
+                 headers: [{"cf-aig-gateway-id", "gw"}, {"OpenAI-Organization", "org-override"}]
+               )
+    end
+  end
 end
