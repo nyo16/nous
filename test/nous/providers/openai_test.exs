@@ -299,22 +299,24 @@ defmodule Nous.Providers.OpenAITest do
                OpenAI.request(model(base, []), messages, settings)
     end
 
-    test "forwards the model organization as a header, not a body key", %{
+    test "forwards the model organization and project as headers, not body keys", %{
       bypass: bypass,
       base: base
     } do
       Bypass.expect_once(bypass, fn conn ->
         assert Plug.Conn.get_req_header(conn, "openai-organization") == ["org-from-model"]
+        assert Plug.Conn.get_req_header(conn, "openai-project") == ["proj-from-model"]
 
         {body, conn} = read_json_body(conn)
         refute Map.has_key?(body, "organization")
+        refute Map.has_key?(body, "project")
 
         respond_json(conn, 200, text_response("ok"))
       end)
 
       assert {:ok, %Message{}} =
                OpenAI.request(
-                 model(base, organization: "org-from-model"),
+                 model(base, organization: "org-from-model", project: "proj-from-model"),
                  [Message.user("hi")],
                  %{}
                )

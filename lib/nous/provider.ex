@@ -377,7 +377,10 @@ defmodule Nous.Provider do
       defp error_status(%{status: status}) when is_integer(status), do: status
       defp error_status(_), do: nil
 
-      # Build provider options from model config
+      # Build provider options from model config. The provider-scoped options
+      # (`:organization`/`:project` for OpenAI, `:enable_long_context`/`:beta`
+      # for Anthropic) are only added when set; providers that do not read
+      # them ignore them.
       defp build_provider_opts(model) do
         opts = [
           base_url: model.base_url,
@@ -387,12 +390,18 @@ defmodule Nous.Provider do
           headers: model.headers
         ]
 
-        # Add organization if present
-        if model.organization do
-          Keyword.put(opts, :organization, model.organization)
-        else
-          opts
-        end
+        scoped =
+          Enum.reject(
+            [
+              organization: model.organization,
+              project: model.project,
+              enable_long_context: model.enable_long_context,
+              beta: model.beta
+            ],
+            fn {_key, value} -> value in [nil, false] end
+          )
+
+        opts ++ scoped
       end
 
       # Build request parameters - can be overridden by specific providers

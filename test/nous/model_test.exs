@@ -64,6 +64,16 @@ defmodule Nous.ModelTest do
       assert model.organization == "org-123"
     end
 
+    test "rejects a :beta that is not a string or a list of strings" do
+      assert Model.new(:anthropic, "claude", beta: ["a", "b"]).beta == ["a", "b"]
+
+      for bad <- [:pdfs, ["ok", :nope], 1] do
+        assert_raise ArgumentError, ~r/:beta/, fn ->
+          Model.new(:anthropic, "claude", beta: bad)
+        end
+      end
+    end
+
     test "accepts default_settings" do
       settings = %{temperature: 0.7, max_tokens: 1000}
       model = Model.new(:openai, "gpt-4", default_settings: settings)

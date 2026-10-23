@@ -185,6 +185,27 @@ defmodule Nous.Providers.AnthropicTest do
 
       assert {:ok, _} = Anthropic.request(model, [Message.user("hi")], %{})
     end
+
+    test "the model's :enable_long_context and :beta reach the upstream", %{
+      bypass: bypass,
+      base: base
+    } do
+      Bypass.expect_once(bypass, fn conn ->
+        betas =
+          conn
+          |> Plug.Conn.get_req_header("anthropic-beta")
+          |> Enum.join(",")
+          |> String.split(",")
+          |> Enum.map(&String.trim/1)
+
+        assert betas == ["context-1m-2025-08-07", "pdfs-2024-09-25"]
+        respond_json(conn, 200, text_response("ok"))
+      end)
+
+      model = %{model(base) | enable_long_context: true, beta: "pdfs-2024-09-25"}
+
+      assert {:ok, _} = Anthropic.request(model, [Message.user("hi")], %{})
+    end
   end
 
   describe "chat_stream/2" do

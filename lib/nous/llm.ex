@@ -45,6 +45,21 @@ defmodule Nous.LLM do
 
   @max_tool_iterations 10
 
+  # Options that configure the `%Model{}` a model string is parsed into; see
+  # `Nous.Model.new/3`. Everything else in `opts` is a request option.
+  @model_options [
+    :base_url,
+    :api_key,
+    :llamacpp_model,
+    :receive_timeout,
+    :headers,
+    :organization,
+    :project,
+    :enable_long_context,
+    :beta,
+    :stream_normalizer
+  ]
+
   @type option ::
           {:system, String.t()}
           | {:temperature, float()}
@@ -54,6 +69,11 @@ defmodule Nous.LLM do
           | {:api_key, String.t()}
           | {:receive_timeout, non_neg_integer()}
           | {:headers, [{String.t(), String.t()}] | %{String.t() => String.t()}}
+          | {:organization, String.t()}
+          | {:project, String.t()}
+          | {:enable_long_context, boolean()}
+          | {:beta, String.t() | [String.t()]}
+          | {:stream_normalizer, module()}
           | {:tools, [function() | Tool.t()]}
           | {:deps, map()}
           | {:fallback, [String.t() | Model.t()]}
@@ -85,6 +105,11 @@ defmodule Nous.LLM do
     * `:api_key` - Override API key
     * `:receive_timeout` - HTTP receive timeout in milliseconds (default varies by provider)
     * `:headers` - Extra HTTP headers for every provider request (see `Nous.Model.new/3`)
+    * `:organization`, `:project` - OpenAI organization / project scoping (see
+      `Nous.Model.new/3`)
+    * `:enable_long_context`, `:beta` - Anthropic beta features (see
+      `Nous.Model.new/3`)
+    * `:stream_normalizer` - Custom stream normalizer module
     * `:tools` - List of tool functions or Tool structs
     * `:deps` - Dependencies to pass to tool functions
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
@@ -119,10 +144,7 @@ defmodule Nous.LLM do
 
   def generate_text(model_string, prompt, opts) when is_binary(model_string) do
     model =
-      Model.parse(
-        model_string,
-        Keyword.take(opts, [:base_url, :api_key, :llamacpp_model, :receive_timeout, :headers])
-      )
+      Model.parse(model_string, Keyword.take(opts, @model_options))
 
     generate_text(model, prompt, opts)
   end
@@ -199,10 +221,7 @@ defmodule Nous.LLM do
 
   def stream_text(model_string, prompt, opts) when is_binary(model_string) do
     model =
-      Model.parse(
-        model_string,
-        Keyword.take(opts, [:base_url, :api_key, :llamacpp_model, :receive_timeout, :headers])
-      )
+      Model.parse(model_string, Keyword.take(opts, @model_options))
 
     stream_text(model, prompt, opts)
   end

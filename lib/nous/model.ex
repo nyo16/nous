@@ -38,6 +38,9 @@ defmodule Nous.Model do
           base_url: String.t() | nil,
           api_key: String.t() | nil,
           organization: String.t() | nil,
+          project: String.t() | nil,
+          enable_long_context: boolean(),
+          beta: String.t() | [String.t()] | nil,
           headers: [{String.t(), String.t()}],
           receive_timeout: non_neg_integer(),
           default_settings: map(),
@@ -56,7 +59,10 @@ defmodule Nous.Model do
     :base_url,
     :api_key,
     :organization,
+    :project,
+    :beta,
     :stream_normalizer,
+    enable_long_context: false,
     headers: [],
     # 3 minutes default — LLMs with reasoning/long completions routinely
     # exceed shorter timeouts; local models can be slower still.
@@ -225,7 +231,14 @@ defmodule Nous.Model do
 
     * `:base_url` - Custom API base URL
     * `:api_key` - API key (defaults to environment config)
-    * `:organization` - Organization ID (for OpenAI)
+    * `:organization` - Organization ID, sent as `openai-organization` by
+      `:openai` and the OpenAI-compatible providers
+    * `:project` - Project ID for project-scoped OpenAI keys, sent as
+      `openai-project` (`:openai` only)
+    * `:enable_long_context` - Opt in to Anthropic's 1M-token context window
+      beta (`anthropic-beta: context-1m-2025-08-07`; `:anthropic` only)
+    * `:beta` - Further Anthropic beta features, a string or a list of
+      strings, sent as `anthropic-beta` (`:anthropic` only)
     * `:receive_timeout` - HTTP receive timeout in milliseconds (default: 180000).
       Increase this for local models that may take longer to respond.
     * `:default_settings` - Default model settings (temperature, max_tokens, etc.)
@@ -268,12 +281,27 @@ defmodule Nous.Model do
       base_url: Keyword.get(opts, :base_url, default_base_url(provider)),
       api_key: Keyword.get(opts, :api_key, default_api_key(provider)),
       organization: Keyword.get(opts, :organization),
+      project: Keyword.get(opts, :project),
+      enable_long_context: Keyword.get(opts, :enable_long_context, false) == true,
+      beta: validate_beta(Keyword.get(opts, :beta)),
       receive_timeout: Keyword.get(opts, :receive_timeout, default_receive_timeout(provider)),
       default_settings: Keyword.get(opts, :default_settings, %{}),
       stream_normalizer: Keyword.get(opts, :stream_normalizer),
       headers: normalize_headers(Keyword.get(opts, :headers, []))
     }
   end
+
+  defp validate_beta(nil), do: nil
+  defp validate_beta(beta) when is_binary(beta), do: beta
+
+  defp validate_beta(betas) when is_list(betas) do
+    if Enum.all?(betas, &is_binary/1),
+      do: betas,
+      else: raise(ArgumentError, ":beta must be a string or a list of strings")
+  end
+
+  defp validate_beta(_beta),
+    do: raise(ArgumentError, ":beta must be a string or a list of strings")
 
   # RFC 9110 `token`: the only characters a field name may contain.
   @header_name ~r/\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\z/

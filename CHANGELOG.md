@@ -63,6 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `inspect/1`, like `:api_key`. New helper: `Nous.Providers.HTTP.merge_headers/2`.
   `:llamacpp` ignores the option (no HTTP request).
 
+- **`:project`, `:enable_long_context` and `:beta` model options.**
+  `Nous.Providers.OpenAI` already sent `openai-project` from `opts[:project]`,
+  and `Nous.Providers.Anthropic` already honoured `:enable_long_context` /
+  `:beta`, but `%Nous.Model{}` had no field for any of them, so they were only
+  reachable by calling `chat/2` directly. `Nous.new/2`, `Nous.Model.parse/2`
+  and `Nous.Model.new/3` now accept them; `build_provider_opts/1` passes them
+  (and `:organization`) to the provider only when set. `:beta` must be a
+  string or a list of strings — `Model.new/3` raises `ArgumentError` otherwise.
+
 - **The SQLite, DuckDB and PromEx backends are now declared optional
   dependencies, compile in-repo, and have tests.** `{:exqlite, "~> 0.27"}`,
   `{:duckdbex, "~> 0.5"}`, `{:prom_ex, "~> 1.11"}` (plus `{:plug, ">= 1.16"}`,
@@ -116,6 +125,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
       both directions.
 
 ### Fixed
+
+- **`Nous.LLM.generate_text/3` and `stream_text/3` with a model string
+  dropped model options.** The string was parsed with only `:base_url`,
+  `:api_key`, `:llamacpp_model` and `:receive_timeout`, so `:organization` and
+  `:stream_normalizer` were silently ignored. Every `Nous.Model` option is now
+  forwarded, including `:headers`, `:project`, `:enable_long_context` and
+  `:beta`.
 
 - **A `:pre_tool_use` hook's `{:modify, %{arguments: ...}}` never reached the
   tool.** Two defects, one per hook type. `Nous.Hook.Runner` applied a blocking
