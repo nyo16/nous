@@ -113,4 +113,49 @@ defmodule Nous.ModelTest do
       assert model.receive_timeout == 180_000
     end
   end
+
+  describe "new/3 :headers" do
+    test "accepts a map or a tuple list and keeps it out of inspect output" do
+      from_map = Model.new(:openai, "gpt-4", headers: %{"cf-aig-gateway-id" => "gw"})
+      assert from_map.headers == [{"cf-aig-gateway-id", "gw"}]
+
+      model = Model.new(:openai, "gpt-4", headers: [{"cf-aig-authorization", "Bearer secret"}])
+      assert model.headers == [{"cf-aig-authorization", "Bearer secret"}]
+      refute inspect(model) =~ "secret"
+    end
+
+    test "defaults to no extra headers" do
+      assert Model.new(:openai, "gpt-4").headers == []
+      assert Model.new(:openai, "gpt-4", headers: nil).headers == []
+    end
+
+    test "rejects a value that would split the request, without echoing it" do
+      error =
+        assert_raise ArgumentError, fn ->
+          Model.new(:openai, "gpt-4", headers: [{"x-token", "secret\r\nx-evil: 1"}])
+        end
+
+      assert error.message =~ "x-token"
+      refute error.message =~ "secret"
+    end
+
+    test "rejects names that are not HTTP tokens and entries that are not string pairs" do
+      assert_raise ArgumentError, ~r/invalid HTTP header name/, fn ->
+        Model.new(:openai, "gpt-4", headers: [{"bad name", "v"}])
+      end
+
+      assert_raise ArgumentError, ~r/string tuples/, fn ->
+        Model.new(:openai, "gpt-4", headers: [{:"x-atom", "v"}])
+      end
+
+      assert_raise ArgumentError, ~r/list of \{name, value\} tuples or a map/, fn ->
+        Model.new(:openai, "gpt-4", headers: "x-a: b")
+      end
+    end
+
+    test "parse/2 forwards :headers" do
+      model = Model.parse("custom:m", base_url: "https://gw.example/v1", headers: [{"x-a", "1"}])
+      assert model.headers == [{"x-a", "1"}]
+    end
+  end
 end

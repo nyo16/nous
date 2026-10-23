@@ -45,6 +45,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`:headers` model option: extra HTTP headers on every provider request.**
+  `Nous.new/2`, `Nous.Model.parse/2`, `Nous.Model.new/3` and the string-model
+  forms of `Nous.LLM.generate_text/3` / `stream_text/3` accept
+  `headers: [{name, value}]` (or a map). They are sent on chat and streaming
+  requests by every HTTP provider — the OpenAI-compatible family (`custom:`,
+  `openai_compatible:`, `vllm:`, `sglang:`, `lmstudio:`, `ollama:`, `groq:`,
+  `openrouter:`, `together:`, `mistral:`), `openai:`, `anthropic:`, `gemini:`
+  and `vertex_ai:` — applied after the headers Nous builds, so a header of the
+  same name (case-insensitive) replaces the built one instead of being sent
+  twice. This is what an AI gateway in front of the provider needs
+  (`cf-aig-gateway-id`, `cf-aig-authorization`, `cf-aig-metadata`, Helicone /
+  Portkey auth); previously a `custom:` endpoint could only carry
+  `authorization` and `openai-organization`. Names must be HTTP tokens and
+  values free of CR/LF/NUL — `Model.new/3` raises `ArgumentError` otherwise,
+  without echoing the value. `%Nous.Model{}` now excludes `:headers` from
+  `inspect/1`, like `:api_key`. New helper: `Nous.Providers.HTTP.merge_headers/2`.
+  `:llamacpp` ignores the option (no HTTP request).
+
 - **The SQLite, DuckDB and PromEx backends are now declared optional
   dependencies, compile in-repo, and have tests.** `{:exqlite, "~> 0.27"}`,
   `{:duckdbex, "~> 0.5"}`, `{:prom_ex, "~> 1.11"}` (plus `{:plug, ">= 1.16"}`,

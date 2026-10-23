@@ -175,6 +175,7 @@ defmodule Nous do
     * `:top_p` - Nucleus sampling parameter
     * `:base_url` - Override API base URL
     * `:api_key` - Override API key
+    * `:headers` - Extra HTTP headers for every provider request (see `Nous.Model.new/3`)
     * `:tools` - List of tool functions or `Nous.Tool` structs
     * `:deps` - Dependencies to pass to tool functions
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try

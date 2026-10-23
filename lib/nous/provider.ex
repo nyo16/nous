@@ -383,7 +383,8 @@ defmodule Nous.Provider do
           base_url: model.base_url,
           api_key: model.api_key,
           timeout: model.receive_timeout,
-          finch_name: Application.get_env(:nous, :finch, Nous.Finch)
+          finch_name: Application.get_env(:nous, :finch, Nous.Finch),
+          headers: model.headers
         ]
 
         # Add organization if present
@@ -667,8 +668,11 @@ defmodule Nous.Provider do
   # nil / empty / "not-needed", so the local-server "not-needed" sentinel is kept.
   defp build_headers_ast(:bearer) do
     quote do
-      defp chat_build_headers(api_key, _opts) do
-        Nous.Providers.HTTP.json_headers() ++ Nous.Providers.HTTP.bearer_auth_header(api_key)
+      defp chat_build_headers(api_key, opts) do
+        Nous.Providers.HTTP.merge_headers(
+          Nous.Providers.HTTP.json_headers() ++ Nous.Providers.HTTP.bearer_auth_header(api_key),
+          Keyword.get(opts, :headers)
+        )
       end
     end
   end
@@ -677,9 +681,12 @@ defmodule Nous.Provider do
   defp build_headers_ast(:bearer_org) do
     quote do
       defp chat_build_headers(api_key, opts) do
-        Nous.Providers.HTTP.json_headers() ++
-          Nous.Providers.HTTP.bearer_auth_header(api_key) ++
-          Nous.Providers.HTTP.organization_header(Keyword.get(opts, :organization))
+        Nous.Providers.HTTP.merge_headers(
+          Nous.Providers.HTTP.json_headers() ++
+            Nous.Providers.HTTP.bearer_auth_header(api_key) ++
+            Nous.Providers.HTTP.organization_header(Keyword.get(opts, :organization)),
+          Keyword.get(opts, :headers)
+        )
       end
     end
   end

@@ -227,6 +227,33 @@ defmodule Nous.Providers.VertexAITest do
     end
   end
 
+  describe "Model :headers" do
+    test "reach the upstream next to the bearer token (build_provider_opts override)" do
+      bypass = Bypass.open()
+
+      Bypass.expect_once(bypass, fn conn ->
+        assert Plug.Conn.get_req_header(conn, "x-tenant") == ["acme"]
+        assert Plug.Conn.get_req_header(conn, "authorization") == ["Bearer test-token"]
+
+        conn
+        |> Plug.Conn.put_resp_header("content-type", "application/json")
+        |> Plug.Conn.resp(
+          200,
+          ~s({"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]}}]})
+        )
+      end)
+
+      model =
+        Nous.Model.new(:vertex_ai, "gemini-2.0-flash",
+          api_key: "test-token",
+          base_url: "http://localhost:#{bypass.port}",
+          headers: [{"x-tenant", "acme"}]
+        )
+
+      assert {:ok, _} = VertexAI.request(model, [Nous.Message.user("hi")], %{})
+    end
+  end
+
   describe "message format" do
     test "uses Gemini format for to_provider_format" do
       messages = [Nous.Message.system("Be helpful"), Nous.Message.user("Hello")]

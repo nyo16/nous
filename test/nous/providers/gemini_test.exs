@@ -142,6 +142,20 @@ defmodule Nous.Providers.GeminiTest do
     end
   end
 
+  describe "Model :headers" do
+    test "reach the upstream alongside the API key header", %{bypass: bypass, base: base} do
+      Bypass.expect_once(bypass, fn conn ->
+        assert Plug.Conn.get_req_header(conn, "x-tenant") == ["acme"]
+        assert Plug.Conn.get_req_header(conn, "x-goog-api-key") == [@api_key]
+        respond_json(conn, 200, text_response("ok"))
+      end)
+
+      model = %{model(base) | headers: [{"x-tenant", "acme"}]}
+
+      assert {:ok, _} = Gemini.request(model, [Message.user("hi")], %{})
+    end
+  end
+
   describe "chat_stream/2" do
     test "POSTs to :streamGenerateContent and decodes the JSON-array stream", %{
       bypass: bypass,

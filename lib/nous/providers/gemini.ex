@@ -101,7 +101,7 @@ defmodule Nous.Providers.Gemini do
     api_key = api_key(opts)
 
     url = build_url(base_url(opts), model, :generate)
-    headers = build_headers(api_key)
+    headers = build_headers(api_key, opts)
     timeout = Keyword.get(opts, :timeout, @default_timeout)
 
     # Remove model from params (it's in the URL)
@@ -116,7 +116,7 @@ defmodule Nous.Providers.Gemini do
     api_key = api_key(opts)
 
     url = build_url(base_url(opts), model, :stream)
-    headers = build_headers(api_key)
+    headers = build_headers(api_key, opts)
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     finch_name = Keyword.get(opts, :finch_name, Nous.Finch)
 
@@ -144,7 +144,10 @@ defmodule Nous.Providers.Gemini do
   # Route through HTTP.api_key_header/2 like Anthropic and OpenAI do: it drops
   # the header for a nil/empty key so the request fails as a 401 from the API
   # rather than raising inside Req on a nil header value.
-  defp build_headers(api_key) do
-    HTTP.api_key_header(api_key, "x-goog-api-key") ++ HTTP.json_headers()
+  defp build_headers(api_key, opts) do
+    HTTP.merge_headers(
+      HTTP.api_key_header(api_key, "x-goog-api-key") ++ HTTP.json_headers(),
+      Keyword.get(opts, :headers)
+    )
   end
 end

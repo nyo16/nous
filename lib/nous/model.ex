@@ -38,14 +38,17 @@ defmodule Nous.Model do
           base_url: String.t() | nil,
           api_key: String.t() | nil,
           organization: String.t() | nil,
+          headers: [{String.t(), String.t()}],
           receive_timeout: non_neg_integer(),
           default_settings: map(),
           stream_normalizer: module() | nil
         }
 
-  # Keep the API key out of inspect output — crash reports, Logger metadata,
-  # and IEx would otherwise leak it.
-  @derive {Inspect, except: [:api_key]}
+  # Keep credentials out of inspect output — crash reports, Logger metadata,
+  # and IEx would otherwise leak them. Extra headers are excluded wholesale:
+  # they are where gateway credentials (`cf-aig-authorization`,
+  # `helicone-auth`, …) travel, and Nous cannot tell which ones are secret.
+  @derive {Inspect, except: [:api_key, :headers]}
   @enforce_keys [:provider, :model]
   defstruct [
     :provider,
@@ -54,6 +57,7 @@ defmodule Nous.Model do
     :api_key,
     :organization,
     :stream_normalizer,
+    headers: [],
     # 3 minutes default — LLMs with reasoning/long completions routinely
     # exceed shorter timeouts; local models can be slower still.
     receive_timeout: 180_000,
@@ -226,6 +230,16 @@ defmodule Nous.Model do
       Increase this for local models that may take longer to respond.
     * `:default_settings` - Default model settings (temperature, max_tokens, etc.)
     * `:stream_normalizer` - Custom stream normalizer module implementing `Nous.StreamNormalizer` behaviour
+    * `:headers` - Extra HTTP headers sent with every request to the provider,
+      as a list of `{name, value}` string tuples or a map. Use it for whatever
+      an intermediary in front of the provider needs: an AI gateway's routing
+      and auth headers (`cf-aig-gateway-id`, `cf-aig-authorization`), request
+      metadata, a tenant id. They are applied last, so a header with the same
+      name as one Nous builds (compared case-insensitively) replaces it. Names
+      must be HTTP tokens and values may not contain CR, LF or NUL; anything
+      else raises `ArgumentError` here rather than failing inside the HTTP
+      client on every request. Excluded from `inspect/1`. Not used by
+      `:llamacpp`, which makes no HTTP request.
 
   ## Example
 
@@ -239,6 +253,12 @@ defmodule Nous.Model do
         receive_timeout: 120_000  # 2 minutes
       )
 
+      # Through an AI gateway that routes and tags by header
+      model = Model.new(:custom, "openai/gpt-4.1",
+        base_url: "https://api.cloudflare.com/client/v4/accounts/ACCOUNT/ai/v1",
+        headers: [{"cf-aig-gateway-id", "my-gateway"}]
+      )
+
   """
   @spec new(provider(), String.t(), keyword()) :: t()
   def new(provider, model, opts \\ []) do
@@ -250,9 +270,61 @@ defmodule Nous.Model do
       organization: Keyword.get(opts, :organization),
       receive_timeout: Keyword.get(opts, :receive_timeout, default_receive_timeout(provider)),
       default_settings: Keyword.get(opts, :default_settings, %{}),
-      stream_normalizer: Keyword.get(opts, :stream_normalizer)
+      stream_normalizer: Keyword.get(opts, :stream_normalizer),
+      headers: normalize_headers(Keyword.get(opts, :headers, []))
     }
   end
+
+  # RFC 9110 `token`: the only characters a field name may contain.
+  @header_name ~r/\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\z/
+
+  defp normalize_headers(nil), do: []
+
+  defp normalize_headers(headers) when is_map(headers),
+    do: normalize_headers(Map.to_list(headers))
+
+  defp normalize_headers(headers) when is_list(headers) do
+    Enum.map(headers, fn
+      {name, value} when is_binary(name) and is_binary(value) ->
+        validate_header!(name, value)
+
+      other ->
+        raise ArgumentError,
+              ":headers entries must be {name, value} string tuples, got: " <>
+                inspect_header_entry(other)
+    end)
+  end
+
+  defp normalize_headers(other) do
+    raise ArgumentError,
+          ":headers must be a list of {name, value} tuples or a map, got: " <>
+            inspect_header_entry(other)
+  end
+
+  defp validate_header!(name, value) do
+    cond do
+      not Regex.match?(@header_name, name) ->
+        raise ArgumentError, "invalid HTTP header name in :headers: #{inspect(name)}"
+
+      String.contains?(value, ["\r", "\n", <<0>>]) ->
+        # The value is not echoed: it may be a credential.
+        raise ArgumentError, "HTTP header #{name} in :headers contains CR, LF or NUL"
+
+      true ->
+        {name, value}
+    end
+  end
+
+  # Shape only — an entry that failed validation may still carry a secret.
+  defp inspect_header_entry({name, _value}) when is_binary(name) or is_atom(name),
+    do: "{#{inspect(name)}, ...}"
+
+  defp inspect_header_entry(other) when is_tuple(other), do: "a #{tuple_size(other)}-tuple"
+  defp inspect_header_entry(other) when is_atom(other) or is_number(other), do: inspect(other)
+  defp inspect_header_entry(other) when is_binary(other), do: "a string"
+  defp inspect_header_entry(other) when is_map(other), do: "a map"
+  defp inspect_header_entry(other) when is_list(other), do: "a list"
+  defp inspect_header_entry(_other), do: "an unsupported term"
 
   # Private functions
 

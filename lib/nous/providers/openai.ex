@@ -137,9 +137,12 @@ defmodule Nous.Providers.OpenAI do
   end
 
   defp build_headers(api_key, opts) do
-    HTTP.json_headers() ++
-      HTTP.bearer_auth_header(api_key) ++
-      HTTP.organization_header(Keyword.get(opts, :organization)) ++
-      HTTP.openai_project_header(Keyword.get(opts, :project))
+    HTTP.merge_headers(
+      HTTP.json_headers() ++
+        HTTP.bearer_auth_header(api_key) ++
+        HTTP.organization_header(Keyword.get(opts, :organization)) ++
+        HTTP.openai_project_header(Keyword.get(opts, :project)),
+      Keyword.get(opts, :headers)
+    )
   end
 end

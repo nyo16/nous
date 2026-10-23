@@ -150,6 +150,19 @@ defmodule Nous.LLMTest do
     end
   end
 
+  describe "string models carry :headers" do
+    test "generate_text/3 and stream_text/3 build the model with them" do
+      headers = [{"cf-aig-gateway-id", "gw"}]
+
+      {:ok, _text} = Nous.LLM.generate_text("openai:gpt-4", "hi", headers: headers)
+      {:ok, stream} = Nous.LLM.stream_text("openai:gpt-4", "hi", headers: headers)
+      _chunks = Enum.to_list(stream)
+
+      assert [%Model{headers: ^headers}, %Model{headers: ^headers}] =
+               CapturingDispatcher.get_models()
+    end
+  end
+
   describe "stream_text/3 with tools surfaces dispatcher errors" do
     test "emits an {:error, _} event instead of silently halting" do
       # Before fix: stream_text_with_tools silently :halt'd on Fallback error,
