@@ -126,6 +126,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`mint` floor raised to `~> 1.11`.** mint 1.10.1 is affected by
+  CVE-2026-94194 (chunked framing applied when chunked is not the final
+  transfer coding — response smuggling), CVE-2026-91043 (HPACK-indexed cookie
+  fields bypass `max_header_list_size`) and CVE-2026-92103 (HTTP/2 frames
+  buffered up to 16 MiB before `max_frame_size` is enforced), all reachable
+  through `Nous.Tools.WebFetch` from a hostile server. The lock also moves
+  `decimal` to 3.2.0 (CVE-2026-97853) and `plug_crypto` to 2.2.1
+  (CVE-2026-105963).
+
 - **`Nous.LLM.generate_text/3` and `stream_text/3` with a model string
   dropped model options.** The string was parsed with only `:base_url`,
   `:api_key`, `:llamacpp_model` and `:receive_timeout`, so `:organization` and
