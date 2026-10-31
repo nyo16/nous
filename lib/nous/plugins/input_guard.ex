@@ -72,12 +72,27 @@ defmodule Nous.Plugins.InputGuard do
       `:any` the survivors decide, and if every strategy drops the input
       passes as `:safe`. Dropped strategies always emit a `Logger` warning and a
       `[:nous, :input_guard, :strategy_dropped]` telemetry event.
-    * `:strategy_timeout` — Per-strategy timeout in ms for the parallel
-      (non-short-circuit) path; a strategy exceeding it is killed and counts
-      as dropped. Default: `30_000`
+    * `:strategy_timeout` — Per-strategy timeout in ms, on both the parallel
+      and the `short_circuit` path; a strategy exceeding it is killed and
+      counts as dropped. Default: `30_000`
     * `:on_violation` — Optional callback function `fn result -> ... end` called when
       input is flagged.
     * `:skip_empty` — Skip checking empty or whitespace-only messages. Default: `true`
+    * `:max_attachment_bytes` — How many bytes of a `text/*` attachment are
+      decoded and classified. Gemini / Vertex AI send such a part to the model
+      as a document, so its text is checked like the message. A larger
+      attachment, or one that is not valid base64 / UTF-8, cannot be
+      classified and fails closed (`policy[:dropped]`, default `:block`).
+      Default: `1_048_576`
+
+  ## Which messages are checked
+
+  Every user message the model has not answered yet: all user messages after
+  the last assistant message that were not checked earlier in the run. When
+  several messages arrive in one turn (queued `Nous.AgentServer.steer/2`
+  calls, or `:message_history` ending in user messages), each is classified
+  and the strictest result applies. Messages the model already answered are
+  history and are not classified again.
 
   ## Streaming Limitation
 
@@ -89,8 +104,12 @@ defmodule Nous.Plugins.InputGuard do
 
   @behaviour Nous.Plugin
 
+  require Logger
+
   alias Nous.Agent.Context
-  alias Nous.Plugins.InputGuard.{Engine, Policy}
+  alias Nous.Plugins.InputGuard.{Engine, Policy, Result}
+
+  @max_attachment_bytes 1_048_576
 
   @impl true
   def init(_agent, ctx) do
@@ -107,30 +126,88 @@ defmodule Nous.Plugins.InputGuard do
   def before_request(_agent, ctx, tools) do
     config = get_config(ctx)
 
-    case Engine.unchecked_user_input(ctx, :input_guard_last_checked) do
-      nil ->
+    opts = [max_decoded_bytes: Map.get(config, :max_attachment_bytes, @max_attachment_bytes)]
+
+    case Engine.unchecked_user_inputs(ctx, :input_guard_last_checked, opts) do
+      [] ->
         {ctx, tools}
 
-      {input, index} ->
-        # Update the checked index
-        ctx = Context.merge_deps(ctx, %{input_guard_last_checked: index})
+      inputs ->
+        {_input, last} = List.last(inputs)
+        ctx = Context.merge_deps(ctx, %{input_guard_last_checked: last})
 
-        # Skip empty input if configured
-        if skip_empty?(config) && blank?(input) do
-          {ctx, tools}
-        else
-          input
-          |> Engine.run(ctx, config,
-            telemetry_prefix: [:nous, :input_guard],
-            label: "InputGuard",
-            fail_closed_on: [:safe, :suspicious]
-          )
-          |> Policy.apply(ctx, tools, config)
-        end
+        inputs
+        |> Enum.reject(fn {input, _index} -> skip_empty?(config) and blank?(input) end)
+        |> classify_all(ctx, config)
+        |> Policy.apply(ctx, tools, config)
     end
   end
 
   # --- Private ---
+
+  @label "InputGuard"
+
+  # Each message is classified on its own (a detector must not see a malicious
+  # message diluted by benign ones); the strictest result applies. A :blocked
+  # verdict ends the scan: nothing can be stricter.
+  defp classify_all(inputs, ctx, config) do
+    inputs
+    |> Enum.reduce_while(%Result{severity: :safe}, fn {input, _index}, strictest ->
+      result = classify(input, ctx, config)
+      strictest = Enum.max_by([strictest, result], &rank/1)
+
+      if result.severity == :blocked, do: {:halt, strictest}, else: {:cont, strictest}
+    end)
+  end
+
+  defp classify({:ok, text}, ctx, config), do: run_engine(text, ctx, config)
+
+  defp classify({:error, reason, text}, ctx, config) do
+    text |> run_engine(ctx, config) |> unreadable(reason, config)
+  end
+
+  defp run_engine(text, ctx, config) do
+    Engine.run(text, ctx, config,
+      telemetry_prefix: [:nous, :input_guard],
+      label: @label,
+      fail_closed_on: [:safe, :suspicious]
+    )
+  end
+
+  # Part of the message could not be classified, so a :safe or :suspicious
+  # verdict only covers the rest of it: fail closed like a dropped strategy.
+  defp unreadable(%Result{severity: :blocked} = result, _reason, _config), do: result
+
+  defp unreadable(result, reason, config) do
+    Logger.warning("#{@label}: attachment could not be classified: #{inspect(reason)}")
+
+    if Map.get(config, :fail_closed, true) do
+      escalated = %Result{
+        severity: :suspicious,
+        reason:
+          "A text attachment could not be read for classification " <>
+            "(#{describe_unreadable(reason)}); failing closed",
+        metadata: %{fail_closed: true, attachment_unreadable: reason}
+      }
+
+      Engine.fire_on_violation(escalated, config, @label)
+      escalated
+    else
+      result
+    end
+  end
+
+  defp describe_unreadable({:attachment_unreadable, {kind, media_type}}),
+    do: "#{kind} #{media_type}"
+
+  defp describe_unreadable(other), do: inspect(other)
+
+  # A fail-closed result outranks a :suspicious verdict: the default policy
+  # blocks it, where it only warns on :suspicious.
+  defp rank(%Result{severity: :blocked}), do: 3
+  defp rank(%Result{metadata: %{fail_closed: true}}), do: 2
+  defp rank(%Result{severity: :suspicious}), do: 1
+  defp rank(%Result{}), do: 0
 
   defp get_config(ctx) do
     Map.get(ctx.deps, :input_guard_config, %{})
@@ -138,5 +215,7 @@ defmodule Nous.Plugins.InputGuard do
 
   defp skip_empty?(config), do: Map.get(config, :skip_empty, true)
 
-  defp blank?(str), do: String.trim(str) == ""
+  # A message with an unreadable attachment is never "empty".
+  defp blank?({:ok, text}), do: String.trim(text) == ""
+  defp blank?(_unreadable), do: false
 end
