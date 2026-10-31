@@ -359,6 +359,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`hackney` floor raised to `~> 4.9`; `jose` and `ssl_verify_fun` patched
+  in the lock.** hackney (optional; the alternative HTTP and streaming
+  backend) before 4.9.0 is affected by CVE-2026-115693 (pinned `cacerts` /
+  `cacertfile` did not restrict trust), CVE-2026-97200 (unbounded buffered
+  body and decompression), CVE-2026-113440 (redirects resent `basic_auth` and
+  cookies to another scheme or port), CVE-2026-115700 (SSRF allowlist bypass
+  via percent-encoded bracketed IPv6 or trailing-dot literals) and
+  CVE-2026-112880 (CRLF in `Proxy-Authorization`). The floor makes a
+  consumer's resolver refuse those releases. Locked at 4.9.1, which also
+  moves `certifi` to 2.18.0 (eMudhra roots removed), `h2` to 0.12.5, `quic`
+  to 2.1.3 and `webtransport` to 0.4.8. hackney 4.9 caps bodies it buffers at
+  512 MiB (`{:error, :body_too_large}`), far above any provider response; the
+  pull-mode stream backend does not buffer. The lock also moves `jose`
+  (through optional `goth`) to 1.11.13 for CVE-2026-65625..65632 and
+  `ssl_verify_fun` (through hackney) to 1.1.8 for CVE-2026-117666. CI's
+  `mix hex.audit` step is green again; only the two test-only cowlib
+  advisories remain acknowledged.
 - **`mint` floor raised to `~> 1.11`.** mint 1.10.1 is affected by
   CVE-2026-94194 (chunked framing applied when chunked is not the final
   transfer coding — response smuggling), CVE-2026-91043 (HPACK-indexed cookie

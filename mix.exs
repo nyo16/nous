@@ -84,7 +84,7 @@ defmodule Nous.MixProject do
       # producer and a slow consumer can't OOM us via mailbox accumulation.
       # (Finch.stream/5's callback is push-based; a fast LLM + slow consumer =
       # unbounded mailbox growth — see review M-12.) To use the hackney
-      # backend, declare `{:hackney, "~> 4.0"}` in your app's deps and select
+      # backend, declare `{:hackney, "~> 4.9"}` in your app's deps and select
       # it via `NOUS_HTTP_BACKEND=hackney` (or the streaming variant).
       {:finch, "~> 0.19"},
       # req 0.7+: `finch:` takes options (`[name: ...]`) — the bare-atom shape
@@ -104,7 +104,13 @@ defmodule Nous.MixProject do
       # hostile server. This floor is what makes a consumer's resolver refuse
       # the vulnerable line.
       {:mint, "~> 1.11"},
-      {:hackney, "~> 4.0", optional: true},
+      # 4.9 floor: earlier 4.x is affected by CVE-2026-115693 (pinned cacerts
+      # did not restrict trust), CVE-2026-97200 (unbounded buffered body and
+      # decompression), CVE-2026-113440 (redirects resent basic_auth/cookies
+      # across scheme or port), CVE-2026-115700 (SSRF allowlist bypass via
+      # encoded IPv6 / trailing-dot literals) and CVE-2026-112880 (CRLF in
+      # Proxy-Authorization). Same reasoning as the mint floor above.
+      {:hackney, "~> 4.9", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
       {:goth, "~> 1.4", optional: true},

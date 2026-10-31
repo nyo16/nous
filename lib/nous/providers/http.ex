@@ -217,7 +217,7 @@ defmodule Nous.Providers.HTTP do
   end
 
   # The hackney backends are opt-in: hackney is an optional dep. If a user
-  # selects it (env var / config) without adding `{:hackney, "~> 4.0"}`, fall
+  # selects it (env var / config) without adding `{:hackney, "~> 4.9"}`, fall
   # back to the default backend with a loud warning instead of raising
   # UndefinedFunctionError on the first request.
   defp hackney_backend_or_fallback(hackney_backend, fallback) do
@@ -228,7 +228,7 @@ defmodule Nous.Providers.HTTP do
 
       Logger.warning(
         "NOUS_HTTP_BACKEND/stream backend set to hackney, but :hackney is not " <>
-          "available. Add {:hackney, \"~> 4.0\"} to your deps to use it. " <>
+          "available. Add {:hackney, \"~> 4.9\"} to your deps to use it. " <>
           "Falling back to the default backend."
       )
 

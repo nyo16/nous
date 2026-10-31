@@ -158,7 +158,7 @@ defmodule Nous.Application do
 
         Logger.warning(
           "config :nous, :hackney_pool is set but :hackney could not be started " <>
-            "(#{inspect(reason)}). Add {:hackney, \"~> 4.0\"} to your deps. " <>
+            "(#{inspect(reason)}). Add {:hackney, \"~> 4.9\"} to your deps. " <>
             "Skipping pool configuration."
         )
 

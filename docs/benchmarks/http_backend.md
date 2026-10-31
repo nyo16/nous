@@ -199,7 +199,7 @@ Stay on Req (most users):
 unless you ask for it. Add it to your app's deps:
 
 ```elixir
-{:hackney, "~> 4.0"}
+{:hackney, "~> 4.9"}
 ```
 
 Then select the backend one of three ways, highest precedence first
