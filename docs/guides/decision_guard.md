@@ -35,7 +35,7 @@ required.
 
 | Surface | Where it runs | Pack | What a deny does |
 |---|---|---|---|
-| `:user_input` (**default**) | plugin `before_request/3` | `Nous.Plugins.DecisionGuard.Packs.UserInput` | Blocks like `Nous.Plugins.InputGuard`'s `:block`: an assistant refusal is added and no chat request is sent |
+| `:user_input` (**default**) | plugin `before_request/3` | `Nous.Plugins.DecisionGuard.Packs.UserInput` | The refused messages are replaced by `"[user message blocked by DecisionGuard]"` (the originals stay in the session log), an assistant refusal is added and no chat request is sent |
 | `:tool_call` | `:pre_tool_use` hook | `Nous.Plugins.DecisionGuard.Packs.ToolCall` | The tool never runs; the model is told the call was denied |
 | `:tool_result` | `:post_tool_use` hook | `Nous.Plugins.DecisionGuard.Packs.ToolResult` | The result is replaced by `"[tool result withheld by decision hook]"` before the model, history or `on_tool_response` see it |
 | `:model_output` | `:post_response` hook (blocking) | `Nous.Plugins.DecisionGuard.Packs.ModelOutput` | The run returns `{:error, %Nous.Errors.ResponseDenied{}}`; callbacks and PubSub never see the response |
@@ -66,7 +66,13 @@ deps = %{
   checked once, oldest first, including the initial prompt of `Nous.run/3`. A
   step boundary can add several at once (two `Nous.AgentServer.steer/2` calls
   claimed together, say); the worst verdict wins, so one denied message
-  refuses the whole batch.
+  refuses the whole batch. The batch is redacted in place, so it never
+  reaches the model on a later turn either. "Since the last check" follows
+  the session log, not list positions, so a Summarization compaction cannot
+  hide a later message; the marker carries over between runs on the same
+  context, so an `AgentServer` turn checks only its new input. List
+  DecisionGuard **before** `Nous.Plugins.Summarization` in `:plugins` (the
+  other order raises), so nothing is summarised before it is checked.
 - **Tool call, tool result and model output** are `:decision` hooks
   contributed through the plugin's `hooks/2` callback at priority **900**
   (late, so they judge what earlier hooks produced) with `fail_closed: true`.

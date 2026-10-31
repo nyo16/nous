@@ -19,7 +19,7 @@ defmodule Nous.Plugins.DecisionGuard do
 
   | Surface | Runs in | Pack | Deny means |
   |---|---|---|---|
-  | `:user_input` (default) | plugin `before_request/3` | `Packs.UserInput` | blocked exactly like `Nous.Plugins.InputGuard`'s `:block`: an assistant refusal is added and no chat request is sent |
+  | `:user_input` (default) | plugin `before_request/3` | `Packs.UserInput` | the refused messages are redacted in place (`"[user message blocked by DecisionGuard]"`; the originals stay in the session log), an assistant refusal is added and no chat request is sent |
   | `:tool_call` | `:pre_tool_use` hook | `Packs.ToolCall` | the tool never runs; the model is told the call was denied |
   | `:tool_result` | `:post_tool_use` hook | `Packs.ToolResult` | the result is withheld from the model, history and callbacks |
   | `:model_output` | `:post_response` hook (blocking) | `Packs.ModelOutput` | the run returns `{:error, %Nous.Errors.ResponseDenied{}}` |
@@ -31,6 +31,18 @@ defmodule Nous.Plugins.DecisionGuard do
   last check once, oldest first, including the initial prompt of
   `Nous.run/3`. A step boundary can add several at once (an inbox batch);
   the worst verdict wins, so one denied message refuses the whole batch.
+
+  "Since its last check" is tracked by session-log position (`Nous.Session.Log`
+  seqs), not by place in `ctx.messages`, so compaction cannot hide a message.
+  The marker lives in `ctx.deps` and carries over to the next run on the same
+  context (each `Nous.AgentServer` turn checks only its own input); on any
+  other context it does not apply and everything is checked again. A refused
+  batch is redacted, so it reaches the model on no later turn either.
+
+  List this plugin **before** `Nous.Plugins.Summarization` (or any plugin that
+  rewrites the transcript in `before_request/3`): run the other way round,
+  unchecked messages would be summarised first. With Summarization first,
+  the run raises `ArgumentError`.
 
   The other surfaces are `:decision` hooks (`Nous.Hook.Decision`) contributed
   through `c:Nous.Plugin.hooks/2` at priority **900** with `fail_closed:
@@ -115,12 +127,13 @@ defmodule Nous.Plugins.DecisionGuard do
   require Logger
 
   alias Nous.Agent.Context
-  alias Nous.Hook
+  alias Nous.{Hook, Message}
   alias Nous.Hook.Decision
   alias Nous.Plugins.DecisionGuard.Pack
   alias Nous.Plugins.DecisionGuard.Packs
   alias Nous.Plugins.InputGuard.{Engine, Policy, Result}
   alias Nous.Plugins.InputGuard.Strategies
+  alias Nous.Session.Log
 
   @surfaces [:user_input, :tool_call, :tool_result, :model_output]
   @packs %{
@@ -144,14 +157,18 @@ defmodule Nous.Plugins.DecisionGuard do
     :matcher
   ]
   @priority 900
-  @last_checked :decision_guard_last_checked
+  @checked :decision_guard_checked
+  @redacted "[user message blocked by DecisionGuard]"
   @strategy_severity %{deny: :blocked, escalate: :suspicious, allow: :safe}
   @verdicts %{safe: :allow, suspicious: :escalate, blocked: :deny}
 
   # ── Plugin callbacks ───────────────────────────────────────────────────────
 
   @impl true
-  def init(_agent, ctx), do: Context.merge_deps(ctx, %{@last_checked => -1})
+  def init(agent, ctx) do
+    if Map.has_key?(ctx.deps, :decision_guard_config), do: check_plugin_order!(agent.plugins)
+    ctx
+  end
 
   @impl true
   def hooks(_agent, ctx) do
@@ -177,20 +194,104 @@ defmodule Nous.Plugins.DecisionGuard do
   def before_request(_agent, ctx, tools) do
     with %{} = config <- config(ctx),
          %{} = surface <- config.surfaces[:user_input],
-         [_ | _] = inputs <- Engine.unchecked_user_inputs(ctx, @last_checked) do
-      {_input, newest} = List.last(inputs)
-      ctx = Context.merge_deps(ctx, %{@last_checked => newest})
-
+         [_ | _] = inputs <- unchecked_user_inputs(ctx) do
       inputs =
         if config.skip_empty,
           do: Enum.reject(inputs, fn {input, _index} -> String.trim(input) == "" end),
           else: inputs
 
-      check_user_inputs(inputs, ctx, tools, config, surface)
+      {ctx, tools} = check_user_inputs(inputs, ctx, tools, config, surface)
+      {mark_checked(ctx), tools}
     else
       _ -> {ctx, tools}
     end
   end
+
+  # Summarization (or any plugin that rewrites the transcript in
+  # `before_request/3`) running first would summarise user messages this guard
+  # has not classified yet, sending them to the summarizer and into a system
+  # message.
+  defp check_plugin_order!(plugins) do
+    guard = Enum.find_index(plugins, &(&1 == __MODULE__))
+    summarization = Enum.find_index(plugins, &(&1 == Nous.Plugins.Summarization))
+
+    if guard && summarization && summarization < guard do
+      raise ArgumentError,
+            "Nous.Plugins.DecisionGuard must come before Nous.Plugins.Summarization in " <>
+              ":plugins, or unclassified user messages are summarised"
+    end
+
+    :ok
+  end
+
+  # ── which user messages are new ────────────────────────────────────────────
+
+  # "Checked" is a position in the session log, not in `ctx.messages`: log
+  # seqs only grow, and compaction (`Context.replace_message_range/4`) appends
+  # a replacement instead of renumbering, whereas list positions shrink when
+  # Summarization collapses old messages. The marker is `%{count, anchor}`:
+  # every event below `count` has been seen, and `anchor` fingerprints event
+  # `count - 1` so the marker only applies to the log it was taken from. A
+  # marker from another log (a sub-agent given the parent's deps, a cleared
+  # history, a reseeded log) or whose anchor a snapshot dropped does not
+  # match, and every user message is checked again: the failure mode is a
+  # repeated check, never a skipped one.
+  defp unchecked_user_inputs(ctx) do
+    indexed = Log.derive_indexed(ctx.log)
+    offset = length(ctx.messages) - length(indexed)
+
+    if in_step?(ctx.messages, indexed, offset) do
+      from = checked_count(ctx)
+
+      for {{seq, %Message{role: :user} = message}, i} <- Enum.with_index(indexed),
+          seq >= from,
+          do: {Engine.message_text(message), i + offset}
+    else
+      # The view was written around the log (a legacy `%{ctx | messages: ...}`),
+      # so seqs say nothing about it: every user message counts as new.
+      for {%Message{role: :user} = message, i} <- Enum.with_index(ctx.messages),
+          do: {Engine.message_text(message), i}
+    end
+  end
+
+  # `indexed` is the log's projection; the view adds at most the system-prompt
+  # overlay (a leading system message, or text on the existing one).
+  defp in_step?(messages, indexed, offset) when offset in [0, 1] do
+    messages
+    |> Enum.drop(offset)
+    |> Enum.zip(indexed)
+    |> Enum.all?(fn
+      {view, {_seq, %Message{role: :user} = logged}} -> view == logged
+      {_view, _other} -> true
+    end)
+  end
+
+  defp in_step?(_messages, _indexed, _offset), do: false
+
+  defp checked_count(ctx) do
+    with %{count: count, anchor: anchor} when is_integer(count) and is_integer(anchor) <-
+           Map.get(ctx.deps, @checked),
+         true <- count > 0 and Log.count(ctx.log) >= count,
+         ^anchor <- anchor(ctx.log, count - 1) do
+      count
+    else
+      _ -> 0
+    end
+  end
+
+  defp mark_checked(ctx) do
+    count = Log.count(ctx.log)
+    Context.merge_deps(ctx, %{@checked => %{count: count, anchor: anchor(ctx.log, count - 1)}})
+  end
+
+  defp anchor(log, seq) when seq >= 0 do
+    case Log.since(log, seq) do
+      [%{seq: ^seq} = event | _] -> :erlang.phash2({event.type, event.data, event.time})
+      _ -> nil
+    end
+  end
+
+  defp anchor(_log, _seq), do: nil
 
   # ── user input ─────────────────────────────────────────────────────────────
 
@@ -209,10 +310,10 @@ defmodule Nous.Plugins.DecisionGuard do
     {ctx_and_tools, outcomes} =
       case Enum.find(checks, &(&1.verdict == :deny)) do
         %{result: result} ->
-          {block(result.reason, ctx, tools), Enum.map(checks, fn _ -> :deny end)}
+          {block(result.reason, inputs, ctx, tools), Enum.map(checks, fn _ -> :deny end)}
 
         nil ->
-          resolve_escalations(checks, ctx, tools, surface)
+          resolve_escalations(checks, inputs, ctx, tools, surface)
       end
 
     Enum.zip_with(checks, outcomes, &emit_check/2)
@@ -231,7 +332,7 @@ defmodule Nous.Plugins.DecisionGuard do
       strategies: strategies,
       aggregation: :any,
       short_circuit: false,
-      strategy_timeout: engine_timeout(opts)
+      strategy_timeout: engine_timeout(config, surface)
     }
 
     inputs
@@ -274,7 +375,7 @@ defmodule Nous.Plugins.DecisionGuard do
 
   # → {{ctx, tools}, [outcome per check]}. The first escalation that is not
   # approved refuses the batch.
-  defp resolve_escalations(checks, ctx, tools, surface) do
+  defp resolve_escalations(checks, inputs, ctx, tools, surface) do
     checks
     |> Enum.reduce_while({ctx, []}, fn check, {ctx, outcomes} ->
       case resolve(check, ctx, surface) do
@@ -283,8 +384,11 @@ defmodule Nous.Plugins.DecisionGuard do
       end
     end)
     |> case do
-      {:block, reason, ctx} -> {block(reason, ctx, tools), Enum.map(checks, fn _ -> :deny end)}
-      {ctx, outcomes} -> {{ctx, tools}, Enum.reverse(outcomes)}
+      {:block, reason, ctx} ->
+        {block(reason, inputs, ctx, tools), Enum.map(checks, fn _ -> :deny end)}
+
+      {ctx, outcomes} ->
+        {{ctx, tools}, Enum.reverse(outcomes)}
     end
   end
 
@@ -338,7 +442,17 @@ defmodule Nous.Plugins.DecisionGuard do
 
   defp escalate(_none, _info), do: :deny
 
-  defp block(reason, ctx, tools) do
+  # A refused batch is redacted in place before the refusal is added: the
+  # checked marker moves past it, so a message left verbatim would reach the
+  # model on the next turn without being classified again. Every message of
+  # the batch goes, including ones the scan did not reach after the deny.
+  # `Context.replace_message/3` keeps the originals in the session log.
+  defp block(reason, inputs, ctx, tools) do
+    ctx =
+      Enum.reduce(inputs, ctx, fn {_input, index}, ctx ->
+        replace_content(ctx, index, @redacted)
+      end)
+
     Policy.apply(
       %Result{severity: :blocked, reason: reason || "Input blocked by DecisionGuard"},
       ctx,
@@ -348,7 +462,8 @@ defmodule Nous.Plugins.DecisionGuard do
   end
 
   defp replace_content(ctx, index, content) do
-    %{ctx | messages: List.update_at(ctx.messages, index, &%{&1 | content: content})}
+    message = Enum.at(ctx.messages, index)
+    Context.replace_message(ctx, index, %{message | content: content})
   end
 
   defp strategy_opts(config, surface) do
@@ -368,23 +483,37 @@ defmodule Nous.Plugins.DecisionGuard do
     ]
   end
 
-  # Raises ArgumentError on an invalid band / question / family setup.
+  # Raises ArgumentError on an invalid band / question / family / chunking setup.
   defp validate_user_input!(config, surface) do
-    opts = strategy_opts(config, surface)
-
-    pack_opts =
-      Keyword.take(opts, [:questions, :bands, :include, :preset, :model_family])
-
-    Decision.new([model: config.model] ++ Pack.build(Packs.UserInput, pack_opts))
+    user_input_decision(config, surface)
     :ok
   end
 
-  # Each decision call is bounded by `:timeout`; a check makes at most
-  # max_chunks calls, doubled by the canary.
-  defp engine_timeout(opts) do
-    case opts[:timeout] do
+  # The decision `Strategies.DecisionModel` builds from the same options.
+  defp user_input_decision(config, surface) do
+    opts = strategy_opts(config, surface)
+    pack_opts = Keyword.take(opts, [:questions, :bands, :include, :preset, :model_family])
+
+    Decision.new(
+      [
+        model: config.model,
+        oversize: opts[:oversize],
+        max_chunks: opts[:max_chunks],
+        canary: opts[:canary]
+      ] ++ Pack.build(Packs.UserInput, pack_opts)
+    )
+  end
+
+  # The engine's kill is a backstop: `Decision.budget/2` covers the planning
+  # task and every decision-model call, so the decision's own (typed) timeout
+  # always fires first. The extra second covers building the decision.
+  defp engine_timeout(config, surface) do
+    case Decision.budget(
+           user_input_decision(config, surface),
+           surface[:timeout] || config.timeout
+         ) do
       :infinity -> :infinity
-      t -> t * opts[:max_chunks] * if(opts[:canary], do: 2, else: 1) + 1_000
+      budget -> budget + 1_000
     end
   end
 

@@ -168,7 +168,7 @@ dm = Nous.DecisionModel.parse("llamacpp:clef")
 | `:n_ctx` | `:n_batch` | context size |
 | `:n_gpu_layers` | `-1` (all) | layers offloaded to the GPU |
 | `:decision_opts` | `[]` | extra `LlamaCppEx.Decision.new/2` options (`:n_threads`, `:flash_attn`, ...) |
-| `:shutdown` | `30_000` | child-spec shutdown in ms, so an in-flight decode can finish and the model is freed cleanly |
+| `:shutdown` | `30_000` | child-spec shutdown in ms: how long the supervisor waits before `:kill`. The process stops once an in-flight decode returns; the model is freed with the process either way |
 
 - **Start-up.** The model loads in `handle_continue/2`, so starting the child
   does not block the supervisor. Calls made while it loads wait for it, up

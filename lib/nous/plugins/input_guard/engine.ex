@@ -81,21 +81,11 @@ defmodule Nous.Plugins.InputGuard.Engine do
   end
 
   @doc """
-  Every user message after the index stored in `ctx.deps[last_checked_key]`
-  (default `-1`), oldest first, as `[{text, index}]`. Only text parts count.
-
-  Several user messages can arrive before one request (an inbox batch, or a
-  run started with several new messages); a guard that must see all of them
-  uses this rather than `unchecked_user_input/2`.
+  The text a guard classifies for `message`: its content, or its text parts
+  joined with spaces.
   """
-  @spec unchecked_user_inputs(Context.t(), atom()) :: [{String.t(), non_neg_integer()}]
-  def unchecked_user_inputs(ctx, last_checked_key) do
-    last_checked = Map.get(ctx.deps, last_checked_key, -1)
-
-    for {%Message{role: :user} = msg, idx} <- Enum.with_index(ctx.messages),
-        idx > last_checked,
-        do: {extract_text(msg), idx}
-  end
+  @spec message_text(Message.t()) :: String.t()
+  def message_text(%Message{} = message), do: extract_text(message)
 
   defp extract_text(%Message{content: content}) when is_binary(content), do: content
 

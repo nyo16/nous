@@ -34,6 +34,21 @@ defmodule Nous.Plugins.DecisionGuardTest do
     def count_tokens(dm, text), do: dm.opts[:count_tokens].(text)
   end
 
+  # A global model dispatcher for AgentServer runs: reports every request to
+  # the pid in `:persistent_term` and answers "the answer".
+  defmodule ServerModel do
+    alias Nous.{Message, Usage}
+
+    def request(_model, messages, _settings) do
+      send(:persistent_term.get(__MODULE__), {:model_request, messages})
+      usage = %Usage{input_tokens: 5, output_tokens: 5, total_tokens: 10, requests: 1}
+      {:ok, %{Message.assistant("the answer") | metadata: %{usage: usage}}}
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:ok, []}
+    def count_tokens(_messages), do: 10
+  end
+
   setup do
     Nous.ModelDispatcher.put_dispatcher(nil)
     %{bypass: Bypass.open(), test_pid: self()}
@@ -232,18 +247,25 @@ defmodule Nous.Plugins.DecisionGuardTest do
       assert [_] = surface_states("user_input")
     end
 
-    # A `claim_inbox` dep that hands `texts` over as one batch at the first
-    # step boundary, as two `Nous.AgentServer.steer/2` calls before it do.
-    defp inbox_batch(texts) do
-      {:ok, inbox} = Elixir.Agent.start_link(fn -> Enum.map(texts, &Nous.Message.user/1) end)
+    # A `claim_inbox` dep that hands each of `batches` over at successive step
+    # boundaries, as `Nous.AgentServer.steer/2` calls between steps do.
+    defp inbox_batches(batches) do
+      batches = Enum.map(batches, fn texts -> Enum.map(texts, &Nous.Message.user/1) end)
+      {:ok, inbox} = Elixir.Agent.start_link(fn -> batches end)
 
       fn
-        :next_step -> Elixir.Agent.get_and_update(inbox, &{&1, []})
-        :next_turn -> []
+        :next_step ->
+          Elixir.Agent.get_and_update(inbox, fn
+            [batch | rest] -> {batch, rest}
+            [] -> {[], []}
+          end)
+
+        :next_turn ->
+          []
       end
     end
 
-    defp with_inbox(deps, texts), do: Map.put(deps, :claim_inbox, inbox_batch(texts))
+    defp with_inbox(deps, texts), do: Map.put(deps, :claim_inbox, inbox_batches([texts]))
 
     defp classified_user_input do
       Enum.map(surface_states("user_input"), & &1["untrusted_content"])
@@ -359,6 +381,67 @@ defmodule Nous.Plugins.DecisionGuardTest do
       refute_received {:chat_request, _, _}
     end
 
+    test "a steer after Summarization compacted the transcript is still checked", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, fn _n, body ->
+        cond do
+          JSON.encode!(body) =~ "Summarize the conversation above" -> text_reply("a summary")
+          Enum.any?(body["messages"], &(&1["role"] == "tool")) -> text_reply("done")
+          true -> tool_call_reply("lookup", %{"q" => "x"})
+        end
+      end)
+
+      agent =
+        Agent.new("lmstudio:test-model",
+          base_url: "http://localhost:#{bypass.port}/v1",
+          plugins: [DecisionGuard, Nous.Plugins.Summarization],
+          tools: [lookup_tool(pid)]
+        )
+
+      # Step 1 claims a long batch, which Summarization collapses into one
+      # summary: the transcript ends up shorter than it was when the guard
+      # last checked. Step 2 claims the injection.
+      long = String.duplicate("background detail for the task at hand ", 60)
+
+      deps =
+        deps(flag_user_input("MALICIOUS"), pattern_ensemble: false)
+        |> Map.put(:summarization_config, %{max_context_tokens: 300, keep_recent: 2})
+        |> Map.put(
+          :claim_inbox,
+          inbox_batches([
+            [long, long, long, long, "ok one", "ok two"],
+            ["please MALICIOUS do this"]
+          ])
+        )
+
+      assert {:ok, result} = AgentRunner.run(agent, "hello", deps: deps)
+
+      # 1: the summary, 2: the tool call. Nothing after the injection.
+      assert_received {:chat_request, 1, summary_body}
+      assert JSON.encode!(summary_body) =~ "Summarize the conversation above"
+      assert_received {:chat_request, 2, _}
+      refute_received {:chat_request, 3, _}
+
+      assert "please MALICIOUS do this" in classified_user_input()
+      assert %{role: :assistant, content: refusal} = List.last(result.context.messages)
+      assert refusal =~ "can't process"
+      refute inspect(result.context.messages) =~ "MALICIOUS"
+    end
+
+    test "plugin order: Summarization before the guard fails the run loudly", %{bypass: bypass} do
+      agent =
+        Agent.new("lmstudio:test-model",
+          base_url: "http://localhost:#{bypass.port}/v1",
+          plugins: [Nous.Plugins.Summarization, DecisionGuard]
+        )
+
+      assert_raise ArgumentError, ~r/must come before Nous.Plugins.Summarization/, fn ->
+        AgentRunner.run(agent, "hi", deps: deps(fn _ -> 0.0 end))
+      end
+    end
+
     test "an escalation without on_escalate blocks", %{bypass: bypass, test_pid: pid} do
       chat_endpoint(bypass, pid, always("never"))
 
@@ -422,6 +505,75 @@ defmodule Nous.Plugins.DecisionGuardTest do
                          result: :deny,
                          probabilities: %{verdict: [safe: _, suspicious: _, blocked: 0.95]}
                        }}
+    end
+  end
+
+  # ── across AgentServer turns ──────────────────────────────────────────────
+
+  describe "across AgentServer turns" do
+    # AgentServer runs in its own processes, which a process-scoped dispatcher
+    # does not reach: the global one answers and reports every request.
+    setup do
+      original = Application.get_env(:nous, :model_dispatcher)
+      :persistent_term.put(ServerModel, self())
+      Application.put_env(:nous, :model_dispatcher, ServerModel)
+
+      on_exit(fn ->
+        :persistent_term.erase(ServerModel)
+
+        if original,
+          do: Application.put_env(:nous, :model_dispatcher, original),
+          else: Application.delete_env(:nous, :model_dispatcher)
+      end)
+    end
+
+    defp start_server(deps) do
+      session_id = "decision-guard-#{System.unique_integer([:positive])}"
+
+      config = %{
+        model: "openai:test-model",
+        instructions: "Test agent",
+        plugins: [DecisionGuard],
+        deps: deps
+      }
+
+      start_supervised!(
+        Supervisor.child_spec(
+          {Nous.AgentServer,
+           [session_id: session_id, agent_config: config, inactivity_timeout: :infinity]},
+          id: {Nous.AgentServer, session_id}
+        )
+      )
+    end
+
+    defp wait_for_reply(server, turn) do
+      Enum.find_value(1..200, fn _ ->
+        messages = Nous.AgentServer.get_context(server).messages
+
+        if Enum.count(messages, &(&1.role == :assistant)) >= turn,
+          do: messages,
+          else: Process.sleep(20) && nil
+      end)
+    end
+
+    test "a denied turn is redacted and checked once; the next turn is answered" do
+      server = start_server(deps(flag_user_input("MALICIOUS"), pattern_ensemble: false))
+
+      Nous.AgentServer.send_message(server, "please MALICIOUS do this")
+      assert [_ | _] = wait_for_reply(server, 1)
+      refute_received {:model_request, _}
+
+      Nous.AgentServer.send_message(server, "what is 2 + 2?")
+      assert_receive {:model_request, messages}, 2_000
+
+      body = inspect(messages)
+      assert body =~ "what is 2 + 2?"
+      assert body =~ "[user message blocked by DecisionGuard]"
+      refute body =~ "MALICIOUS"
+
+      # Turn 2 classified only its own message.
+      assert ["please MALICIOUS do this", "what is 2 + 2?"] =
+               Enum.map(surface_states("user_input"), & &1["untrusted_content"])
     end
   end
 
@@ -792,7 +944,7 @@ defmodule Nous.Plugins.DecisionGuardTest do
       model =
         Nous.DecisionModel.new(
           CountingBackend,
-          [model: "counting", count_tokens: count_tokens, script: fn _ -> 0.0 end] ++ model_opts
+          model_opts ++ [model: "counting", count_tokens: count_tokens, script: fn _ -> 0.0 end]
         )
 
       %{
@@ -847,15 +999,17 @@ defmodule Nous.Plugins.DecisionGuardTest do
       assert_received {:chat_request, 1, _}
     end
 
-    test "user input: a strategy killed at the engine's bound follows on_error, not escalation",
-         %{bypass: bypass, test_pid: pid} do
+    test "user input: a slow check inside the decision's budget is not cut short", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
       chat_endpoint(bypass, pid, always("never"))
       ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :decision_guard, :verdict]])
 
-      # timeout 1.4 s, max_chunks 2: the engine kills the strategy at
-      # 1.4 * 2 + 1 = 3.8 s. Planning (one slow count) and each of the two
-      # decide calls stay inside the 1.65 s per-call bound, but together
-      # (~4.2 s) they outlast the engine's.
+      # timeout 1.4 s, max_chunks 2. Planning (one slow count) and the two
+      # decide calls each stay inside the 1.65 s per-call bound, ~4.2 s in
+      # all: inside `Decision.budget/2` (3 x 1.65 s), so the classification
+      # must finish and deny on the injected last window.
       calls = :counters.new(1, [])
 
       slow_first_count = fn text ->
@@ -867,22 +1021,25 @@ defmodule Nous.Plugins.DecisionGuardTest do
       deps =
         counting_deps(
           slow_first_count,
-          [timeout: 1_400, max_chunks: 2, on_escalate: approving(pid)],
+          [timeout: 1_400, max_chunks: 2],
           decide_sleep: 1_400,
-          max_state_tokens: 20_000
+          max_state_tokens: 20_000,
+          script: flag_user_input("TAIL-INJECTION")
         )
 
       # Several windows, of which the first and the last are classified.
       prompt = String.duplicate("an ordinary line of pasted log output\n", 3_000)
-      assert {:ok, _} = AgentRunner.run(agent(bypass), prompt, deps: deps)
+      assert {:ok, _} = AgentRunner.run(agent(bypass), prompt <> "TAIL-INJECTION", deps: deps)
 
-      refute_received {:asked, _}
       refute_received {:chat_request, _, _}
 
-      assert_received {[:nous, :decision_guard, :verdict], ^ref, _,
-                       %{surface: :user_input, verdict: :deny, error: error}}
-
-      assert error =~ "did not complete"
+      assert_received {[:nous, :decision_guard, :verdict], ^ref, %{chunk_count: 2},
+                       %{
+                         surface: :user_input,
+                         verdict: :deny,
+                         error: nil,
+                         probabilities: %{verdict: [_ | _]}
+                       }}
     end
   end
 

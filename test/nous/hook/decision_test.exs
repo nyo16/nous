@@ -784,6 +784,8 @@ defmodule Nous.Hook.DecisionTest do
       test_pid: pid
     } do
       chat_endpoint(bypass, pid, fn _ -> text_reply("call me on 555-0100") end)
+      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :hook, :denied]])
+      on_exit(fn -> :telemetry.detach(ref) end)
       hook = Hook.new(:post_response, handler: fn _, _ -> {:deny, %{code: :pii}} end)
 
       assert {:error, %ResponseDenied{reason: reason}} =
@@ -792,6 +794,31 @@ defmodule Nous.Hook.DecisionTest do
       assert is_binary(reason)
       assert reason =~ "pii"
       refute_received {:agent_message, _}
+
+      # Telemetry keeps the hook's own term; only the text is inspected.
+      assert_received {[:nous, :hook, :denied], ^ref, _,
+                       %{event: :post_response, reason: %{code: :pii}}}
+    end
+
+    test "a {:modify, _} without a map lets the response through unchanged", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, fn _ -> text_reply("hello") end)
+
+      hooks = [
+        Hook.new(:post_response, priority: 100, handler: fn _, _ -> {:modify, "redacted"} end),
+        Hook.new(:post_response,
+          priority: 200,
+          handler: fn _, %{content: content} ->
+            send(pid, {:later_saw, content})
+            :allow
+          end
+        )
+      ]
+
+      assert {:ok, %{output: "hello"}} = AgentRunner.run(agent(bypass, hooks), "go")
+      assert_received {:later_saw, "hello"}
     end
 
     test "an escalation edit without a string :response denies the response", %{
@@ -932,6 +959,39 @@ defmodule Nous.Hook.DecisionTest do
 
       assert_received {:tool_ran, %{"trail" => trail}}
       assert trail == ["agent", "plugin_a", "plugin_b"]
+    end
+  end
+
+  describe "a {:modify, _} without a map" do
+    test "on :pre_tool_use is not a result: the call runs with its own arguments", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, tool_then_text("lookup", %{"q" => "x"}))
+      hook = Hook.new(:pre_tool_use, handler: fn _, _ -> {:modify, "not a map"} end)
+
+      assert {:ok, _} = AgentRunner.run(agent(bypass, [hook], tools: [lookup_tool(pid)]), "go")
+      assert_received {:tool_ran, %{"q" => "x"}}
+    end
+
+    test "on :post_tool_use is ignored, and later hooks still run", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, tool_then_text("lookup", %{}))
+
+      hooks = [
+        Hook.new(:post_tool_use, priority: 100, handler: fn _, _ -> {:modify, "redacted"} end),
+        Hook.new(:post_tool_use,
+          priority: 200,
+          handler: fn _, %{result: result} -> {:modify, %{result: "seen: #{result}"}} end
+        )
+      ]
+
+      assert {:ok, _} = AgentRunner.run(agent(bypass, hooks, tools: [lookup_tool(pid)]), "go")
+
+      assert_receive {:chat_request, 2, body}
+      assert tool_message(body) == "seen: SECRET-VALUE"
     end
   end
 

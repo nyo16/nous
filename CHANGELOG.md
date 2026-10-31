@@ -79,14 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A blocking hook that returns a non-result value is `:allow`.** A
   `:pre_tool_use`, `:pre_request` or `:post_response` hook returning anything
   other than `:allow | :deny | {:deny, reason} | {:modify, map} |
-  {:error, reason}` (typically `:ok` from a logging hook) is logged and
-  treated as `:allow`; it used to crash the run with `CaseClauseError`. A
-  non-string `{:deny, reason}` is rendered with `inspect/1` instead of
-  raising.
+  {:error, reason}` (typically `:ok` from a logging hook, or `{:modify, _}`
+  without a map) is logged and treated as `:allow`; it used to crash the run
+  with `CaseClauseError` / `BadMapError`. A non-string `{:deny, reason}` is
+  rendered with `inspect/1` in logs and messages instead of raising;
+  `[:nous, :hook, :denied]` telemetry still carries the raw reason.
 - **Non-blocking hooks see earlier hooks' modifications.** Each
   `:post_tool_use` (and other non-blocking) hook now receives the payload with
-  the preceding hooks' `{:modify, …}` applied, so a later hook judges the
-  result the model will actually receive rather than the raw one.
+  the preceding hooks' `{:modify, map}` applied, so a later hook judges the
+  result the model will actually receive rather than the raw one. A
+  `{:modify, _}` without a map is ignored.
 - **`fail_closed: true` now applies to `:post_tool_use`.** An erroring (or
   timed-out) `fail_closed` `:post_tool_use` hook replaces the tool result
   with `"[tool result withheld: hook error]"` and stops later
@@ -207,12 +209,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Packs.UserInput`, `ToolCall`, `ToolResult`, `ModelOutput`, all tuned for
   the `"clef"` family, which refuse default bands for any other family):
   `:user_input` (default; in `before_request/3`, with the Pattern strategy
-  under `:any`, blocking like InputGuard's `:block`; every user message added
-  since the last check is classified and one deny refuses the batch), and
-  `:tool_call`, `:tool_result`, `:model_output` as `:decision` hooks at
-  priority 900 with `fail_closed: true`. A strategy exit (llama.cpp process
-  down or still loading) or an engine timeout follows `:on_error`, never
-  `:on_escalate`. User-input presets `:balanced` (default, 0.3 / 0.7) and
+  under `:any`; every user message added since the last check is classified,
+  tracked by session-log position so a Summarization compaction cannot hide
+  later messages and carried across runs so each `AgentServer` turn checks
+  only its new input; one deny refuses the whole batch and replaces those
+  messages with `"[user message blocked by DecisionGuard]"` (originals stay
+  in the session log), so a denied message never reaches the model on a
+  later turn), and `:tool_call`, `:tool_result`, `:model_output` as
+  `:decision` hooks at priority 900 with `fail_closed: true`. It must be
+  listed before `Nous.Plugins.Summarization` (the other order raises
+  `ArgumentError`). A strategy exit (llama.cpp process down or still
+  loading) or an engine timeout follows `:on_error`, never `:on_escalate`;
+  the engine timeout covers the decision's full time budget. User-input
+  presets `:balanced` (default, 0.3 / 0.7) and
   `:strict` (0.06 / 0.53); the other surfaces' bands are provisional. Opt-in
   canary as a separate call. Telemetry `[:nous, :decision_guard, :verdict]`,
   `[:nous, :decision_guard, :canary_failed]`,

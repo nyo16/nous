@@ -201,9 +201,10 @@ defmodule Nous.Hook.Runner do
       {:deny, reason} ->
         # The reason reaches log lines, tool messages and
         # `Nous.Errors.ResponseDenied` (a `String.t()`), so a non-string one
-        # (a function hook may return `{:deny, %{code: :pii}}`) is inspected.
-        reason = if is_binary(reason), do: reason, else: inspect(reason)
-        Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}: #{reason}")
+        # (a function hook may return `{:deny, %{code: :pii}}`) is inspected
+        # there. Telemetry keeps the hook's own term.
+        text = if is_binary(reason), do: reason, else: inspect(reason)
+        Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}: #{text}")
 
         :telemetry.execute(
           [:nous, :hook, :denied],
@@ -211,9 +212,9 @@ defmodule Nous.Hook.Runner do
           %{event: event, hook_name: hook.name, hook_type: hook.type, reason: reason}
         )
 
-        {:deny, reason}
+        {:deny, text}
 
-      {:modify, new_changes} ->
+      {:modify, new_changes} when is_map(new_changes) ->
         # Apply modification to payload, continue with remaining hooks
         updated_payload = Map.merge(payload, new_changes)
         run_blocking(rest, event, updated_payload, env, Map.merge(changes, new_changes))
@@ -246,8 +247,9 @@ defmodule Nous.Hook.Runner do
         end
 
       other ->
-        # Not a hook result (an observer hook returning `:ok` or `nil`, say).
-        # Treated as `:allow`, the same as on non-blocking events.
+        # Not a hook result (an observer hook returning `:ok` or `nil`, or a
+        # `{:modify, _}` without a map). Treated as `:allow`, the same as on
+        # non-blocking events.
         Logger.warning(
           "Hook #{inspect(hook.name || hook.type)} returned #{inspect(other)} on #{event}; " <>
             "treating it as :allow"
@@ -293,7 +295,7 @@ defmodule Nous.Hook.Runner do
         :allow ->
           {:cont, acc}
 
-        {:modify, changes} ->
+        {:modify, changes} when is_map(changes) ->
           # Merge modifications (last writer wins for conflicts)
           case acc do
             {:modify, existing} -> {:cont, {:modify, Map.merge(existing, changes)}}
@@ -315,6 +317,7 @@ defmodule Nous.Hook.Runner do
             {:cont, acc}
           end
 
+        # Not a hook result, including a `{:modify, _}` without a map: ignored.
         _ ->
           {:cont, acc}
       end
@@ -696,7 +699,7 @@ defmodule Nous.Hook.Runner do
   defp result_type(:allow), do: :allow
   defp result_type(:deny), do: :deny
   defp result_type({:deny, _}), do: :deny
-  defp result_type({:modify, _}), do: :modify
+  defp result_type({:modify, changes}) when is_map(changes), do: :modify
   defp result_type({:withhold, _}), do: :modify
   defp result_type({:error, _}), do: :error
   defp result_type(_), do: :unknown

@@ -42,8 +42,10 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
       * `:n_gpu_layers` - default `-1` (all).
       * `:decision_opts` - extra `LlamaCppEx.Decision.new/2` tuning options
         (`:n_threads`, `:flash_attn`, ...).
-      * `:shutdown` - the child spec's shutdown, in ms. Default `30_000`, time
-        for an in-flight decode to finish so the model is freed cleanly.
+      * `:shutdown` - the child spec's shutdown, in ms: how long the
+        supervisor waits before escalating to `:kill`. Default `30_000`. The
+        process does not trap exits, so it stops as soon as an in-flight
+        decode returns; the model is freed with the process either way.
 
     `:n_ctx` and `:n_batch` are capped at 32,768: above that, the macOS GPU
     watchdog kills the single command buffer and poisons the context. A
