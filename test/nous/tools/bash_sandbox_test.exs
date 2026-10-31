@@ -630,14 +630,26 @@ defmodule Nous.Tools.BashSandboxTest do
       assert div(elapsed_us, 1_000) < @command_timeout + grace + 1_500
 
       # Returning early must not mean abandoning the child: it is SIGKILLed.
-      Process.sleep(300)
-      assert {_, 1} = System.cmd("pgrep", ["-f", sleep])
+      # The kill is asynchronous (NetRunner's shepherd reacts to its owner
+      # dying after Sandbox.run/2 has returned), so wait for it with a bound
+      # far below the 30 s the child would otherwise live; a fixed 300 ms
+      # sleep flaked on loaded CI runners.
+      assert eventually(fn -> match?({_, 1}, System.cmd("pgrep", ["-f", sleep])) end, 3_000),
+             "child #{inspect(sleep)} still running 3 s after the timeout"
     end
   end
 
   # ---------------------------------------------------------------------------
 
   defp bash_tool, do: Tool.from_module(Nous.Tools.Bash)
+
+  defp eventually(fun, budget_ms) do
+    cond do
+      fun.() -> true
+      budget_ms <= 0 -> false
+      true -> Process.sleep(50) && eventually(fun, budget_ms - 50)
+    end
+  end
 
   defp restore(key, {:ok, value}), do: Application.put_env(:nous, key, value)
   defp restore(key, :error), do: Application.delete_env(:nous, key)
