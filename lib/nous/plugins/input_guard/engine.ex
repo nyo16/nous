@@ -83,21 +83,33 @@ defmodule Nous.Plugins.InputGuard.Engine do
   end
 
   @doc """
-  The newest user message after the index stored in `ctx.deps[last_checked_key]`
-  (default `-1`), as `{text, index}`, or `nil`. Only text parts count.
-  """
-  @spec unchecked_user_input(Context.t(), atom()) :: {String.t(), non_neg_integer()} | nil
-  def unchecked_user_input(ctx, last_checked_key) do
-    last_checked = Map.get(ctx.deps, last_checked_key, -1)
+  Every user message the guard has not classified yet, oldest first, as
+  `{message_text(message, opts), index}`.
 
-    ctx.messages
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn {msg, idx} ->
-      if msg.role == :user && idx > last_checked do
-        {extract_text(msg), idx}
-      end
-    end)
+  The window starts after the later of the index stored in
+  `ctx.deps[last_checked_key]` (default `-1`) and the last `:assistant`
+  message: all user messages the model has not answered yet, which is every
+  message queued in this turn (several `Nous.AgentServer.steer/2` calls, or
+  `:message_history` ending in user messages), not just the newest one.
+  Messages the model already answered are history and are not classified
+  again on each run. `opts` go to `message_text/2` (`:max_decoded_bytes`).
+  """
+  @spec unchecked_user_inputs(Context.t(), atom(), keyword()) ::
+          [{{:ok, String.t()} | {:error, term(), String.t()}, non_neg_integer()}]
+  def unchecked_user_inputs(ctx, last_checked_key, opts \\ []) do
+    indexed = Enum.with_index(ctx.messages)
+
+    answered =
+      Enum.reduce(indexed, -1, fn
+        {%Message{role: :assistant}, i}, _acc -> i
+        _other, acc -> acc
+      end)
+
+    from = max(Map.get(ctx.deps, last_checked_key, -1), answered)
+
+    for {%Message{role: :user} = message, i} <- indexed,
+        i > from,
+        do: {message_text(message, opts), i}
   end
 
   @doc """
@@ -231,11 +243,12 @@ defmodule Nous.Plugins.InputGuard.Engine do
   # that errored, timed out, or returned `{:error, reason}` — it produced no
   # verdict, which must not be mistaken for a :safe verdict (see
   # apply_fail_closed/6). Strategies skipped by short-circuiting after a
-  # :blocked result are NOT drops.
-  defp run_strategies(strategies, input, ctx, true = _short_circuit, _timeout, label) do
+  # :blocked result are NOT drops. Both variants bound each strategy by
+  # `timeout`: a hung detector is a drop, never a hung run.
+  defp run_strategies(strategies, input, ctx, true = _short_circuit, timeout, label) do
     {results, dropped} =
       Enum.reduce_while(strategies, {[], 0}, fn {mod, opts}, {acc, dropped} ->
-        case safe_check(mod, input, opts, ctx, label) do
+        case bounded_check(mod, input, opts, ctx, timeout, label) do
           {:ok, %Result{severity: :blocked} = result} ->
             {:halt, {[result | acc], dropped}}
 
@@ -276,6 +289,28 @@ defmodule Nous.Plugins.InputGuard.Engine do
       end)
 
     {Enum.reverse(results), dropped}
+  end
+
+  # One strategy, run in a task so `timeout` applies on the sequential path
+  # as it does on the parallel one.
+  defp bounded_check(mod, input, opts, ctx, timeout, label) do
+    task =
+      Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
+        safe_check(mod, input, opts, ctx, label)
+      end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, outcome} ->
+        outcome
+
+      {:exit, reason} ->
+        Logger.warning("#{label}: Strategy #{inspect(mod)} dropped (exit: #{inspect(reason)})")
+        :error
+
+      nil ->
+        Logger.warning("#{label}: Strategy #{inspect(mod)} dropped (timeout after #{timeout}ms)")
+        :error
+    end
   end
 
   # A dropped strategy produced no verdict, and counting it as :safe is a
@@ -410,7 +445,11 @@ defmodule Nous.Plugins.InputGuard.Engine do
   defp severity_rank(%Result{severity: :suspicious}), do: 1
   defp severity_rank(%Result{severity: :blocked}), do: 2
 
-  defp fire_on_violation(result, config, label) do
+  @doc false
+  # Called by `run/4`, and by `Nous.Plugins.InputGuard` for a result it
+  # escalates after the run (an unreadable attachment).
+  @spec fire_on_violation(Result.t(), map(), String.t()) :: term()
+  def fire_on_violation(result, config, label) do
     case Map.get(config, :on_violation) do
       fun when is_function(fun, 1) -> fun.(result)
       _ -> :ok

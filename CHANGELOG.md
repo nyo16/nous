@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **InputGuard checks every unanswered user message, not just the newest.**
+  When several user messages arrived in one turn (queued
+  `Nous.AgentServer.steer/2` calls, or `:message_history` ending in user
+  messages), only the last one was classified and the rest reached the model
+  unchecked. Each user message after the last assistant message is now
+  classified on its own, and the strictest result applies (#92).
+- **InputGuard classifies text attachments.** A `text/*` attachment, which
+  Gemini and Vertex AI send to the model as a document, was classified as its
+  placeholder. Its decoded text is now classified with the message, up to the
+  new `:max_attachment_bytes` (default 1 MiB). An attachment that is larger, or
+  is not valid base64 / UTF-8, fails closed through `policy[:dropped]`
+  (default `:block`) (#93).
+- **InputGuard `short_circuit: true` honours `:strategy_timeout`.** The
+  sequential path ran strategies inline, so a hung detector hung the run.
+  Each strategy now runs in a task that is killed at the timeout, and the
+  timeout counts as a drop (#94).
+
 ## [0.18.2] - 2026-10-31
 
 Security and correctness patch from the 2026-10-31 project audit. Several

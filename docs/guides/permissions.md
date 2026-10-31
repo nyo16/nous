@@ -314,8 +314,8 @@ tool results and model output. Its decision-model escalations on tool calls go
 through the same approval handler. See the [DecisionGuard guide](decision_guard.md).
 
 What matters for guardrails is what happens when a strategy *fails to* vote. A
-strategy that raises, throws, or exits is **dropped**; on the parallel path, a
-strategy that outruns `:strategy_timeout` is killed and dropped too. A drop is
+strategy that raises, throws, or exits is **dropped**; a strategy that outruns
+`:strategy_timeout` is killed and dropped too. A drop is
 not a `:safe` verdict — it is *no* verdict, and counting it as `:safe` is
 fail-open: one flaky LLM-judge call and your only substantive detector is gone.
 
@@ -363,16 +363,35 @@ detectors are actually flaky, instead of guessing.
 
 ### `:strategy_timeout`
 
-Per-strategy timeout in milliseconds; default `30_000`. It bounds the **parallel
-path only** — the default `short_circuit: false`, which runs strategies through
-`Task.Supervisor.async_stream_nolink/4` with `on_timeout: :kill_task`. With
-`short_circuit: true` strategies run sequentially so the first `:blocked` verdict
-can skip the rest, and the timeout is not applied: a strategy that hangs there
-hangs the request. If any strategy does network I/O, stay on the parallel path
-and set a timeout comfortably below your request budget.
+Per-strategy timeout in milliseconds; default `30_000`. It bounds every
+strategy on both paths: the default `short_circuit: false` runs strategies
+through `Task.Supervisor.async_stream_nolink/4` with `on_timeout: :kill_task`,
+and `short_circuit: true` runs them one at a time, each in a task killed at the
+timeout, so the first `:blocked` verdict can skip the rest. (Before 0.18.3 the
+sequential path ignored the timeout, and a hung strategy hung the request.) Set
+it comfortably below your request budget when a strategy does network I/O.
 
 Strategies that never ran because short-circuiting stopped after a `:blocked`
 verdict are **not** drops — only errors and timeouts are.
+
+### Which messages are checked
+
+InputGuard classifies every user message the model has not answered yet: all
+user messages after the last assistant message that were not already checked
+earlier in the run. When several arrive in one turn (queued
+`Nous.AgentServer.steer/2` calls, or a `:message_history` ending in user
+messages), each is classified on its own and the strictest result applies:
+`:blocked`, then a fail-closed result, then `:suspicious`. Messages the model
+already answered are history and are not classified again on each run.
+
+A `text/*` attachment (an `:image` part with a `text/plain` media type, or a
+base64 `data:text/...` URL) is decoded and classified with the message, because
+Gemini and Vertex AI send it to the model as a document. Up to
+`:max_attachment_bytes` (default `1_048_576`) are decoded. A larger
+attachment, or one that is not valid base64 or UTF-8, cannot be classified and
+fails closed like a dropped strategy (`policy[:dropped]`, default `:block`).
+Other binary attachments (images, PDFs) are classified as their placeholder
+only.
 
 ```elixir
 {:ok, result} =
