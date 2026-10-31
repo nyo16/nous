@@ -6,7 +6,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
     Runs GGUF models directly in-process via `llama_cpp_ex` NIF bindings.
     No HTTP server needed.
 
-    Requires optional dep: `{:llama_cpp_ex, "~> 0.8"}`
+    Requires optional dep: `{:llama_cpp_ex, "~> 0.8.63"}`
 
     ## Usage
 
@@ -38,8 +38,29 @@ if Code.ensure_loaded?(LlamaCppEx) do
     | `:temperature` | `:temp` | Sampling temperature |
     | `:max_tokens` | `:max_tokens` | Maximum tokens to generate |
     | `:top_p` | `:top_p` | Nucleus sampling |
-    | `:json_schema` | `:grammar` | Constrained JSON output: the schema is compiled to a GBNF grammar. An agent's `output_type` sets it. A schema llama.cpp cannot compile returns `{:error, %Nous.Errors.ConfigurationError{}}` |
+    | `:json_schema` | `:grammar` | Constrained JSON output: the schema is compiled to a GBNF grammar. An agent's `output_type` sets it when the agent has no tools. A schema llama.cpp cannot compile returns `{:error, %Nous.Errors.ConfigurationError{}}` |
     | `:enable_thinking` | `:enable_thinking` | Enable/disable thinking tokens |
+    | `:tools` | `:tools` | The agent's tools, OpenAI-shaped (set by the agent runner) |
+    | `:tool_choice` | `:tool_choice` | `"auto"` (default), `"none"`, `"required"` or `%{"type" => "function", "function" => %{"name" => name}}` |
+    | `:parallel_tool_calls` | `:parallel_tool_calls` | Let the model emit several calls in one reply (llama_cpp_ex default: `false`). Set it in `model_settings`; the agent's `parallel_tool_calls:` option only controls running tools concurrently |
+
+    ## Tool Calling
+
+    The agent's tools go to `LlamaCppEx.chat_completion/3` and
+    `LlamaCppEx.stream_chat_completion/3`. The model's chat template renders
+    them and supplies the grammar and parser for its call format, so the reply
+    comes back as `tool_calls` (streamed as `{:tool_call_delta, _}` events) and
+    the agent loop runs the tools as with any other provider. This needs a model
+    whose template supports tools (Qwen3 / Qwen3.5, Llama 3.x, ...). With any
+    other model the request fails with llama.cpp's "does not support tool calls"
+    error instead of silently dropping the tools.
+
+    llama.cpp cannot apply a JSON-schema grammar and the tool-call grammar at
+    once. An agent with tools and an `output_type` therefore gets its output as
+    a synthetic tool call (`Nous.OutputSchema`'s `:tool_call` mode, the default
+    for `llamacpp` when the agent has tools). An explicit
+    `structured_output: [mode: :json_schema]` together with tools is a
+    `Nous.Errors.ConfigurationError`.
 
     ## Thinking Models
 
@@ -252,9 +273,12 @@ if Code.ensure_loaded?(LlamaCppEx) do
     #
     # `:json_schema` (set by Nous.OutputSchema for `output_type`, or passed
     # directly) is compiled to a GBNF grammar here rather than handed to
-    # LlamaCppEx as-is: LlamaCppEx compiles it with a raising
-    # `from_json_schema!/1`, so a schema llama.cpp cannot convert would crash the
-    # run. Compiling once here turns that into a typed error.
+    # LlamaCppEx as-is, so a schema llama.cpp cannot convert is a typed
+    # `ConfigurationError` before any generation, on the streaming path too
+    # (where LlamaCppEx would report it as an in-stream error element).
+    #
+    # `:tools` arrive OpenAI-shaped (Nous.Tool.to_openai_schema/1, string
+    # keys), which is the shape LlamaCppEx renders through the chat template.
     defp build_llamacpp_opts(settings) do
       opts = []
 
@@ -270,9 +294,104 @@ if Code.ensure_loaded?(LlamaCppEx) do
           do: [{:enable_thinking, settings[:enable_thinking]} | opts],
           else: opts
 
-      case settings[:json_schema] do
-        nil -> {:ok, opts}
-        schema -> with_grammar(opts, schema)
+      with {:ok, opts} <- with_tools(opts, settings) do
+        case settings[:json_schema] do
+          nil -> {:ok, opts}
+          schema -> with_grammar(opts, schema)
+        end
+      end
+    end
+
+    defp with_tools(opts, settings) do
+      case settings[:tools] do
+        tools when tools in [nil, []] ->
+          {:ok, opts}
+
+        tools when is_list(tools) ->
+          with :ok <- check_tool_entries(tools),
+               {:ok, choice} <- tool_choice(settings[:tool_choice]),
+               :ok <- check_tool_grammar(choice, settings) do
+            opts = [{:tools, tools}, {:tool_choice, choice} | opts]
+
+            opts =
+              if is_boolean(settings[:parallel_tool_calls]),
+                do: [{:parallel_tool_calls, settings[:parallel_tool_calls]} | opts],
+                else: opts
+
+            {:ok, opts}
+          end
+
+        other ->
+          {:error, invalid_tools(other)}
+      end
+    end
+
+    # The runner always sends a list of OpenAI-shaped maps; a raw `:tools` in
+    # `model_settings` may not be. LlamaCppEx raises (or fails to JSON-encode)
+    # on anything else, so that is a typed error here rather than a crash.
+    defp check_tool_entries(tools) do
+      if Enum.all?(tools, &(is_map(&1) and not is_struct(&1))),
+        do: :ok,
+        else: {:error, invalid_tools(tools)}
+    end
+
+    defp invalid_tools(tools) do
+      Nous.Errors.ConfigurationError.exception(
+        message:
+          "llamacpp :tools must be a list of OpenAI-shaped tool maps " <>
+            "(%{\"type\" => \"function\", \"function\" => %{...}}), got: " <>
+            inspect(tools, limit: 5),
+        details: %{provider: :llamacpp}
+      )
+    end
+
+    # The OpenAI shapes Nous produces (strings, or the named-function map
+    # Nous.OutputSchema's :tool_call mode uses); LlamaCppEx accepts all of
+    # them but raises on anything else, so that is a typed error here.
+    defp tool_choice(nil), do: {:ok, :auto}
+    defp tool_choice(choice) when choice in [:auto, :none, :required], do: {:ok, choice}
+
+    defp tool_choice("auto"), do: {:ok, :auto}
+    defp tool_choice("none"), do: {:ok, :none}
+    defp tool_choice("required"), do: {:ok, :required}
+
+    defp tool_choice(%{"type" => "function", "function" => %{"name" => name}} = choice)
+         when is_binary(name),
+         do: {:ok, choice}
+
+    defp tool_choice(%{type: "function", function: %{name: name}} = choice) when is_binary(name),
+      do: {:ok, choice}
+
+    defp tool_choice(other) do
+      {:error,
+       Nous.Errors.ConfigurationError.exception(
+         message:
+           "invalid :tool_choice #{inspect(other)} for llamacpp; expected \"auto\", " <>
+             "\"none\", \"required\" or %{\"type\" => \"function\", \"function\" => %{\"name\" => name}}",
+         details: %{provider: :llamacpp, tool_choice: other}
+       )}
+    end
+
+    # llama.cpp constrains a tool call with the chat template's own grammar, so
+    # a JSON-schema grammar cannot apply at the same time (LlamaCppEx raises
+    # ArgumentError, as llama-server refuses). `output_type` with tools uses
+    # the :tool_call mode by default (Nous.OutputSchema); this is the explicit
+    # `structured_output: [mode: :json_schema]` (or a raw `:json_schema`
+    # setting) together with tools.
+    defp check_tool_grammar(:none, _settings), do: :ok
+
+    defp check_tool_grammar(_choice, settings) do
+      if settings[:json_schema] do
+        {:error,
+         Nous.Errors.ConfigurationError.exception(
+           message:
+             "llama.cpp cannot constrain output with a JSON schema while tools are offered " <>
+               "(the chat template supplies the tool-call grammar). Use output_type's default " <>
+               "mode (:tool_call when the agent has tools) instead of mode: :json_schema.",
+           details: %{provider: :llamacpp}
+         )}
+      else
+        :ok
       end
     end
 
@@ -354,12 +473,12 @@ else
     @moduledoc """
     LlamaCpp NIF-based provider for local LLM inference.
 
-    **Not available** - add `{:llama_cpp_ex, "~> 0.8"}` to your mix.exs deps.
+    **Not available** - add `{:llama_cpp_ex, "~> 0.8.63"}` to your mix.exs deps.
     """
 
     @behaviour Nous.Provider
 
-    @not_available "LlamaCppEx is not available. Add {:llama_cpp_ex, \"~> 0.8\"} to your mix.exs deps."
+    @not_available "LlamaCppEx is not available. Add {:llama_cpp_ex, \"~> 0.8.63\"} to your mix.exs deps."
 
     @impl true
     def provider_id, do: :llamacpp

@@ -61,11 +61,15 @@ There are 13 named providers plus the `custom:` prefix. The list below is the au
 
 **Local servers** — `ollama`, `lmstudio`, `vllm`, and `sglang` point at a server running on your own machine. They need no API key (Nous supplies a placeholder where one is required). `ollama` defaults to `http://localhost:11434/v1`, `lmstudio` to `http://localhost:1234/v1`, and `sglang` to `http://localhost:30000/v1`. `vllm` is the exception: `Nous.Model.parse/2` has a dedicated `"vllm:"` clause that raises `ArgumentError` when you do not pass `base_url:`. The layering here is subtle enough to deserve its own section — see [vLLM and SGLang base URLs](#vllm-and-sglang-base-urls).
 
-**In-process** — `llamacpp` runs the model inside the BEAM via NIFs (no HTTP server, no API key). Its base URL is the sentinel string `"local"`. Pass the model file with the `:llamacpp_model` option, which `parse/2` folds into `default_settings`:
+**In-process** — `llamacpp` runs the model inside the BEAM via NIFs (no HTTP server, no API key). Its base URL is the sentinel string `"local"`. Load the model with `llama_cpp_ex` (`~> 0.8.63`) and pass it with the `:llamacpp_model` option, which `parse/2` folds into `default_settings`:
 
 ```elixir
-Nous.new("llamacpp:local", llamacpp_model: "/path/to/model.gguf")
+:ok = LlamaCppEx.init()
+{:ok, llm} = LlamaCppEx.load_model("/path/to/model.gguf", n_gpu_layers: -1)
+Nous.new("llamacpp:local", llamacpp_model: llm, tools: [MyApp.Tools.Search])
 ```
+
+Tool calling works when the model's chat template supports tools (Qwen3 and Qwen3.5, Llama 3.x, ...): the template renders the tools and its grammar constrains the call. A template without tool support fails the request with an error saying so; tools are never silently dropped. With tools, an agent's `output_type` comes back as a synthetic tool call (the `:tool_call` mode) instead of a JSON-schema grammar, which llama.cpp cannot combine with tools.
 
 **Enterprise** — `vertex_ai` is Google Cloud's enterprise Gemini platform (VPC-SC, IAM, regional/global endpoints). It uses GCP OAuth tokens rather than a static API key, and its base URL is built per-request by the provider. See [Vertex AI setup](vertex_ai_setup.md) for auth, and [Model settings](vertex_ai_setup.md#model-settings) for the Gemini request surface shared by `vertex_ai:` and `gemini:` — thinking config, native tools, safety settings, tool choice, JSON output, and context caching.
 

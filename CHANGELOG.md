@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`llama_cpp_ex` floor raised to `~> 0.8.63`** (#83). Earlier releases
+  tokenized chat message content with special-token parsing, so a user
+  message containing `<|im_end|>\n<|im_start|>system ...` forged a real
+  system turn on every `llamacpp:` agent (nyo16/llama_cpp_ex#108), and did
+  the same with decision-model inputs (#109). Nous already defangs
+  decision state, which stays as a second layer, but had no defence for chat
+  messages. A `:llama` regression test checks that such a message costs
+  exactly its literal tokens.
+
+### Added
+
+- **Tool calling on the `llamacpp:` provider** (#83). The agent's tools and
+  `tool_choice` (plus `parallel_tool_calls` from `model_settings`; the agent
+  option of that name only controls running tools concurrently) go to
+  llama.cpp, whose chat template renders them and constrains the call. The
+  agent loop runs the tools as with any other provider, on `run/3` and
+  `run(..., stream: true)`; `run_stream/3`, which never runs tools, emits the
+  call as `{:tool_call_delta, _}` events. Needs a model whose template
+  supports tools (Qwen3 / Qwen3.5, Llama 3.x).
+
+### Changed — Behavioral
+
+- **`output_type` on a `llamacpp:` agent with tools uses the `:tool_call`
+  mode by default** (#83). llama.cpp cannot combine a JSON-schema grammar
+  with tools, so the structured answer comes back as a synthetic tool call.
+  Without tools nothing changes (the schema is still compiled to a grammar).
+  An explicit `structured_output: [mode: :json_schema]` with tools returns a
+  `ConfigurationError` instead of crashing in llama_cpp_ex.
+- **A `llamacpp:` agent with tools on a model whose chat template has no tool
+  support now fails** with llama.cpp's "does not support tool calls" error
+  (a `ProviderError`). The tools used to be silently ignored and the model
+  answered in text. Remove the tools, or use a model whose template supports
+  them.
+- **Falling back to another provider drops the source provider's
+  structured-output settings** (`:json_schema`, `:guided_*`) before
+  re-injecting the target's. An SGLang agent with tools and an `output_type`
+  falling back to `llamacpp:` used to carry SGLang's `:json_schema` across,
+  which llama.cpp refuses together with tools.
+
+### Fixed
+
+- **Streaming errors from `llamacpp:` are no longer dropped.** LlamaCppEx ends
+  a failed stream with a bare `{:error, reason}` element, which the stream
+  normalizer treated as an unknown chunk and filtered out; it is now an
+  `{:error, %Nous.Errors.ProviderError{}}` event, as on the non-streaming
+  path. The normalizer also maps `reasoning_content` to `{:thinking_delta, _}`
+  and `tool_calls` deltas to `{:tool_call_delta, _}`.
+- The `llamacpp:` provider returns a `ConfigurationError` for an invalid
+  `:tool_choice` or a `:tools` value that is not a list of tool maps, instead
+  of crashing in llama_cpp_ex.
+- The llamacpp smoke test that traces `LlamaCppEx.chat_completion/3` stops
+  its trace forwarder on exit. Left alive, it kept llama.cpp resources
+  referenced until the VM halted, where llama_cpp_ex 0.8.63's Metal teardown
+  asserts (exit 134 after a green run).
+
 ## [0.18.3] - 2026-10-31
 
 InputGuard fixes from the 0.18.2 security review. A message or attachment

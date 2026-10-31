@@ -12,7 +12,7 @@ IO.puts("=== Nous AI - LlamaCpp (Local NIF) ===\n")
 IO.puts("""
 --- Setup ---
 
-1. Add {:llama_cpp_ex, "~> 0.8"} to your mix.exs deps
+1. Add {:llama_cpp_ex, "~> 0.8.63"} to your mix.exs deps
 2. Download a GGUF model (e.g., from HuggingFace)
 3. Set LLAMACPP_MODEL_PATH or edit the path below
 4. Run: mix run examples/providers/llamacpp.exs
@@ -152,6 +152,47 @@ structured_agent =
 case Nous.run(structured_agent, "Describe a fictional character.") do
   {:ok, result} ->
     IO.puts("Structured: #{result.output}")
+
+  {:error, error} ->
+    IO.puts("Error: #{inspect(error)}")
+end
+
+IO.puts("")
+
+# ============================================================================
+# Tool Calling
+# ============================================================================
+
+IO.puts("--- Tool Calling ---")
+
+# Needs a model whose chat template supports tools (Qwen3 / Qwen3.5, Llama 3.x).
+# The template renders the tools and constrains the call; the agent runs the
+# tool and the model answers from its result.
+weather =
+  Nous.Tool.from_function(
+    fn _ctx, %{"city" => city} -> "The weather in #{city} is 21 degrees C and sunny." end,
+    name: "get_weather",
+    description: "Get the current weather for a city",
+    parameters: %{
+      "type" => "object",
+      "properties" => %{"city" => %{"type" => "string", "description" => "City name"}},
+      "required" => ["city"]
+    }
+  )
+
+tool_agent =
+  Nous.new("llamacpp:local",
+    llamacpp_model: llm,
+    instructions: "Use the get_weather tool to answer weather questions.",
+    tools: [weather],
+    model_settings: %{max_tokens: 256, enable_thinking: false, temperature: 0.0}
+  )
+
+case Nous.run(tool_agent, "What is the weather in Oslo?") do
+  {:ok, result} ->
+    calls = Enum.flat_map(result.all_messages, & &1.tool_calls)
+    IO.puts("Tool calls: #{inspect(Enum.map(calls, &{&1["name"], &1["arguments"]}))}")
+    IO.puts("Answer: #{result.output}")
 
   {:error, error} ->
     IO.puts("Error: #{inspect(error)}")

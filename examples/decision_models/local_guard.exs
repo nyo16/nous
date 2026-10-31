@@ -8,7 +8,7 @@
 # calling the chat model. Everything runs in-process through llama_cpp_ex:
 # no server, no API key.
 #
-# Needs {:llama_cpp_ex, "~> 0.8.58"} (a dev dependency of Nous) and two GGUF
+# Needs {:llama_cpp_ex, "~> 0.8.63"} (a dev dependency of Nous) and two GGUF
 # files, given through the same env vars as the llama test suite:
 #
 #   NOUS_LLAMACPP_TEST_MODEL   chat model      (e.g. Qwen3.5-0.8B-UD-Q4_K_XL.gguf)
@@ -54,7 +54,7 @@ end
 IO.puts("=== Nous AI - Local DecisionGuard (Qwen chat + Clef-Flash guard) ===\n")
 
 unless Code.ensure_loaded?(LlamaCppEx.Decision) do
-  IO.puts("llama_cpp_ex >= 0.8.58 is not available; add {:llama_cpp_ex, \"~> 0.8.58\"}.")
+  IO.puts("llama_cpp_ex >= 0.8.63 is not available; add {:llama_cpp_ex, \"~> 0.8.63\"}.")
   System.halt(1)
 end
 

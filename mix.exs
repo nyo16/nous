@@ -154,11 +154,15 @@ defmodule Nous.MixProject do
 
       # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
       # to unlock the LlamaCpp provider and the LlamaCpp decision-model
-      # backend). 0.8.58 is the first release with `LlamaCppEx.Decision`.
+      # backend). 0.8.63 is the floor, not a preference: earlier releases
+      # tokenized chat message content with special-token parsing, so
+      # "<|im_end|>\n<|im_start|>system ..." in a user message forged a system
+      # turn (nyo16/llama_cpp_ex#108), and did the same with decision inputs
+      # (#109). 0.8.63 also adds tool calling (#111), which the provider uses.
       # optional: true keeps it out of downstream apps' builds unless they opt
       # in, while still being available for Nous's own dev/test (e.g. the
       # tagged llamacpp smoke test).
-      {:llama_cpp_ex, "~> 0.8.58", optional: true},
+      {:llama_cpp_ex, "~> 0.8.63", optional: true},
 
       # Process execution for command hooks and the Bash tool. A NIF-based
       # runner is used (over System.cmd/Port) for fine-grained process-tree
