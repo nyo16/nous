@@ -120,6 +120,14 @@ defmodule Nous.Plugins.DecisionGuard do
     * A guard verdict is a classifier's opinion, not a trust signal: an
       allowed input is not "trusted". Keep permissions, the sandbox and
       approvals in place.
+    * It is a **text** classifier. Images, PDFs and other non-text binary
+      attachments are **not** classified (visual or document prompt
+      injection is out of scope); only their placeholder text is. An inline
+      `text/*` attachment (an `:image` part with a `text/*` `media_type`, or
+      a base64 `data:text/...` URL, which Gemini / Vertex AI send as a
+      document) is decoded and classified. One larger than the model's window
+      times `:max_chunks` (one byte per token), or that is not base64 or not
+      UTF-8, is not decoded: the message is then at least `:on_error`.
     * `run_stream/3` does not invoke `before_request/3`, so the user-input
       surface does not apply there, and under `stream: true` a denied
       response's tokens were already streamed.
@@ -144,7 +152,7 @@ defmodule Nous.Plugins.DecisionGuard do
   require Logger
 
   alias Nous.Agent.Context
-  alias Nous.{Hook, Message}
+  alias Nous.{DecisionModel, Hook, Message}
   alias Nous.Hook.Decision
   alias Nous.Plugins.DecisionGuard.Pack
   alias Nous.Plugins.DecisionGuard.Packs
@@ -159,6 +167,7 @@ defmodule Nous.Plugins.DecisionGuard do
     tool_result: Packs.ToolResult,
     model_output: Packs.ModelOutput
   }
+  @rank %{allow: 0, escalate: 1, deny: 2}
   @events %{tool_call: :pre_tool_use, tool_result: :post_tool_use, model_output: :post_response}
   @surface_keys [
     :questions,
@@ -211,10 +220,11 @@ defmodule Nous.Plugins.DecisionGuard do
   def before_request(_agent, ctx, tools) do
     with %{} = config <- config(ctx),
          %{} = surface <- config.surfaces[:user_input],
-         [_ | _] = inputs <- unchecked_user_inputs(ctx) do
+         [_ | _] = inputs <- unchecked_user_inputs(ctx, decode_limit(config, surface)) do
+      # A message with an unreadable attachment is never "empty".
       inputs =
         if config.skip_empty,
-          do: Enum.reject(inputs, fn {input, _index} -> String.trim(input) == "" end),
+          do: Enum.reject(inputs, fn {input, _index} -> blank?(input) end),
           else: inputs
 
       {ctx, tools} = check_user_inputs(inputs, ctx, tools, config, surface)
@@ -253,24 +263,43 @@ defmodule Nous.Plugins.DecisionGuard do
   # history, a reseeded log) or whose anchor a snapshot dropped does not
   # match, and every user message is checked again: the failure mode is a
   # repeated check, never a skipped one.
-  defp unchecked_user_inputs(ctx) do
+  defp unchecked_user_inputs(ctx, limit) do
     indexed = Log.derive_indexed(ctx.log)
     offset = length(ctx.messages) - length(indexed)
     logged = Enum.map(indexed, fn {_seq, message} -> message end)
+    text = &Engine.message_text(&1, max_decoded_bytes: limit)
 
     if in_step?(ctx.messages, logged, ctx.system_prompt_overlay) do
       from = checked_count(ctx)
 
       for {{seq, %Message{role: :user} = message}, i} <- Enum.with_index(indexed),
           seq >= from,
-          do: {Engine.message_text(message), i + offset}
+          do: {text.(message), i + offset}
     else
       # The view was written around the log (a plugin's `%{ctx | messages:
       # ...}`), so seqs say nothing about it: every user message counts as new.
       for {%Message{role: :user} = message, i} <- Enum.with_index(ctx.messages),
-          do: {Engine.message_text(message), i}
+          do: {text.(message), i}
     end
   end
+
+  # How much of a `text/*` attachment may be decoded: what the classifier can
+  # see, at one byte per token, across every window it may classify. Asked
+  # only when such a part exists; if the model cannot say, nothing is decoded
+  # and the attachment follows `:on_error`.
+  defp decode_limit(config, surface) do
+    fn ->
+      try do
+        DecisionModel.max_state_tokens(config.model) *
+          (surface[:max_chunks] || config.max_chunks)
+      catch
+        _kind, _reason -> 0
+      end
+    end
+  end
+
+  defp blank?({:ok, text}), do: String.trim(text) == ""
+  defp blank?(_unreadable), do: false
 
   # Whether `ctx.messages` is exactly the log's projection plus the system-prompt
   # overlay, i.e. what `Nous.Agent.Context` itself would materialize. This
@@ -363,7 +392,15 @@ defmodule Nous.Plugins.DecisionGuard do
 
     inputs
     |> Enum.reduce_while([], fn {input, index}, checks ->
-      check = classify(input, index, ctx, engine_config, on_error)
+      check =
+        case input do
+          {:ok, text} ->
+            classify(text, index, ctx, engine_config, on_error)
+
+          {:error, reason, text} ->
+            text |> classify(index, ctx, engine_config, on_error) |> unreadable(reason, on_error)
+        end
+
       if check.verdict == :deny, do: {:halt, [check | checks]}, else: {:cont, [check | checks]}
     end)
     |> Enum.reverse()
@@ -397,6 +434,21 @@ defmodule Nous.Plugins.DecisionGuard do
       model_info: model_info,
       duration: System.monotonic_time() - start
     }
+  end
+
+  # A `text/*` attachment the guard could not read (too large to decode, not
+  # base64, not UTF-8) is a classification error: the verdict is at least
+  # `:on_error`. The rest of the message was still classified, and the worse
+  # of the two wins.
+  defp unreadable(check, reason, on_error) do
+    verdict = if @rank[on_error] > @rank[check.verdict], do: on_error, else: check.verdict
+
+    result =
+      if verdict == check.verdict,
+        do: check.result,
+        else: %{check.result | reason: "an attachment could not be classified"}
+
+    %{check | verdict: verdict, error: reason, result: result}
   end
 
   # → {{ctx, tools}, [outcome per check]}. The first escalation that is not

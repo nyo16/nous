@@ -224,7 +224,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Nous.Plugins.Summarization` (the latter is enforced: the other order
   raises `ArgumentError`). A strategy exit (llama.cpp process down or still
   loading) or an engine timeout follows `:on_error`, never `:on_escalate`;
-  the engine timeout covers the decision's full time budget. User-input
+  the engine timeout covers the decision's full time budget. Inline `text/*`
+  attachments (a `text/*` `:image` part or a base64 `data:text/...` URL, which
+  Gemini and Vertex AI read as documents) are decoded and classified, capped
+  at the model's window times `:max_chunks` bytes; an oversized or
+  unreadable one follows `:on_error`. Images, PDFs and other binary
+  attachments are not classified. User-input
   presets `:balanced` (default, 0.3 / 0.7) and
   `:strict` (0.06 / 0.53); the other surfaces' bands are provisional. Opt-in
   canary as a separate call. Telemetry `[:nous, :decision_guard, :verdict]`,

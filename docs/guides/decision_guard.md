@@ -206,6 +206,23 @@ classifier reads the attacker's text itself. Keep the real controls in
 place: `:permissions`, the sandbox, approval handlers, `UrlGuard`. Never
 widen what an agent may do because DecisionGuard allowed something.
 
+### Attachments: text only
+
+DecisionGuard is a text classifier. **Images, PDFs and other non-text binary
+attachments are not classified**: text rendered inside an image or a PDF
+(visual or document prompt injection) is out of scope, and only the part's
+placeholder (`"[Image]"`, `"[Image: url]"`) is read. Keep such uploads behind
+the same permissions and approvals you would use for any untrusted file.
+
+An inline `text/*` attachment is classified: an `:image` part whose
+`media_type` is `text/plain`, `text/html` and so on, or a base64
+`data:text/...` URL. Gemini and Vertex AI send these to the model as
+documents, so the guard decodes them and classifies the text. It decodes at
+most the model's window times `:max_chunks` bytes (one byte per token); a
+larger attachment, or one that is not valid base64 or UTF-8, is not decoded,
+and the message is treated as a decision-model error (`:on_error`, deny by
+default).
+
 ## The canary is weak evidence
 
 `canary: true` makes a second, separate call per check (and per chunk) asking

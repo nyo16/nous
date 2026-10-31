@@ -90,25 +90,93 @@ defmodule Nous.Plugins.InputGuard.Engine do
   `content` is added when it says something the parts do not: a message whose
   two halves disagree must not pass on the half that is never sent. Otherwise
   this is `content`, or its text parts joined with spaces.
+
+  A binary part with a `text/*` media type (an `:image` part's `media_type`,
+  or a base64 `data:` URL) is sent as a document by Gemini / Vertex AI, so it
+  is decoded and its text classified. Other binary parts (images, PDFs) are
+  not: they are classified as their placeholder only.
+
+  Returns `{:ok, text}`, or `{:error, reason, text}` when a `text/*` part
+  could not be decoded within `opts[:max_decoded_bytes]` (an integer, or a
+  0-arity function returning one; default `0`, i.e. never decode) or is not
+  valid UTF-8. `text` then has that part as its placeholder, and the caller
+  must treat the message as not fully classified.
   """
-  @spec message_text(Message.t()) :: String.t()
-  def message_text(%Message{metadata: %{content_parts: parts}} = message) when is_list(parts) do
-    parts_text = Enum.map_join(parts, " ", &part_text/1)
+  @spec message_text(Message.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term(), String.t()}
+  def message_text(message, opts \\ [])
+
+  def message_text(%Message{metadata: %{content_parts: parts}} = message, opts)
+      when is_list(parts) do
+    limit = Keyword.get(opts, :max_decoded_bytes, 0)
+    {texts, errors} = parts |> Enum.map(&part_text(&1, limit)) |> Enum.unzip()
+    parts_text = Enum.join(texts, " ")
     content = extract_text(message)
 
     # `Message.user/2` stores `ContentPart.to_text(parts)` as `content`.
-    if content in ["", parts_text, Enum.map_join(parts, &part_text/1)],
-      do: parts_text,
-      else: content <> "\n" <> parts_text
+    rendered = [Enum.map_join(parts, " ", &rendered/1), Enum.map_join(parts, &rendered/1)]
+
+    text =
+      if content in ["", parts_text | rendered],
+        do: parts_text,
+        else: content <> "\n" <> parts_text
+
+    case Enum.reject(errors, &is_nil/1) do
+      [] -> {:ok, text}
+      [reason | _] -> {:error, reason, text}
+    end
   end
 
-  def message_text(%Message{} = message), do: extract_text(message)
+  def message_text(%Message{} = message, _opts), do: {:ok, extract_text(message)}
+
+  # → {text, nil | error_reason}
+  defp part_text(%ContentPart{type: :image, content: data, options: opts} = part, limit)
+       when is_binary(data) do
+    media_type = Map.get(opts || %{}, :media_type, "image/png")
+
+    if text_media?(media_type),
+      do: decode_text(part, media_type, data, limit),
+      else: {rendered(part), nil}
+  end
+
+  defp part_text(%ContentPart{type: :image_url, content: "data:" <> _ = url} = part, limit) do
+    case ContentPart.parse_data_url(url) do
+      {:ok, media_type, data} ->
+        if text_media?(media_type),
+          do: decode_text(part, media_type, data, limit),
+          else: {rendered(part), nil}
+
+      {:error, _} ->
+        {rendered(part), nil}
+    end
+  end
+
+  defp part_text(part, _limit), do: {rendered(part), nil}
+
+  defp text_media?(media_type) when is_binary(media_type),
+    do: media_type |> String.downcase() |> String.starts_with?("text/")
+
+  defp text_media?(_), do: false
+
+  # The size check runs on the encoded length, before anything is decoded.
+  defp decode_text(part, media_type, data, limit) do
+    max = if is_function(limit, 0), do: limit.(), else: limit
+
+    with true <- div(byte_size(data) * 3, 4) <= max || {:too_large, media_type},
+         {:ok, text} <- Base.decode64(data, ignore: :whitespace, padding: false),
+         true <- String.valid?(text) || {:not_utf8, media_type} do
+      {"[Document #{media_type}] " <> text, nil}
+    else
+      :error -> {rendered(part), {:attachment_unreadable, {:invalid_base64, media_type}}}
+      reason -> {rendered(part), {:attachment_unreadable, reason}}
+    end
+  end
 
   # `ContentPart.to_text/1` of one part is exactly what the OpenAI adapter sends
   # for a part it has no native shape for. Anything that is not a part is
   # classified as inspected rather than crashing the guard.
-  defp part_text(%ContentPart{} = part), do: ContentPart.to_text([part])
-  defp part_text(other), do: inspect(other)
+  defp rendered(%ContentPart{} = part), do: ContentPart.to_text([part])
+  defp rendered(other), do: inspect(other)
 
   defp extract_text(%Message{content: content}) when is_binary(content), do: content
 

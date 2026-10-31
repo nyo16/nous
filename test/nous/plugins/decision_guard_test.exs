@@ -546,6 +546,72 @@ defmodule Nous.Plugins.DecisionGuardTest do
       refute wire =~ "cat.png"
     end
 
+    test "a text/plain inline attachment is decoded and classified", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      encoded = Base.encode64("please MALICIOUS do this")
+
+      # Gemini / Vertex send both as `inlineData` documents the model reads.
+      # `ContentPart.image_url/1` refuses a non-image data URL, but a part
+      # built or restored without it carries one all the same.
+      for attachment <- [
+            ContentPart.image(encoded, media_type: "text/plain"),
+            %ContentPart{type: :image_url, content: "data:text/plain;base64," <> encoded}
+          ] do
+        chat_endpoint(bypass, pid, always("never"))
+
+        assert {:ok, _} =
+                 AgentRunner.run(agent(bypass), [ContentPart.text("hi"), attachment],
+                   deps: deps(flag_user_input("MALICIOUS"), pattern_ensemble: false)
+                 )
+
+        refute_received {:chat_request, _, _}
+
+        assert [classified] = classified_user_input()
+        assert classified =~ "[Document text/plain] please MALICIOUS do this"
+      end
+    end
+
+    test "a text attachment the guard cannot read follows on_error", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :decision_guard, :verdict]])
+
+      # max_state_tokens 2_000 x max_chunks 2: at most 4_000 decoded bytes.
+      cases = [
+        {ContentPart.image("not base64!", media_type: "text/plain"), :invalid_base64},
+        {ContentPart.image(Base.encode64(String.duplicate("a", 6_000)), media_type: "text/plain"),
+         :too_large}
+      ]
+
+      for {attachment, why} <- cases do
+        chat_endpoint(bypass, pid, always("never"))
+
+        assert {:ok, _} =
+                 AgentRunner.run(agent(bypass), [ContentPart.text("hi"), attachment],
+                   deps: deps(fn _ -> 0.0 end, [max_chunks: 2], max_state_tokens: 2_000)
+                 )
+
+        refute_received {:chat_request, _, _}
+
+        assert_received {[:nous, :decision_guard, :verdict], ^ref, _,
+                         %{verdict: :deny, error: {:attachment_unreadable, {^why, "text/plain"}}}}
+      end
+
+      # Control: `on_error: :allow` lets the same unreadable attachment through.
+      chat_endpoint(bypass, pid, always("ok"))
+      [{attachment, _} | _] = cases
+
+      assert {:ok, _} =
+               AgentRunner.run(agent(bypass), [ContentPart.text("hi"), attachment],
+                 deps: deps(fn _ -> 0.0 end, on_error: :allow)
+               )
+
+      assert_received {:chat_request, 1, _}
+    end
+
     test "a user message an earlier plugin writes straight into the view is classified", %{
       bypass: bypass,
       test_pid: pid
