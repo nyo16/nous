@@ -33,8 +33,9 @@ defmodule Nous.Hook.Decision do
       * `:score` - `{allow_below, deny_at}` on the expected level scaled to
         `0..1` (lowest level 0, highest 1). The highest level is the riskiest.
       * `:choice` - `%{option_id => {allow_below, deny_at}}` (or a keyword
-        list) on the probability of each listed option. Unlisted options are
-        safe.
+        list) on the probability of each listed option. A key that is a
+        list of options (`%{[:suspicious, :blocked] => {0.3, 0.7}}`) reads
+        their summed probability. Unlisted options are safe.
 
       `p < allow_below` allows, `p >= deny_at` denies, anything between
       escalates. The verdict is the worst question's.
@@ -62,6 +63,22 @@ defmodule Nous.Hook.Decision do
       rejects), and every other event denies (`:post_tool_use`: withholds the
       result). `info` is `%{event, payload, env, hook_name, reason,
       probabilities}`.
+    * `:combine` - `(answers, verdict -> verdict)`, applied per chunk after
+      the bands, with `answers :: %{question_id => %Nous.DecisionModel.Answer{}}`.
+      It can only raise the verdict (the worse of the two wins), e.g. "deny
+      when both `destructive` and `off_task` are elevated".
+    * `:canary` - `false` (default) or `true`: per chunk, ask a second,
+      separate `Nous.DecisionModel.decide/4` call a numeric question about a
+      random `"check"` value added to the state ("is the number in the check
+      field greater than k?"; value, margin and polarity drawn fresh from
+      `:crypto` every call). A wrong answer floors that chunk's verdict at
+      `:escalate`. A separate call cannot perturb the joint answers, but costs
+      a second call per chunk. Weak evidence: a correct answer never lowers
+      a verdict.
+    * `:on_verdict` - `(report -> any)`, called after every evaluation with
+      the `[:nous, :hook, :decision]` telemetry metadata plus its
+      measurements (`:duration`, `:chunk_count`).
+      Errors in it are logged and ignored.
 
   Escalation is resolved here, inside the hook, so a decision hook still
   returns only `:allow`, `{:deny, reason}` or `{:modify, changes}`. On
@@ -74,7 +91,8 @@ defmodule Nous.Hook.Decision do
   Each decision-model call runs in its own task bounded by the hook's
   `:timeout` (`Nous.Hook`, default 10 s); a timeout follows `:on_error`.
   Chunked content makes one call per chunk, sequentially, stopping at the
-  first deny. Escalation (which may wait on a human) is not bounded.
+  first deny. With `:canary`, each chunk makes a second call. Escalation
+  (which may wait on a human) is not bounded.
 
   ## Telemetry
 
@@ -82,7 +100,7 @@ defmodule Nous.Hook.Decision do
       * Measurements: `%{duration: native_time, chunk_count: integer}`
       * Metadata: `%{event, hook_name, verdict: :allow | :escalate | :deny,
         result: :allow | :deny | :modify, probabilities: %{id => [{key, p}]},
-        backend, model, error: term | nil}`
+        backend, model, canary_failed: integer, error: term | nil}`
   """
 
   alias Nous.Agent.Context
@@ -111,12 +129,17 @@ defmodule Nous.Hook.Decision do
   @type t :: %__MODULE__{
           model: DecisionModel.t(),
           questions: [Question.t()],
-          bands: %{Question.id() => band() | %{Question.option_id() => band()}},
+          bands: %{
+            Question.id() => band() | %{(Question.option_id() | [Question.option_id()]) => band()}
+          },
           state: (map(), env() -> term()) | nil,
           on_error: :deny | :escalate | :allow,
           oversize: :chunk | :suspicious | :head_tail,
           max_chunks: pos_integer(),
-          on_escalate: (map() -> escalation()) | nil
+          on_escalate: (map() -> escalation()) | nil,
+          combine: (%{Question.id() => Answer.t()}, verdict() -> verdict()) | nil,
+          canary: boolean(),
+          on_verdict: (map() -> any()) | nil
         }
 
   @enforce_keys [:model, :questions, :bands]
@@ -126,9 +149,12 @@ defmodule Nous.Hook.Decision do
     :bands,
     :state,
     :on_escalate,
+    :combine,
+    :on_verdict,
     on_error: :deny,
     oversize: :chunk,
-    max_chunks: 8
+    max_chunks: 8,
+    canary: false
   ]
 
   @withheld "[tool result withheld by decision hook]"
@@ -163,7 +189,10 @@ defmodule Nous.Hook.Decision do
       on_escalate: Keyword.get(opts, :on_escalate),
       on_error: Keyword.get(opts, :on_error, :deny),
       oversize: Keyword.get(opts, :oversize, :chunk),
-      max_chunks: Keyword.get(opts, :max_chunks, 8)
+      max_chunks: Keyword.get(opts, :max_chunks, 8),
+      combine: Keyword.get(opts, :combine),
+      canary: Keyword.get(opts, :canary, false),
+      on_verdict: Keyword.get(opts, :on_verdict)
     }
 
     validate!(decision)
@@ -185,19 +214,35 @@ defmodule Nous.Hook.Decision do
     unless is_nil(d.on_escalate) or is_function(d.on_escalate, 1),
       do: raise(ArgumentError, ":on_escalate must be a 1-arity function")
 
+    unless is_nil(d.combine) or is_function(d.combine, 2),
+      do: raise(ArgumentError, ":combine must be a 2-arity function (answers, verdict)")
+
+    unless is_boolean(d.canary), do: raise(ArgumentError, ":canary must be a boolean")
+
+    unless is_nil(d.on_verdict) or is_function(d.on_verdict, 1),
+      do: raise(ArgumentError, ":on_verdict must be a 1-arity function")
+
     d
   end
 
   defp validate_band!(%Question{type: :choice} = q, band) when is_map(band) or is_list(band) do
     declared = q.criteria |> Enum.map(fn {option, _} -> option end) |> MapSet.new()
 
-    Enum.each(band, fn {option, option_band} ->
-      unless MapSet.member?(declared, option),
-        do:
-          raise(
-            ArgumentError,
-            "band for #{inspect(q.id)} names undeclared option #{inspect(option)}"
-          )
+    Enum.each(band, fn {options, option_band} ->
+      case List.wrap(options) do
+        [] ->
+          raise ArgumentError, "band for #{inspect(q.id)} names no option"
+
+        listed ->
+          Enum.each(listed, fn option ->
+            unless MapSet.member?(declared, option),
+              do:
+                raise(
+                  ArgumentError,
+                  "band for #{inspect(q.id)} names undeclared option #{inspect(option)}"
+                )
+          end)
+      end
 
       validate_band!(%{q | type: :noul}, option_band)
     end)
@@ -211,7 +256,7 @@ defmodule Nous.Hook.Decision do
   defp validate_band!(%Question{id: id, type: type}, band) do
     expected =
       if type == :choice,
-        do: "%{option_id => {allow_below, deny_at}}",
+        do: "%{option_id | [option_id] => {allow_below, deny_at}}",
         else: "{allow_below, deny_at} with 0 <= allow_below <= deny_at <= 1"
 
     raise ArgumentError,
@@ -357,65 +402,103 @@ defmodule Nous.Hook.Decision do
   def evaluate(%__MODULE__{} = d, hook, event, payload, env) do
     start = System.monotonic_time()
 
-    {outcome, meta} =
-      try do
-        classify(d, hook, event, payload, env)
-      rescue
-        e -> {{:error, e}, %{chunk_count: 0, probabilities: %{}}}
-      catch
-        kind, reason -> {{:error, {kind, reason}}, %{chunk_count: 0, probabilities: %{}}}
-      end
-
-    {verdict, error, why} =
-      case outcome do
-        {:verdict, verdict, why} -> {verdict, nil, why}
-        {:error, reason} -> {d.on_error, reason, {:error, reason}}
+    {verdict, error, why, info} =
+      case safe_verdict(d, hook, event, payload, env) do
+        {:ok, verdict, info} -> {verdict, nil, info.why, info}
+        {:error, reason, info} -> {d.on_error, reason, {:error, reason}, info}
       end
 
     if error, do: Logger.warning("Decision hook #{inspect(hook.name)} errored: #{inspect(error)}")
 
-    result = resolve(d, hook, event, payload, env, verdict, why, meta.probabilities)
+    result = resolve(d, hook, event, payload, env, verdict, why, info.probabilities)
 
-    :telemetry.execute(
-      [:nous, :hook, :decision],
-      %{duration: System.monotonic_time() - start, chunk_count: meta.chunk_count},
-      %{
-        event: event,
-        hook_name: hook.name,
-        verdict: verdict,
-        result: result_kind(result),
-        probabilities: meta.probabilities,
-        backend: d.model.backend,
-        model: d.model.model,
-        error: error
-      }
-    )
+    report = %{
+      event: event,
+      hook_name: hook.name,
+      verdict: verdict,
+      result: result_kind(result),
+      probabilities: info.probabilities,
+      canary_failed: info.canary_failed,
+      backend: d.model.backend,
+      model: d.model.model,
+      error: error
+    }
+
+    measurements = %{duration: System.monotonic_time() - start, chunk_count: info.chunk_count}
+    :telemetry.execute([:nous, :hook, :decision], measurements, report)
+    notify(d, Map.merge(report, measurements))
 
     result
+  end
+
+  defp safe_verdict(d, hook, event, payload, env) do
+    verdict(d, build_state(d, event, payload, env), timeout: hook.timeout)
+  rescue
+    e -> {:error, e, empty_info()}
+  catch
+    kind, reason -> {:error, {kind, reason}, empty_info()}
+  end
+
+  defp notify(%__MODULE__{on_verdict: nil}, _report), do: :ok
+
+  defp notify(%__MODULE__{on_verdict: fun}, report) do
+    fun.(report)
+    :ok
+  rescue
+    e -> Logger.warning("Decision hook on_verdict raised: #{Exception.message(e)}")
+  catch
+    kind, reason -> Logger.warning("Decision hook on_verdict #{kind}: #{inspect(reason)}")
   end
 
   defp result_kind(:allow), do: :allow
   defp result_kind({:deny, _}), do: :deny
   defp result_kind(_modify_or_withhold), do: :modify
 
-  defp classify(d, hook, event, payload, env) do
-    state = build_state(d, event, payload, env)
+  defp empty_info, do: %{chunk_count: 0, probabilities: %{}, canary_failed: 0, why: :band}
+
+  @doc """
+  Classifies `state` with the config's model, questions and bands, without
+  resolving an escalation: the verdict a hook built from `d` would act on.
+
+  Applies the `:oversize` policy, the `:combine` rule and the `:canary`
+  check exactly as a hook does. `Nous.Plugins.InputGuard.Strategies.DecisionModel`
+  uses it to classify user input outside the hook runner.
+
+  ## Options
+
+    * `:timeout` - per decision-model call, in ms (default `10_000`).
+
+  Returns `{:ok, verdict, info}` or `{:error, reason, info}`, where `info` is
+  `%{probabilities: %{id => [{key, p}]}, chunk_count: integer, canary_failed:
+  integer, why: :band | :oversize | :canary}`. `:probabilities` are the
+  answers of the chunk that set the verdict.
+  """
+  @spec verdict(t(), term(), keyword()) ::
+          {:ok, verdict(), map()} | {:error, term(), map()}
+  def verdict(%__MODULE__{} = d, state, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 10_000)
 
     case plan_states(d, state) do
       {:error, reason} ->
-        {{:error, reason}, %{chunk_count: 0, probabilities: %{}}}
+        {:error, reason, empty_info()}
 
       {states, floor} ->
-        case decide_all(d, hook, states) do
-          {:ok, worst, probabilities} ->
-            verdict = worst_verdict(worst, floor)
-            why = if verdict == worst, do: :band, else: :oversize
+        case decide_all(d, timeout, states) do
+          {:ok, acc} ->
+            verdict = worst_verdict(acc.verdict, floor)
+            why = if verdict == acc.verdict, do: acc.why, else: :oversize
 
-            {{:verdict, verdict, why},
-             %{chunk_count: length(states), probabilities: probabilities}}
+            {:ok, verdict,
+             %{
+               probabilities: acc.probabilities,
+               chunk_count: length(states),
+               canary_failed: acc.canary_failed,
+               why: why
+             }}
 
-          {:error, reason} ->
-            {{:error, reason}, %{chunk_count: length(states), probabilities: %{}}}
+          {:error, reason, canary_failed} ->
+            {:error, reason,
+             %{empty_info() | chunk_count: length(states), canary_failed: canary_failed}}
         end
     end
   end
@@ -427,36 +510,102 @@ defmodule Nous.Hook.Decision do
 
   # Classify chunk by chunk, stopping at the first deny. The worst verdict wins
   # and its probabilities are the ones reported.
-  defp decide_all(d, hook, states) do
-    Enum.reduce_while(states, {:ok, :allow, %{}}, fn state, {:ok, worst, probs} ->
-      case decide_bounded(d, hook, state) do
-        {:ok, %Result{} = result} ->
-          case score(d, result) do
-            {:ok, verdict, chunk_probs} ->
-              acc =
-                if rank(verdict) > rank(worst) or probs == %{},
-                  do: {:ok, worst_verdict(verdict, worst), chunk_probs},
-                  else: {:ok, worst, probs}
+  defp decide_all(d, timeout, states) do
+    initial = %{verdict: :allow, why: :band, probabilities: %{}, canary_failed: 0}
 
-              if verdict == :deny, do: {:halt, acc}, else: {:cont, acc}
+    Enum.reduce_while(states, {:ok, initial}, fn state, {:ok, acc} ->
+      case decide_chunk(d, timeout, state) do
+        {:ok, verdict, why, chunk_probs, failed} ->
+          acc = %{acc | canary_failed: acc.canary_failed + failed}
 
-            {:error, _} = err ->
-              {:halt, err}
-          end
+          acc =
+            if rank(verdict) > rank(acc.verdict) or acc.probabilities == %{},
+              do: %{
+                acc
+                | verdict: worst_verdict(verdict, acc.verdict),
+                  why: why,
+                  probabilities: chunk_probs
+              },
+              else: acc
 
-        {:error, _} = err ->
-          {:halt, err}
+          if verdict == :deny, do: {:halt, {:ok, acc}}, else: {:cont, {:ok, acc}}
+
+        {:error, reason} ->
+          {:halt, {:error, reason, acc.canary_failed}}
       end
     end)
   end
 
-  defp decide_bounded(d, hook, state) do
-    timeout = hook.timeout
+  # One chunk: the questions, the `:combine` rule (which can only raise the
+  # verdict), then - unless already denied - the canary in its own call, so
+  # it cannot perturb the joint answers. A failed canary floors the chunk at
+  # :escalate.
+  defp decide_chunk(d, timeout, state) do
+    with {:ok, %Result{} = result} <- decide_bounded(d.model, timeout, state, d.questions),
+         {:ok, verdict, probs, answers} <- score(d, result) do
+      verdict = combine(d, answers, verdict)
+
+      if d.canary and verdict != :deny do
+        case canary(d.model, timeout, state) do
+          :passed -> {:ok, verdict, :band, probs, 0}
+          :failed when verdict == :allow -> {:ok, :escalate, :canary, probs, 1}
+          :failed -> {:ok, verdict, :band, probs, 1}
+          {:error, _} = err -> err
+        end
+      else
+        {:ok, verdict, :band, probs, 0}
+      end
+    end
+  end
+
+  defp combine(%__MODULE__{combine: nil}, _answers, verdict), do: verdict
+
+  defp combine(%__MODULE__{combine: fun}, answers, verdict) do
+    case fun.(answers, verdict) do
+      combined when combined in [:allow, :escalate, :deny] -> worst_verdict(combined, verdict)
+      other -> raise ArgumentError, ":combine returned #{inspect(other)}, expected a verdict"
+    end
+  end
+
+  # The numeric canary (research/packs.md §5, variant B): "is the number in
+  # the check field greater than k?", with the number, the margin and the
+  # polarity drawn fresh from :crypto on every call, never reused. The agent's
+  # LLM never sees the state and untrusted text is JSON-escaped, so content
+  # can neither read nor forge the check value.
+  defp canary(dm, timeout, state) do
+    <<a, b, c>> = :crypto.strong_rand_bytes(3)
+    n = 20 + rem(a, 61)
+    margin = 10 + rem(b, 10)
+    truth = rem(c, 2) == 0
+    k = if truth, do: n - margin, else: n + margin
+
+    question = [
+      check: [
+        type: :noul,
+        instructions: "Is the number in the check field of the state greater than #{k}?"
+      ]
+    ]
+
+    with {:ok, %Result{} = result} <-
+           decide_bounded(dm, timeout, canary_state(state, n), question),
+         {:ok, %Answer{noul: p}} when is_number(p) <- Result.fetch(result, :check) do
+      p_correct = if truth, do: p, else: 1 - p
+      if p_correct < 0.5, do: :failed, else: :passed
+    else
+      {:error, _} = err -> err
+      _ -> {:error, {:missing_answer, :check}}
+    end
+  end
+
+  defp canary_state(state, n) when is_map(state), do: Map.put(state, "check", n)
+  defp canary_state(state, n), do: %{"check" => n, "state" => state}
+
+  defp decide_bounded(dm, timeout, state, questions) do
     opts = if is_integer(timeout), do: [timeout: timeout], else: []
 
     task =
       Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-        DecisionModel.decide(d.model, state, d.questions, opts)
+        DecisionModel.decide(dm, state, questions, opts)
       end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
@@ -469,10 +618,12 @@ defmodule Nous.Hook.Decision do
   end
 
   defp score(d, %Result{} = result) do
-    Enum.reduce_while(d.questions, {:ok, :allow, %{}}, fn q, {:ok, worst, probs} ->
+    Enum.reduce_while(d.questions, {:ok, :allow, %{}, %{}}, fn q, {:ok, worst, probs, answers} ->
       with {:ok, %Answer{} = answer} <- Result.fetch(result, q.id),
            {:ok, verdict} <- question_verdict(q, answer, Map.fetch!(d.bands, q.id)) do
-        {:cont, {:ok, worst_verdict(verdict, worst), Map.put(probs, q.id, answer.probabilities)}}
+        {:cont,
+         {:ok, worst_verdict(verdict, worst), Map.put(probs, q.id, answer.probabilities),
+          Map.put(answers, q.id, answer)}}
       else
         _ -> {:halt, {:error, {:missing_answer, q.id}}}
       end
@@ -488,18 +639,32 @@ defmodule Nous.Hook.Decision do
   end
 
   defp question_verdict(%Question{type: :choice}, %Answer{probabilities: probs}, bands) do
-    Enum.reduce_while(bands, {:ok, :allow}, fn {option, band}, {:ok, worst} ->
-      case List.keyfind(probs, option, 0) do
-        {^option, p} when is_number(p) ->
-          {:cont, {:ok, worst_verdict(band_verdict(p, band), worst)}}
-
-        _ ->
-          {:halt, :error}
+    Enum.reduce_while(bands, {:ok, :allow}, fn {options, band}, {:ok, worst} ->
+      case option_probability(probs, options) do
+        {:ok, p} -> {:cont, {:ok, worst_verdict(band_verdict(p, band), worst)}}
+        :error -> {:halt, :error}
       end
     end)
   end
 
   defp question_verdict(_question, _answer, _band), do: :error
+
+  # A band keyed by a list of options reads their summed probability.
+  defp option_probability(probs, options) when is_list(options) do
+    Enum.reduce_while(options, {:ok, 0.0}, fn option, {:ok, sum} ->
+      case option_probability(probs, option) do
+        {:ok, p} -> {:cont, {:ok, sum + p}}
+        :error -> {:halt, :error}
+      end
+    end)
+  end
+
+  defp option_probability(probs, option) do
+    case List.keyfind(probs, option, 0) do
+      {^option, p} when is_number(p) -> {:ok, p}
+      _ -> :error
+    end
+  end
 
   defp band_verdict(p, {allow_below, _deny_at}) when p < allow_below, do: :allow
   defp band_verdict(p, {_allow_below, deny_at}) when p >= deny_at, do: :deny
@@ -735,5 +900,6 @@ defmodule Nous.Hook.Decision do
 
   defp reason_text(:band), do: "flagged by the decision model"
   defp reason_text(:oversize), do: "content too large to classify fully"
+  defp reason_text(:canary), do: "the canary check failed"
   defp reason_text({:error, _}), do: "decision model unavailable (fail closed)"
 end

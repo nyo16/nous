@@ -128,6 +128,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `init/2`. `Nous.AgentServer`'s `agent_config` now accepts `:plugins`.
 - **`Nous.Errors.ResponseDenied`** for a denied `:post_response`.
 - `Nous.Hook.Registry.has_type?/2`.
+- **`Nous.Plugins.DecisionGuard`**: a security guard backed by a
+  `Nous.DecisionModel`, configured in `deps[:decision_guard_config]`. Four
+  surfaces with built-in question packs (`Nous.Plugins.DecisionGuard.Pack`;
+  `Packs.UserInput`, `ToolCall`, `ToolResult`, `ModelOutput`, all tuned for
+  the `"clef"` family, which refuse default bands for any other family):
+  `:user_input` (default; in `before_request/3`, with the Pattern strategy
+  under `:any`, blocking like InputGuard's `:block`), and `:tool_call`,
+  `:tool_result`, `:model_output` as `:decision` hooks at priority 900 with
+  `fail_closed: true`. User-input presets `:balanced` (default, 0.3 / 0.7) and
+  `:strict` (0.06 / 0.53); the other surfaces' bands are provisional. Opt-in
+  canary as a separate call. Telemetry `[:nous, :decision_guard, :verdict]`,
+  `[:nous, :decision_guard, :canary_failed]`,
+  `[:nous, :decision_guard, :strategy_dropped]`. New guide:
+  `docs/guides/decision_guard.md`.
+- **`Nous.Plugins.InputGuard.Strategies.DecisionModel`**: a decision-model
+  InputGuard strategy (one `safe` / `suspicious` / `blocked` choice, banded on
+  P(suspicious) + P(blocked); `on_error` as LLMJudge, `:drop` by default).
+- **`Nous.Plugins.InputGuard.Engine`**: InputGuard's strategy runner,
+  aggregation and fail-closed accounting, extracted so DecisionGuard shares
+  it. InputGuard's behaviour, logs and `[:nous, :input_guard,
+  :strategy_dropped]` event are unchanged. `c:Nous.Plugins.InputGuard.Strategy.check/3`
+  documents that `ctx` may be `nil` off the user-input path.
+- **`Nous.Hook.Decision`**: `combine:` (cross-question rule that can only
+  raise the verdict), `canary:` (a separate per-chunk canary call; a wrong
+  answer floors the verdict at escalate), `on_verdict:` (observer), choice
+  bands keyed by a list of options (summed probability), and `verdict/3` to
+  classify a state outside the hook runner. `[:nous, :hook, :decision]`
+  metadata gains `canary_failed`.
+- **Sub-agents inherit DecisionGuard.** `:decision_guard_config` joins
+  SubAgent's confinement keys (no `:sub_agent_shared_deps` value can withhold
+  or replace it), and `delegate_task` / `spawn_agents` children get
+  `Nous.Plugins.DecisionGuard` added to their plugins.
 - **Pluggable pre-dispatch router (`Nous.Router`, `router:` agent option).**
   `Nous.new(model, router: {module, opts})` picks the chat model before each
   request is built, at a `:granularity` of `:per_turn` (default), `:once`,

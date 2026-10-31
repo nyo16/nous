@@ -144,8 +144,10 @@ guard =
 ```
 
 - **Bands** read P(risky): a `:noul` band applies to P(true), a `:score` band to the
-  expected level scaled to `0..1`, and a `:choice` band is a map of option → band. The worst
-  question wins.
+  expected level scaled to `0..1`, and a `:choice` band is a map of option → band (a list of
+  options as the key reads their summed probability: `%{[:suspicious, :blocked] => {0.3, 0.7}}`).
+  The worst question wins. `combine: fn answers, verdict -> verdict end` adds a cross-question
+  rule that can only raise the verdict.
 - **State.** By default the model sees a JSON-framed map whose keys sort with
   `untrusted_content` last: `surface` (`tool_call`, `tool_result`, `model_output`,
   `user_input`), `task` (the last user message), `tool` (name, description, category) and
@@ -166,6 +168,12 @@ guard =
   the model's context and the worst chunk wins; beyond `max_chunks` (default 8) the head and
   tail chunks are classified and the verdict is at least an escalation. `:suspicious`
   escalates without classifying; `:head_tail` classifies the head and tail only.
+- **Canary** (`canary: true`, off by default): each chunk gets a second, separate call asking
+  whether a random `check` number added to the state exceeds a random threshold. A wrong
+  answer floors that chunk at escalate. It is weak evidence, never a reason to allow.
+- `on_verdict: fn report -> ... end` observes every evaluation (the telemetry metadata and
+  measurements). `Nous.Plugins.DecisionGuard` builds its hooks from these options; see the
+  [DecisionGuard guide](decision_guard.md).
 
 #### `env`
 

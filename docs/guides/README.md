@@ -33,7 +33,8 @@ the same way as the [HexDocs sidebar](https://hexdocs.pm/nous).
 - **[HTTP Backends](http_backends.md)** — Finch/Req vs Hackney, streaming backpressure.
 - **[Vertex AI Setup](vertex_ai_setup.md)** — Google Cloud Vertex AI configuration.
 - **[Fallback Chains](fallback.md)** — automatic provider/model failover.
-- **[Decision Models](decision_models.md)** — route each turn to the right model tier with a decision model.
+- **[Decision Models](decision_models.md)** — non-generative classifiers (Clef, Clef-Flash, Jev): backends, local llama_cpp_ex setup, latency, decision hooks and per-turn model routing.
+- **[DecisionGuard](decision_guard.md)** — decision-model security guard for user input, tool calls, tool results and model output: presets, latency, canary, sub-agent inheritance.
 
 ## Integrations & Operations
 

@@ -122,7 +122,19 @@ defmodule Nous.Telemetry do
       (`Nous.Hook.Decision`).
       * Measurement: `%{duration, chunk_count}`
       * Metadata: `%{event, hook_name, verdict, result, probabilities, backend,
-        model, error}`
+        model, canary_failed, error}`
+    * `[:nous, :decision_guard, :verdict]` - one check by
+      `Nous.Plugins.DecisionGuard`, on any surface.
+      * Measurement: `%{duration, chunk_count}`
+      * Metadata: `%{surface, verdict, result, probabilities, canary_failed, error}`
+    * `[:nous, :decision_guard, :canary_failed]` - a DecisionGuard canary was
+      answered wrongly.
+      * Measurement: `%{count}`
+      * Metadata: `%{surface}`
+    * `[:nous, :decision_guard, :strategy_dropped]` - a DecisionGuard
+      user-input strategy produced no verdict (`Nous.Plugins.InputGuard.Engine`).
+      * Measurement: `%{count}`
+      * Metadata: `%{aggregation, fail_closed}`
 
   ## Skill Events
 

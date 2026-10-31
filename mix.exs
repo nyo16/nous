@@ -258,6 +258,8 @@ defmodule Nous.MixProject do
         {"docs/guides/fallback.md", filename: "fallback", title: "Fallback Chains Guide"},
         {"docs/guides/decision_models.md",
          filename: "decision_models", title: "Decision Models Guide"},
+        {"docs/guides/decision_guard.md",
+         filename: "decision_guard", title: "DecisionGuard Guide"},
 
         # Design Documents
         {"docs/design/llm_council_design.md",
@@ -334,7 +336,8 @@ defmodule Nous.MixProject do
           "http_backends.html",
           "vertex_ai_setup.html",
           "fallback.html",
-          "decision_models.html"
+          "decision_models.html",
+          "decision_guard.html"
         ],
         Design: [
           "council_design.html",
@@ -561,6 +564,14 @@ defmodule Nous.MixProject do
           Nous.Plugins.InputGuard.Strategies.Pattern,
           Nous.Plugins.InputGuard.Strategies.LLMJudge,
           Nous.Plugins.InputGuard.Strategies.Semantic,
+          Nous.Plugins.InputGuard.Strategies.DecisionModel,
+          Nous.Plugins.InputGuard.Engine,
+          Nous.Plugins.DecisionGuard,
+          Nous.Plugins.DecisionGuard.Pack,
+          Nous.Plugins.DecisionGuard.Packs.UserInput,
+          Nous.Plugins.DecisionGuard.Packs.ToolCall,
+          Nous.Plugins.DecisionGuard.Packs.ToolResult,
+          Nous.Plugins.DecisionGuard.Packs.ModelOutput,
           Nous.Plugins.Memory,
           Nous.Plugins.SubAgent,
           Nous.Plugins.Summarization,

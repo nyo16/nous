@@ -126,7 +126,9 @@ One event per `Nous.Router` consultation; see the
 | `[:nous, :hook, :execute, :stop]` | `duration` | `event`, `hook_name`, `hook_type`, `result?` |
 | `[:nous, :hook, :denied]` | — | `event`, `hook_name`, `hook_type`, `reason?` |
 | `[:nous, :hook, :failed_closed]` | `system_time` | `event`, `hook_name`, `hook_type`, `reason` |
-| `[:nous, :hook, :decision]` | `duration`, `chunk_count` | `event`, `hook_name`, `verdict`, `result`, `probabilities`, `backend`, `model`, `error` |
+| `[:nous, :hook, :decision]` | `duration`, `chunk_count` | `event`, `hook_name`, `verdict`, `result`, `probabilities`, `backend`, `model`, `canary_failed`, `error` |
+| `[:nous, :decision_guard, :verdict]` | `duration`, `chunk_count` | `surface`, `verdict`, `result`, `probabilities`, `canary_failed`, `error` |
+| `[:nous, :decision_guard, :canary_failed]` | `count` | `surface` |
 | `[:nous, :skill, :activate]` | — | `skill_name`, `agent_name` |
 | `[:nous, :skill, :deactivate]` | — | `skill_name`, `agent_name` |
 
@@ -149,6 +151,7 @@ Full payloads are documented in `Nous.Workflow.Telemetry`.
 |-------|-------------|----------|
 | `[:nous, :rate_limiter, :unavailable]` | `count` | rate-limiter context |
 | `[:nous, :input_guard, :strategy_dropped]` | `count` | input-guard strategy context |
+| `[:nous, :decision_guard, :strategy_dropped]` | `count` | `aggregation`, `fail_closed` (DecisionGuard user-input strategies) |
 
 > **Research observability:** the research pipeline (`Nous.Research`) does not
 > emit its own telemetry namespace. Because it runs ordinary agents internally,

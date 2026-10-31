@@ -71,6 +71,12 @@ Auth picks up the env var by convention: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
 `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, etc. Local providers
 don't need a key. Override per-call with `api_key:` opt.
 
+Decision models (`Nous.DecisionModel.parse/2` strings such as
+`"workers_ai:clef-flash"` or `"llamacpp:<name>"`) are not chat models: they
+answer typed questions with probabilities. To guard an agent with one, add
+`Nous.Plugins.DecisionGuard` and `deps: %{decision_guard_config: %{model: ...}}`
+(user input by default; see `docs/guides/decision_guard.md`).
+
 ## Key opts you'll actually use
 
 ```elixir
@@ -260,6 +266,11 @@ these, it will be rejected.
    `spawn_agents` may carry at most `:sub_agent_max_tasks` (10), and
    delegation stops at `:sub_agent_max_depth` (2) — each refuses rather than
    substituting, and all three inherit downward like confinement.
+   `Nous.Plugins.DecisionGuard`'s `:decision_guard_config` dep is confinement
+   too: it always reaches every sub-agent (no `:sub_agent_shared_deps` value
+   can withhold or replace it) and SubAgent re-adds the DecisionGuard plugin
+   to the child. Hooks otherwise do not inherit; a template can only add its
+   own, and those do not reach grandchildren.
 
 ## Common workflows
 

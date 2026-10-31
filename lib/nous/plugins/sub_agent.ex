@@ -97,6 +97,15 @@ defmodule Nous.Plugins.SubAgent do
   handler) delegates the same unbounded capability set it has itself —
   inheritance bounds sub-agents by the parent's policy, it does not invent one.
 
+  The one exception to "hooks do not inherit" is `Nous.Plugins.DecisionGuard`:
+  its `:decision_guard_config` dep is execution policy, so it travels as
+  confinement (no `:sub_agent_shared_deps` value can withhold or replace it),
+  and every sub-agent runs with `Nous.Plugins.DecisionGuard` added to its
+  plugins. The accepted limitation: a template cannot change that config (a
+  template carries no deps). It can only *add* hooks of its own, such as a
+  stricter `:decision` hook, and those tightenings do not reach the
+  sub-agent's own sub-agents, which inherit the original config only.
+
   > **Security note:** prior to v0.14.4 the default was the equivalent of
   > `:all`. Upgrading is a behaviour change: if your existing sub-agent flows
   > relied on inheriting parent deps, set `sub_agent_shared_deps: :all` to
@@ -139,7 +148,10 @@ defmodule Nous.Plugins.SubAgent do
     :session_id,
     :sub_agent_allowed_models,
     :sub_agent_max_tasks,
-    :sub_agent_max_depth
+    :sub_agent_max_depth,
+    # DecisionGuard policy is execution policy: a child must run under the
+    # parent's guard, and no shared-deps choice may swap in a looser one.
+    :decision_guard_config
   ]
 
   # ===========================================================================
@@ -581,8 +593,20 @@ defmodule Nous.Plugins.SubAgent do
     %{
       agent
       | sandbox: inherit_sandbox(parent_ctx, agent.sandbox),
-        permissions: Nous.Permissions.Policy.strictest(parent_permissions, agent.permissions)
+        permissions: Nous.Permissions.Policy.strictest(parent_permissions, agent.permissions),
+        plugins: inherit_decision_guard(parent_ctx, agent.plugins)
     }
+  end
+
+  # The parent's DecisionGuard config travels as confinement (see
+  # @confinement_keys); the plugin that enforces it must travel too, or the
+  # forwarded config would sit unread in a child that lacks the plugin.
+  defp inherit_decision_guard(parent_ctx, plugins) do
+    deps = Map.get(parent_ctx, :deps) || %{}
+
+    if Map.get(deps, :decision_guard_config) && Nous.Plugins.DecisionGuard not in plugins,
+      do: [Nous.Plugins.DecisionGuard | plugins],
+      else: plugins
   end
 
   # Template has no sandbox of its own: thread the parent's session policy

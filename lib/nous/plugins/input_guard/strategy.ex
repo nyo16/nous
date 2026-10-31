@@ -62,11 +62,15 @@ defmodule Nous.Plugins.InputGuard.Strategy do
 
   ## Parameters
 
-    * `input` — The user's input text to check
+    * `input` — The text to check (the user's message on the user-input surface)
     * `config` — Strategy-specific configuration from the `{Module, opts}` tuple
     * `ctx` — The full agent context for access to message history, deps, etc.
+      It is **`nil`** when `Nous.Plugins.InputGuard.Engine` runs the strategy
+      on a surface that has no agent context (anything other than the
+      user-input `before_request/3` path). Strategies must not assume a
+      context; the built-in ones ignore it.
 
   """
-  @callback check(input :: String.t(), config :: keyword(), ctx :: Context.t()) ::
+  @callback check(input :: String.t(), config :: keyword(), ctx :: Context.t() | nil) ::
               {:ok, Result.t()} | {:error, term()}
 end

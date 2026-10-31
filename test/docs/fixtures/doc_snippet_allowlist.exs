@@ -16,8 +16,8 @@
 [
   {"docs/guides/custom_providers.md", 278,
    "bare `base_url:` option values contrasting correct vs missing /v1"},
-  {"docs/guides/hooks.md", 214, "bare `matcher:` option values, one per matching mode"},
-  {"docs/guides/observability.md", 362, "bare mix.exs dep tuples, shown outside the deps list"},
+  {"docs/guides/hooks.md", 222, "bare `matcher:` option values, one per matching mode"},
+  {"docs/guides/observability.md", 365, "bare mix.exs dep tuples, shown outside the deps list"},
   {"docs/guides/research.md", 128,
    "bare `search_tool:` option value, shown outside its opts list"},
   {"docs/guides/workflows.md", 62, "leading-`|>` Workflow builder fragment"},
