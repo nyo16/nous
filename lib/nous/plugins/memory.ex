@@ -42,8 +42,17 @@ defmodule Nous.Plugins.Memory do
     * `:agent_id` - Tag memories with this agent ID
     * `:session_id` - Tag memories with this session ID
     * `:user_id` - Tag memories with this user ID
-    * `:namespace` - Arbitrary namespace grouping
+    * `:namespace` - Partition: memories are tagged with it, and recall,
+      auto-inject, `forget` and reflection only see entries in the same
+      namespace, whatever `:default_search_scope` is
     * `:default_search_scope` - `:agent` (default), `:user`, `:session`, or `:global`
+
+  When neither `:namespace` nor any field the `:default_search_scope` mode
+  uses is set (for instance no scope fields at all), the scope is global:
+  recall, `forget` and reflection reach every memory in the store. That is
+  fine for a single-tenant store; a store shared by several users, agents or
+  tenants must set the mode's scope field or `:namespace`. See
+  `Nous.Memory.Scope`.
 
   **Optional — auto-injection:**
     * `:auto_inject` - Auto-inject relevant memories before each request (default: true)
@@ -254,7 +263,13 @@ defmodule Nous.Plugins.Memory do
     # 2. Fetch existing memories — the newest `max_memories`. The store honours
     # :limit (see Nous.Memory.Store.list/2); without :order the bound would
     # keep an arbitrary N, which is worse than useless for reflection.
-    scope = build_memory_scope(config)
+    # Store.list/2 takes a field map, so an unscoped (`:global`) config lists
+    # with the empty map; the SQL stores raised on the bare atom.
+    scope =
+      case build_memory_scope(config) do
+        :global -> %{}
+        fields -> fields
+      end
 
     existing_memories =
       case store_mod.list(store_state, scope: scope, order: :newest, limit: max_memories) do

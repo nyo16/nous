@@ -4,21 +4,46 @@ defmodule Nous.Memory.Scope do
 
   Both `Nous.Plugins.Memory` and `Nous.Memory.Tools` need to resolve a scope
   from config. This module extracts that common pattern.
+
+  ## Namespace is a partition
+
+  `:default_search_scope` picks which of `:agent_id`, `:session_id` and
+  `:user_id` narrow a search. `:namespace` is not one of those levels: when it
+  is configured it is added to the scope in every mode, explicit `:global`
+  included, so recall, auto-inject, `forget` and the auto-update reflection
+  never see or touch another namespace's memories. `:global` only drops the
+  agent/session/user narrowing inside the namespace.
+
+  ## Unscoped config is global
+
+  When neither `:namespace` nor any field the mode uses has a value (for
+  instance a config with no scope fields at all, or only `:session_id` under
+  the default `:agent` mode), `build/1` returns `:global`: every entry in the
+  store is in scope, for recall and for `forget`/reflection update and forget
+  alike. That is the intended single-tenant default. A store shared by several
+  users, agents or tenants must set the mode's scope field or `:namespace` on
+  every config that uses it.
   """
 
   @doc """
   Build a scope map from config based on the `:default_search_scope` setting.
 
   Returns `:global` or a map of scoping fields extracted from `config`.
+  `:namespace`, when set, is part of the map in every mode (see the
+  moduledoc), so `:global` is returned only when neither the mode's fields nor
+  `:namespace` have a value.
   """
   @spec build(map()) :: :global | map()
   def build(config) do
-    case config[:default_search_scope] do
-      :global -> :global
-      :session -> from_fields(config, [:agent_id, :session_id, :user_id])
-      :user -> from_fields(config, [:user_id])
-      _agent_or_default -> from_fields(config, [:agent_id, :user_id])
-    end
+    fields =
+      case config[:default_search_scope] do
+        :global -> []
+        :session -> [:agent_id, :session_id, :user_id]
+        :user -> [:user_id]
+        _agent_or_default -> [:agent_id, :user_id]
+      end
+
+    from_fields(config, fields ++ [:namespace])
   end
 
   @doc """
