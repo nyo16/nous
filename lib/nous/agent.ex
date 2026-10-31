@@ -133,6 +133,11 @@ defmodule Nous.Agent do
       `Nous.Sandbox.Policy.new/1`. `nil` (the default) falls back to the
       `config :nous, :sandbox_mode` application setting.
 
+      Without an explicit `:workspace_root`, the root is bound per run from
+      `deps[:workspace_root]` (then the current directory), so one agent can
+      serve runs with different workspaces. Subprocesses also run *in* that
+      root, so relative paths mean the same files the file tools see.
+
       This is a **sibling** knob to `:permissions`, not a replacement for it:
       permissions decide whether a tool may run at all, the sandbox confines
       what the subprocess that tool spawns may touch once it is running. A

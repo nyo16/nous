@@ -71,9 +71,12 @@ defmodule Nous.Sandbox.Policy do
 
   @type mode :: :read_only | :workspace_write | :danger_full_access
 
+  # `workspace_root: nil` means "unbound": no root was given, so `resolve/2`
+  # binds it per call — `ctx.deps[:workspace_root]`, then the current
+  # directory. See `new/1`.
   @type t :: %Policy{
           mode: mode(),
-          workspace_root: Path.t(),
+          workspace_root: Path.t() | nil,
           session_id: String.t() | nil
         }
 
@@ -93,13 +96,20 @@ defmodule Nous.Sandbox.Policy do
   @doc """
   Build a policy from a mode, a keyword list, a map, or another policy.
 
-  `:workspace_root` defaults to the current working directory, matching
-  `Nous.PathGuard`.
+  An explicit `:workspace_root` is canonicalised and pinned. Without one the
+  root stays **unbound** (`nil`) and is bound per tool call by `resolve/2`:
+  `ctx.deps[:workspace_root]` first, then the current directory. That is what
+  makes `Nous.new(model, sandbox: :workspace_write)` confine each run to the
+  `:workspace_root` it is given, instead of freezing whatever directory the
+  BEAM was in when the agent was built.
 
   ## Examples
 
       iex> Nous.Sandbox.Policy.new(:read_only).mode
       :read_only
+
+      iex> Nous.Sandbox.Policy.new(:read_only).workspace_root
+      nil
 
       iex> policy = Nous.Sandbox.Policy.new(mode: :workspace_write, workspace_root: "/srv/ws")
       iex> {policy.mode, policy.workspace_root}
@@ -123,37 +133,53 @@ defmodule Nous.Sandbox.Policy do
       # the real unconfined case, since the warning fires once per VM. It would
       # also raise on unrelated bad global config an explicit policy never uses.
       mode: coerce_mode!(Map.get_lazy(opts, :mode, &default_mode/0)),
-      workspace_root: expand_root(Map.get(opts, :workspace_root)),
+      workspace_root: maybe_expand_root(Map.get(opts, :workspace_root)),
       session_id: Map.get(opts, :session_id)
     }
   end
 
   @doc """
-  Resolve the effective policy for a tool call.
+  Resolve the effective policy for a tool call. The result is always bound.
 
   `ctx` is a `Nous.RunContext` (or any map with `:sandbox`/`:deps` keys, or
   `nil`). `opts` may override `:mode`, `:workspace_root` and `:session_id`.
 
-  The workspace root falls back to `ctx.deps[:workspace_root]` — the same place
-  `Nous.PathGuard` reads it from — and then to the current directory.
+  The workspace root is, in order: `opts[:workspace_root]`, a root pinned on
+  the session policy (`ctx.sandbox`), `ctx.deps[:workspace_root]` — the same
+  place `Nous.PathGuard` reads it from — and then the current directory.
   """
   @spec resolve(Nous.RunContext.t() | map() | nil, keyword()) :: t()
   def resolve(ctx, opts \\ []) do
     session = session_policy(ctx)
     deps = deps_of(ctx)
 
-    new(
-      mode:
-        Keyword.get(opts, :mode) || (session && session.mode) ||
-          default_mode(),
-      workspace_root:
-        Keyword.get(opts, :workspace_root) || (session && session.workspace_root) ||
-          Map.get(deps, :workspace_root),
-      session_id:
-        Keyword.get(opts, :session_id) || (session && session.session_id) ||
-          Map.get(deps, :session_id)
+    bind(
+      new(
+        mode:
+          Keyword.get(opts, :mode) || (session && session.mode) ||
+            default_mode(),
+        workspace_root:
+          Keyword.get(opts, :workspace_root) || (session && session.workspace_root) ||
+            Map.get(deps, :workspace_root),
+        session_id:
+          Keyword.get(opts, :session_id) || (session && session.session_id) ||
+            Map.get(deps, :session_id)
+      )
     )
   end
+
+  @doc """
+  Bind an unbound policy's workspace root to the current directory.
+
+  A bound policy is returned unchanged. `Nous.Sandbox.confine/2` and
+  `Nous.Sandbox.writable_roots/1` call this, so a policy built without a root
+  and handed to them directly confines to the current directory, as before.
+  """
+  @spec bind(t()) :: t()
+  def bind(%Policy{workspace_root: nil} = policy),
+    do: %{policy | workspace_root: expand_root(File.cwd!())}
+
+  def bind(%Policy{} = policy), do: policy
 
   @doc """
   The configured application-wide default mode.
@@ -206,7 +232,8 @@ defmodule Nous.Sandbox.Policy do
           "invalid sandbox mode #{inspect(other)}; expected one of #{inspect(@modes)}"
   end
 
-  defp expand_root(nil), do: expand_root(File.cwd!())
+  defp maybe_expand_root(nil), do: nil
+  defp maybe_expand_root(root), do: expand_root(root)
 
   defp expand_root(root) when is_binary(root) do
     # A NUL truncates the SBPL profile mid-string, which happens to fail closed

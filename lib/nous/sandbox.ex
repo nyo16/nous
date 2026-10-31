@@ -124,7 +124,7 @@ defmodule Nous.Sandbox do
   end
 
   def confine([_ | _] = argv, %Policy{} = policy) do
-    backend().confine(argv, policy)
+    backend().confine(argv, Policy.bind(policy))
   end
 
   @doc """
@@ -224,14 +224,16 @@ defmodule Nous.Sandbox do
   fence both call it, so they cannot drift apart.
 
   The workspace root arrives already canonical from
-  `Nous.Sandbox.Policy.new/1`, and the two temp roots are canonicalised once per
-  VM (see `warm/0`), which is what keeps `confine/2` off the filesystem.
+  `Nous.Sandbox.Policy.new/1` (an unbound policy is bound to the current
+  directory first, see `Nous.Sandbox.Policy.bind/1`), and the two temp roots
+  are canonicalised once per VM (see `warm/0`), which is what keeps
+  `confine/2` off the filesystem.
   """
   @spec writable_roots(Policy.t()) :: [Path.t()]
   def writable_roots(%Policy{mode: :read_only}), do: []
 
-  def writable_roots(%Policy{workspace_root: root}) do
-    Enum.uniq([root | temp_roots()])
+  def writable_roots(%Policy{} = policy) do
+    Enum.uniq([Policy.bind(policy).workspace_root | temp_roots()])
   end
 
   @doc """
