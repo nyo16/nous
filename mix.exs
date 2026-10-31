@@ -38,17 +38,19 @@ defmodule Nous.MixProject do
       # `test_coverage: [threshold: n]` is silently ignored and you keep the
       # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
       test_coverage: [summary: [threshold: 66]],
-      # `mix hex.audit` acknowledgements. Two cowlib advisories have no patched
-      # release (2.20.0 fixed only CVE-2026-43971):
-      #   CVE-2026-43966  structured-fields header CRLF injection
-      #   CVE-2026-43969  cookie request-header injection (GHSA-g2wm-735q-3f56)
+      # `mix hex.audit` acknowledgement. One cowlib advisory has no patched
+      # release:
+      #   CVE-2026-43966  structured-fields header CRLF injection (fixed
+      #                   upstream in ninenines/cowlib 4401b85, after the
+      #                   2.21.0 tag; 2.21.0 fixed CVE-2026-43969, whose
+      #                   ignore is gone)
       # Exposure is test-only: cowlib reaches this project exclusively through
       # bypass -> plug_cowboy -> cowboy, and bypass is `only: :test`. hex.audit
       # warns when an entry no longer matches the lock, so a patched cowlib
       # bump surfaces the stale ignore by itself. The `deps.audit` CI step
-      # carries the same two ids (see .github/workflows/ci.yml). Never add a
+      # carries the same id (see .github/workflows/ci.yml). Never add a
       # runtime dep here — that is exactly what the gate exists to catch.
-      hex: [ignore_advisories: ["CVE-2026-43966", "CVE-2026-43969"]],
+      hex: [ignore_advisories: ["CVE-2026-43966"]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix, :ex_unit]

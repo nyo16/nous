@@ -374,8 +374,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pull-mode stream backend does not buffer. The lock also moves `jose`
   (through optional `goth`) to 1.11.13 for CVE-2026-65625..65632 and
   `ssl_verify_fun` (through hackney) to 1.1.8 for CVE-2026-117666. CI's
-  `mix hex.audit` step is green again; only the two test-only cowlib
-  advisories remain acknowledged.
+  `mix hex.audit` step is green again. `cowlib` (test-only, via bypass) moves
+  to 2.21.0, which fixes CVE-2026-43969, so that acknowledgement is dropped;
+  CVE-2026-43966 stays acknowledged until a cowlib release ships its fix.
 - **`mint` floor raised to `~> 1.11`.** mint 1.10.1 is affected by
   CVE-2026-94194 (chunked framing applied when chunked is not the final
   transfer coding — response smuggling), CVE-2026-91043 (HPACK-indexed cookie
