@@ -277,9 +277,12 @@ Features: Jaro-distance text search, optional vector search with embeddings, sco
 
 ### Custom Backends
 
-Implement the `Nous.KnowledgeBase.Store` behaviour (19 callbacks, of which
-`search_entries/3`, `related_entries/3` and `link_counts_by_source/1` are optional)
-for custom backends:
+Implement the `Nous.KnowledgeBase.Store` behaviour (20 callbacks, of which
+`search_entries/3`, `related_entries/3`, `fetch_entry_by_slug/3` and
+`link_endpoints/1` are optional) for custom backends. Implement
+`link_endpoints/1` if your backend can list every link's `{from, to}` pair
+in one scan: without it, the health check and health workflow call
+`outlinks/2` once per entry.
 
 ```elixir
 defmodule MyApp.KBStore.Postgres do

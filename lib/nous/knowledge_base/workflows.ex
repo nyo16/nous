@@ -231,7 +231,12 @@ defmodule Nous.KnowledgeBase.Workflows do
     {:ok, entries} = store_mod.list_entries(store_state, opts)
     {:ok, docs} = store_mod.list_documents(store_state, opts)
 
-    link_counts = link_counts_by_source(store_mod, store_state, entries)
+    # Outgoing links per entry, counting only links with both ends in this
+    # knowledge base (a shared store holds other kb_ids; #97).
+    link_counts =
+      store_mod
+      |> Nous.KnowledgeBase.LinkScope.endpoints(store_state, entries)
+      |> Enum.frequencies_by(fn {from, _to} -> from end)
 
     stats = %{
       total_entries: length(entries),
@@ -253,49 +258,6 @@ defmodule Nous.KnowledgeBase.Workflows do
     state
     |> put_in([Access.key(:data), :stats], stats)
     |> put_in([Access.key(:data), :entry_summaries], entry_summaries)
-  end
-
-  # Use the optional bulk Store callback if implemented (single scan instead
-  # of a full links-table scan per entry); fall back to per-entry outlinks/2
-  # so older custom backends keep working without code changes. Scoped to the
-  # listed entries — the bulk callback counts links store-wide.
-  defp link_counts_by_source(store_mod, store_state, entries) do
-    entry_ids = Enum.map(entries, & &1.id)
-
-    if bulk_counts_supported?(store_mod) do
-      case store_mod.link_counts_by_source(store_state) do
-        {:ok, counts} -> Map.take(counts, entry_ids)
-        _ -> %{}
-      end
-    else
-      count_links_per_entry(store_mod, store_state, entry_ids)
-    end
-  end
-
-  # Code.ensure_loaded?/1 FIRST: function_exported?/3 answers false for a
-  # module that merely has not been loaded yet (interactive code loading),
-  # which silently drops even the first-party ETS store — which does export
-  # the callback — into the quadratic fallback below. #68 removed the
-  # O(entries × links) shape from the main path; a false negative here puts
-  # it straight back.
-  defp bulk_counts_supported?(store_mod) do
-    Code.ensure_loaded?(store_mod) and function_exported?(store_mod, :link_counts_by_source, 1)
-  end
-
-  # Compatibility path for backends predating link_counts_by_source/1. Each
-  # outlinks/2 call is a whole-store scan on a naive backend, so this is the
-  # old O(entries × links). It cannot be collapsed the way the main path was:
-  # the Store behaviour exposes no other bulk link primitive, so n round-trips
-  # is the floor. Kept as cheap as the behaviour allows — one pass, whose map
-  # also feeds total_links, so there is no second traversal. A third-party
-  # backend opts out by implementing link_counts_by_source/1.
-  defp count_links_per_entry(store_mod, store_state, entry_ids) do
-    Map.new(entry_ids, fn id ->
-      case store_mod.outlinks(store_state, id) do
-        {:ok, links} -> {id, length(links)}
-        _ -> {id, 0}
-      end
-    end)
   end
 
   defp build_health_report(state) do

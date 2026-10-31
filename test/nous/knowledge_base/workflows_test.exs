@@ -5,9 +5,9 @@ defmodule Nous.KnowledgeBase.WorkflowsTest do
   alias Nous.KnowledgeBase.Store.ETS
   alias Nous.Workflow.State
 
-  # A store double that deliberately does NOT export link_counts_by_source/1,
-  # so gather_kb_statistics/1 takes the per-entry outlinks/2 compatibility path
-  # kept for backends written before that optional callback existed.
+  # A store double that deliberately does NOT export link_endpoints/1, so
+  # gather_kb_statistics/1 takes the per-entry outlinks/2 path kept for
+  # backends without that optional callback.
   defmodule LegacyStore do
     defdelegate list_entries(state, opts), to: ETS
     defdelegate list_documents(state, opts), to: ETS
@@ -87,6 +87,20 @@ defmodule Nous.KnowledgeBase.WorkflowsTest do
 
         assert state.data.stats == %{total_entries: 0, total_links: 0, total_documents: 0}
         assert state.data.entry_summaries == []
+      end
+    end
+
+    # #97: a link into another kb_id (made before kb_link refused them) is not
+    # this knowledge base's, on either path.
+    test "a link into another kb_id is not counted", %{kb: kb} do
+      ETS.store_entry(kb, Entry.new(%{title: "Z", content: "z", id: "z", kb_id: "kb2"}))
+      ETS.store_link(kb, Link.new(%{from_entry_id: "a", to_entry_id: "z"}))
+
+      for store <- [ETS, LegacyStore] do
+        state = gather_stats(store, kb)
+
+        assert state.data.stats.total_links == 3, inspect(store)
+        assert summaries(state) == [{"a", 2}, {"b", 1}, {"c", 0}], inspect(store)
       end
     end
   end

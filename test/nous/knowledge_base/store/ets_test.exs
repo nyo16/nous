@@ -395,25 +395,18 @@ defmodule Nous.KnowledgeBase.Store.ETSTest do
     end
   end
 
-  describe "link_counts_by_source/1" do
-    test "counts outgoing links per source entry", %{state: state} do
+  describe "link_endpoints/1" do
+    test "returns every link as a {from, to} pair", %{state: state} do
       ETS.store_link(state, Link.new(%{from_entry_id: "a", to_entry_id: "b"}))
       ETS.store_link(state, Link.new(%{from_entry_id: "a", to_entry_id: "c"}))
       ETS.store_link(state, Link.new(%{from_entry_id: "b", to_entry_id: "c"}))
 
-      assert {:ok, %{"a" => 2, "b" => 1}} = ETS.link_counts_by_source(state)
+      assert {:ok, pairs} = ETS.link_endpoints(state)
+      assert Enum.sort(pairs) == [{"a", "b"}, {"a", "c"}, {"b", "c"}]
     end
 
-    test "omits entries with no outgoing links", %{state: state} do
-      ETS.store_link(state, Link.new(%{from_entry_id: "a", to_entry_id: "b"}))
-
-      {:ok, counts} = ETS.link_counts_by_source(state)
-      assert counts == %{"a" => 1}
-    end
-
-    test "returns an empty map for an empty links table", %{state: state} do
-      assert {:ok, counts} = ETS.link_counts_by_source(state)
-      assert counts == %{}
+    test "returns an empty list for an empty links table", %{state: state} do
+      assert {:ok, []} = ETS.link_endpoints(state)
     end
   end
 

@@ -4,10 +4,19 @@ defmodule Nous.KnowledgeBase.ToolsTest do
   alias Nous.KnowledgeBase.{Entry, Link, Tools}
   alias Nous.KnowledgeBase.Store.ETS
 
+  # A store without the optional link_endpoints/1 callback: the health check
+  # falls back to outlinks/2 per entry, which must give the same report.
+  defmodule NoEndpointsStore do
+    defdelegate list_entries(state, opts), to: ETS
+    defdelegate list_documents(state, opts), to: ETS
+    defdelegate outlinks(state, entry_id), to: ETS
+    defdelegate backlinks(state, entry_id), to: ETS
+  end
+
   defp build_ctx(state, opts \\ []) do
     kb_config =
       %{
-        store: ETS,
+        store: Keyword.get(opts, :store, ETS),
         store_state: state,
         kb_id: Keyword.get(opts, :kb_id)
       }
@@ -21,6 +30,43 @@ defmodule Nous.KnowledgeBase.ToolsTest do
   setup do
     {:ok, state} = ETS.init([])
     %{state: state}
+  end
+
+  describe "kb_health_check/2 in a store shared by several kb_ids (#97)" do
+    # kb1: a -> b (internal), and `lonely`, linked only from kb2 by a link
+    # created before kb_link refused cross-KB links. kb2: x -> y.
+    setup %{state: state} do
+      for {id, kb} <- [{"a", "kb1"}, {"b", "kb1"}, {"lonely", "kb1"}, {"x", "kb2"}, {"y", "kb2"}] do
+        ETS.store_entry(state, Entry.new(%{id: id, title: id, content: id, kb_id: kb}))
+      end
+
+      for {from, to} <- [{"a", "b"}, {"x", "y"}, {"x", "lonely"}] do
+        ETS.store_link(state, Link.new(%{from_entry_id: from, to_entry_id: to}))
+      end
+
+      :ok
+    end
+
+    defp orphan_titles(result) do
+      for %{type: "orphan", description: d} <- result.issues,
+          [_, title] = Regex.run(~r/Entry '([^']+)'/, d),
+          do: title
+    end
+
+    test "counts and judges only links with both ends in the configured kb", %{state: state} do
+      for store <- [ETS, NoEndpointsStore] do
+        {:ok, result, _} =
+          Tools.kb_health_check(build_ctx(state, kb_id: "kb1", store: store), %{})
+
+        assert result.total_entries == 3, inspect(store)
+        # a -> b only; x -> y and x -> lonely belong to kb2.
+        assert result.total_links == 1, inspect(store)
+
+        # b has an incoming kb1 link, so it is not an orphan; lonely is only
+        # linked from kb2, so for kb1 it is.
+        assert Enum.sort(orphan_titles(result)) == ["lonely"], inspect(store)
+      end
+    end
   end
 
   describe "kb_search/2" do

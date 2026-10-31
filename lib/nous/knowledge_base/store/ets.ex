@@ -304,16 +304,16 @@ defmodule Nous.KnowledgeBase.Store.ETS do
   end
 
   @impl true
-  def link_counts_by_source(state) do
-    # Project just the source id inside ETS: this is the one link query that
+  def link_endpoints(state) do
+    # Project just the two ids inside ETS: this is the one link query that
     # genuinely visits every row, so at least don't copy whole Link structs
-    # out to count them.
-    counts =
-      state.links
-      |> select_link_field(%{from_entry_id: :"$1"})
-      |> Enum.frequencies()
+    # out of the table.
+    pairs =
+      :ets.select(state.links, [
+        {{:_, %{from_entry_id: :"$1", to_entry_id: :"$2"}}, [], [{{:"$1", :"$2"}}]}
+      ])
 
-    {:ok, counts}
+    {:ok, pairs}
   end
 
   @impl true
