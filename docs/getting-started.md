@@ -1,7 +1,7 @@
 # Getting Started with Nous
 
 This guide picks up where the [README Quick Start](../README.md#quick-start)
-leaves off. It assumes you already have Nous installed (`{:nous, "~> 0.17"}`)
+leaves off. It assumes you already have Nous installed (`{:nous, "~> 0.18"}`)
 and a provider configured (API key set, or a local LM Studio / Ollama / vLLM
 server running).
 

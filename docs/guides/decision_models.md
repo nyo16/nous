@@ -131,7 +131,7 @@ on Workers AI.
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.17"},
+    {:nous, "~> 0.18"},
     {:llama_cpp_ex, "~> 0.8.58"}
   ]
 end

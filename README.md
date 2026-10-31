@@ -49,7 +49,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:nous, "~> 0.17"}
+    {:nous, "~> 0.18"}
   ]
 end
 ```
