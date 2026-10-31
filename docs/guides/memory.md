@@ -529,7 +529,11 @@ The `default_search_scope` config option controls how scopes are built automatic
 | `:agent` (default) | `agent_id`, `user_id` |
 | `:user` | `user_id` only |
 | `:session` | `agent_id`, `session_id`, `user_id` |
-| `:global` | No filtering |
+| `:global` | No agent/session/user filtering |
+
+`namespace` is a partition, not a scope level: when `:namespace` is set it is added to the scope in every mode, `:global` included. Recall, auto-inject, the `forget` tool and the auto-update reflection's `update`/`forget` then only see and touch memories in that namespace; an id from another namespace is reported as not found.
+
+**An unscoped config is global.** When neither `:namespace` nor any field the mode uses is set (for instance no scope fields at all), the scope is `:global`: recall, `forget` and reflection reach every memory in the store. That is the single-tenant default and is fine when one user owns the store. A store shared by several users, agents or tenants must set the mode's scope field (`agent_id`, `user_id`, `session_id`) or `:namespace` on every config that uses it.
 
 See `examples/memory/cross_agent.exs`.
 
@@ -537,7 +541,7 @@ See `examples/memory/cross_agent.exs`.
 
 `Nous.Memory.Scope` is the module behind the table above. It turns a config map into the scope value that `Search.search/5` and the store callbacks expect:
 
-- `Nous.Memory.Scope.build/1` -- reads `:default_search_scope` from a config map and returns either `:global` or a map of scoping fields. `:session` yields `agent_id` + `session_id` + `user_id`, `:user` yields `user_id`, and `:agent` (or anything unrecognised) yields `agent_id` + `user_id`.
+- `Nous.Memory.Scope.build/1` -- reads `:default_search_scope` from a config map and returns either `:global` or a map of scoping fields. `:session` yields `agent_id` + `session_id` + `user_id`, `:user` yields `user_id`, `:agent` (or anything unrecognised) yields `agent_id` + `user_id`, and `:global` yields none of them. `namespace` is added in every mode when it is set.
 - `Nous.Memory.Scope.from_fields/2` -- builds a scope from an explicit field list instead of a preset. Both functions return `:global` when none of the requested fields have a value in the config, so an unscoped config never silently produces an empty-map filter.
 
 `Nous.Plugins.Memory` and `Nous.Memory.Tools` call `build/1` for you, so you only reach for this module directly when you query a store outside the agent loop -- a background job, a LiveView, a custom tool -- and want exactly the scope the agent would have used:
@@ -680,7 +684,7 @@ Types can be used as search filters: `Search.search(mod, state, query, nil, type
 
 ### Namespaces
 
-Use the `:namespace` field to organize memories into groups without changing the scoping logic:
+Use the `:namespace` field to partition one store into groups (tenants, projects, knowledge areas):
 
 ```elixir
 Entry.new(%{
@@ -690,7 +694,7 @@ Entry.new(%{
 })
 ```
 
-You can then filter by namespace in scope: `scope: %{namespace: "api_docs"}`.
+Set `namespace:` in `memory_config` and the agent tags what it remembers with it and confines recall, auto-inject, `forget` and the auto-update reflection to that namespace in every `default_search_scope` mode, `:global` included (see [Cross-Agent Memory](#cross-agent-memory)). Outside the agent loop, filter by namespace in scope: `scope: %{namespace: "api_docs"}`.
 
 ## Examples
 

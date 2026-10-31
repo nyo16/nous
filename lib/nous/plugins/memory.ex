@@ -42,8 +42,17 @@ defmodule Nous.Plugins.Memory do
     * `:agent_id` - Tag memories with this agent ID
     * `:session_id` - Tag memories with this session ID
     * `:user_id` - Tag memories with this user ID
-    * `:namespace` - Arbitrary namespace grouping
+    * `:namespace` - Partition: memories are tagged with it, and recall,
+      auto-inject, `forget` and reflection only see entries in the same
+      namespace, whatever `:default_search_scope` is
     * `:default_search_scope` - `:agent` (default), `:user`, `:session`, or `:global`
+
+  When neither `:namespace` nor any field the `:default_search_scope` mode
+  uses is set (for instance no scope fields at all), the scope is global:
+  recall, `forget` and reflection reach every memory in the store. That is
+  fine for a single-tenant store; a store shared by several users, agents or
+  tenants must set the mode's scope field or `:namespace`. See
+  `Nous.Memory.Scope`.
 
   **Optional — auto-injection:**
     * `:auto_inject` - Auto-inject relevant memories before each request (default: true)
