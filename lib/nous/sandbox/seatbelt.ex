@@ -156,7 +156,9 @@ defmodule Nous.Sandbox.Seatbelt do
     # does not exist in net_runner 1.0 — passing it disables the `:consume`
     # drain and leaves the stderr pipe unread. The one line the shell prints
     # when the refused write fails is drained by the default.
-    result = NetRunner.run(argv, timeout: timeout_ms)
+    # `Nous.Sandbox.run/2` bounds a hung probe to timeout +
+    # Nous.Sandbox.kill_timeout_ms/0, like every other spawn.
+    result = Nous.Sandbox.run(argv, timeout: timeout_ms)
 
     # Only reachable on a host where the write was *not* refused, in which case
     # the probe is about to report :unusable. Do not leave the file behind.

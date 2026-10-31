@@ -506,12 +506,13 @@ defmodule Nous.Tools.BashSandboxTest do
   end
 
   describe "environment scrubbing" do
-    # `NetRunner` has no `:env` option: `run/2` forwards unknown options to a
-    # port layer that ignores them and the shepherd `execvp`s, so the child
-    # inherits the BEAM's whole environment. This tool passed
-    # `env: Nous.Tools.Env.scrubbed()` for its entire existence and that option
-    # was silently discarded the whole time — `printenv` returned every API key.
-    # The scrubbing is therefore enforced by an `/usr/bin/env -i` prefix on the
+    # Through net_runner 1.3 `NetRunner` had no `:env` option: `run/2`
+    # forwarded unknown options to a port layer that ignored them, so the child
+    # inherited the BEAM's whole environment. This tool passed
+    # `env: Nous.Tools.Env.scrubbed()` for its early life and that option was
+    # silently discarded the whole time — `printenv` returned every API key.
+    # 1.4's `:env` is an overlay on the BEAM's environment, not an allowlist,
+    # so the scrubbing is still enforced by an `/usr/bin/env -i` prefix on the
     # argv, where nothing can ignore it.
     setup do
       Application.put_env(:nous, :sandbox_mode, :danger_full_access)
@@ -583,6 +584,54 @@ defmodule Nous.Tools.BashSandboxTest do
                })
 
       assert String.trim(output) == "<absent>"
+    end
+  end
+
+  describe "a command that ignores SIGTERM" do
+    # On `:timeout` NetRunner SIGTERMs the child and waits a fixed 5 s before
+    # SIGKILL. A command that traps TERM therefore kept `NetRunner.run/2` busy
+    # for timeout + 5 s, which is exactly the headroom @tool_deadline had over
+    # the command budget: the tool's own "Command timed out" raced the
+    # executor's opaque kill. Bash now spawns through `Nous.Sandbox.run/2`.
+    setup do
+      Application.put_env(:nous, :sandbox_mode, :danger_full_access)
+      Application.put_env(:nous, :sandbox_backend, Unavailable)
+      :ok
+    end
+
+    @command_timeout 300
+
+    test "times out with Bash's own message, well inside the tool deadline", ctx do
+      grace = Sandbox.kill_timeout_ms()
+
+      # The real tool keeps its deadline above budget + grace for the default
+      # budget; scale that same ratio down to this test's budget, so the
+      # executor's kill fires if the grace is not honoured (NetRunner's fixed
+      # 5 s lands past it), instead of a 126 s wait.
+      assert bash_tool().timeout > 120_000 + grace
+      tool = %{bash_tool() | timeout: @command_timeout + grace + 2_000}
+
+      run_ctx =
+        RunContext.new(%{workspace_root: ctx.workspace},
+          approval_handler: fn %{name: "bash"} -> :approve end
+        )
+
+      # A unique duration, so the survivor check below can only match this run.
+      sleep = "sleep 30.#{System.unique_integer([:positive])}"
+      args = %{"command" => "trap '' TERM; #{sleep}", "timeout" => @command_timeout}
+
+      {elapsed_us, result} = :timer.tc(fn -> ToolExecutor.execute(tool, args, run_ctx) end)
+
+      # Bash's own message, never the executor's kill of the tool process.
+      assert {:error, error} = result
+      assert error_message(error) =~ "Command timed out after #{@command_timeout}ms"
+
+      # Budget + grace + spawn slack, far below NetRunner's fixed 5 s wait.
+      assert div(elapsed_us, 1_000) < @command_timeout + grace + 1_500
+
+      # Returning early must not mean abandoning the child: it is SIGKILLed.
+      Process.sleep(300)
+      assert {_, 1} = System.cmd("pgrep", ["-f", sleep])
     end
   end
 

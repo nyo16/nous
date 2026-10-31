@@ -11,7 +11,7 @@ defmodule Nous.Sandbox do
   ## The shape
 
       {:ok, confined} = Nous.Sandbox.confine(["/bin/sh", "-c", cmd], policy)
-      {output, status} = NetRunner.run(Nous.Sandbox.merge_stderr(confined.argv))
+      {output, status} = Nous.Sandbox.run(Nous.Sandbox.merge_stderr(confined.argv), timeout: 5_000)
       Nous.Sandbox.classify(confined, status, output)
 
   Three properties are load-bearing:
@@ -209,6 +209,74 @@ defmodule Nous.Sandbox do
   @spec merge_stderr([String.t()]) :: [String.t()]
   def merge_stderr([_ | _] = argv) do
     ["/bin/sh", "-c", ~s(exec "$@" 2>&1), "sh" | argv]
+  end
+
+  @kill_timeout_ms 1_000
+
+  @doc """
+  The SIGTERM→SIGKILL grace, in milliseconds, that `run/2` allows a timed-out
+  child before it is killed outright.
+
+  One second is enough for a well-behaved child to flush and exit on SIGTERM,
+  and is the bound every caller budgets for: `Nous.Tools.Bash`'s tool
+  deadline, `:command` hooks (`Nous.Hook.Runner`) and the sandbox backend
+  probes.
+  """
+  @spec kill_timeout_ms() :: pos_integer()
+  def kill_timeout_ms, do: @kill_timeout_ms
+
+  @doc """
+  `NetRunner.run/2`, but a timed-out child that ignores SIGTERM cannot hold
+  the caller past `:timeout` + `kill_timeout_ms/0`.
+
+  On `:timeout`, `NetRunner.run/2` sends SIGTERM and then waits a hard-coded
+  5 s before SIGKILL — its `:kill_timeout` option only reaches the
+  shepherd's own POLLHUP ladder, not that wait (net_runner 1.4.1). So a
+  `trap '' TERM` command overran a `:command` hook's timeout by 5 s and raced
+  the Bash tool's executor deadline. Here the call runs in a linked task with
+  a deadline of `:timeout` + `kill_timeout_ms/0`; past it the task is killed,
+  and NetRunner's owner monitor SIGKILLs the child (and its cgroup, where one
+  was requested), so the result is `{:error, :timeout}` on time.
+  `:kill_timeout` is also passed, so the shepherd's own escalation (for a
+  BEAM-side crash) uses the same grace.
+
+  Every Nous spawn goes through here. Without `:timeout` it is a plain
+  `NetRunner.run/2`. An exception NetRunner raises (e.g. `ArgumentError` on a
+  malformed option) is re-raised in the caller, as a direct call would.
+  Requires the optional `:net_runner` dependency; callers check for it first.
+  """
+  @spec run([String.t()], keyword()) ::
+          {iodata(), non_neg_integer()}
+          | {iodata(), non_neg_integer(), binary()}
+          | {:error, term()}
+  def run([_ | _] = argv, opts) do
+    opts = Keyword.put(opts, :kill_timeout, @kill_timeout_ms)
+
+    deadline =
+      case Keyword.get(opts, :timeout) do
+        ms when is_integer(ms) -> ms + @kill_timeout_ms
+        _ -> :infinity
+      end
+
+    # Linked, so a caller that is itself killed (the tool executor's deadline)
+    # takes the task — and through NetRunner's owner monitor, the child — with
+    # it. Everything raised inside is caught and handed back, so a crash in
+    # the task can never arrive as an untrappable exit signal instead.
+    task =
+      Task.async(fn ->
+        try do
+          {:ok, NetRunner.run(argv, opts)}
+        catch
+          kind, reason -> {:raised, kind, reason, __STACKTRACE__}
+        end
+      end)
+
+    case Task.yield(task, deadline) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:ok, result}} -> result
+      {:ok, {:raised, kind, reason, stacktrace}} -> :erlang.raise(kind, reason, stacktrace)
+      {:exit, reason} -> {:error, {:task_crashed, reason}}
+      nil -> {:error, :timeout}
+    end
   end
 
   @doc """

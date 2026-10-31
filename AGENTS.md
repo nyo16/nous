@@ -218,8 +218,13 @@ See `docs/benchmarks/http_backend.md`.
 and `:command` hooks — both fail closed without it (Bash returns a
 "Refusing to run" error; command hooks return `{:deny, ...}` regardless of
 `fail_closed`, because a hook that never ran must not permit the event).
-If your app uses either, add `{:net_runner, "~> 1.0"}` to your own deps;
-nothing else in Nous needs it.
+If your app uses either, add `{:net_runner, "~> 1.4.1"}` to your own deps;
+nothing else in Nous needs it. 1.4.1 is the floor: it is the first release
+whose shepherd creates the `net_runner/` cgroup parent that Bash's
+`net_runner/nous_bash_<n>` cgroups live under. Every Nous spawn goes through
+`Nous.Sandbox.run/2`, never `NetRunner.run/2` directly: NetRunner waits a
+fixed 5 s before SIGKILLing a timed-out child that ignores SIGTERM, and
+`run/2` caps that at `Nous.Sandbox.kill_timeout_ms/0` (1 s).
 
 ## Critical rules (security & correctness)
 

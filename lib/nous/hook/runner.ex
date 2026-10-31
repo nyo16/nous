@@ -428,7 +428,7 @@ defmodule Nous.Hook.Runner do
     else
       Logger.warning(
         "Command hook NOT run: the optional :net_runner dependency is not available: " <>
-          "#{inspect(argv)}. Add {:net_runner, \"~> 1.0\"} to your deps to " <>
+          "#{inspect(argv)}. Add {:net_runner, \"~> 1.4.1\"} to your deps to " <>
           "enable :command hooks. Denying the event (fail closed)."
       )
 
@@ -511,8 +511,13 @@ defmodule Nous.Hook.Runner do
   # NetRunner availability is guaranteed here: `execute_command_hook/5` gates
   # on `Code.ensure_loaded?(NetRunner)` before any confine call and denies the
   # event when the optional dep is missing.
+  #
+  # `Nous.Sandbox.run/2`, not `NetRunner.run/2`: on timeout NetRunner waits a
+  # fixed 5 s for a SIGTERM-ignoring child, so a hook that traps TERM overran
+  # its `timeout` by 5 s. This returns within `timeout` +
+  # `Nous.Sandbox.kill_timeout_ms/0`.
   defp run_command_hook(%Confined{} = confined, json_input, timeout, fail_closed) do
-    case NetRunner.run(confined.argv, input: json_input, timeout: timeout) do
+    case Nous.Sandbox.run(confined.argv, input: json_input, timeout: timeout) do
       {:error, :timeout} ->
         Logger.warning("Command hook timed out after #{timeout}ms: #{inspect(confined.argv)}")
         {:error, :timeout}
