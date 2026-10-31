@@ -65,13 +65,44 @@ defmodule Nous.DecisionModel.Backend do
   alias Nous.DecisionModel.{Question, Result}
   alias Nous.Errors.DecisionModelError
 
+  @doc """
+  Answers `questions` about `state`.
+
+  `state` is already defanged and the questions are already validated and in
+  declared order. `opts` carries per-call options such as `:timeout` (ms).
+
+  Returns `{:ok, %Nous.DecisionModel.Result{}}` with one answer per question,
+  in question order, keyed by the declared ids. Every failure, including a
+  response that names an undeclared id, option or level, is
+  `{:error, %Nous.Errors.DecisionModelError{}}`.
+  """
   @callback decide(DecisionModel.t(), state :: term(), [Question.t()], keyword()) ::
               {:ok, Result.t()} | {:error, DecisionModelError.t()}
 
+  @doc """
+  The token budget a single request (state plus questions) must fit in.
+
+  Optional. `Nous.DecisionModel.max_state_tokens/1` prefers a
+  `:max_state_tokens` option on the struct, then this callback, then a default.
+  Hooks and guards size their chunks from this value.
+  """
   @callback max_state_tokens(DecisionModel.t()) :: pos_integer()
 
+  @doc """
+  The exact number of tokens `text` occupies for this backend's model.
+
+  Optional. `text` is already defanged. Without this callback,
+  `Nous.DecisionModel.count_tokens/2` assumes one token per byte, an upper
+  bound, so chunking never relies on server-side truncation.
+  """
   @callback count_tokens(DecisionModel.t(), String.t()) :: non_neg_integer()
 
+  @doc """
+  A child spec for backends that own a process, such as a loaded local model.
+
+  Optional. Start the child under your own supervision tree; see
+  `Nous.DecisionModel.Backend.LlamaCpp` for the options it accepts.
+  """
   @callback child_spec(keyword()) :: Supervisor.child_spec()
 
   @optional_callbacks max_state_tokens: 1, count_tokens: 2, child_spec: 1

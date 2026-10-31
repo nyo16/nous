@@ -136,6 +136,9 @@ or out to a focused guide.
 - **[Plugins](#plugin-system)** — composable cross-cutting concerns
 - **[Human-in-the-loop](#human-in-the-loop)** — approval workflows for sensitive tools, sync or async via PubSub
 - **[Input guard](#input-guard)** — pluggable strategies for prompt-injection and jailbreak detection
+- **[Decision models](#decision-models)** — non-generative classifiers (Clef / Clef-Flash, hosted or local via llama.cpp) that answer typed questions with probabilities; power `:decision` hooks, `DecisionGuard` and model routing ([guide](docs/guides/decision_models.md))
+- **[DecisionGuard](#decision-models)** — decision-model security checks on user input, tool calls, tool results and model output; fail-closed, inherited by sub-agents ([guide](docs/guides/decision_guard.md))
+- **[Model routing](#decision-models)** — `router:` picks the chat model per turn (e.g. cheap vs. strong tier) before the request is built ([guide](docs/guides/decision_models.md#routing))
 - **[Sub-agent delegation](#sub-agent-delegation)** — `delegate_task` / `spawn_agents` for sequential or parallel sub-agents
 - **[Multi-agent teams](docs/guides/teams.md)** — supervised agent groups with roles, shared state, comms, and budget/rate limiting
 - **[Decision graph](docs/guides/decisions.md)** — track goals, decisions, and outcomes as a queryable graph
@@ -513,6 +516,54 @@ aggregation (`:any | :majority | :all`) and a policy map. Create custom
 strategies by implementing `Nous.Plugins.InputGuard.Strategy`. See
 [examples/15_input_guard.exs](examples/15_input_guard.exs).
 
+### Decision Models
+
+A decision model (`Nous.DecisionModel`) generates no text: it reads a state
+and returns a probability per answer for a list of typed questions (`:noul`
+yes/no, `:choice`, `:score`). Backends: Cloudflare Workers AI
+(`"workers_ai:clef-flash"`), self-hosted `/v1/systemone` (vLLM, SGLang,
+llama-server), OpenAI-style `/v1/decisions`, and in-process GGUF through
+`llama_cpp_ex` (`>= 0.8.58`).
+
+Guard an agent with it:
+
+```elixir
+agent = Nous.new("openai:gpt-4.1", plugins: [Nous.Plugins.DecisionGuard])
+
+{:ok, result} =
+  Nous.run(agent, "Summarise the attached report",
+    deps: %{
+      decision_guard_config: %{
+        model: "workers_ai:clef-flash",
+        surfaces: [:user_input, :tool_call]
+      }
+    }
+  )
+```
+
+Or route each turn to a cheap or a strong model:
+
+```elixir
+agent =
+  Nous.new("openai:gpt-4o",
+    router:
+      {Nous.Router.DecisionModel,
+       model: Nous.DecisionModel.parse("workers_ai:clef-flash"),
+       tiers: [
+         simple: [model: "openai:gpt-4o-mini", description: "greetings, lookups, short answers"],
+         complex: [model: "openai:gpt-4o", description: "multi-step reasoning, code, planning"]
+       ]}
+  )
+```
+
+Only user input is guarded by default; each check is one model call (tens to
+hundreds of ms hosted, about 0.5–1 s on a laptop). Routing fails open to the
+agent's own model; guards fail closed. Any hook can also be a `:decision` hook
+(`Nous.Hook.Decision`). See [decision models](docs/guides/decision_models.md),
+[DecisionGuard](docs/guides/decision_guard.md), and the fully local examples
+[local_guard.exs](examples/decision_models/local_guard.exs) and
+[local_router.exs](examples/decision_models/local_router.exs).
+
 ### Sub-Agent Delegation
 
 Enable agents to delegate tasks to specialized child agents:
@@ -754,6 +805,8 @@ No clone, no `mix` — these open straight from the hex page and install Nous vi
 - [advanced/cancellation.exs](examples/advanced/cancellation.exs) - Task cancellation
 - [advanced/teams.exs](examples/advanced/teams.exs) - Multi-agent team lifecycle (roles, shared state)
 - [advanced/decisions.exs](examples/advanced/decisions.exs) - Decision-graph tracking
+- [decision_models/local_guard.exs](examples/decision_models/local_guard.exs) - DecisionGuard on a local Clef-Flash guarding a local Qwen chat model
+- [decision_models/local_router.exs](examples/decision_models/local_router.exs) - Route turns between two local Qwen tiers with Clef-Flash
 - [advanced/deep_research.exs](examples/advanced/deep_research.exs) - Autonomous deep research with citations
 - [advanced/liveview_chat.exs](examples/advanced/liveview_chat.exs) - LiveView streaming chat
 - [advanced/liveview_multi_agent.exs](examples/advanced/liveview_multi_agent.exs) - LiveView multi-agent dashboard

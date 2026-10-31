@@ -264,6 +264,8 @@ defmodule Nous.MixProject do
         # Design Documents
         {"docs/design/llm_council_design.md",
          filename: "council_design", title: "LLM Council Design (Proposal)"},
+        {"docs/design/decision_models_adr.md",
+         filename: "decision_models_adr", title: "Decision Models: Architecture Decisions"},
         {"docs/benchmarks/http_backend.md",
          filename: "http_backend_benchmark", title: "HTTP Backend Benchmark"}
       ],
@@ -345,6 +347,7 @@ defmodule Nous.MixProject do
         ],
         Design: [
           "council_design.html",
+          "decision_models_adr.html",
           "http_backend_benchmark.html"
         ],
         Reference: [
