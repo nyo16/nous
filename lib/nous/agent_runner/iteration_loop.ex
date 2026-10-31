@@ -44,9 +44,9 @@ defmodule Nous.AgentRunner.IterationLoop do
   # `Nous.AgentServer.steer/2` are wired through; the loop itself knows nothing
   # about servers or queues. Without the key, nothing changes.
 
-  alias Nous.{Errors, Hook, Message, Plugin}
+  alias Nous.{Errors, Hook, Message, Plugin, ToolCall}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
-  alias Nous.AgentRunner.{PromptAssembly, RequestDispatch, ToolExecution}
+  alias Nous.AgentRunner.{PromptAssembly, RequestDispatch, Routing, ToolExecution}
   alias Nous.Session.{Event, Log}
 
   require Logger
@@ -57,8 +57,13 @@ defmodule Nous.AgentRunner.IterationLoop do
   @exit_reason_key :__turn_exit_reason__
 
   # `ctx.deps` key holding the sticky fallback model once a fallback answered.
-  # Runtime-only: see clear_active_model/1.
+  # Runtime-only: see clear_runtime_models/1.
   @active_model_key :active_model
+
+  # `ctx.deps` flag set once any request of the run was answered by a
+  # fallback. Runtime-only; outlives the sticky model, which a routing
+  # boundary clears.
+  @fallback_used_key :__fallback_used__
 
   # A turn: opens before its first input is claimed, closes when nothing is
   # owed. `loop/3` is the recursion target — see the moduledoc note.
@@ -194,8 +199,11 @@ defmodule Nous.AgentRunner.IterationLoop do
 
       # One effective model per iteration: tool schemas, structured-output
       # settings and the dispatch chain are all built for the same model, so a
-      # sticky fallback to another provider gets that provider's formats.
-      request_agent = %{agent | model: effective_model(agent, ctx)}
+      # routed tier or a sticky fallback on another provider gets that
+      # provider's formats. Routing runs here, after the pre_request verdict,
+      # so a denied step spends no routing decision.
+      {ctx, model} = effective_model(agent, ctx)
+      request_agent = %{agent | model: model}
 
       {ctx, messages, model_settings} =
         prepare_request(agent, request_agent, behaviour, ctx, all_tools)
@@ -253,13 +261,18 @@ defmodule Nous.AgentRunner.IterationLoop do
     # not structs: a command hook JSON-encodes this payload and %Message{} is
     # not encodable.
     pre_step_result =
-      Hook.Runner.run(ctx.hook_registry, :pre_request, %{
-        agent_name: agent.name,
-        tool_count: length(all_tools),
-        iteration: ctx.iteration,
-        claimed: length(claimed),
-        claimed_content: Enum.map(claimed, &Message.extract_text/1)
-      })
+      Hook.Runner.run(
+        ctx.hook_registry,
+        :pre_request,
+        %{
+          agent_name: agent.name,
+          tool_count: length(all_tools),
+          iteration: ctx.iteration,
+          claimed: length(claimed),
+          claimed_content: Enum.map(claimed, &Message.extract_text/1)
+        },
+        fn -> Hook.Decision.env(ctx, agent.name) end
+      )
 
     {ctx, all_tools, pre_step_result}
   end
@@ -316,9 +329,23 @@ defmodule Nous.AgentRunner.IterationLoop do
   end
 
   # The model this iteration's request is built for and dispatched to: the
-  # sticky fallback recorded earlier in this run, else the configured model.
+  # sticky fallback recorded earlier in this run, else the routed model, else
+  # the configured one. At a routing boundary (Nous.Router granularity) the
+  # router is consulted first and its new decision clears the sticky fallback.
+  defp effective_model(%{router: nil} = agent, ctx) do
+    {ctx, Map.get(ctx.deps, @active_model_key) || agent.model}
+  end
+
   defp effective_model(agent, ctx) do
-    Map.get(ctx.deps, @active_model_key) || agent.model
+    {turn, _steps} = turn_cursor(ctx)
+
+    ctx =
+      case Routing.route(agent, ctx, turn) do
+        {:boundary, ctx} -> %{ctx | deps: Map.delete(ctx.deps, @active_model_key)}
+        {:hold, ctx} -> ctx
+      end
+
+    {ctx, Map.get(ctx.deps, @active_model_key) || Routing.routed_model(ctx) || agent.model}
   end
 
   # Make the model request (with fallback chain if configured). `request_agent`
@@ -356,49 +383,67 @@ defmodule Nous.AgentRunner.IterationLoop do
   end
 
   # Record which model answered. A fallback happened only when the answering
-  # model is not the one this request was built for; it becomes sticky for the
-  # rest of the run and is labelled once per change, so a run that stays on the
-  # fallback emits `[:nous, :agent, :fallback, :used]` exactly once. Track it in
-  # ctx for telemetry, but do NOT mutate agent.model: mutating made the
-  # start-of-run telemetry tag one provider and the stop another.
+  # model is not the one this request was built for (the routed model, when a
+  # router chose one); it becomes sticky until the next routing boundary (the
+  # rest of the run without a router) and is labelled once per change, so a
+  # run that stays on the fallback emits `[:nous, :agent, :fallback, :used]`
+  # exactly once. Track it in ctx for telemetry, but do NOT mutate
+  # agent.model: mutating made the start-of-run telemetry tag one provider and
+  # the stop another.
   defp record_active_model(agent, ctx, intended_model, active_model) do
     if active_model != intended_model and active_model != Map.get(ctx.deps, @active_model_key) do
+      original = Routing.routed_model(ctx) || agent.model
+
       :telemetry.execute(
         [:nous, :agent, :fallback, :used],
         %{system_time: System.system_time()},
         %{
           agent_name: agent.name,
-          original_provider: agent.model.provider,
-          original_model: agent.model.model,
+          original_provider: original.provider,
+          original_model: original.model,
           active_provider: active_model.provider,
           active_model: active_model.model
         }
       )
 
-      %{ctx | deps: Map.put(ctx.deps, @active_model_key, active_model)}
+      deps =
+        ctx.deps
+        |> Map.put(@active_model_key, active_model)
+        |> Map.put(@fallback_used_key, true)
+
+      %{ctx | deps: deps}
     else
       ctx
     end
   end
 
   @doc false
-  # The fallback model this run promoted to, or nil when every request was
-  # answered by the model it was built for.
-  def active_model(%Context{deps: deps}), do: Map.get(deps, @active_model_key)
-
-  @doc false
-  # `:active_model` is runtime-only, like the turn exit reason: dropped at run
-  # start (a new run or AgentServer turn starts at the primary again) and from
-  # the result's deps/context so it is never persisted.
-  def clear_active_model(%Context{} = ctx) do
-    %{ctx | deps: Map.delete(ctx.deps, @active_model_key)}
+  # The model the run's last request went to: the sticky fallback, else the
+  # routed model; nil when that was the configured model.
+  def served_model(%Context{deps: deps} = ctx) do
+    Map.get(deps, @active_model_key) || Routing.routed_model(ctx)
   end
 
-  # Fold a successful model response into the context (usage, callbacks,
-  # plugin/hook after-response, behaviour processing, tool calls) and re-enter
-  # the loop.
+  @doc false
+  # Whether any request of this run was answered by a fallback model.
+  def fallback_used?(%Context{deps: deps}), do: Map.get(deps, @fallback_used_key, false)
+
+  @doc false
+  # The sticky fallback, the fallback flag and the routing decision are
+  # runtime-only, like the turn exit reason: dropped at run start (a new run
+  # or AgentServer turn starts at the primary again and routes afresh) and
+  # from the result's deps/context so they are never persisted.
+  def clear_runtime_models(%Context{} = ctx) do
+    deps = Map.drop(ctx.deps, [@active_model_key, @fallback_used_key])
+    Routing.clear(%{ctx | deps: deps})
+  end
+
+  # Fold a successful model response into the context (usage, the blocking
+  # post_response hook, callbacks, plugin after-response, behaviour processing,
+  # tool calls) and re-enter the loop.
   def handle_response(agent, behaviour, ctx, response, all_tools) do
-    # Update usage
+    # Update usage. Accounting stays before the post_response hook: a denied
+    # response was still paid for.
     usage_update = response.metadata.usage || %{}
     ctx = Context.add_usage(ctx, usage_update)
     ctx = Context.increment_iteration(ctx)
@@ -414,17 +459,27 @@ defmodule Nous.AgentRunner.IterationLoop do
       "Model response received (tokens: +#{tokens_added}, total: #{ctx.usage.total_tokens})"
     )
 
+    # post_response hooks run BEFORE anything else sees the response — the
+    # callbacks (notify_pid, PubSub), plugins and the transcript — so a deny
+    # actually withholds it. Deltas already emitted under `stream: true` cannot
+    # be recalled.
+    case run_post_response_hooks(agent, ctx, response) do
+      {:deny, reason} ->
+        Logger.info("Model response denied by post_response hook: #{reason}")
+        _ctx = log_step_end(ctx, :error)
+        {:error, Errors.ResponseDenied.exception(reason: reason)}
+
+      {:ok, response} ->
+        continue_response(agent, behaviour, ctx, response, all_tools)
+    end
+  end
+
+  defp continue_response(agent, behaviour, ctx, response, all_tools) do
     # Execute callback
     Callbacks.execute(ctx, :on_llm_new_message, response)
 
     # Run plugin after_response hooks
     ctx = Plugin.run_after_response(agent.plugins, agent, response, ctx)
-
-    # Run post_response hooks
-    Hook.Runner.run(ctx.hook_registry, :post_response, %{
-      agent_name: agent.name,
-      iteration: ctx.iteration
-    })
 
     # Process response via behaviour - this handles tool calls and updates needs_response
     ctx = behaviour.process_response(agent, response, ctx)
@@ -442,6 +497,34 @@ defmodule Nous.AgentRunner.IterationLoop do
 
     # Continue loop
     loop(agent, behaviour, ctx)
+  end
+
+  # Text, not structs, for the same reason as :pre_request: a command hook
+  # JSON-encodes the payload. `{:modify, %{response: text}}` replaces the
+  # message content before anything else sees it.
+  defp run_post_response_hooks(agent, ctx, response) do
+    if ctx.hook_registry && Hook.Registry.has_hooks?(ctx.hook_registry, :post_response) do
+      payload = %{
+        agent_name: agent.name,
+        iteration: ctx.iteration,
+        content: Message.extract_text(response),
+        tool_calls:
+          Enum.map(response.tool_calls || [], fn call ->
+            %{name: ToolCall.field(call, :name), arguments: ToolCall.field(call, :arguments)}
+          end)
+      }
+
+      env = fn -> Hook.Decision.env(ctx, agent.name) end
+
+      case Hook.Runner.run(ctx.hook_registry, :post_response, payload, env) do
+        :deny -> {:deny, "response denied by hook"}
+        {:deny, reason} -> {:deny, reason}
+        {:modify, %{response: text}} when is_binary(text) -> {:ok, %{response | content: text}}
+        _allow -> {:ok, response}
+      end
+    else
+      {:ok, response}
+    end
   end
 
   # A failed model request: give the behaviour's handle_error a chance to retry

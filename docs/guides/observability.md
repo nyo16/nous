@@ -106,8 +106,17 @@ Use these to alert on provider degradation. See the
 
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
-| `[:nous, :agent, :fallback, :used]` | `system_time` | `agent_name`, `original_provider`, `original_model`, `active_provider`, `active_model` |
+| `[:nous, :agent, :fallback, :used]` | `system_time` | `agent_name`, `original_provider`, `original_model` (the routed model when a router chose one), `active_provider`, `active_model` |
 | `[:nous, :fallback, :activated]` | call-site dependent | active model + activation reason |
+
+### Router Events
+
+One event per `Nous.Router` consultation; see the
+[Decision Models guide](decision_models.md#routing).
+
+| Event | Measurement | Metadata |
+|-------|-------------|----------|
+| `[:nous, :router, :route]` | `duration` | `agent_name`, `router`, `granularity`, `turn`, `iteration`, `cause`, `tier`, `probabilities`, `confidence`, `reason`, `model_provider`, `model_name` |
 
 ### Hook & Skill Events
 
@@ -117,6 +126,7 @@ Use these to alert on provider degradation. See the
 | `[:nous, :hook, :execute, :stop]` | `duration` | `event`, `hook_name`, `hook_type`, `result?` |
 | `[:nous, :hook, :denied]` | — | `event`, `hook_name`, `hook_type`, `reason?` |
 | `[:nous, :hook, :failed_closed]` | `system_time` | `event`, `hook_name`, `hook_type`, `reason` |
+| `[:nous, :hook, :decision]` | `duration`, `chunk_count` | `event`, `hook_name`, `verdict`, `result`, `probabilities`, `backend`, `model`, `error` |
 | `[:nous, :skill, :activate]` | — | `skill_name`, `agent_name` |
 | `[:nous, :skill, :deactivate]` | — | `skill_name`, `agent_name` |
 

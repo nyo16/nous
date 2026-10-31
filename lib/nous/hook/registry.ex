@@ -102,6 +102,16 @@ defmodule Nous.Hook.Registry do
   end
 
   @doc """
+  Check if the registry has any hook of the given type (e.g. `:decision`).
+  """
+  @spec has_type?(t() | nil, Hook.hook_type()) :: boolean()
+  def has_type?(nil, _type), do: false
+
+  def has_type?(%Registry{} = registry, type) do
+    Enum.any?(registry.hooks, fn {_event, hooks} -> Enum.any?(hooks, &(&1.type == type)) end)
+  end
+
+  @doc """
   Return the total number of registered hooks.
   """
   @spec count(t()) :: non_neg_integer()

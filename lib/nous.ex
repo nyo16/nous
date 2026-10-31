@@ -92,6 +92,14 @@ defmodule Nous do
         model_settings: %{temperature: 0.7}
       )
 
+      # Route each turn to a model tier (see Nous.Router)
+      agent = Nous.new("openai:gpt-4o",
+        router:
+          {Nous.Router.DecisionModel,
+           model: Nous.DecisionModel.parse("workers_ai:clef-flash"),
+           tiers: [simple: "openai:gpt-4o-mini", complex: "openai:gpt-4o"]}
+      )
+
   """
   @spec new(String.t(), keyword()) :: Agent.t()
   defdelegate new(model_string, opts \\ []), to: Agent
@@ -115,6 +123,9 @@ defmodule Nous do
 
   @doc """
   Run an agent with streaming (shorthand for Agent.run_stream/3).
+
+  The agent's `router` is not consulted here (see `Nous.Router`); use
+  `run/3` with `stream: true` for a routed, streamed run.
 
   ## Example
 

@@ -256,6 +256,8 @@ defmodule Nous.MixProject do
         {"docs/guides/vertex_ai_setup.md",
          filename: "vertex_ai_setup", title: "Vertex AI Setup Guide"},
         {"docs/guides/fallback.md", filename: "fallback", title: "Fallback Chains Guide"},
+        {"docs/guides/decision_models.md",
+         filename: "decision_models", title: "Decision Models Guide"},
 
         # Design Documents
         {"docs/design/llm_council_design.md",
@@ -331,7 +333,8 @@ defmodule Nous.MixProject do
           "custom_providers.html",
           "http_backends.html",
           "vertex_ai_setup.html",
-          "fallback.html"
+          "fallback.html",
+          "decision_models.html"
         ],
         Design: [
           "council_design.html",
@@ -366,7 +369,9 @@ defmodule Nous.MixProject do
         "Model Configuration": [
           Nous.Model,
           Nous.ModelDispatcher,
-          Nous.Fallback
+          Nous.Fallback,
+          Nous.Router,
+          Nous.Router.DecisionModel
         ],
         "Decision Models": [
           Nous.DecisionModel,

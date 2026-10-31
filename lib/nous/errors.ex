@@ -320,4 +320,28 @@ defmodule Nous.Errors do
         if(reason, do: ": #{reason}", else: "")
     end
   end
+
+  defmodule ResponseDenied do
+    @moduledoc """
+    Error when a `:post_response` hook denies a model response.
+
+    Returned as `{:error, %ResponseDenied{}}` by the agent run. The denied
+    response never reaches `:on_llm_new_message` callbacks, PubSub, plugins'
+    `after_response/3`, the transcript or tool execution. It is not
+    `Nous.Fallback.fallback_eligible?/1`: a policy denial is not a provider
+    failure, so it never switches to a fallback model.
+    """
+
+    use Nous.Errors.Base, fields: [:reason]
+
+    @type t :: %__MODULE__{
+            message: String.t(),
+            reason: String.t() | nil
+          }
+
+    defp default_message(%{reason: reason}) do
+      "Model response denied by hook" <>
+        if(reason, do: ": #{reason}", else: "")
+    end
+  end
 end

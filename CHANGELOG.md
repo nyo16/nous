@@ -84,9 +84,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session restore, so an `AgentServer` inbox run (`steer/2`, `followup/2`)
   after a restore fired no hooks at all. `Nous.AgentServer`'s `agent_config`
   now also accepts `:hooks`.
+- **`:post_response` hooks are blocking, and run before anything sees the
+  response.** A `:deny` used to be silently ignored; it now ends the run with
+  `{:error, %Nous.Errors.ResponseDenied{}}` (not fallback-eligible) and the
+  response never reaches `:on_llm_new_message` callbacks, `notify_pid`,
+  PubSub, plugins' `after_response/3`, the transcript or tool execution.
+  `{:modify, %{response: text}}` replaces the response text, and
+  `fail_closed` now applies. The hook moved from after `after_response/3` to
+  before the `:on_llm_new_message` callback, and its payload gains `content`
+  and `tool_calls`. Under `Nous.AgentServer` a denied turn is reported as
+  `{:agent_error, message}` and nothing from it is persisted. With
+  `stream: true`, deltas already emitted cannot be recalled.
+- **Plugin-contributed hooks replace a hand-set registry.** The run's hook
+  registry is rebuilt on every run from `agent.hooks ++` the new
+  `c:Nous.Plugin.hooks/2` of every plugin. A `ctx.hook_registry` you set
+  yourself is still kept when neither source contributes a hook, but is
+  replaced as soon as a plugin does. Ties within a priority run agent hooks
+  first, then plugin hooks in plugin order.
+- **`parallel_tool_calls: true` runs the `:pre_tool_use` hooks of one
+  response concurrently.** Results keep call order, and approval checks stay
+  serial in call order; hooks that assumed the calls of one response are
+  judged one after another may now overlap.
 
 ### Added
 
+- **`:decision` hook type (`Nous.Hook.Decision`).** A hook whose handler is a
+  `Nous.Hook.Decision` classifies the payload with a `Nous.DecisionModel` and
+  maps per-question P(risky) bands (`{allow_below, deny_at}`) to allow /
+  escalate / deny. Escalation is resolved inside the hook (`on_escalate`, or
+  on `:pre_tool_use` the run's approval handler through
+  `Nous.Permissions.consult_handler/2`; no handler rejects), so `Hook.result`
+  is unchanged. It is fail-closed (`on_error: :deny` by default; on
+  `:post_tool_use` a deny withholds the result), bounds each decision-model
+  call by the hook's `timeout`, windows oversize content (`oversize: :chunk |
+  :suspicious | :head_tail`, `max_chunks`), and emits
+  `[:nous, :hook, :decision]`. Code Mode sub-calls fire it too.
+- **`Nous.Hook.Runner.run/4`** takes an `env`
+  (`%{approval_handler, agent_name, task, tool}`, or a zero-arity function
+  returning it) that only `:decision` handlers receive; `run/3` is unchanged.
+  `Nous.RunContext` gains `hook_env` so Code Mode sub-calls carry it.
+- **`c:Nous.Plugin.hooks/2`** (optional callback) and
+  `Nous.Plugin.collect_hooks/3`: plugins contribute hooks once per run, after
+  `init/2`. `Nous.AgentServer`'s `agent_config` now accepts `:plugins`.
+- **`Nous.Errors.ResponseDenied`** for a denied `:post_response`.
+- `Nous.Hook.Registry.has_type?/2`.
+- **Pluggable pre-dispatch router (`Nous.Router`, `router:` agent option).**
+  `Nous.new(model, router: {module, opts})` picks the chat model before each
+  request is built, at a `:granularity` of `:per_turn` (default), `:once`,
+  `:per_iteration` or `:escalate_only` (cheapest tier first, only moves up).
+  Tool schemas and structured-output settings follow the routed model's
+  provider; the fallback chain is `[routed | agent.fallback]`, and a routed
+  tier is never labelled a fallback. A fallback that answered stays sticky
+  until the next routing boundary. `:default`, an error or a crashing router
+  uses `agent.model` (fails open). The decision is runtime-only (never in
+  `result.deps` or a persisted context). Per-run override: `Nous.run(agent,
+  prompt, router: nil | {module, opts})`. `run_stream/3` is not routed.
+  Telemetry: `[:nous, :router, :route]` (tier, probabilities, confidence,
+  cause, latency). `Nous.Router.DecisionModel` routes with one `:choice`
+  decision over LiteLLM-style ordered `tiers` (model string / `%Model{}` /
+  keyword with per-tier model options and a `description`), with
+  `min_confidence`, `context_turns`, `instructions` and `timeout` options.
+  Run-stop `active_model_*` now names the model that served the last request,
+  and `fallback_used` is true if any request of the run fell back. New guide:
+  `docs/guides/decision_models.md` (Routing).
 - **`:headers` model option: extra HTTP headers on every provider request.**
   `Nous.new/2`, `Nous.Model.parse/2`, `Nous.Model.new/3` and the string-model
   forms of `Nous.LLM.generate_text/3` / `stream_text/3` accept

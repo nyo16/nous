@@ -86,9 +86,9 @@ defmodule Nous.Telemetry do
 
   ## Fallback Events
 
-    * `[:nous, :agent, :fallback, :used]` - Dispatched when an iteration switches
-      to a fallback model (sticky-fallback). Use this to alert on provider
-      degradation.
+    * `[:nous, :agent, :fallback, :used]` - Dispatched when a model other than
+      the one the request was built for (the routed model, else the agent's)
+      answered (sticky-fallback). Use this to alert on provider degradation.
       * Measurement: `%{system_time: native_time}`
       * Metadata: `%{agent_name, original_provider, original_model, active_provider, active_model}`
 
@@ -96,6 +96,14 @@ defmodule Nous.Telemetry do
       promotes to the next model after the primary returns an error.
       * Measurement: depends on the call site
       * Metadata: includes the active model and the reason for activation
+
+  ## Router Events
+
+    * `[:nous, :router, :route]` - Dispatched each time the agent's
+      `Nous.Router` is consulted.
+      * Measurement: `%{duration: native_time}` (the router call's latency)
+      * Metadata: `%{agent_name, router, granularity, turn, iteration, cause,
+        tier, probabilities, confidence, reason, model_provider, model_name}`
 
   ## Hook Events
 
@@ -110,6 +118,11 @@ defmodule Nous.Telemetry do
       the tool result was withheld.
       * Measurement: `%{system_time}`
       * Metadata: `%{event, hook_name, hook_type, reason}`
+    * `[:nous, :hook, :decision]` - one evaluation of a `:decision` hook
+      (`Nous.Hook.Decision`).
+      * Measurement: `%{duration, chunk_count}`
+      * Metadata: `%{event, hook_name, verdict, result, probabilities, backend,
+        model, error}`
 
   ## Skill Events
 

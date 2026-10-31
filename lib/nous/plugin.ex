@@ -40,11 +40,13 @@ defmodule Nous.Plugin do
   sequentially for all hooks:
 
   1. `init/2` — once at run start
-  2. `system_prompt/2` — once, fragments joined into system message
-  3. `tools/2` — once per iteration, tools collected
-  4. `before_request/3` — before each LLM call
-  5. `after_response/3` — after each LLM response
-  6. `after_run/3` — once after the entire run completes (post-loop)
+  2. `hooks/2` — once per run, after `init/2` (and on every
+     `Nous.AgentRunner.run_with_context/3`); merged after `agent.hooks`
+  3. `system_prompt/2` — once, fragments joined into system message
+  4. `tools/2` — once per iteration, tools collected
+  5. `before_request/3` — before each LLM call
+  6. `after_response/3` — after each LLM response
+  7. `after_run/3` — once after the entire run completes (post-loop)
 
   ## Built-in Plugins
 
@@ -111,10 +113,22 @@ defmodule Nous.Plugin do
   """
   @callback after_run(agent :: Nous.Agent.t(), result :: map(), ctx :: Context.t()) :: Context.t()
 
+  @doc """
+  Contribute `Nous.Hook`s for this agent run.
+
+  Called once per run, after every plugin's `init/2`, so `ctx` already holds
+  the final approval handler and deps. The run's hook registry is rebuilt from
+  `agent.hooks ++` the hooks of every plugin (in list order) on each run, so
+  hooks never accumulate across `Nous.AgentServer` turns. Order within a
+  priority is registration order: agent hooks first, then plugin hooks.
+  """
+  @callback hooks(agent :: Nous.Agent.t(), ctx :: Context.t()) :: [Nous.Hook.t()]
+
   @optional_callbacks [
     init: 2,
     tools: 2,
     system_prompt: 2,
+    hooks: 2,
     before_request: 3,
     after_response: 3,
     after_run: 3
@@ -144,6 +158,20 @@ defmodule Nous.Plugin do
     Enum.flat_map(plugins, fn plugin ->
       if exports?(plugin, :tools, 2) do
         plugin.tools(agent, ctx)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  Collect hooks from all plugins, in plugin list order.
+  """
+  @spec collect_hooks([module()], Nous.Agent.t(), Context.t()) :: [Nous.Hook.t()]
+  def collect_hooks(plugins, agent, ctx) do
+    Enum.flat_map(plugins, fn plugin ->
+      if exports?(plugin, :hooks, 2) do
+        plugin.hooks(agent, ctx)
       else
         []
       end

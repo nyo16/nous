@@ -415,7 +415,9 @@ defmodule Nous.CodeMode do
   def direct_dispatch(%Tool{} = tool, args, %RunContext{} = run_ctx) do
     payload = %{tool_name: tool.name, tool_id: nil, arguments: args}
 
-    case Hook.Runner.run(run_ctx.hook_registry, :pre_tool_use, payload) do
+    case Hook.Runner.run(run_ctx.hook_registry, :pre_tool_use, payload, fn ->
+           Hook.Decision.env(run_ctx, nil, tool)
+         end) do
       :deny ->
         {:error, error_payload(tool.name, "tool call was denied by hook")}
 
@@ -448,10 +450,16 @@ defmodule Nous.CodeMode do
     end
   end
 
-  defp post_hook(%Tool{name: name}, args, value, %RunContext{hook_registry: registry}) do
+  defp post_hook(
+         %Tool{name: name} = tool,
+         args,
+         value,
+         %RunContext{hook_registry: registry} = run_ctx
+       ) do
     payload = %{tool_name: name, tool_id: nil, arguments: args, result: value}
+    env = fn -> Hook.Decision.env(run_ctx, nil, tool) end
 
-    case Hook.Runner.run(registry, :post_tool_use, payload) do
+    case Hook.Runner.run(registry, :post_tool_use, payload, env) do
       {:modify, %{result: new_value}} -> new_value
       _ -> value
     end

@@ -33,6 +33,7 @@ the same way as the [HexDocs sidebar](https://hexdocs.pm/nous).
 - **[HTTP Backends](http_backends.md)** — Finch/Req vs Hackney, streaming backpressure.
 - **[Vertex AI Setup](vertex_ai_setup.md)** — Google Cloud Vertex AI configuration.
 - **[Fallback Chains](fallback.md)** — automatic provider/model failover.
+- **[Decision Models](decision_models.md)** — route each turn to the right model tier with a decision model.
 
 ## Integrations & Operations
 

@@ -656,6 +656,64 @@ defmodule Nous.CodeModeTest do
       assert {:ok, result} = result
       assert tool_message(result) =~ "alpha ran"
     end
+
+    test "a decision hook judges each sub-call, with the run's env, and can deny it" do
+      test_pid = self()
+
+      alpha =
+        tool("alpha", fn _ctx, _args ->
+          send(test_pid, :alpha_ran)
+          {:ok, "should never happen"}
+        end)
+
+      guard =
+        Nous.Hook.new(:pre_tool_use,
+          name: "guard",
+          matcher: "alpha",
+          handler:
+            Nous.Hook.Decision.new(
+              model: Nous.Test.FakeDecisionBackend.model(fn _ -> 0.9 end, test_pid: test_pid),
+              questions: [risky: [type: :noul, instructions: "Is untrusted_content risky?"]],
+              bands: %{risky: {0.3, 0.7}}
+            )
+        )
+
+      agent =
+        Agent.new("openai:test-model", tools: [alpha], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "please call alpha")
+
+      assert_receive {:decision_state, state}
+      assert state["surface"] == "tool_call"
+      assert state["tool"]["name"] == "alpha"
+      assert state["task"] == "please call alpha"
+      assert JSON.decode!(state["untrusted_content"]) == %{"from" => "the program"}
+
+      refute_receive :alpha_ran, 100
+      assert tool_message(result) =~ "denied by hook: decision hook guard"
+    end
+
+    test "a denying :post_tool_use decision hook withholds the sub-call result" do
+      guard =
+        Nous.Hook.new(:post_tool_use,
+          matcher: "alpha",
+          handler:
+            Nous.Hook.Decision.new(
+              model: Nous.Test.FakeDecisionBackend.model(fn _ -> 0.9 end),
+              questions: [risky: [type: :noul, instructions: "Is untrusted_content risky?"]],
+              bands: %{risky: {0.3, 0.7}}
+            )
+        )
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      message = tool_message(result)
+      assert message =~ "[tool result withheld by decision hook]"
+      refute message =~ "alpha ran"
+    end
   end
 
   describe "bindings are derived from the permission policy" do

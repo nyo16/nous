@@ -5,7 +5,7 @@ defmodule Nous.Hook.Runner do
 
   ## Execution Semantics
 
-  - **Blocking events** (`:pre_tool_use`, `:pre_request`): short-circuits on first `:deny`
+  - **Blocking events** (`:pre_tool_use`, `:pre_request`, `:post_response`): short-circuits on first `:deny`
   - **Non-blocking events**: all hooks run, results collected
   - Hooks with the same priority run sequentially (ordered by registration)
   - Each hook has a configurable timeout (default 10s). `:function` and
@@ -31,6 +31,17 @@ defmodule Nous.Hook.Runner do
   - `:command` — Executes shell command via `NetRunner.run/2` with JSON on stdin.
     Requires the optional `:net_runner` dependency; without it every `:command`
     hook fails closed (denies the event) rather than silently passing.
+  - `:decision` — Classifies the payload with a `Nous.DecisionModel`; see
+    `Nous.Hook.Decision`. The only handler type that receives `env`.
+
+  ## `env`
+
+  `run/4` takes an `env` beside the payload:
+  `%{approval_handler:, agent_name:, task:, tool:}` (`t:Nous.Hook.Decision.env/0`).
+  It is handed **only** to `:decision` handlers, so payloads stay
+  JSON-encodable and function/module/command hooks see exactly what they
+  always did. `env` may be a zero-arity function returning the map; it is
+  called once, and only when a decision hook runs.
 
   ## Sandbox
 
@@ -76,7 +87,7 @@ defmodule Nous.Hook.Runner do
   """
 
   alias Nous.Hook
-  alias Nous.Hook.Registry
+  alias Nous.Hook.{Decision, Registry}
   alias Nous.Sandbox
   alias Nous.Sandbox.{Confined, Policy}
 
@@ -85,32 +96,57 @@ defmodule Nous.Hook.Runner do
   @withheld_tool_result "[tool result withheld: hook error]"
 
   @doc """
+  Run all matching hooks for an event, with an empty `env`. See `run/4`.
+  """
+  @spec run(Registry.t() | nil, Hook.event(), map()) :: Hook.result()
+  def run(registry, event, payload), do: run(registry, event, payload, %{})
+
+  @doc """
   Run all matching hooks for an event.
+
+  `env` (a map, or a zero-arity function returning one) is passed only to
+  `:decision` handlers; see the moduledoc.
 
   Returns the aggregate result:
   - `:allow` — all hooks passed (or no hooks registered)
   - `:deny` or `{:deny, reason}` — a hook blocked the action
   - `{:modify, changes}` — a hook wants to modify the payload (last modify wins)
   """
-  @spec run(Registry.t() | nil, Hook.event(), map()) :: Hook.result()
-  def run(nil, _event, _payload), do: :allow
+  @spec run(Registry.t() | nil, Hook.event(), map(), map() | (-> map())) :: Hook.result()
+  def run(nil, _event, _payload, _env), do: :allow
 
-  def run(%Registry{} = registry, event, payload) do
+  def run(%Registry{} = registry, event, payload, env) do
     hooks = Registry.hooks_for(registry, event, payload)
-    run_hooks(hooks, event, payload)
+    run_hooks(hooks, event, payload, env)
   end
 
   @doc """
   Run a list of hooks directly (without registry lookup).
   """
-  @spec run_hooks([Hook.t()], Hook.event(), map()) :: Hook.result()
-  def run_hooks([], _event, _payload), do: :allow
+  @spec run_hooks([Hook.t()], Hook.event(), map(), map() | (-> map())) :: Hook.result()
+  def run_hooks(hooks, event, payload, env \\ %{})
 
-  def run_hooks(hooks, event, payload) do
+  def run_hooks([], _event, _payload, _env), do: :allow
+
+  def run_hooks(hooks, event, payload, env) do
+    env = resolve_env(hooks, env)
+
     if Hook.blocking_event?(event) do
-      run_blocking(hooks, event, payload)
+      run_blocking(hooks, event, payload, env, %{})
     else
-      run_non_blocking(hooks, event, payload)
+      run_non_blocking(hooks, event, payload, env)
+    end
+  end
+
+  @env_keys [:approval_handler, :agent_name, :task, :tool]
+
+  # Built at most once per event, and only when a decision hook will see it.
+  defp resolve_env(hooks, env) do
+    if Enum.any?(hooks, &(&1.type == :decision)) do
+      env = if is_function(env, 0), do: env.(), else: env
+      Map.merge(Map.new(@env_keys, &{&1, nil}), env)
+    else
+      %{}
     end
   end
 
@@ -119,12 +155,10 @@ defmodule Nous.Hook.Runner do
   # gets `{:modify, changes}` back when every hook allowed — without that the
   # documented `{:modify, %{arguments: ...}}` rewrite reached later hooks and
   # nobody else.
-  defp run_blocking(hooks, event, payload), do: run_blocking(hooks, event, payload, %{})
+  defp run_blocking([], _event, _payload, _env, changes) when map_size(changes) == 0, do: :allow
+  defp run_blocking([], _event, _payload, _env, changes), do: {:modify, changes}
 
-  defp run_blocking([], _event, _payload, changes) when map_size(changes) == 0, do: :allow
-  defp run_blocking([], _event, _payload, changes), do: {:modify, changes}
-
-  defp run_blocking([hook | rest], event, payload, changes) do
+  defp run_blocking([hook | rest], event, payload, env, changes) do
     start_time = System.monotonic_time()
 
     :telemetry.execute(
@@ -133,7 +167,7 @@ defmodule Nous.Hook.Runner do
       %{event: event, hook_name: hook.name, hook_type: hook.type}
     )
 
-    result = execute_hook(hook, event, payload)
+    result = execute_hook(hook, event, payload, env)
     duration = System.monotonic_time() - start_time
 
     :telemetry.execute(
@@ -144,7 +178,7 @@ defmodule Nous.Hook.Runner do
 
     case result do
       :allow ->
-        run_blocking(rest, event, payload, changes)
+        run_blocking(rest, event, payload, env, changes)
 
       :deny ->
         Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}")
@@ -171,7 +205,7 @@ defmodule Nous.Hook.Runner do
       {:modify, new_changes} ->
         # Apply modification to payload, continue with remaining hooks
         updated_payload = Map.merge(payload, new_changes)
-        run_blocking(rest, event, updated_payload, Map.merge(changes, new_changes))
+        run_blocking(rest, event, updated_payload, env, Map.merge(changes, new_changes))
 
       {:error, reason} ->
         Logger.warning(
@@ -197,16 +231,17 @@ defmodule Nous.Hook.Runner do
 
           {:deny, "hook errored (fail_closed): #{inspect(reason)}"}
         else
-          run_blocking(rest, event, payload, changes)
+          run_blocking(rest, event, payload, env, changes)
         end
     end
   end
 
-  # For non-blocking events, run all hooks and collect modifications. The one
-  # exception is a `fail_closed` hook erroring on `:post_tool_use`: the result
-  # is withheld and no later hook runs (a later `{:modify, %{result: _}}` must
-  # not put the unredacted value back).
-  defp run_non_blocking(hooks, event, payload) do
+  # For non-blocking events, run all hooks and collect modifications. The
+  # exceptions are a `fail_closed` hook erroring on `:post_tool_use` and a
+  # decision hook withholding a result: the result is withheld and no later
+  # hook runs (a later `{:modify, %{result: _}}` must not put the unredacted
+  # value back).
+  defp run_non_blocking(hooks, event, payload, env) do
     Enum.reduce_while(hooks, :allow, fn hook, acc ->
       start_time = System.monotonic_time()
 
@@ -216,7 +251,7 @@ defmodule Nous.Hook.Runner do
         %{event: event, hook_name: hook.name, hook_type: hook.type}
       )
 
-      result = execute_hook(hook, event, payload)
+      result = execute_hook(hook, event, payload, env)
       duration = System.monotonic_time() - start_time
 
       :telemetry.execute(
@@ -235,6 +270,9 @@ defmodule Nous.Hook.Runner do
             {:modify, existing} -> {:cont, {:modify, Map.merge(existing, changes)}}
             _ -> {:cont, {:modify, changes}}
           end
+
+        {:withhold, text} ->
+          {:halt, {:modify, %{result: text}}}
 
         {:error, reason} ->
           Logger.warning(
@@ -262,13 +300,22 @@ defmodule Nous.Hook.Runner do
     )
   end
 
-  # Execute a single hook based on its type
-  defp execute_hook(%Hook{type: :function, handler: fun} = hook, event, payload)
+  # Execute a single hook based on its type. Only :decision handlers see env.
+  defp execute_hook(
+         %Hook{type: :decision, handler: %Decision{} = decision} = hook,
+         event,
+         payload,
+         env
+       ) do
+    Decision.evaluate(decision, hook, event, payload, env)
+  end
+
+  defp execute_hook(%Hook{type: :function, handler: fun} = hook, event, payload, _env)
        when is_function(fun, 2) do
     bounded(hook, "Function hook", fn -> fun.(event, payload) end)
   end
 
-  defp execute_hook(%Hook{type: :module, handler: module} = hook, event, payload)
+  defp execute_hook(%Hook{type: :module, handler: module} = hook, event, payload, _env)
        when is_atom(module) do
     bounded(hook, "Module hook #{inspect(module)}", fn ->
       Code.ensure_loaded!(module)
@@ -283,13 +330,14 @@ defmodule Nous.Hook.Runner do
   defp execute_hook(
          %Hook{type: :command, handler: [program | _] = argv} = hook,
          event,
-         payload
+         payload,
+         _env
        )
        when is_binary(program) do
     execute_command_hook(argv, event, payload, hook.timeout, hook.fail_closed)
   end
 
-  defp execute_hook(%Hook{type: :command, handler: handler}, _event, _payload) do
+  defp execute_hook(%Hook{type: :command, handler: handler}, _event, _payload, _env) do
     Logger.warning(
       "Command hook handler must be a [program | args] list of binaries, got: #{inspect(handler)}. " <>
         "Raw shell strings are no longer accepted - they're an RCE risk if the value " <>
@@ -299,7 +347,7 @@ defmodule Nous.Hook.Runner do
     {:error, :invalid_command_handler}
   end
 
-  defp execute_hook(hook, _event, _payload) do
+  defp execute_hook(hook, _event, _payload, _env) do
     Logger.warning("Invalid hook configuration: #{inspect(hook)}")
     {:error, :invalid_hook}
   end
@@ -578,6 +626,7 @@ defmodule Nous.Hook.Runner do
   defp result_type(:deny), do: :deny
   defp result_type({:deny, _}), do: :deny
   defp result_type({:modify, _}), do: :modify
+  defp result_type({:withhold, _}), do: :modify
   defp result_type({:error, _}), do: :error
   defp result_type(_), do: :unknown
 end

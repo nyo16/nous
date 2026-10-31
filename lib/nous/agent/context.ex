@@ -532,6 +532,8 @@ defmodule Nous.Agent.Context do
     * `:permissions` - `Nous.Permissions.Policy` to carry onto the run context
       so delegating tools can inherit the effective policy. The agent runner
       passes `agent.permissions` here; enforcement stays in the runner.
+    * `:agent_name` - the agent name `:decision` hooks fired from the run
+      context see in their env (defaults to `ctx.agent_name`).
 
   ## Examples
 
@@ -560,8 +562,22 @@ defmodule Nous.Agent.Context do
       approval_gated?: true,
       sandbox: Keyword.get(opts, :sandbox),
       permissions: Keyword.get(opts, :permissions),
-      hook_registry: ctx.hook_registry
+      hook_registry: ctx.hook_registry,
+      hook_env: run_hook_env(ctx, Keyword.get(opts, :agent_name))
     )
+  end
+
+  # Decision hooks fired from a run context (Code Mode sub-calls) need the
+  # agent name and the user's task; computed only when one is registered.
+  defp run_hook_env(%Context{hook_registry: registry} = ctx, agent_name) do
+    if Nous.Hook.Registry.has_type?(registry, :decision) do
+      %{
+        agent_name: agent_name || ctx.agent_name,
+        task: Nous.Hook.Decision.task_text(ctx.messages)
+      }
+    else
+      %{}
+    end
   end
 
   @doc """

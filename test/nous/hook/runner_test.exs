@@ -284,8 +284,8 @@ defmodule Nous.Hook.RunnerTest do
     end
 
     test "fail_closed on another non-blocking event fails open" do
-      hook = make_hook(:post_response, fn _, _ -> raise "boom" end, fail_closed: true)
-      assert Runner.run(Registry.from_hooks([hook]), :post_response, %{}) == :allow
+      hook = make_hook(:session_end, fn _, _ -> raise "boom" end, fail_closed: true)
+      assert Runner.run(Registry.from_hooks([hook]), :session_end, %{}) == :allow
     end
   end
 
