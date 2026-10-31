@@ -56,6 +56,75 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    describe "update_node/3 field allowlist (#86)" do
+      defp rows(state) do
+        {:ok, ref} =
+          Duckdbex.query(state.conn, "SELECT id, status, label FROM decision_nodes ORDER BY id")
+
+        Duckdbex.fetch_all(ref)
+      end
+
+      test "crafted string key raises and leaves every row unchanged", %{state: state} do
+        n1 = Node.new(%{type: :goal, label: "A"})
+        n2 = Node.new(%{type: :goal, label: "B"})
+        {:ok, state} = DuckDB.add_node(state, n1)
+        {:ok, state} = DuckDB.add_node(state, n2)
+        before = rows(state)
+
+        assert_raise ArgumentError, fn ->
+          DuckDB.update_node(state, n1.id, %{
+            "status = $2 WHERE id <> $3 OR id = $3 --" => 1
+          })
+        end
+
+        assert rows(state) == before
+        assert Enum.all?(before, fn [_, status, _] -> status == "active" end)
+      end
+
+      test "unknown atom key and :id raise without writing", %{state: state} do
+        node = Node.new(%{type: :goal, label: "A"})
+        {:ok, state} = DuckDB.add_node(state, node)
+        before = rows(state)
+
+        assert_raise ArgumentError, fn -> DuckDB.update_node(state, node.id, %{bogus: 1}) end
+        assert_raise ArgumentError, fn -> DuckDB.update_node(state, node.id, %{id: "x"}) end
+
+        assert_raise ArgumentError, fn ->
+          DuckDB.update_node(state, node.id, %{"label" => "x"})
+        end
+
+        assert rows(state) == before
+      end
+
+      test "every allowed field round-trips", %{state: state} do
+        node = Node.new(%{type: :goal, label: "A"})
+        {:ok, state} = DuckDB.add_node(state, node)
+        created = ~U[2020-01-02 03:04:05Z]
+
+        {:ok, state} =
+          DuckDB.update_node(state, node.id, %{
+            type: :decision,
+            label: "B",
+            status: :completed,
+            confidence: 0.25,
+            rationale: "why",
+            metadata: %{k: "v"},
+            created_at: created,
+            updated_at: created
+          })
+
+        {:ok, got} = DuckDB.get_node(state, node.id)
+        assert got.type == :decision
+        assert got.label == "B"
+        assert got.status == :completed
+        assert got.confidence == 0.25
+        assert got.rationale == "why"
+        assert got.metadata == %{k: "v"}
+        assert DateTime.compare(got.created_at, created) == :eq
+        assert DateTime.compare(got.updated_at, created) == :gt
+      end
+    end
+
     describe "delete_node/2" do
       test "removes a node and its edges", %{state: state} do
         n1 = Node.new(%{type: :goal, label: "Goal"})
