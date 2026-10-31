@@ -321,6 +321,43 @@ agent =
 
 Falls through on transport errors, 5xx, and rate-limit (429) responses.
 
+### Decision models: guard and route
+
+A decision model (`Nous.DecisionModel`, e.g. Clef-Flash) answers typed
+questions with probabilities, no text. Two consumers:
+
+```elixir
+dm = Nous.DecisionModel.parse("workers_ai:clef-flash")  # CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN
+
+# Guard: user input checked by default; deny blocks before any chat request.
+# Fails closed on a decision-model error. Size :timeout for your backend.
+agent = Nous.new("openai:gpt-4o", plugins: [Nous.Plugins.DecisionGuard])
+
+{:ok, result} =
+  Nous.run(agent, prompt,
+    deps: %{decision_guard_config: %{model: dm, surfaces: [:user_input, :tool_call]}}
+  )
+
+# Router: picks the chat model per turn from ordered tiers (cheapest first).
+# Fails open: no route, low confidence or an error uses the agent's own model.
+agent =
+  Nous.new("openai:gpt-4o",
+    router:
+      {Nous.Router.DecisionModel,
+       model: dm,
+       tiers: [
+         simple: [model: "openai:gpt-4o-mini", description: "greetings, lookups, short answers"],
+         complex: [model: "openai:gpt-4o", description: "multi-step reasoning, code, planning"]
+       ]}
+  )
+```
+
+Local decision models run in-process: start a
+`{Nous.DecisionModel.Backend.LlamaCpp, name: :clef, source: {:path, gguf}}`
+child (needs `{:llama_cpp_ex, "~> 0.8.58"}`) and use `"llamacpp:clef"`. A
+local check costs ~0.5–1 s. See `docs/guides/decision_models.md` and
+`docs/guides/decision_guard.md`.
+
 ### Code Mode: one program instead of a chain of tool calls
 
 ```elixir
@@ -412,6 +449,13 @@ Currently hidden, do not call:
 - `Nous.CodeRuntime.JS.Bridge`, `Nous.CodeRuntime.JS.Prelude`,
   `Nous.CodeRuntime.JS.Session` — the tyrex-facing internals behind the public
   `Nous.CodeRuntime.JS` provider
+- `Nous.DecisionModel.Backend.HTTP`, `Nous.DecisionModel.SystemOneWire`,
+  `Nous.DecisionModel.OrderedObject` — request plumbing, wire encoding and
+  the key-order-preserving JSON object shared by the decision-model
+  backends; use `Nous.DecisionModel.parse/2` / `decide/4`
+- `Nous.AgentRunner.Routing` — the runner's router integration (covered by
+  the `Nous.AgentRunner.*` rule above); configure routing with `router:` and
+  `Nous.Router`
 
 Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
 `Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and

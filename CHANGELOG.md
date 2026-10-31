@@ -105,9 +105,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   response concurrently.** Results keep call order, and approval checks stay
   serial in call order; hooks that assumed the calls of one response are
   judged one after another may now overlap.
+- **Minimum `llama_cpp_ex` is 0.8.58.** The optional dependency is now
+  `{:llama_cpp_ex, "~> 0.8.58", optional: true}` (locked at 0.8.62, from
+  0.8.45). 0.8.58 is the first release with `LlamaCppEx.Decision`, which
+  `Nous.DecisionModel.Backend.LlamaCpp` needs. An optional requirement still
+  constrains resolution, so apps that depend on an older `llama_cpp_ex` must
+  update it. Apps without the dependency are unaffected: the local decision
+  backend returns `reason: :unavailable`. The lock update also moves `req`
+  to 0.7.5 and `finch` to 0.24.0 transitively.
 
 ### Added
 
+- **`Nous.DecisionModel`: non-generative decision models.** A state plus
+  ordered, typed questions (`Nous.DecisionModel.Question`: `:noul`,
+  `:choice`, `:score`) in, a probability distribution per question out
+  (`Nous.DecisionModel.Result` / `Answer`), from Clef / Clef-Flash, Jev,
+  Decision 3.0 or OpenAI `/v1/decisions` models. `decide/4`, `parse/2`,
+  `new/2`, `max_state_tokens/1`, `count_tokens/2`. Ids and option keys
+  round-trip exactly as declared; nothing from a response is turned into an
+  atom. Every string in the state is defanged against special-token
+  injection (`Nous.DecisionModel.Defang`) before every backend call.
+  Backends (`Nous.DecisionModel.Backend` behaviour):
+  - `Backend.SystemOne`: `/v1/systemone` (vLLM, SGLang, llama-server,
+    LiteLLM), plus a Cloudflare Workers AI preset (`"workers_ai:clef-flash"`,
+    `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN`).
+  - `Backend.OpenAIDecisions`: OpenAI and vLLM `/v1/decisions`.
+  - `Backend.LlamaCpp`: in-process GGUF decision models through
+    `LlamaCppEx.Decision`. A supervised process per model serialises calls.
+    `n_batch` defaults to 4096 and is capped at 32,768 (the macOS GPU
+    watchdog poisons the context above that). A dead context is recreated.
+
+  Failures are `{:error, %Nous.Errors.DecisionModelError{}}` (`:oversize`,
+  `:timeout`, `:backend_dead`, `:http`, `:invalid_response`,
+  `:unknown_label`, `:unavailable`), which is never fallback-eligible.
+  Telemetry: `[:nous, :decision_model, :decide, :start | :stop | :exception]`.
+  New guide: `docs/guides/decision_models.md` (backends, local llama_cpp_ex
+  setup, `n_batch` / memory table, measured latency, decision hooks,
+  routing). New examples, fully local:
+  `examples/decision_models/local_guard.exs` and `local_router.exs`.
 - **`:decision` hook type (`Nous.Hook.Decision`).** A hook whose handler is a
   `Nous.Hook.Decision` classifies the payload with a `Nous.DecisionModel` and
   maps per-question P(risky) bands (`{allow_below, deny_at}`) to allow /
@@ -177,8 +212,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keyword with per-tier model options and a `description`), with
   `min_confidence`, `context_turns`, `instructions` and `timeout` options.
   Run-stop `active_model_*` now names the model that served the last request,
-  and `fallback_used` is true if any request of the run fell back. New guide:
-  `docs/guides/decision_models.md` (Routing).
+  and `fallback_used` is true if any request of the run fell back. Documented
+  in the Routing section of `docs/guides/decision_models.md`.
 - **`:headers` model option: extra HTTP headers on every provider request.**
   `Nous.new/2`, `Nous.Model.parse/2`, `Nous.Model.new/3` and the string-model
   forms of `Nous.LLM.generate_text/3` / `stream_text/3` accept
