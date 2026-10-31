@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-31
+
+The remaining fixes from the 0.18.2 security review. Plugins now run on
+every entry point, and memory and knowledge-base access respect their
+partitions; read the "0.19.0 to 0.19.1" section of the migration guide.
+
+### Security
+
+- **Memory: `:namespace` now scopes recall, auto-inject, `forget` and the
+  auto-update reflection** (#96). `Nous.Memory.Scope.build/1` ignored
+  `:namespace`, so a config with only a namespace, or with agent/user fields
+  shared across namespaces, could read, update and delete other namespaces'
+  memories in a shared store. The namespace now applies in every
+  `default_search_scope` mode, including `:global` (a namespace is a
+  partition, not a search level). A config with no scope field and no
+  namespace is still global, the single-tenant default; shared stores must
+  set a scope field or `:namespace`.
+- **Plugins now initialise on `Nous.run(agent, messages: [...])` and
+  `Nous.AgentServer` inbox runs** (#95). `Nous.AgentRunner.run_with_context/3`
+  never ran plugin `init/2`, so on these paths skills were inert (`:auto`
+  and `{:on_match, _}` skills never activated, their instructions were never
+  injected, and their `allowed_tools` were not enforced) and other plugins'
+  setup was skipped too: HumanInTheLoop's approval handler, InputGuard,
+  Memory, Summarization. `run_with_context/3` now runs plugin init once for
+  a context that has not been initialised (hand-built or restored from a
+  session), tracked by a new runtime-only `Context.plugins_initialized`
+  field. A previous run's `result.context` is continued without re-running
+  init, so plugin state such as activated skills carries over.
+
 ### Fixed
 
 - **`kb_health_check` and the health workflow only count this knowledge
@@ -20,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - On a store module that had not been loaded yet, the link callback was
     never found, so the check saw zero links and flagged every entry
     without source documents.
+- **Memory: auto-update reflection with an unscoped config no longer
+  crashes on SQLite/DuckDB.** The reflection passed `:global` to
+  `Store.list/2`, which raised `Protocol.UndefinedError` on the SQL stores.
 
 ### Changed
 
@@ -3654,7 +3686,8 @@ Initial public release with multi-provider LLM support:
 - ReAct agent implementation
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/nyo16/nous/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.19.1...HEAD
+[0.19.1]: https://github.com/nyo16/nous/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/nyo16/nous/compare/v0.18.3...v0.19.0
 [0.18.3]: https://github.com/nyo16/nous/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/nyo16/nous/compare/v0.18.1...v0.18.2

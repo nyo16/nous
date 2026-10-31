@@ -9,12 +9,12 @@ to change something.
 
 | | |
 |---|---|
-| Current version | `0.19.0` |
+| Current version | `0.19.1` |
 | Elixir | `~> 1.18` |
 
 ```elixir
 defp deps do
-  [{:nous, "~> 0.19.0"}]
+  [{:nous, "~> 0.19.1"}]
 end
 ```
 
@@ -22,8 +22,9 @@ Boundaries are cumulative: if you are skipping versions, read every section
 between your current version and your target in order. **0.16.1** and
 **0.18.0** are formally breaking, and **0.17.1** / **0.17.2** shipped breaking
 removals and renames despite their patch numbers. **0.16.3**, **0.16.5**,
-**0.17.2**, **0.18.2** and **0.18.3** tighten security defaults, which can
-change the behaviour of a working setup — those are called out inline.
+**0.17.2**, **0.18.2**, **0.18.3** and **0.19.1** tighten security defaults,
+which can change the behaviour of a working setup — those are called out
+inline.
 
 ## Contents
 
@@ -37,6 +38,7 @@ change the behaviour of a working setup — those are called out inline.
 - [0.18.1 to 0.18.2](#0181-to-0182) — security defaults: InputGuard blocks on detector failure, Teams roles and skill `allowed_tools` enforced, scoped KB/memory access, dependency floors
 - [0.18.2 to 0.18.3](#0182-to-0183) — InputGuard checks every unanswered message and text attachments
 - [0.18.3 to 0.19.0](#0183-to-0190) — `llamacpp:` tool calling and `llama_cpp_ex ~> 0.8.63`, agent `max_iterations`
+- [0.19.0 to 0.19.1](#0190-to-0191) — plugins initialise on every entry point, memory `:namespace` scoping, KB health-check scoping
 - [Related guides](#related-guides)
 
 ## 0.15.x to 0.16.0
@@ -783,6 +785,44 @@ The option used to be dropped, so every run allowed 10 iterations. It now
 caps every run of the agent (a run's own `:max_iterations` still wins). If
 you passed it, check that the value is the ceiling you want; a value that
 is not a positive integer now raises `ArgumentError`.
+
+## 0.19.0 to 0.19.1
+
+No API removals. Three fixes can change what a working setup does:
+
+### Plugins run on `Nous.run(agent, messages: [...])` and AgentServer inbox runs
+
+These paths used to skip every plugin's `init/2`. Your configured plugins
+now actually run there:
+
+- Skills activate and their `allowed_tools` restrict the request.
+- InputGuard screens the input.
+- Memory, Decisions and KnowledgeBase initialise their stores.
+- HumanInTheLoop installs its approval handler. Approval-gated tools that
+  were refused on these paths (no handler means deny) can now run once
+  approved.
+
+Code that builds a `%Nous.Agent.Context{}` and pattern-matches the whole
+struct sees a new runtime-only field, `plugins_initialized`.
+
+### Memory `:namespace` is a partition
+
+With `:namespace` set in `memory_config`, recall, auto-inject, `forget` and
+the auto-update reflection only see that namespace's memories, in every
+`default_search_scope` mode including `:global`. `forget` reports another
+namespace's id as `"not_found"`. To search across namespaces outside the
+agent loop, call `Nous.Memory.Search.search/5` with an explicit `scope:`.
+A config with no scope field and no namespace is still global; a store
+shared by several tenants must set a scope field or `:namespace`.
+
+### Knowledge-base health counts only the configured `kb_id`
+
+`kb_health_check` and the health workflow count a link only when both ends
+are entries of the configured `kb_id`, so `total_links` and the orphan list
+can change for shared stores. Custom `Nous.KnowledgeBase.Store` backends:
+the optional `link_endpoints/1` callback replaces `link_counts_by_source/1`
+(see the [Knowledge Base guide](knowledge_base.md)). Without it the check
+stays correct but calls `outlinks/2` once per entry.
 
 ## Related guides
 
