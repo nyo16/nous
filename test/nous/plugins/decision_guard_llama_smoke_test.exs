@@ -25,17 +25,12 @@ defmodule Nous.Plugins.DecisionGuardLlamaSmokeTest do
   @moduletag timeout: 900_000
   @moduletag :capture_log
 
-  alias Nous.{DecisionModel, Message, Tool, Usage}
-  alias Nous.DecisionModel.Backend.LlamaCpp
-  alias Nous.Plugins.DecisionGuard
+  alias Nous.{Message, Usage}
 
   @chat_path System.get_env("NOUS_LLAMACPP_TEST_MODEL")
   @clef_path System.get_env("NOUS_DECISION_TEST_MODEL")
   @runnable Code.ensure_loaded?(LlamaCppEx.Decision) and
               Enum.all?([@chat_path, @clef_path], &(&1 && File.exists?(Path.expand(&1))))
-
-  @load_timeout 600_000
-  @withheld "[tool result withheld by decision hook]"
 
   defmodule ScriptedTools do
     @moduledoc false
@@ -65,6 +60,13 @@ defmodule Nous.Plugins.DecisionGuardLlamaSmokeTest do
   end
 
   if @runnable do
+    alias Nous.{DecisionModel, Tool}
+    alias Nous.DecisionModel.Backend.LlamaCpp
+    alias Nous.Plugins.DecisionGuard
+
+    @load_timeout 600_000
+    @withheld "[tool result withheld by decision hook]"
+
     setup_all do
       :ok = LlamaCppEx.init()
       {:ok, chat} = LlamaCppEx.load_model(Path.expand(@chat_path), n_gpu_layers: -1)
