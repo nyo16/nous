@@ -9,12 +9,12 @@ to change something.
 
 | | |
 |---|---|
-| Current version | `0.18.2` |
+| Current version | `0.18.3` |
 | Elixir | `~> 1.18` |
 
 ```elixir
 defp deps do
-  [{:nous, "~> 0.18.2"}]
+  [{:nous, "~> 0.18.3"}]
 end
 ```
 
@@ -22,8 +22,8 @@ Boundaries are cumulative: if you are skipping versions, read every section
 between your current version and your target in order. **0.16.1** and
 **0.18.0** are formally breaking, and **0.17.1** / **0.17.2** shipped breaking
 removals and renames despite their patch numbers. **0.16.3**, **0.16.5**,
-**0.17.2** and **0.18.2** tighten security defaults, which can change the
-behaviour of a working setup — those are called out inline.
+**0.17.2**, **0.18.2** and **0.18.3** tighten security defaults, which can
+change the behaviour of a working setup — those are called out inline.
 
 ## Contents
 
@@ -35,6 +35,7 @@ behaviour of a working setup — those are called out inline.
 - [0.17.0 to 0.17.3](#0170-to-0173) — **breaking**: dead memory stores removed, guard modules renamed, `net_runner` optional, sub-agent and LLMJudge defaults
 - [0.17.3 to 0.18.0](#0173-to-0180) — **breaking**: hook semantics, `:post_response` blocking, dependency floors
 - [0.18.1 to 0.18.2](#0181-to-0182) — security defaults: InputGuard blocks on detector failure, Teams roles and skill `allowed_tools` enforced, scoped KB/memory access, dependency floors
+- [0.18.2 to 0.18.3](#0182-to-0183) — InputGuard checks every unanswered message and text attachments
 - [Related guides](#related-guides)
 
 ## 0.15.x to 0.16.0
@@ -722,6 +723,28 @@ Restoring works as before as long as you pass your runtime `deps` again, which
 - Optional floors stop a resolver from picking vulnerable transitive versions:
   `decimal >= 3.1.2` (which implies `ecto >= 3.13.6`), `ssl_verify_fun >= 1.1.8`
   and `jose >= 1.11.13`. If your lock pins older versions, update them.
+
+## 0.18.2 to 0.18.3
+
+No API changes. InputGuard checks more of the input, so a request that used
+to pass can now be blocked:
+
+- **Every unanswered user message is checked.** When several user messages
+  arrive in one turn (queued `Nous.AgentServer.steer/2` calls, or a
+  `:message_history` ending in user messages), each one is classified, not
+  just the last. Messages before the last assistant message are not
+  re-checked. An LLM-judge strategy now makes one call per queued message.
+- **`text/*` attachments are classified.** Their decoded text is checked
+  with the message, up to the new `:max_attachment_bytes` (default
+  `1_048_576`). An attachment that is larger, or not valid base64 / UTF-8,
+  fails closed through `policy[:dropped]` (default `:block`). Raise
+  `:max_attachment_bytes` or set `policy: %{..., dropped: :warn}` if you
+  accept large text files.
+- **`short_circuit: true` honours `:strategy_timeout`.** A strategy that
+  outruns it is killed and counts as dropped, which blocks by default. Before,
+  a hung strategy hung the run on that path.
+
+See [Which messages are checked](permissions.md#which-messages-are-checked).
 
 ## Related guides
 

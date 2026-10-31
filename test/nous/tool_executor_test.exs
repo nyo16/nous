@@ -801,9 +801,12 @@ defmodule Nous.ToolExecutorTest do
       assert_receive {:ran, tool_pid}
       # Monitor before the deadline fires: `:killed` as the exit reason is the
       # difference between a process the executor stopped and one that chose to
-      # return. "The call returned an error" proves neither.
+      # return. "The call returned an error" proves neither. The window is wide
+      # because the default 100 ms flaked on a loaded CI runner; it cannot
+      # hide a missing kill, since an unkilled tool exits `:normal` at 500 ms,
+      # which this pattern never matches.
       ref = Process.monitor(tool_pid)
-      assert_receive {:DOWN, ^ref, :process, ^tool_pid, :killed}
+      assert_receive {:DOWN, ^ref, :process, ^tool_pid, :killed}, 2_000
       refute Process.alive?(tool_pid)
 
       # `retries: 1` used to run the tool a second time here. Counting
