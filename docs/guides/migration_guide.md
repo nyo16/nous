@@ -9,21 +9,21 @@ to change something.
 
 | | |
 |---|---|
-| Current version | `0.18.0` |
+| Current version | `0.18.2` |
 | Elixir | `~> 1.18` |
 
 ```elixir
 defp deps do
-  [{:nous, "~> 0.18.0"}]
+  [{:nous, "~> 0.18.2"}]
 end
 ```
 
 Boundaries are cumulative: if you are skipping versions, read every section
 between your current version and your target in order. **0.16.1** and
 **0.18.0** are formally breaking, and **0.17.1** / **0.17.2** shipped breaking
-removals and renames despite their patch numbers. **0.16.3**, **0.16.5** and
-**0.17.2** tighten security defaults, which can change the behaviour of a
-working setup — those are called out inline.
+removals and renames despite their patch numbers. **0.16.3**, **0.16.5**,
+**0.17.2** and **0.18.2** tighten security defaults, which can change the
+behaviour of a working setup — those are called out inline.
 
 ## Contents
 
@@ -34,6 +34,7 @@ working setup — those are called out inline.
 - [0.16.5 to 0.17.0](#0165-to-0170) — `parallel_tool_calls`, AgentRunner split
 - [0.17.0 to 0.17.3](#0170-to-0173) — **breaking**: dead memory stores removed, guard modules renamed, `net_runner` optional, sub-agent and LLMJudge defaults
 - [0.17.3 to 0.18.0](#0173-to-0180) — **breaking**: hook semantics, `:post_response` blocking, dependency floors
+- [0.18.1 to 0.18.2](#0181-to-0182) — security defaults: InputGuard blocks on detector failure, Teams roles and skill `allowed_tools` enforced, scoped KB/memory access, dependency floors
 - [Related guides](#related-guides)
 
 ## 0.15.x to 0.16.0
@@ -619,6 +620,108 @@ features (additive; see [Decision Models](decision_models.md),
   :used]` telemetry event instead.
 - `run_with_context/3` (and `Nous.AgentServer` inbox runs) now build the hook
   registry from `agent.hooks`, so hooks fire after a session restore.
+
+## 0.18.1 to 0.18.2
+
+### InputGuard blocks when a detection strategy fails
+
+**Behaviour change.** A strategy that errors, times out or returns
+`{:error, reason}` used to upgrade a `:safe` aggregate to `:suspicious`, which
+the default policy (`suspicious: :warn`) only warned about: the request still
+went to the chat model with every tool. And under `:majority` / `:all`, where
+`:fail_closed` defaulted to `false`, a run in which every strategy dropped was
+`:safe`.
+
+Now `:fail_closed` defaults to `true` in every aggregation mode, a drop counts
+as a flagging vote against the configured strategy count, and when it could
+change the outcome the result is fail-closed (`metadata.fail_closed: true`).
+The policy handles that with a new key, `:dropped`, which defaults to `:block`
+even when your policy map does not mention it. A `:suspicious` survivor no
+longer keeps a drop at warning level under InputGuard. See
+[Input Guard Fail-Closed](permissions.md#input-guard-fail-closed).
+
+```elixir
+# 0.18.2+ — keep failing closed, but warn and proceed as before
+warn_on_drop = %{
+  strategies: strategies,
+  policy: %{suspicious: :warn, blocked: :block, dropped: :warn}
+}
+
+# 0.18.2+ — fail open (drops count as votes that did not flag)
+fail_open = %{strategies: strategies, fail_closed: false}
+
+Nous.run(agent, user_input, deps: %{input_guard_config: warn_on_drop})
+```
+
+The `Semantic` strategy's `:on_error` now defaults to `:drop` (it was `:safe`,
+so an embedding outage passed the input). Pass `on_error: :safe` to keep the
+old behaviour. `Nous.Plugins.DecisionGuard` is unchanged: its decision-model
+errors still follow its own `:on_error`.
+
+### Teams roles are enforced
+
+**Behaviour change.** `Nous.Teams.spawn_agent(team, name, config, role: role)`
+used to store the role and nothing else. Now a role's `allowed_tools` /
+`denied_tools` become the agent's `Nous.Permissions.Policy` (combined with any
+`:permissions` you pass; the stricter wins), its `system_prompt` is put in
+front of the agent's instructions, and its `max_iterations` caps each run.
+Blocked tools are hidden from the model and refused in Code Mode.
+
+- A role that sets both lists now blocks a denied tool even if it is also
+  allowed. `Role.apply_tool_filter/2` follows the same rule.
+- `allowed_tools: []` now blocks every tool.
+- `Role.researcher/0` now lists real tool names (`file_read`, `file_glob`,
+  `file_grep`, `fetch_page`, the search tools, read-only `kb_*`, `recall` and
+  the team tools). Custom roles must also use the exact tool names
+  (`Nous.Tools.FileRead` is `"file_read"`, not `"read_file"`).
+- An invalid `:role` value, including a `%Role{}` that fails
+  `Role.validate/1` (e.g. `allowed_tools: "file_read"` or
+  `max_iterations: 0`), returns `{:error, {:invalid_role, value}}`.
+- `Nous.AgentServer` refuses to start with a `:max_iterations` that is not a
+  positive integer.
+
+### Skill `allowed_tools` is enforced
+
+**Behaviour change.** While a skill with `allowed_tools` is active, the agent
+can only see and call those tools; several active skills allow the union of
+their lists. A skill without `allowed_tools` restricts nothing. A malformed
+value now allows nothing (it used to be ignored), including a present but
+empty `allowed_tools:` in frontmatter, and a comma- or space-separated string
+is accepted. Use exact tool names (`file_read`, `file_grep`). `model_override`
+is still not applied and now logs a one-time warning when a skill sets it.
+
+### Scoped knowledge-base and memory access
+
+- `kb_read`, `kb_link` and `kb_backlinks` no longer reach entries outside the
+  configured `kb_id`; such an entry is reported as not found.
+- Memory `forget`, and the auto-update reflection's `update`/`forget`, only
+  act on memories inside the configured scope. `forget` returns
+  `"not_found"` for an out-of-scope or unknown id (it used to report
+  `"forgotten"` for any id).
+
+### `Nous.Decisions.update_node/4` validates fields
+
+Both decision stores raise `ArgumentError` for any key outside
+`Nous.Decisions.Node.updatable_fields/0`, including string keys and `:id`.
+The ETS store used to ignore such keys; the DuckDB store put them into the
+SQL. Pass atom keys for real `Node` fields.
+
+### Persisted contexts no longer carry nested credentials
+
+Credential-shaped keys are now removed at any depth when a context is
+persisted (for example `memory_config.embedding_opts.api_key`, `%Nous.Model{}`
+API keys and headers in `sub_agent_templates`), not just at the top level.
+Restoring works as before as long as you pass your runtime `deps` again, which
+`Nous.AgentServer` already does on start and `load_context`.
+
+### Dependency floors
+
+- `{:net_runner, "~> 1.4.1"}` if you use `Nous.Tools.Bash` or `:command`
+  hooks. Bash cgroups now live under `net_runner/nous_bash_<n>`, and a command
+  that ignores SIGTERM is killed one second after its timeout instead of five.
+- Optional floors stop a resolver from picking vulnerable transitive versions:
+  `decimal >= 3.1.2` (which implies `ecto >= 3.13.6`), `ssl_verify_fun >= 1.1.8`
+  and `jose >= 1.11.13`. If your lock pins older versions, update them.
 
 ## Related guides
 

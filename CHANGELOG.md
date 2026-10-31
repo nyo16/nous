@@ -7,6 +7,125 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-31
+
+Security and correctness patch from the 2026-10-31 project audit. Several
+fixes tighten defaults that can change a working setup; read the
+"0.18.1 to 0.18.2" section of the migration guide.
+
+### Security
+
+- **`Nous.Teams.Role` restrictions are enforced** when an agent is spawned
+  with `role:`. They used to be stored in deps and nothing else. A role's
+  `allowed_tools`/`denied_tools` become the agent's `Nous.Permissions.Policy`
+  (combined with any existing policy; the stricter wins), so blocked tools are
+  hidden from the model, refused when called and refused in Code Mode.
+  `system_prompt` is prepended to the instructions, `max_iterations` caps each
+  run. An invalid `:role` — not a `%Role{}`, or one failing the new
+  `Role.validate/1` — returns `{:error, {:invalid_role, value}}` instead of
+  spawning an unrestricted agent or crashing the coordinator; a non-`Policy`
+  `:permissions` returns `{:error, {:invalid_permissions, value}}` (#85).
+- **SQL injection in the DuckDB decision store's `update_node` fixed.**
+  Column names were built from caller-supplied map keys, reachable through the
+  public `Nous.Decisions.update_node/4`; an explicit column allowlist replaces
+  them (#86).
+- **Credentials nested in `deps` are no longer persisted.** Context
+  serialization now removes credential-shaped keys at any depth (maps,
+  keyword and header lists, structs), matched by whole key segments so token
+  counts such as `max_tokens` are kept. A top-level `max_tokens` dep is no
+  longer dropped either. Credential words include `auth` (Req's
+  `auth: {:bearer, …}`, also inside a stored `%Req.Request{}`, and headers
+  such as `helicone-auth`), `cookie`, `pwd`, `passphrase` and
+  `signing_key`-style compounds. It strips `api_key`/`headers` from
+  `%Nous.Model{}` values (e.g. in `sub_agent_templates`) and `api_key` from
+  `%Nous.DecisionModel{}` opts. The documented
+  `memory_config`/`kb_config` `embedding_opts: %{api_key: …}` shapes were
+  written to the shared ETS table after every response. Restored sessions get
+  runtime deps back from the caller as before (#87).
+- **Knowledge-base tools respect `kb_id`.** `kb_read`, `kb_link` and
+  `kb_backlinks` no longer return or link entries from another `kb_id` in a
+  shared store; a foreign entry is reported as not found (#88).
+- **Memory `forget` and reflection are scoped.** The `forget` tool and the
+  `Nous.Plugins.Memory` auto-update reflection's `update`/`forget` only act
+  on memories inside the configured scope (the one `recall` uses).
+  Out-of-scope or unknown ids return `"not_found"` (#88).
+- **Skill `allowed_tools` is enforced.** While a skill is active, the agent
+  can only see and call the listed tools (the union across active skills), and
+  sub-agents inherit the restriction. The field was parsed and documented but
+  ignored. A malformed value — a non-list in code, or a present-but-empty
+  `allowed_tools:` in frontmatter — now allows nothing instead of everything
+  (#90).
+- **Floors for vulnerable transitive versions.** Optional floor-only
+  constraints `ssl_verify_fun >= 1.1.8` (hackney's TLS hostname check),
+  `jose >= 1.11.13` (via goth) and `decimal >= 3.1.2` (via ecto; implies
+  ecto >= 3.13.6) stop a consumer's resolver from picking versions with known
+  advisories (#91).
+
+### Changed — Behavioral
+
+- **InputGuard blocks when a detection strategy errors or times out.** A
+  fail-closed result goes to the new `policy[:dropped]` key, which defaults to
+  `:block`; set `dropped: :warn` for the old warn-and-proceed. `:fail_closed`
+  now defaults to `true` for `:majority` and `:all` too: dropped strategies
+  count as flagging votes against the configured strategy count, so a run
+  where every strategy dropped is no longer `:safe` (`fail_closed: false`
+  opts out). A `:suspicious` verdict from a strategy that did run no longer
+  keeps a detector outage at warning level. The `Semantic` strategy's
+  `:on_error` now defaults to `:drop` (it was `:safe`, i.e. an embedding
+  outage passed the input), matching `LLMJudge` and `DecisionModel`.
+  `Nous.Plugins.DecisionGuard` is unchanged (#89).
+- **`Nous.Decisions.update_node/4` validates fields.** Both stores raise
+  `ArgumentError` on keys outside `Nous.Decisions.Node.updatable_fields/0`,
+  including string keys and `:id`; the ETS store used to ignore them (#86).
+- **`Role.apply_tool_filter/2`** applies `denied_tools` even when
+  `allowed_tools` is set, matching the enforced policy (#85).
+- **`Role.researcher/0` allowlists real tool names**: `file_read`,
+  `file_glob`, `file_grep`, `search`, `web_search`, `news_search`,
+  `fetch_page`, `scrape_results`, the read-only `kb_*` tools, `recall` and
+  the team tools. It listed `read_file` and `web_fetch`, which no Nous tool is
+  called; harmless while roles were not enforced (#85).
+- **`Nous.AgentServer` rejects an invalid `:max_iterations`** (anything but a
+  positive integer) at start instead of running without an iteration cap.
+- **`net_runner` floor is `~> 1.4.1`.** Bash cgroups live under
+  `net_runner/nous_bash_<n>`; 1.4.1 is the first release that creates that
+  parent itself (nyo16/net_runner#24) (#84).
+- **Skill `model_override`** is documented as not applied and logs a one-time
+  warning when set (#90).
+
+### Fixed
+
+- **Nous compiles on Elixir 1.18 with Erlang/OTP 28.** `mix.exs` admits
+  `elixir: "~> 1.18"`, but `InputGuard.Strategies.Pattern` kept its compiled
+  regexes in a module attribute, which Elixir 1.18 cannot escape on OTP 28.
+  The whole library failed to compile there. CI now runs the suite on Elixir
+  1.18 / OTP 28.
+- **Commands and `:command` hooks that ignore SIGTERM no longer overrun their
+  timeout by 5 s.** `NetRunner.run/2` hard-codes a 5 s SIGKILL grace
+  (nyo16/net_runner#28). `Nous.Sandbox.run/2` bounds every spawn at
+  `timeout + 1 s` and kills the process tree. A Bash command that ignores
+  SIGTERM used to race the tool executor's hard kill (#84).
+
+### Added
+
+- `Nous.Teams.Role.to_policy/1`, `Nous.Teams.Role.apply_to_config/2`,
+  `Nous.Teams.Role.validate/1`; `Nous.AgentServer` accepts `:permissions` and
+  `:max_iterations` in its agent config (#85).
+- Optional `c:Nous.KnowledgeBase.Store.fetch_entry_by_slug/3` callback
+  (`kb_id:` option, implemented by the ETS store), so namespaces sharing a
+  slug each resolve their own entry (#88).
+- `Nous.Decisions.Node.updatable_fields/0` (#86).
+- **CI:**
+  - a job against the newest dependency versions `mix.exs` admits
+  - a Bash cgroup-confinement job (locked and newest `net_runner`)
+  - an Elixir 1.18 / OTP 28 job
+
+  All three gate publishing.
+
+### Tests
+
+- The local-model test files no longer emit unused-alias/attribute warnings
+  when the model env vars are unset.
+
 ## [0.18.1] - 2026-10-31
 
 ### Fixed
@@ -3397,7 +3516,8 @@ Initial public release with multi-provider LLM support:
 - ReAct agent implementation
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/nyo16/nous/compare/v0.18.1...HEAD
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.18.2...HEAD
+[0.18.2]: https://github.com/nyo16/nous/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nyo16/nous/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/nyo16/nous/compare/65f1148...v0.18.0
 [0.17.3]: https://github.com/nyo16/nous/compare/848e63e...65f1148
