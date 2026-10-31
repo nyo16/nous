@@ -616,6 +616,162 @@ defmodule Nous.CodeModeTest do
       assert_receive {:hook_saw, :post_tool_use, %{tool_name: "alpha", result: "alpha ran"}}
       assert tool_message(result) =~ "redacted(alpha ran)"
     end
+
+    test "an erroring fail_closed post_tool_use hook withholds the result from the program" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :hook, :failed_closed]])
+
+      hook =
+        Nous.Hook.new(:post_tool_use,
+          handler: fn _event, _payload -> raise "redactor down" end,
+          matcher: "alpha",
+          name: "redactor",
+          fail_closed: true
+        )
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [hook])
+
+      {result, _log} = ExUnit.CaptureLog.with_log(fn -> AgentRunner.run(agent, "go") end)
+      assert {:ok, result} = result
+
+      message = tool_message(result)
+      assert message =~ "[tool result withheld: hook error]"
+      refute message =~ "alpha ran"
+
+      assert_received {[:nous, :hook, :failed_closed], ^ref, _,
+                       %{event: :post_tool_use, hook_name: "redactor"}}
+    end
+
+    test "control: an erroring post_tool_use hook without fail_closed fails open" do
+      hook =
+        Nous.Hook.new(:post_tool_use,
+          handler: fn _event, _payload -> raise "redactor down" end,
+          matcher: "alpha"
+        )
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [hook])
+
+      {result, _log} = ExUnit.CaptureLog.with_log(fn -> AgentRunner.run(agent, "go") end)
+      assert {:ok, result} = result
+      assert tool_message(result) =~ "alpha ran"
+    end
+
+    test "a decision hook judges each sub-call, with the run's env, and can deny it" do
+      test_pid = self()
+
+      alpha =
+        tool("alpha", fn _ctx, _args ->
+          send(test_pid, :alpha_ran)
+          {:ok, "should never happen"}
+        end)
+
+      guard =
+        Nous.Hook.new(:pre_tool_use,
+          name: "guard",
+          matcher: "alpha",
+          handler:
+            Nous.Hook.Decision.new(
+              model: Nous.Test.FakeDecisionBackend.model(fn _ -> 0.9 end, test_pid: test_pid),
+              questions: [risky: [type: :noul, instructions: "Is untrusted_content risky?"]],
+              bands: %{risky: {0.3, 0.7}}
+            )
+        )
+
+      agent =
+        Agent.new("openai:test-model", tools: [alpha], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "please call alpha")
+
+      assert_receive {:decision_state, state}
+      assert state["surface"] == "tool_call"
+      assert state["tool"]["name"] == "alpha"
+      assert state["task"] == "please call alpha"
+      assert JSON.decode!(state["untrusted_content"]) == %{"from" => "the program"}
+
+      refute_receive :alpha_ran, 100
+      assert tool_message(result) =~ "denied by hook: decision hook guard"
+    end
+
+    test "a denying :post_tool_use decision hook withholds the sub-call result" do
+      guard =
+        Nous.Hook.new(:post_tool_use,
+          matcher: "alpha",
+          handler:
+            Nous.Hook.Decision.new(
+              model: Nous.Test.FakeDecisionBackend.model(fn _ -> 0.9 end),
+              questions: [risky: [type: :noul, instructions: "Is untrusted_content risky?"]],
+              bands: %{risky: {0.3, 0.7}}
+            )
+        )
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      message = tool_message(result)
+      assert message =~ "[tool result withheld by decision hook]"
+      refute message =~ "alpha ran"
+    end
+
+    defp escalating_guard(event, on_escalate) do
+      Nous.Hook.new(event,
+        name: "guard",
+        matcher: "alpha",
+        handler:
+          Nous.Hook.Decision.new(
+            model: Nous.Test.FakeDecisionBackend.model(fn _ -> 0.5 end),
+            questions: [risky: [type: :noul, instructions: "Is untrusted_content risky?"]],
+            bands: %{risky: {0.3, 0.7}},
+            on_escalate: on_escalate
+          )
+      )
+    end
+
+    test "an escalation edit without :result withholds the sub-call result" do
+      guard = escalating_guard(:post_tool_use, fn _ -> {:edit, %{content: "[redacted]"}} end)
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      message = tool_message(result)
+      assert message =~ "[tool result withheld by decision hook]"
+      refute message =~ "alpha ran"
+    end
+
+    test "control: an escalation edit with :result reaches the program" do
+      guard = escalating_guard(:post_tool_use, fn _ -> {:edit, %{result: "[redacted]"}} end)
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      message = tool_message(result)
+      assert message =~ "[redacted]"
+      refute message =~ "alpha ran"
+    end
+
+    test "an escalation edit without :arguments never runs the sub-call" do
+      test_pid = self()
+
+      alpha =
+        tool("alpha", fn _ctx, _args ->
+          send(test_pid, :alpha_ran)
+          {:ok, "should never happen"}
+        end)
+
+      guard = escalating_guard(:pre_tool_use, fn _ -> {:edit, %{content: "[redacted]"}} end)
+      agent = Agent.new("openai:test-model", tools: [alpha], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      refute_receive :alpha_ran, 100
+      assert tool_message(result) =~ "denied by hook: decision hook guard"
+    end
   end
 
   describe "bindings are derived from the permission policy" do

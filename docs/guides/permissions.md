@@ -307,6 +307,11 @@ mapped to an action by `Nous.Plugins.InputGuard.Policy` (default
 `%{suspicious: :warn, blocked: :block}`: `:warn` injects a system-message
 warning and continues, `:block` halts the loop).
 
+`Nous.Plugins.DecisionGuard` runs the same engine (`Nous.Plugins.InputGuard.Engine`)
+with a decision-model strategy on the user input, and can also guard tool calls,
+tool results and model output. Its decision-model escalations on tool calls go
+through the same approval handler. See the [DecisionGuard guide](decision_guard.md).
+
 What matters for guardrails is what happens when a strategy *fails to* vote. A
 strategy that raises, throws, or exits is **dropped**; on the parallel path, a
 strategy that outruns `:strategy_timeout` is killed and dropped too. A drop is
@@ -531,3 +536,6 @@ Run either with `mix run examples/<path>.exs`.
   `:approval_handler` to satisfy approval-required tools.
 - [Production Best Practices](best_practices.md) — running managed, long-lived
   agent sessions that consume these guardrails.
+- [DecisionGuard](decision_guard.md) — decision-model classification of user
+  input, tool calls, tool results and model output; its config inherits into
+  sub-agents like the policies above.

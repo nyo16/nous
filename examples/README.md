@@ -93,6 +93,15 @@ Test, benchmark, and optimize agents:
 | [eval/04_custom_evaluator.exs](eval/04_custom_evaluator.exs) | Write a custom evaluator |
 | [eval/05_ab_testing.exs](eval/05_ab_testing.exs) | A/B compare two agent configurations |
 
+## Decision Model Examples
+
+Fully local, through `llama_cpp_ex` (needs `{:llama_cpp_ex, "~> 0.8.58"}` and GGUF files; see each script's header):
+
+| File | Description |
+|------|-------------|
+| [decision_models/local_guard.exs](decision_models/local_guard.exs) | A local Qwen chat model guarded by `Nous.Plugins.DecisionGuard` on Clef-Flash: allow, deny, and an `on_escalate` handler |
+| [decision_models/local_router.exs](decision_models/local_router.exs) | Clef-Flash routes each turn between a small and a large local Qwen model |
+
 ## Memory Examples
 
 Persistent agent memory with hybrid search:

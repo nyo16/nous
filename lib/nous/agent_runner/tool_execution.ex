@@ -59,7 +59,11 @@ defmodule Nous.AgentRunner.ToolExecution do
         # site for both the sequential and parallel paths below, so the session
         # sandbox and permission policies only have to be attached here.
         run_ctx =
-          Context.to_run_context(ctx, sandbox: agent.sandbox, permissions: agent.permissions)
+          Context.to_run_context(ctx,
+            sandbox: agent.sandbox,
+            permissions: agent.permissions,
+            agent_name: agent.name
+          )
 
         # Execute all real tool calls and collect results
         {tool_results, ctx} =
@@ -96,7 +100,16 @@ defmodule Nous.AgentRunner.ToolExecution do
 
             {:execute, call} ->
               {result_msg, context_updates} = ToolInvocation.invoke(tools, call, run_ctx, agent)
-              record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx)
+
+              record_tool_result(
+                call,
+                result_msg,
+                context_updates,
+                tools,
+                behaviour,
+                agent,
+                acc_ctx
+              )
           end
 
         {[result_msg | results], acc_ctx}
@@ -105,18 +118,23 @@ defmodule Nous.AgentRunner.ToolExecution do
     {Enum.reverse(results), ctx}
   end
 
-  # Parallel tool-call execution (agent.parallel_tool_calls). Three stages keep
-  # hook/approval/post-processing semantics sequential while only the approved
-  # executions fan out:
-  #   (a) pre-stage, in call order: on_tool_call callback, invalid-args
-  #       short-circuit, pre_tool_use hook, approval check
-  #   (b) approved calls execute concurrently under Nous.TaskSupervisor;
+  # Parallel tool-call execution (agent.parallel_tool_calls). Four stages keep
+  # approval/post-processing semantics sequential while the pre_tool_use hooks
+  # and the approved executions fan out:
+  #   (a) screen, in call order: on_tool_call callback, invalid-args
+  #       short-circuit, Code Mode collapse
+  #   (b) pre_tool_use hooks, concurrently per call (pre_tool_hook_stage/4).
+  #       Results keep call order. Escalations from decision hooks (their
+  #       on_escalate, or the approval handler) come back to this process and
+  #       run one at a time (run_stage/4), so human prompts never interleave.
+  #   (c) approval check, serially in call order in this process
+  #   (d) approved calls execute concurrently under Nous.TaskSupervisor;
   #       async_stream preserves input order. The stream carries a finite
   #       per-call ceiling (batch_call_timeout/2) plus on_timeout: :kill_task.
   #       ToolExecutor's per-tool timeout is *not* always armed — tool.timeout
   #       is nil-able and only enforced when positive — so this outer bound is
   #       all that stops one hung tool from blocking the run forever.
-  #   (c) post-stage, in original call order: post_tool_use hook,
+  #   (e) post-stage, in original call order: post_tool_use hook,
   #       on_tool_response callback, behaviour :after_tool, merge_deps
   # Tools cannot observe each other's context updates within a turn in either
   # mode (run_ctx is snapshotted before the loop); what changes vs sequential
@@ -124,7 +142,15 @@ defmodule Nous.AgentRunner.ToolExecution do
   # hooks see the pre-turn ctx rather than earlier calls' post-stage effects.
   def run_tool_calls_parallel(real_calls, tools, run_ctx, behaviour, agent, ctx) do
     code_mode = CodeMode.resolve(agent)
-    decisions = Enum.map(real_calls, &pre_stage_decision(&1, tools, code_mode, agent, ctx))
+
+    decisions =
+      real_calls
+      |> Enum.map(&screen_call(&1, code_mode, ctx))
+      |> run_hook_stage_concurrently(tools, agent, ctx)
+      |> Enum.map(fn
+        {:approve, call} -> approval_decision(call, tools, agent, ctx)
+        {:done, _} = done -> done
+      end)
 
     approved = for {:execute, call} <- decisions, do: call
 
@@ -170,7 +196,15 @@ defmodule Nous.AgentRunner.ToolExecution do
           {result_msg, context_updates} = Map.fetch!(executed_by_id, ToolCall.field(call, :id))
 
           {result_msg, acc_ctx} =
-            record_tool_result(call, result_msg, context_updates, behaviour, agent, acc_ctx)
+            record_tool_result(
+              call,
+              result_msg,
+              context_updates,
+              tools,
+              behaviour,
+              agent,
+              acc_ctx
+            )
 
           {[result_msg | results], acc_ctx}
       end)
@@ -209,24 +243,32 @@ defmodule Nous.AgentRunner.ToolExecution do
     Application.get_env(:nous, :parallel_tool_call_timeout_ms, @default_call_timeout_ms)
   end
 
-  # Pre-execution stage for one call, shared by both modes: on_tool_call
-  # callback, invalid-args short-circuit, Code Mode collapse, pre_tool_use
-  # hook, approval. Returns {:done, result_msg} for a short-circuit (invalid
-  # args, collapse, hook denial, approval rejection) or {:execute, call} with
-  # the final — possibly hook- or approval-edited — arguments. `ctx` is the
-  # context whose hook registry and approval handler the call is judged
-  # against: the accumulating one in sequential mode, the pre-turn snapshot in
-  # parallel mode.
+  # Pre-execution stage for one call in sequential mode: screen_call/3, the
+  # pre_tool_use hooks, then approval. Returns {:done, result_msg} for a
+  # short-circuit (invalid args, collapse, hook denial, approval rejection) or
+  # {:execute, call} with the final — possibly hook- or approval-edited —
+  # arguments. `ctx` is the context whose hook registry and approval handler
+  # the call is judged against: the accumulating one in sequential mode, the
+  # pre-turn snapshot in parallel mode.
   def pre_stage_decision(call, tools, code_mode, agent, ctx) do
+    with {:hooks, call} <- screen_call(call, code_mode, ctx),
+         {:approve, call} <-
+           pre_tool_hook_stage(call, tools, ctx.hook_registry, hook_env(ctx, agent)) do
+      approval_decision(call, tools, agent, ctx)
+    end
+  end
+
+  # The on_tool_call callback, invalid-args short-circuit and Code Mode
+  # collapse. Always runs in the runner process, in call order.
+  def screen_call(call, code_mode, ctx) do
     call_name = ToolCall.field(call, :name)
     call_id = ToolCall.field(call, :id)
-    call_arguments = ToolCall.field(call, :arguments)
     cleaned_name = ToolCall.clean_name(call_name)
 
     Callbacks.execute(ctx, :on_tool_call, %{
       id: call_id,
       name: call_name,
-      arguments: call_arguments
+      arguments: ToolCall.field(call, :arguments)
     })
 
     # A call whose arguments JSON failed to parse was tagged by the provider
@@ -241,41 +283,245 @@ defmodule Nous.AgentRunner.ToolExecution do
         {:done, code_mode_denial(call_id, cleaned_name)}
 
       true ->
-        hook_payload = %{
-          tool_name: cleaned_name,
-          tool_id: call_id,
-          arguments: call_arguments
-        }
-
-        case Hook.Runner.run(ctx.hook_registry, :pre_tool_use, hook_payload) do
-          :deny ->
-            Logger.info("Tool '#{cleaned_name}' denied by hook")
-            {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)}
-
-          {:deny, reason} ->
-            Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
-
-            {:done,
-             Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
-
-          {:modify, %{arguments: new_args}} ->
-            # The approval gate runs on the modified call exactly as on an
-            # untouched one: a tool gated ONLY by the permission policy (strict
-            # mode / approval_required / execute-category) must not execute
-            # ungated because a hook rewrote its arguments.
-            modified_call = ToolCall.put_field(call, :arguments, new_args)
-            approval_decision(modified_call, call_id, cleaned_name, tools, agent, ctx)
-
-          _ ->
-            approval_decision(call, call_id, cleaned_name, tools, agent, ctx)
-        end
+        {:hooks, call}
     end
   end
 
-  def approval_decision(call, call_id, cleaned_name, tools, agent, ctx) do
+  # The pre_tool_use hooks for one call. Returns {:done, denial} or
+  # {:approve, call} (arguments possibly rewritten by a hook) for the approval
+  # stage. `env` is a `tool -> env` function: only a decision hook makes it run.
+  def pre_tool_hook_stage(call, tools, registry, env) do
+    call_id = ToolCall.field(call, :id)
+    cleaned_name = ToolCall.clean_name(ToolCall.field(call, :name))
+
+    hook_payload = %{
+      tool_name: cleaned_name,
+      tool_id: call_id,
+      arguments: ToolCall.field(call, :arguments)
+    }
+
+    hook_env = fn -> env.(find_tool(tools, cleaned_name)) end
+
+    case Hook.Runner.run(registry, :pre_tool_use, hook_payload, hook_env) do
+      :deny ->
+        Logger.info("Tool '#{cleaned_name}' denied by hook")
+        {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)}
+
+      {:deny, reason} ->
+        Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
+
+        {:done,
+         Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
+
+      {:modify, %{arguments: new_args}} ->
+        # The approval gate runs on the modified call exactly as on an
+        # untouched one: a tool gated ONLY by the permission policy (strict
+        # mode / approval_required / execute-category) must not execute
+        # ungated because a hook rewrote its arguments.
+        {:approve, ToolCall.put_field(call, :arguments, new_args)}
+
+      _ ->
+        {:approve, call}
+    end
+  end
+
+  # Stage (b) of the parallel path: run the pre_tool_use hooks of every
+  # screened call concurrently, results in call order. Inline when there is
+  # nothing to overlap, and when a hook opted out of bounding with
+  # `timeout: :infinity`: such a hook relies on running in the calling
+  # process, which a stage task is not. The context is NOT copied into the
+  # tasks — only the registry and a pre-built env. A hook stage that crashes or
+  # overruns its ceiling denies its call (fail closed).
+  defp run_hook_stage_concurrently(screened, tools, agent, ctx) do
+    pending = for {:hooks, call} <- screened, do: call
+    registry = ctx.hook_registry
+    hooks = if registry, do: Hook.Registry.hooks_for(registry, :pre_tool_use), else: []
+
+    if length(pending) < 2 or hooks == [] or Enum.any?(hooks, &(&1.timeout == :infinity)) do
+      env = hook_env(ctx, agent)
+
+      Enum.map(screened, fn
+        {:hooks, call} -> pre_tool_hook_stage(call, tools, registry, env)
+        done -> done
+      end)
+    else
+      tag = make_ref()
+
+      base_env =
+        if Hook.Registry.has_type?(registry, :decision),
+          do: ctx |> Hook.Decision.env(agent.name) |> Map.put(:escalate_via, {self(), tag}),
+          else: %{}
+
+      env = fn tool -> Hook.Decision.with_tool(base_env, tool) end
+
+      staged =
+        pending
+        |> run_stage(
+          &pre_tool_hook_stage(&1, tools, registry, env),
+          hook_stage_timeout(hooks),
+          tag
+        )
+        |> Enum.zip_with(pending, fn
+          {:ok, staged}, _call -> staged
+          {:exit, reason}, call -> {:done, hook_stage_failed(call, reason)}
+        end)
+
+      {decisions, []} =
+        Enum.map_reduce(screened, staged, fn
+          {:hooks, _call}, [staged | rest] -> {staged, rest}
+          done, rest -> {done, rest}
+        end)
+
+      decisions
+    end
+  end
+
+  defp hook_env(ctx, agent), do: &Hook.Decision.env(ctx, agent.name, &1)
+
+  defp find_tool(tools, name), do: Enum.find(tools, fn t -> t.name == name end)
+
+  # Outer ceiling for one call's hook stage, excluding time spent on
+  # escalations (run_stage/4 pauses it while one runs). Every hook is bounded
+  # on its own — a :function/:module/:command hook by its timeout, a decision
+  # hook by `Nous.Hook.Decision.budget/2` — so the sum plus headroom is a
+  # safety net that is always finite.
+  defp hook_stage_timeout(hooks) do
+    hooks
+    |> Enum.map(fn
+      %Hook{type: :decision, handler: %Hook.Decision{} = d, timeout: timeout}
+      when is_integer(timeout) ->
+        Hook.Decision.budget(d, timeout)
+
+      %Hook{timeout: timeout} when is_integer(timeout) ->
+        timeout
+
+      # An invalid timeout is a hook error the runner returns at once.
+      %Hook{} ->
+        0
+    end)
+    |> Enum.sum()
+    |> Kernel.+(@timeout_headroom_ms)
+  end
+
+  defp hook_stage_failed(call, reason) do
+    call_id = ToolCall.field(call, :id)
+    cleaned_name = ToolCall.clean_name(ToolCall.field(call, :name))
+    Logger.warning("pre_tool_use hooks for '#{cleaned_name}' did not finish: #{inspect(reason)}")
+
+    Message.tool(call_id, "Tool call was denied: pre_tool_use hooks did not finish.",
+      name: cleaned_name
+    )
+  end
+
+  # Runs `fun` on every item in its own task (`Nous.Hook.Runner.async_task/1`:
+  # it dies with this process, so a cancelled run leaves no stage running) and
+  # returns `{:ok, value}` or `{:exit, reason}` per item, in item order.
+  #
+  # While it waits, this process serves the stage's escalations: a decision
+  # hook in a task sends `{tag, {pid, ref}, fun}` (`Nous.Hook.Decision` does,
+  # via `env.escalate_via`) and blocks until `{ref, reply}`. They run here, one
+  # at a time, which is what keeps human prompts from interleaving; an
+  # escalation that raises is not approved. Each task is killed `timeout` ms
+  # after it started, with time spent on escalations added back, so a human
+  # who takes a while does not time the batch out.
+  defp run_stage(items, fun, timeout, tag) do
+    now = System.monotonic_time(:millisecond)
+
+    running =
+      items
+      |> Enum.with_index()
+      |> Map.new(fn {item, index} ->
+        task = Hook.Runner.async_task(fn -> fun.(item) end)
+        {task.ref, {index, task, now + timeout}}
+      end)
+
+    results = await_stage(running, %{}, tag)
+    flush_escalations(tag)
+    for index <- 0..(length(items) - 1)//1, do: Map.fetch!(results, index)
+  end
+
+  defp await_stage(running, results, _tag) when map_size(running) == 0, do: results
+
+  defp await_stage(running, results, tag) do
+    next_deadline = running |> Map.values() |> Enum.map(&elem(&1, 2)) |> Enum.min()
+    wait = max(next_deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {ref, value} when is_map_key(running, ref) ->
+        Process.demonitor(ref, [:flush])
+        {{index, _task, _deadline}, running} = Map.pop!(running, ref)
+        await_stage(running, Map.put(results, index, {:ok, value}), tag)
+
+      {:DOWN, ref, :process, _pid, reason} when is_map_key(running, ref) ->
+        {{index, _task, _deadline}, running} = Map.pop!(running, ref)
+        await_stage(running, Map.put(results, index, {:exit, reason}), tag)
+
+      {^tag, {pid, reply_ref}, escalation} ->
+        if Enum.any?(running, fn {_ref, {_index, task, _deadline}} -> task.pid == pid end) do
+          started = System.monotonic_time(:millisecond)
+          send(pid, {reply_ref, run_escalation(escalation)})
+          paused = System.monotonic_time(:millisecond) - started
+
+          running =
+            Map.new(running, fn {ref, {i, t, deadline}} -> {ref, {i, t, deadline + paused}} end)
+
+          await_stage(running, results, tag)
+        else
+          await_stage(running, results, tag)
+        end
+    after
+      wait -> await_stage_timeouts(running, results, tag)
+    end
+  end
+
+  defp await_stage_timeouts(running, results, tag) do
+    now = System.monotonic_time(:millisecond)
+
+    {expired, running} =
+      Map.split_with(running, fn {_ref, {_index, _task, deadline}} -> deadline <= now end)
+
+    results =
+      Enum.reduce(expired, results, fn {_ref, {index, task, _deadline}}, acc ->
+        result =
+          case Task.shutdown(task, :brutal_kill) do
+            {:ok, value} -> {:ok, value}
+            _ -> {:exit, :timeout}
+          end
+
+        Map.put(acc, index, result)
+      end)
+
+    await_stage(running, results, tag)
+  end
+
+  defp run_escalation(escalation) do
+    escalation.()
+  rescue
+    e ->
+      Logger.warning("Decision hook escalation raised: #{Exception.message(e)}; denying")
+      :deny
+  catch
+    kind, reason ->
+      Logger.warning("Decision hook escalation #{kind}: #{inspect(reason)}; denying")
+      :deny
+  end
+
+  # Escalations from tasks that were killed before theirs was served.
+  defp flush_escalations(tag) do
+    receive do
+      {^tag, _from, _escalation} -> flush_escalations(tag)
+    after
+      0 -> :ok
+    end
+  end
+
+  def approval_decision(call, tools, agent, ctx) do
+    call_id = ToolCall.field(call, :id)
+    cleaned_name = ToolCall.clean_name(ToolCall.field(call, :name))
+
     tool =
       tools
-      |> Enum.find(fn t -> t.name == cleaned_name end)
+      |> find_tool(cleaned_name)
       |> Permissions.enforce_approval(agent.permissions)
 
     case check_tool_approval(tool, call, ctx) do
@@ -302,20 +548,26 @@ defmodule Nous.AgentRunner.ToolExecution do
   # This is also the only stage on the tool path that holds a
   # `%Nous.Agent.Context{}`, and therefore the only place a `:log_event`
   # operation can reach a session log.
-  def record_tool_result(call, result_msg, context_update, behaviour, agent, acc_ctx) do
+  def record_tool_result(call, result_msg, context_update, tools, behaviour, agent, acc_ctx) do
     call_name = ToolCall.field(call, :name)
     call_id = ToolCall.field(call, :id)
     call_arguments = ToolCall.field(call, :arguments)
     cleaned_name = ToolCall.clean_name(call_name)
 
+    hook_payload = %{
+      tool_name: cleaned_name,
+      tool_id: call_id,
+      arguments: call_arguments,
+      result: result_msg.content
+    }
+
+    hook_env = fn ->
+      Hook.Decision.env(acc_ctx, agent.name, find_tool(tools, cleaned_name))
+    end
+
     # Run post_tool_use hooks (can modify result)
     result_msg =
-      case Hook.Runner.run(acc_ctx.hook_registry, :post_tool_use, %{
-             tool_name: cleaned_name,
-             tool_id: call_id,
-             arguments: call_arguments,
-             result: result_msg.content
-           }) do
+      case Hook.Runner.run(acc_ctx.hook_registry, :post_tool_use, hook_payload, hook_env) do
         {:modify, %{result: new_result}} ->
           Message.tool(call_id, new_result, name: cleaned_name)
 

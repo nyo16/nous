@@ -33,6 +33,7 @@ defmodule Nous.Agent do
   @type t :: %Agent{
           model: Model.t(),
           fallback: [Model.t()],
+          router: Nous.Router.t() | nil,
           output_type: Types.output_type(),
           structured_output: keyword(),
           instructions: String.t() | function() | nil,
@@ -66,6 +67,7 @@ defmodule Nous.Agent do
     # flagged (A-M2).
     :behaviour_module,
     fallback: [],
+    router: nil,
     output_type: :string,
     structured_output: [],
     instructions: nil,
@@ -113,6 +115,13 @@ defmodule Nous.Agent do
     * `:behaviour_module` - Agent behaviour module (default: `Nous.Agents.BasicAgent`)
     * `:fallback` - Ordered list of fallback model strings or `Model` structs to try
       when the primary model fails with a provider/model error
+    * `:router` - Optional `{module, opts}` implementing `Nous.Router` that
+      picks the chat model before each request at the configured granularity
+      (`:per_turn` by default), e.g. `{Nous.Router.DecisionModel, model: dm,
+      tiers: [simple: "openai:gpt-4o-mini", complex: "openai:gpt-4o"]}`. The
+      routed model heads the fallback chain; `:default` or a router error
+      uses this agent's model. Validated by `Nous.Router.new/1`. Not applied
+      to `run_stream/3`. Sub-agents do not inherit it.
     * `:permissions` - Optional `Nous.Permissions.Policy` enforced at runtime:
       blocked tools are removed from the model's tool list and approval-required
       tools must pass the approval handler (see `Nous.Permissions`)
@@ -139,10 +148,11 @@ defmodule Nous.Agent do
       `:sandbox` and `:permissions` this is a runtime knob, not a prompt: see
       `Nous.CodeMode`.
     * `:parallel_tool_calls` - Execute multiple tool calls from one model
-      response concurrently (default: `false`). Hooks, approval checks, and
-      post-processing (callbacks, `merge_deps`) stay sequential in call order;
-      only the tool executions themselves fan out, and result messages keep
-      the original call order. Tools already cannot observe each other's
+      response concurrently (default: `false`). The `:pre_tool_use` hooks of
+      the calls run concurrently (results keep call order); approval checks
+      and post-processing (`:post_tool_use` hooks, callbacks, `merge_deps`)
+      stay sequential in call order, and the tool executions fan out. Result
+      messages keep the original call order. Tools already cannot observe each other's
       context updates within a turn (the run context is snapshotted before the
       tool loop), but external side effects (HTTP calls, DB writes) will
       interleave — leave this off if your tools depend on sequential
@@ -177,6 +187,7 @@ defmodule Nous.Agent do
     %Agent{
       model: model,
       fallback: Fallback.parse_fallback_models(Keyword.get(opts, :fallback, [])),
+      router: Nous.Router.new(Keyword.get(opts, :router)),
       output_type: Keyword.get(opts, :output_type, :string),
       structured_output: Keyword.get(opts, :structured_output, []),
       instructions: Keyword.get(opts, :instructions),
@@ -225,6 +236,8 @@ defmodule Nous.Agent do
     * `:structured_output` - Override the agent's `structured_output` options for this run
     * `:sandbox` - Override the agent's `sandbox` policy for this run (same
       shapes as the `:sandbox` option to `new/2`)
+    * `:router` - Override the agent's `router` for this run (same shapes as
+      the `:router` option to `new/2`; `nil` disables routing)
 
   ## Examples
 
@@ -339,7 +352,9 @@ defmodule Nous.Agent do
   @doc """
   Run agent with streaming.
 
-  Returns a stream that yields events as they occur.
+  Returns a stream that yields events as they occur. The agent's `router` is
+  not consulted: a stream is one request on `agent.model` and its fallback
+  chain (see `Nous.Router`).
 
   ## Events
     * `{:text_delta, text}` - Incremental text update

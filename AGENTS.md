@@ -71,6 +71,12 @@ Auth picks up the env var by convention: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
 `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, etc. Local providers
 don't need a key. Override per-call with `api_key:` opt.
 
+Decision models (`Nous.DecisionModel.parse/2` strings such as
+`"workers_ai:clef-flash"` or `"llamacpp:<name>"`) are not chat models: they
+answer typed questions with probabilities. To guard an agent with one, add
+`Nous.Plugins.DecisionGuard` and `deps: %{decision_guard_config: %{model: ...}}`
+(user input by default; see `docs/guides/decision_guard.md`).
+
 ## Key opts you'll actually use
 
 ```elixir
@@ -260,6 +266,11 @@ these, it will be rejected.
    `spawn_agents` may carry at most `:sub_agent_max_tasks` (10), and
    delegation stops at `:sub_agent_max_depth` (2) — each refuses rather than
    substituting, and all three inherit downward like confinement.
+   `Nous.Plugins.DecisionGuard`'s `:decision_guard_config` dep is confinement
+   too: it always reaches every sub-agent (no `:sub_agent_shared_deps` value
+   can withhold or replace it) and SubAgent re-adds the DecisionGuard plugin
+   to the child. Hooks otherwise do not inherit; a template can only add its
+   own, and those do not reach grandchildren.
 
 ## Common workflows
 
@@ -309,6 +320,43 @@ agent =
 ```
 
 Falls through on transport errors, 5xx, and rate-limit (429) responses.
+
+### Decision models: guard and route
+
+A decision model (`Nous.DecisionModel`, e.g. Clef-Flash) answers typed
+questions with probabilities, no text. Two consumers:
+
+```elixir
+dm = Nous.DecisionModel.parse("workers_ai:clef-flash")  # CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN
+
+# Guard: user input checked by default; deny blocks before any chat request.
+# Fails closed on a decision-model error. Size :timeout for your backend.
+agent = Nous.new("openai:gpt-4o", plugins: [Nous.Plugins.DecisionGuard])
+
+{:ok, result} =
+  Nous.run(agent, prompt,
+    deps: %{decision_guard_config: %{model: dm, surfaces: [:user_input, :tool_call]}}
+  )
+
+# Router: picks the chat model per turn from ordered tiers (cheapest first).
+# Fails open: no route, low confidence or an error uses the agent's own model.
+agent =
+  Nous.new("openai:gpt-4o",
+    router:
+      {Nous.Router.DecisionModel,
+       model: dm,
+       tiers: [
+         simple: [model: "openai:gpt-4o-mini", description: "greetings, lookups, short answers"],
+         complex: [model: "openai:gpt-4o", description: "multi-step reasoning, code, planning"]
+       ]}
+  )
+```
+
+Local decision models run in-process: start a
+`{Nous.DecisionModel.Backend.LlamaCpp, name: :clef, source: {:path, gguf}}`
+child (needs `{:llama_cpp_ex, "~> 0.8.58"}`) and use `"llamacpp:clef"`. A
+local check costs ~0.5–1 s. See `docs/guides/decision_models.md` and
+`docs/guides/decision_guard.md`.
 
 ### Code Mode: one program instead of a chain of tool calls
 
@@ -401,6 +449,13 @@ Currently hidden, do not call:
 - `Nous.CodeRuntime.JS.Bridge`, `Nous.CodeRuntime.JS.Prelude`,
   `Nous.CodeRuntime.JS.Session` — the tyrex-facing internals behind the public
   `Nous.CodeRuntime.JS` provider
+- `Nous.DecisionModel.Backend.HTTP`, `Nous.DecisionModel.SystemOneWire`,
+  `Nous.DecisionModel.OrderedObject` — request plumbing, wire encoding and
+  the key-order-preserving JSON object shared by the decision-model
+  backends; use `Nous.DecisionModel.parse/2` / `decide/4`
+- `Nous.AgentRunner.Routing` — the runner's router integration (covered by
+  the `Nous.AgentRunner.*` rule above); configure routing with `router:` and
+  `Nous.Router`
 
 Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
 `Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and

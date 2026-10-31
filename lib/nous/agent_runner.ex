@@ -121,6 +121,8 @@ defmodule Nous.AgentRunner do
       the same shapes as `Nous.Agent.new/2`'s `:sandbox` option (a mode atom, a
       keyword list, or a `Nous.Sandbox.Policy`), e.g.
       `Nous.run(agent, prompt, sandbox: :read_only)`
+    * `:router` - Override the agent's `router` for this run (see
+      `Nous.Router`); `nil` disables routing
     * `:approval_handler` - Handler consulted before any tool with
       `requires_approval: true` runs (see `Nous.RunContext`). Without one such
       tools are rejected. `Nous.Plugins.HumanInTheLoop` can also install a
@@ -159,8 +161,10 @@ defmodule Nous.AgentRunner do
       }
     )
 
-    # Build context from options
-    ctx = build_context(agent, prompt, opts)
+    # Build context from options. A continued context starts at the primary
+    # model again: the sticky fallback and the routing decision are
+    # runtime-only (see IterationLoop).
+    ctx = agent |> build_context(prompt, opts) |> IterationLoop.clear_runtime_models()
 
     # Execute callbacks
     Callbacks.execute(ctx, :on_agent_start, %{agent: agent})
@@ -174,13 +178,7 @@ defmodule Nous.AgentRunner do
     # Initialize context via plugins
     ctx = Plugin.run_init(agent.plugins, agent, ctx)
 
-    # Initialize hooks registry
-    ctx =
-      if agent.hooks != [] do
-        %{ctx | hook_registry: Hook.Registry.from_hooks(agent.hooks)}
-      else
-        ctx
-      end
+    ctx = build_hook_registry(agent, ctx)
 
     # Fire session_start hooks
     Hook.Runner.run(ctx.hook_registry, :session_start, %{agent_name: agent.name})
@@ -224,8 +222,7 @@ defmodule Nous.AgentRunner do
               Requests: #{final_ctx.usage.requests}
             """)
 
-            active_model =
-              get_in(final_ctx.deps, [:active_model]) || agent.model
+            served_model = IterationLoop.served_model(final_ctx) || agent.model
 
             :telemetry.execute(
               [:nous, :agent, :run, :stop],
@@ -242,11 +239,12 @@ defmodule Nous.AgentRunner do
                 agent_name: agent.name,
                 model_provider: agent.model.provider,
                 model_name: agent.model.model,
-                # When fallback fired, surface BOTH so observability can
-                # split metrics by original (intended) and active (used).
-                active_model_provider: active_model.provider,
-                active_model_name: active_model.model,
-                fallback_used: active_model != agent.model
+                # When routing or fallback moved the run off the configured
+                # model, surface BOTH so observability can split metrics by
+                # configured and active (last used) model.
+                active_model_provider: served_model.provider,
+                active_model_name: served_model.model,
+                fallback_used: IterationLoop.fallback_used?(final_ctx)
               }
             )
 
@@ -299,6 +297,11 @@ defmodule Nous.AgentRunner do
       |> maybe_update_stream(opts)
       |> Context.set_needs_response(true)
       |> Context.patch_dangling_tool_calls()
+      |> IterationLoop.clear_runtime_models()
+
+    # A restored context carries no registry (it is runtime-only), so rebuild
+    # it here exactly as run/3 does; otherwise an inbox run fires no hooks.
+    ctx = build_hook_registry(agent, ctx)
 
     # Get behaviour module
     behaviour = Behaviour.get_module(agent)
@@ -340,7 +343,9 @@ defmodule Nous.AgentRunner do
   @doc """
   Run agent with streaming.
 
-  Returns a stream that yields events as they occur.
+  Returns a stream that yields events as they occur. A stream is a single
+  request on `agent.model` (and its fallback chain): the agent's `router` is
+  **not** consulted here. Use `run/3` with `stream: true` for routed runs.
 
   ## Events
     * `{:text_delta, text}` - Incremental text update
@@ -444,8 +449,8 @@ defmodule Nous.AgentRunner do
 
   # Private functions
 
-  # Apply per-run overrides for output_type, structured_output, model_settings
-  # and the sandbox policy
+  # Apply per-run overrides for output_type, structured_output, model_settings,
+  # the sandbox policy and the router
   defp apply_runtime_overrides(agent, opts) do
     agent
     |> then(fn a ->
@@ -473,6 +478,12 @@ defmodule Nous.AgentRunner do
       case Keyword.fetch(opts, :sandbox) do
         {:ok, nil} -> %{a | sandbox: nil}
         {:ok, sandbox} -> %{a | sandbox: Nous.Sandbox.Policy.new(sandbox)}
+        :error -> a
+      end
+    end)
+    |> then(fn a ->
+      case Keyword.fetch(opts, :router) do
+        {:ok, router} -> %{a | router: Nous.Router.new(router)}
         :error -> a
       end
     end)
@@ -609,7 +620,22 @@ defmodule Nous.AgentRunner do
     prompt_fn.(ctx)
   end
 
+  # Rebuilt from the agent's hook sources — `agent.hooks` then every plugin's
+  # `hooks/2`, after `Plugin.run_init/3` — on every run, so it is idempotent
+  # across AgentServer turns (a registry carried in `result.context` is
+  # replaced, never added to) and survives a session restore (the registry is
+  # runtime-only and not serialized). With no hooks from either source, a
+  # hand-set `ctx.hook_registry` is kept.
+  defp build_hook_registry(%Agent{} = agent, ctx) do
+    case agent.hooks ++ Plugin.collect_hooks(agent.plugins, agent, ctx) do
+      [] -> ctx
+      hooks -> %{ctx | hook_registry: Hook.Registry.from_hooks(hooks)}
+    end
+  end
+
   defp build_result(_agent, ctx, output) do
+    ctx = IterationLoop.clear_runtime_models(ctx)
+
     # `ctx.messages` is not a list the runner appended to any more: it is the
     # fold of this session's event log, re-materialized by `Nous.Agent.Context`
     # after every append, plus the assembly-time system-prompt overlay that is

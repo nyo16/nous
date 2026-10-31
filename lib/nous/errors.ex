@@ -87,6 +87,70 @@ defmodule Nous.Errors do
     end
   end
 
+  defmodule DecisionModelError do
+    @moduledoc """
+    Error from a decision model backend (`Nous.DecisionModel`).
+
+    Returned as `{:error, %DecisionModelError{}}` by `Nous.DecisionModel.decide/4`.
+    It is deliberately **not** `Nous.Fallback.fallback_eligible?/1`: a decision
+    model is a classifier, not the chat model, so its failure never switches
+    the agent to a fallback model. Callers that use a decision for security
+    must treat any error as "not safe" (fail closed).
+
+    ## Fields
+
+      * `:reason` - one of:
+        * `:oversize` - the state and questions do not fit the backend's
+          window (llama.cpp batch/context, or an HTTP 400 "too long")
+        * `:timeout` - the request or the serialised call timed out
+        * `:backend_dead` - the in-process backend failed fatally (for example
+          the macOS GPU watchdog); the backend recreates its context before
+          the next call
+        * `:http` - the server answered with an HTTP error status
+        * `:invalid_response` - the response (or the request, as the backend
+          judged it) does not have the expected shape, or the model refused
+        * `:unknown_label` - the response names a question id, option or level
+          that was not declared in the request
+        * `:unavailable` - the backend cannot be reached or is not configured
+          (missing credentials, process not running, optional dep missing)
+      * `:backend` - the `Nous.DecisionModel.Backend` module
+      * `:status` - HTTP status, when there was one
+      * `:retryable?` - whether retrying the same request may succeed
+      * `:retry_after_ms` - server-suggested backoff for a 429, parsed by
+        `Nous.Errors.RetryInfo`, or `nil`
+      * `:details` - the raw error payload, for logs
+    """
+
+    use Nous.Errors.Base,
+      fields: [:reason, :backend, :status, :retryable?, :retry_after_ms, :details]
+
+    @type reason ::
+            :oversize
+            | :timeout
+            | :backend_dead
+            | :http
+            | :invalid_response
+            | :unknown_label
+            | :unavailable
+
+    @type t :: %__MODULE__{
+            message: String.t(),
+            reason: reason() | nil,
+            backend: module() | nil,
+            status: integer() | nil,
+            retryable?: boolean() | nil,
+            retry_after_ms: pos_integer() | nil,
+            details: any()
+          }
+
+    defp default_message(%{reason: reason, backend: backend, status: status}) do
+      "Decision model request failed" <>
+        if(reason, do: " (#{reason})", else: "") <>
+        if(backend, do: " [#{inspect(backend)}]", else: "") <>
+        if(status, do: " [#{status}]", else: "")
+    end
+  end
+
   defmodule ToolError do
     @moduledoc """
     Error during tool execution.
@@ -253,6 +317,30 @@ defmodule Nous.Errors do
 
     defp default_message(%{reason: reason}) do
       "Execution cancelled" <>
+        if(reason, do: ": #{reason}", else: "")
+    end
+  end
+
+  defmodule ResponseDenied do
+    @moduledoc """
+    Error when a `:post_response` hook denies a model response.
+
+    Returned as `{:error, %ResponseDenied{}}` by the agent run. The denied
+    response never reaches `:on_llm_new_message` callbacks, PubSub, plugins'
+    `after_response/3`, the transcript or tool execution. It is not
+    `Nous.Fallback.fallback_eligible?/1`: a policy denial is not a provider
+    failure, so it never switches to a fallback model.
+    """
+
+    use Nous.Errors.Base, fields: [:reason]
+
+    @type t :: %__MODULE__{
+            message: String.t(),
+            reason: String.t() | nil
+          }
+
+    defp default_message(%{reason: reason}) do
+      "Model response denied by hook" <>
         if(reason, do: ": #{reason}", else: "")
     end
   end

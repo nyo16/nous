@@ -43,8 +43,241 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two processes. **Migration:** replace `embedding: Nous.Memory.Embedding.Bumblebee`
   with your copy of the example module.
 
+### Changed — Behavioral / breaking
+
+- **Sticky fallback is scoped to one run and built for the model it uses.**
+  After a cross-provider fallback, later iterations of the same run used to
+  send the *primary* provider's tool schemas and structured-output settings to
+  the fallback provider (e.g. Anthropic-shaped tools and no `response_format`
+  to an OpenAI-compatible server), and retried the failing fallback twice.
+  Each iteration now has one effective model: tool schemas, structured-output
+  settings and the fallback chain are all built for it, and the chain holds no
+  duplicate of it. `[:nous, :agent, :fallback, :used]` fires once per change
+  of the answering model instead of on every iteration, and run-stop
+  `fallback_used` derives from the same fact. `:active_model` is now
+  runtime-only: it no longer appears in `result.deps` or `result.context`, and
+  a new run, `run_with_context/3` call or `Nous.AgentServer` turn starts at
+  the primary again instead of skipping it forever. On the `stream: true`
+  path a non-2xx HTTP status from the provider is now a fallback-eligible
+  `Nous.Errors.ProviderError` (it used to surface as a raw map and end the run
+  without trying the fallback).
+- **Hooks with equal priority run in registration order.** They used to run
+  in reverse registration order, contradicting the docs. Hooks with distinct
+  priorities are unaffected.
+- **`Hook.timeout` is enforced for `:function` and `:module` hooks.** Handlers
+  now run in a task under `Nous.TaskSupervisor` (with `$callers` propagated)
+  and are killed when the timeout (default 10 s) elapses; the timeout becomes
+  `{:error, :timeout}` and follows the hook's `fail_closed` rules. Previously
+  only `:command` hooks were bounded and a hung handler hung the run. Hook
+  tasks die with the process that started them, so a cancelled run no longer
+  keeps calling hooks. A hook that relies on `self()` or the run process's
+  dictionary can opt out with `timeout: :infinity`, which keeps in-process,
+  unbounded execution. `Nous.Hook.new/2` now raises `ArgumentError` for a
+  timeout that is neither a non-negative integer nor `:infinity` (a
+  hand-built struct with one is `{:error, {:invalid_timeout, t}}` and follows
+  `fail_closed`).
+- **A blocking hook that returns a non-result value is `:allow`.** A
+  `:pre_tool_use`, `:pre_request` or `:post_response` hook returning anything
+  other than `:allow | :deny | {:deny, reason} | {:modify, map} |
+  {:error, reason}` (typically `:ok` from a logging hook, or `{:modify, _}`
+  without a map) is logged and treated as `:allow`; it used to crash the run
+  with `CaseClauseError` / `BadMapError`. A non-string `{:deny, reason}` is
+  rendered with `inspect/1` in logs and messages instead of raising;
+  `[:nous, :hook, :denied]` telemetry still carries the raw reason.
+- **Non-blocking hooks see earlier hooks' modifications.** Each
+  `:post_tool_use` (and other non-blocking) hook now receives the payload with
+  the preceding hooks' `{:modify, map}` applied, so a later hook judges the
+  result the model will actually receive rather than the raw one. A
+  `{:modify, _}` without a map is ignored.
+- **`fail_closed: true` now applies to `:post_tool_use`.** An erroring (or
+  timed-out) `fail_closed` `:post_tool_use` hook replaces the tool result
+  with `"[tool result withheld: hook error]"` and stops later
+  `:post_tool_use` hooks, both for direct tool calls and Code Mode sub-calls.
+  It used to fail open, so a broken redaction hook leaked the unredacted
+  result. Every fail-closed outcome emits the new
+  `[:nous, :hook, :failed_closed]` telemetry event. Hooks without
+  `fail_closed` keep the fail-open behaviour.
+- **`run_with_context/3` builds the hook registry from `agent.hooks`.** It used
+  to run with whatever `ctx.hook_registry` held, which is `nil` after a
+  session restore, so an `AgentServer` inbox run (`steer/2`, `followup/2`)
+  after a restore fired no hooks at all. `Nous.AgentServer`'s `agent_config`
+  now also accepts `:hooks`.
+- **`:post_response` hooks are blocking, and run before anything sees the
+  response.** A `:deny` used to be silently ignored; it now ends the run with
+  `{:error, %Nous.Errors.ResponseDenied{}}` (not fallback-eligible) and the
+  response never reaches `:on_llm_new_message` callbacks, `notify_pid`,
+  PubSub, plugins' `after_response/3`, the transcript or tool execution.
+  `{:modify, %{response: text}}` replaces the response text, and
+  `fail_closed` now applies. The hook moved from after `after_response/3` to
+  before the `:on_llm_new_message` callback, and its payload gains `content`
+  and `tool_calls`. Under `Nous.AgentServer` a denied turn is reported as
+  `{:agent_error, message}` and nothing from it is persisted. With
+  `stream: true`, deltas already emitted cannot be recalled.
+- **Plugin-contributed hooks replace a hand-set registry.** The run's hook
+  registry is rebuilt on every run from `agent.hooks ++` the new
+  `c:Nous.Plugin.hooks/2` of every plugin. A `ctx.hook_registry` you set
+  yourself is still kept when neither source contributes a hook, but is
+  replaced as soon as a plugin does. Ties within a priority run agent hooks
+  first, then plugin hooks in plugin order.
+- **`parallel_tool_calls: true` runs the `:pre_tool_use` hooks of one
+  response concurrently.** Results keep call order, and approval checks stay
+  serial in call order; hooks that assumed the calls of one response are
+  judged one after another may now overlap. Decision-hook escalations
+  (`on_escalate`, or the approval handler they consult) are sent back to the
+  run process and handled one at a time, so human prompts never interleave.
+  The stage is always bounded (the sum of the hooks' budgets plus 5 s), and
+  a stage containing a `timeout: :infinity` hook runs in the run process,
+  one call at a time.
+- **Minimum `llama_cpp_ex` is 0.8.58.** The optional dependency is now
+  `{:llama_cpp_ex, "~> 0.8.58", optional: true}` (locked at 0.8.62, from
+  0.8.45). 0.8.58 is the first release with `LlamaCppEx.Decision`, which
+  `Nous.DecisionModel.Backend.LlamaCpp` needs. An optional requirement still
+  constrains resolution, so apps that depend on an older `llama_cpp_ex` must
+  update it. Apps without the dependency are unaffected: the local decision
+  backend returns `reason: :unavailable`. The lock update also moves `req`
+  to 0.7.5 and `finch` to 0.24.0 transitively.
+
 ### Added
 
+- **`Nous.DecisionModel`: non-generative decision models.** A state plus
+  ordered, typed questions (`Nous.DecisionModel.Question`: `:noul`,
+  `:choice`, `:score`) in, a probability distribution per question out
+  (`Nous.DecisionModel.Result` / `Answer`), from Clef / Clef-Flash, Jev,
+  Decision 3.0 or OpenAI `/v1/decisions` models. `decide/4`, `parse/2`,
+  `new/2`, `max_state_tokens/1`, `count_tokens/2`. Ids and option keys
+  round-trip exactly as declared; nothing from a response is turned into an
+  atom. Every string in the state is defanged against special-token
+  injection (`Nous.DecisionModel.Defang`: `<|…|>`, `<think>`, `<tool_call>`,
+  `<tool_response>`, `<tts_*>`, `[INST]`, `<s>`, BERT-style `[CLS]`-family
+  markers) before every backend call. A backend without a tokenizer is
+  counted at one token per byte, an upper bound, so chunking never relies on
+  server-side truncation.
+  Backends (`Nous.DecisionModel.Backend` behaviour):
+  - `Backend.SystemOne`: `/v1/systemone` (vLLM, SGLang, llama-server,
+    LiteLLM), plus a Cloudflare Workers AI preset (`"workers_ai:clef-flash"`,
+    `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN`).
+  - `Backend.OpenAIDecisions`: OpenAI and vLLM `/v1/decisions`.
+  - `Backend.LlamaCpp`: in-process GGUF decision models through
+    `LlamaCppEx.Decision`. A supervised process per model serialises calls,
+    skips requests whose caller already timed out or exited, and also
+    defangs anything the loaded vocabulary reads as a single special token.
+    `n_batch` defaults to 4096 and is capped at 32,768 (the macOS GPU
+    watchdog poisons the context above that). A dead context is freed and
+    recreated; if that fails the process exits so its supervisor reloads the
+    model. `"llamacpp:<name>"` and `server:` reach only processes started by
+    `Backend.LlamaCpp` (tracked in `Nous.DecisionModel.Registry`), never an
+    arbitrary registered process. Child specs default to
+    `shutdown: 30_000` (`:shutdown` option).
+
+  Failures are `{:error, %Nous.Errors.DecisionModelError{}}` (`:oversize`,
+  `:timeout`, `:backend_dead`, `:http`, `:invalid_response`,
+  `:unknown_label`, `:unavailable`), which is never fallback-eligible.
+  Telemetry: `[:nous, :decision_model, :decide, :start | :stop | :exception]`.
+  New guide: `docs/guides/decision_models.md` (backends, local llama_cpp_ex
+  setup, `n_batch` / memory table, measured latency, decision hooks,
+  routing). New examples, fully local:
+  `examples/decision_models/local_guard.exs` and `local_router.exs`.
+- **`:decision` hook type (`Nous.Hook.Decision`).** A hook whose handler is a
+  `Nous.Hook.Decision` classifies the payload with a `Nous.DecisionModel` and
+  maps per-question P(risky) bands (`{allow_below, deny_at}`) to allow /
+  escalate / deny. Escalation is resolved inside the hook (`on_escalate`, or
+  on `:pre_tool_use` the run's approval handler through
+  `Nous.Permissions.consult_handler/2`; no handler rejects), so `Hook.result`
+  is unchanged. It is fail-closed (`on_error: :deny` by default; on
+  `:post_tool_use` a deny withholds the result), bounds state building, token
+  counting, window planning and each decision-model call by the hook's
+  `timeout`, windows oversize content (`oversize: :chunk | :suspicious |
+  :head_tail`, `max_chunks`; `:head_tail` never classifies the middle), and
+  emits `[:nous, :hook, :decision]`. Code Mode sub-calls fire it too. An
+  escalation `{:edit, changes}` applies only through the event's own key
+  (`:arguments` map, `:result`, string `:response`); any other edit counts as
+  not approved. `Nous.Hook.new/2` raises `ArgumentError` for a `:decision`
+  hook on an event other than `:pre_tool_use`, `:post_tool_use`,
+  `:pre_request` or `:post_response`, where it could not enforce a verdict.
+- **`Nous.Hook.Runner.run/4`** takes an `env`
+  (`%{approval_handler, agent_name, task, tool}`, or a zero-arity function
+  returning it) that only `:decision` handlers receive; `run/3` is unchanged.
+  `Nous.RunContext` gains `hook_env` so Code Mode sub-calls carry it.
+- **`c:Nous.Plugin.hooks/2`** (optional callback) and
+  `Nous.Plugin.collect_hooks/3`: plugins contribute hooks once per run, after
+  `init/2`. `Nous.AgentServer`'s `agent_config` now accepts `:plugins`.
+- **`Nous.Errors.ResponseDenied`** for a denied `:post_response`.
+- `Nous.Hook.Registry.has_type?/2`.
+- **`Nous.Plugins.DecisionGuard`**: a security guard backed by a
+  `Nous.DecisionModel`, configured in `deps[:decision_guard_config]`. Four
+  surfaces with built-in question packs (`Nous.Plugins.DecisionGuard.Pack`;
+  `Packs.UserInput`, `ToolCall`, `ToolResult`, `ModelOutput`, all tuned for
+  the `"clef"` family, which refuse default bands for any other family):
+  `:user_input` (default; in `before_request/3`, with the Pattern strategy
+  under `:any`; every user message added since the last check is classified
+  on the text the provider will send, `metadata.content_parts` included,
+  tracked by session-log position so a Summarization compaction cannot hide
+  later messages and carried across runs so each `AgentServer` turn checks
+  only its new input; if a plugin rewrote `ctx.messages` so it no longer
+  matches the log, every user message is classified. One deny refuses the
+  whole batch and replaces those messages with a fresh
+  `"[user message blocked by DecisionGuard]"` (no parts; originals stay in
+  the session log), so a denied message never reaches the model on a later
+  turn), and `:tool_call`, `:tool_result`, `:model_output` as `:decision`
+  hooks at priority 900 with `fail_closed: true`. List it after plugins that
+  add user messages in `before_request/3` (e.g. LoopGuard) and before
+  `Nous.Plugins.Summarization` (the latter is enforced: the other order
+  raises `ArgumentError`). A strategy exit (llama.cpp process down or still
+  loading) or an engine timeout follows `:on_error`, never `:on_escalate`;
+  the engine timeout covers the decision's full time budget. Inline `text/*`
+  attachments (a `text/*` `:image` part or a base64 `data:text/...` URL, which
+  Gemini and Vertex AI read as documents) are decoded and classified, capped
+  at the model's window times `:max_chunks` bytes; an oversized or
+  unreadable one follows `:on_error`. Images, PDFs and other binary
+  attachments are not classified. User-input
+  presets `:balanced` (default, 0.3 / 0.7) and
+  `:strict` (0.06 / 0.53); the other surfaces' bands are provisional. Opt-in
+  canary as a separate call. Telemetry `[:nous, :decision_guard, :verdict]`,
+  `[:nous, :decision_guard, :canary_failed]`,
+  `[:nous, :decision_guard, :strategy_dropped]`. New guide:
+  `docs/guides/decision_guard.md`.
+- **`Nous.Plugins.InputGuard.Strategies.DecisionModel`**: a decision-model
+  InputGuard strategy (one `safe` / `suspicious` / `blocked` choice, banded on
+  P(suspicious) + P(blocked); `on_error` as LLMJudge, `:drop` by default).
+- **`Nous.Plugins.InputGuard.Engine`**: InputGuard's strategy runner,
+  aggregation and fail-closed accounting, extracted so DecisionGuard shares
+  it. InputGuard's behaviour, logs and `[:nous, :input_guard,
+  :strategy_dropped]` event are unchanged. `c:Nous.Plugins.InputGuard.Strategy.check/3`
+  documents that `ctx` may be `nil` off the user-input path.
+- **`Nous.Hook.Decision`**: `combine:` (cross-question rule that can only
+  raise the verdict), `canary:` (a separate per-chunk canary call; a wrong
+  answer floors the verdict at escalate), `on_verdict:` (observer), choice
+  bands keyed by a list of options (summed probability), and `verdict/3` to
+  classify a state outside the hook runner. `[:nous, :hook, :decision]`
+  metadata gains `canary_failed`.
+- **Sub-agents inherit DecisionGuard.** `:decision_guard_config` joins
+  SubAgent's confinement keys (no `:sub_agent_shared_deps` value can withhold
+  or replace it), and `delegate_task` / `spawn_agents` children get
+  `Nous.Plugins.DecisionGuard` added to their plugins. The parent's
+  checked-message marker is never forwarded, so a child classifies its own
+  input from scratch.
+- **Pluggable pre-dispatch router (`Nous.Router`, `router:` agent option).**
+  `Nous.new(model, router: {module, opts})` picks the chat model before each
+  request is built, at a `:granularity` of `:per_turn` (default), `:once`,
+  `:per_iteration` or `:escalate_only` (cheapest tier first, only moves up).
+  Tool schemas and structured-output settings follow the routed model's
+  provider; the fallback chain is `[routed | agent.fallback]`, and a routed
+  tier is never labelled a fallback. A fallback that answered stays sticky
+  until the next routing boundary. `:default`, an error or a crashing router
+  uses `agent.model` (fails open). Under `:escalate_only`, `Nous.Router.new/1`
+  rejects a `tiers/1` that raises or returns no models, and a `tiers/1`
+  failing mid-run leaves that request unrouted instead of crashing the run.
+  The decision is runtime-only (never in
+  `result.deps` or a persisted context). Per-run override: `Nous.run(agent,
+  prompt, router: nil | {module, opts})`. `run_stream/3` is not routed.
+  Telemetry: `[:nous, :router, :route]` (tier, probabilities, confidence,
+  cause, latency). `Nous.Router.DecisionModel` routes with one `:choice`
+  decision over LiteLLM-style ordered `tiers` (model string / `%Model{}` /
+  keyword with per-tier model options and a `description`), with
+  `min_confidence`, `context_turns`, `instructions` and `timeout` options.
+  Run-stop `active_model_*` now names the model that served the last request,
+  and `fallback_used` is true if any request of the run fell back. Documented
+  in the Routing section of `docs/guides/decision_models.md`.
 - **`:headers` model option: extra HTTP headers on every provider request.**
   `Nous.new/2`, `Nous.Model.parse/2`, `Nous.Model.new/3` and the string-model
   forms of `Nous.LLM.generate_text/3` / `stream_text/3` accept
@@ -126,6 +359,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`hackney` floor raised to `~> 4.9`; `jose` and `ssl_verify_fun` patched
+  in the lock.** hackney (optional; the alternative HTTP and streaming
+  backend) before 4.9.0 is affected by CVE-2026-115693 (pinned `cacerts` /
+  `cacertfile` did not restrict trust), CVE-2026-97200 (unbounded buffered
+  body and decompression), CVE-2026-113440 (redirects resent `basic_auth` and
+  cookies to another scheme or port), CVE-2026-115700 (SSRF allowlist bypass
+  via percent-encoded bracketed IPv6 or trailing-dot literals) and
+  CVE-2026-112880 (CRLF in `Proxy-Authorization`). The floor makes a
+  consumer's resolver refuse those releases. Locked at 4.9.1, which also
+  moves `certifi` to 2.18.0 (eMudhra roots removed), `h2` to 0.12.5, `quic`
+  to 2.1.3 and `webtransport` to 0.4.8. hackney 4.9 caps bodies it buffers at
+  512 MiB (`{:error, :body_too_large}`), far above any provider response; the
+  pull-mode stream backend does not buffer. The lock also moves `jose`
+  (through optional `goth`) to 1.11.13 for CVE-2026-65625..65632 and
+  `ssl_verify_fun` (through hackney) to 1.1.8 for CVE-2026-117666. CI's
+  `mix hex.audit` step is green again. `cowlib` (test-only, via bypass) moves
+  to 2.21.0, which fixes CVE-2026-43969, so that acknowledgement is dropped;
+  CVE-2026-43966 stays acknowledged until a cowlib release ships its fix.
 - **`mint` floor raised to `~> 1.11`.** mint 1.10.1 is affected by
   CVE-2026-94194 (chunked framing applied when chunked is not the final
   transfer coding — response smuggling), CVE-2026-91043 (HPACK-indexed cookie

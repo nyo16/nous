@@ -38,17 +38,19 @@ defmodule Nous.MixProject do
       # `test_coverage: [threshold: n]` is silently ignored and you keep the
       # 90% default (Mix.Tasks.Test.Coverage `get_threshold(true)`).
       test_coverage: [summary: [threshold: 66]],
-      # `mix hex.audit` acknowledgements. Two cowlib advisories have no patched
-      # release (2.20.0 fixed only CVE-2026-43971):
-      #   CVE-2026-43966  structured-fields header CRLF injection
-      #   CVE-2026-43969  cookie request-header injection (GHSA-g2wm-735q-3f56)
+      # `mix hex.audit` acknowledgement. One cowlib advisory has no patched
+      # release:
+      #   CVE-2026-43966  structured-fields header CRLF injection (fixed
+      #                   upstream in ninenines/cowlib 4401b85, after the
+      #                   2.21.0 tag; 2.21.0 fixed CVE-2026-43969, whose
+      #                   ignore is gone)
       # Exposure is test-only: cowlib reaches this project exclusively through
       # bypass -> plug_cowboy -> cowboy, and bypass is `only: :test`. hex.audit
       # warns when an entry no longer matches the lock, so a patched cowlib
       # bump surfaces the stale ignore by itself. The `deps.audit` CI step
-      # carries the same two ids (see .github/workflows/ci.yml). Never add a
+      # carries the same id (see .github/workflows/ci.yml). Never add a
       # runtime dep here — that is exactly what the gate exists to catch.
-      hex: [ignore_advisories: ["CVE-2026-43966", "CVE-2026-43969"]],
+      hex: [ignore_advisories: ["CVE-2026-43966"]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
         plt_add_apps: [:mix, :ex_unit]
@@ -84,7 +86,7 @@ defmodule Nous.MixProject do
       # producer and a slow consumer can't OOM us via mailbox accumulation.
       # (Finch.stream/5's callback is push-based; a fast LLM + slow consumer =
       # unbounded mailbox growth — see review M-12.) To use the hackney
-      # backend, declare `{:hackney, "~> 4.0"}` in your app's deps and select
+      # backend, declare `{:hackney, "~> 4.9"}` in your app's deps and select
       # it via `NOUS_HTTP_BACKEND=hackney` (or the streaming variant).
       {:finch, "~> 0.19"},
       # req 0.7+: `finch:` takes options (`[name: ...]`) — the bare-atom shape
@@ -104,7 +106,13 @@ defmodule Nous.MixProject do
       # hostile server. This floor is what makes a consumer's resolver refuse
       # the vulnerable line.
       {:mint, "~> 1.11"},
-      {:hackney, "~> 4.0", optional: true},
+      # 4.9 floor: earlier 4.x is affected by CVE-2026-115693 (pinned cacerts
+      # did not restrict trust), CVE-2026-97200 (unbounded buffered body and
+      # decompression), CVE-2026-113440 (redirects resent basic_auth/cookies
+      # across scheme or port), CVE-2026-115700 (SSRF allowlist bypass via
+      # encoded IPv6 / trailing-dot literals) and CVE-2026-112880 (CRLF in
+      # Proxy-Authorization). Same reasoning as the mint floor above.
+      {:hackney, "~> 4.9", optional: true},
 
       # Google Cloud auth for Vertex AI (optional — add to your app's deps to unlock)
       {:goth, "~> 1.4", optional: true},
@@ -138,10 +146,12 @@ defmodule Nous.MixProject do
       {:plug, ">= 1.16.0", optional: true},
 
       # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
-      # to unlock the LlamaCpp provider). optional: true keeps it out of
-      # downstream apps' builds unless they opt in, while still being available
-      # for Nous's own dev/test (e.g. the tagged llamacpp smoke test).
-      {:llama_cpp_ex, "~> 0.8", optional: true},
+      # to unlock the LlamaCpp provider and the LlamaCpp decision-model
+      # backend). 0.8.58 is the first release with `LlamaCppEx.Decision`.
+      # optional: true keeps it out of downstream apps' builds unless they opt
+      # in, while still being available for Nous's own dev/test (e.g. the
+      # tagged llamacpp smoke test).
+      {:llama_cpp_ex, "~> 0.8.58", optional: true},
 
       # Process execution for command hooks and the Bash tool. A NIF-based
       # runner is used (over System.cmd/Port) for fine-grained process-tree
@@ -254,10 +264,16 @@ defmodule Nous.MixProject do
         {"docs/guides/vertex_ai_setup.md",
          filename: "vertex_ai_setup", title: "Vertex AI Setup Guide"},
         {"docs/guides/fallback.md", filename: "fallback", title: "Fallback Chains Guide"},
+        {"docs/guides/decision_models.md",
+         filename: "decision_models", title: "Decision Models Guide"},
+        {"docs/guides/decision_guard.md",
+         filename: "decision_guard", title: "DecisionGuard Guide"},
 
         # Design Documents
         {"docs/design/llm_council_design.md",
          filename: "council_design", title: "LLM Council Design (Proposal)"},
+        {"docs/design/decision_models_adr.md",
+         filename: "decision_models_adr", title: "Decision Models: Architecture Decisions"},
         {"docs/benchmarks/http_backend.md",
          filename: "http_backend_benchmark", title: "HTTP Backend Benchmark"}
       ],
@@ -274,6 +290,7 @@ defmodule Nous.MixProject do
         "Nous.AgentRunner.IterationLoop",
         "Nous.AgentRunner.PromptAssembly",
         "Nous.AgentRunner.RequestDispatch",
+        "Nous.AgentRunner.Routing",
         "Nous.AgentRunner.Streaming",
         "Nous.AgentRunner.ToolExecution",
         "Nous.AgentRunner.ToolInvocation",
@@ -281,6 +298,9 @@ defmodule Nous.MixProject do
         "Nous.CodeRuntime.JS.Bridge",
         "Nous.CodeRuntime.JS.Prelude",
         "Nous.CodeRuntime.JS.Session",
+        "Nous.DecisionModel.Backend.HTTP",
+        "Nous.DecisionModel.OrderedObject",
+        "Nous.DecisionModel.SystemOneWire",
         "Nous.JSON",
         "Nous.OutputSchema.UseMacro",
         "Nous.Persistence.ETS.TableOwner",
@@ -329,10 +349,13 @@ defmodule Nous.MixProject do
           "custom_providers.html",
           "http_backends.html",
           "vertex_ai_setup.html",
-          "fallback.html"
+          "fallback.html",
+          "decision_models.html",
+          "decision_guard.html"
         ],
         Design: [
           "council_design.html",
+          "decision_models_adr.html",
           "http_backend_benchmark.html"
         ],
         Reference: [
@@ -364,7 +387,20 @@ defmodule Nous.MixProject do
         "Model Configuration": [
           Nous.Model,
           Nous.ModelDispatcher,
-          Nous.Fallback
+          Nous.Fallback,
+          Nous.Router,
+          Nous.Router.DecisionModel
+        ],
+        "Decision Models": [
+          Nous.DecisionModel,
+          Nous.DecisionModel.Question,
+          Nous.DecisionModel.Answer,
+          Nous.DecisionModel.Result,
+          Nous.DecisionModel.Defang,
+          Nous.DecisionModel.Backend,
+          Nous.DecisionModel.Backend.SystemOne,
+          Nous.DecisionModel.Backend.OpenAIDecisions,
+          Nous.DecisionModel.Backend.LlamaCpp
         ],
         Providers: [
           Nous.Provider,
@@ -464,6 +500,7 @@ defmodule Nous.MixProject do
           Nous.Errors.ConfigurationError,
           Nous.Errors.ModelError,
           Nous.Errors.ProviderError,
+          Nous.Errors.DecisionModelError,
           Nous.Errors.ToolError,
           Nous.Errors.ToolTimeout,
           Nous.Errors.ValidationError,
@@ -542,6 +579,14 @@ defmodule Nous.MixProject do
           Nous.Plugins.InputGuard.Strategies.Pattern,
           Nous.Plugins.InputGuard.Strategies.LLMJudge,
           Nous.Plugins.InputGuard.Strategies.Semantic,
+          Nous.Plugins.InputGuard.Strategies.DecisionModel,
+          Nous.Plugins.InputGuard.Engine,
+          Nous.Plugins.DecisionGuard,
+          Nous.Plugins.DecisionGuard.Pack,
+          Nous.Plugins.DecisionGuard.Packs.UserInput,
+          Nous.Plugins.DecisionGuard.Packs.ToolCall,
+          Nous.Plugins.DecisionGuard.Packs.ToolResult,
+          Nous.Plugins.DecisionGuard.Packs.ModelOutput,
           Nous.Plugins.Memory,
           Nous.Plugins.SubAgent,
           Nous.Plugins.Summarization,

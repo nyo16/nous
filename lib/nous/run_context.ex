@@ -57,7 +57,11 @@ defmodule Nous.RunContext do
           approval_gated?: boolean(),
           sandbox: Nous.Sandbox.Policy.t() | nil,
           permissions: Nous.Permissions.Policy.t() | nil,
-          hook_registry: Nous.Hook.Registry.t() | nil
+          hook_registry: Nous.Hook.Registry.t() | nil,
+          hook_env: %{
+            optional(:agent_name) => String.t() | nil,
+            optional(:task) => String.t() | nil
+          }
         }
 
   @type t :: t(any())
@@ -71,7 +75,8 @@ defmodule Nous.RunContext do
     approval_gated?: false,
     sandbox: nil,
     permissions: nil,
-    hook_registry: nil
+    hook_registry: nil,
+    hook_env: %{}
   ]
 
   @doc """
@@ -101,6 +106,9 @@ defmodule Nous.RunContext do
       tools itself (Code Mode's `run_code`) can fire `:pre_tool_use` /
       `:post_tool_use` per sub-call, the way the runner does for a
       model-direct call. `Nous.ToolExecutor` does not consult it.
+    * `:hook_env` - `%{agent_name:, task:}` for `:decision` hooks fired from
+      this context (see `Nous.Hook.Runner.run/4`). Set by the agent runner
+      when the registry holds decision hooks; defaults to `%{}`.
 
   ## Examples
 
@@ -127,7 +135,8 @@ defmodule Nous.RunContext do
       approval_gated?: Keyword.get(opts, :approval_gated?, false),
       sandbox: Keyword.get(opts, :sandbox),
       permissions: Keyword.get(opts, :permissions),
-      hook_registry: Keyword.get(opts, :hook_registry)
+      hook_registry: Keyword.get(opts, :hook_registry),
+      hook_env: Keyword.get(opts, :hook_env, %{})
     }
   end
 end

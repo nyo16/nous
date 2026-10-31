@@ -26,7 +26,12 @@ defmodule Nous.Application do
         # Same ownership pattern for the workflow checkpoint table — without
         # a supervised owner, suspended workflows could vanish whenever the
         # process that saved them exited.
-        Nous.Workflow.Checkpoint.ETS
+        Nous.Workflow.Checkpoint.ETS,
+        # Names of the Nous.DecisionModel.Backend.LlamaCpp processes. The
+        # backend resolves "llamacpp:<name>" only through this registry, so a
+        # name never reaches a process it did not start, and an entry (with
+        # its reference to the loaded model) dies with its process.
+        {Registry, keys: :unique, name: Nous.DecisionModel.Registry}
       ] ++ optional_code_runtime_children()
 
     # Tuned restart limits to match AgentDynamicSupervisor - default 3-in-5
@@ -153,7 +158,7 @@ defmodule Nous.Application do
 
         Logger.warning(
           "config :nous, :hackney_pool is set but :hackney could not be started " <>
-            "(#{inspect(reason)}). Add {:hackney, \"~> 4.0\"} to your deps. " <>
+            "(#{inspect(reason)}). Add {:hackney, \"~> 4.9\"} to your deps. " <>
             "Skipping pool configuration."
         )
 

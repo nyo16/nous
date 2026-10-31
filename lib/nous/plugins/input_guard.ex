@@ -79,11 +79,8 @@ defmodule Nous.Plugins.InputGuard do
 
   @behaviour Nous.Plugin
 
-  require Logger
-
   alias Nous.Agent.Context
-  alias Nous.Message
-  alias Nous.Plugins.InputGuard.{Policy, Result}
+  alias Nous.Plugins.InputGuard.{Engine, Policy}
 
   @impl true
   def init(_agent, ctx) do
@@ -100,7 +97,7 @@ defmodule Nous.Plugins.InputGuard do
   def before_request(_agent, ctx, tools) do
     config = get_config(ctx)
 
-    case find_unchecked_user_input(ctx) do
+    case Engine.unchecked_user_input(ctx, :input_guard_last_checked) do
       nil ->
         {ctx, tools}
 
@@ -112,7 +109,9 @@ defmodule Nous.Plugins.InputGuard do
         if skip_empty?(config) && blank?(input) do
           {ctx, tools}
         else
-          run_guard(input, ctx, tools, config)
+          input
+          |> Engine.run(ctx, config, telemetry_prefix: [:nous, :input_guard], label: "InputGuard")
+          |> Policy.apply(ctx, tools, config)
         end
     end
   end
@@ -123,231 +122,7 @@ defmodule Nous.Plugins.InputGuard do
     Map.get(ctx.deps, :input_guard_config, %{})
   end
 
-  defp find_unchecked_user_input(ctx) do
-    last_checked = Map.get(ctx.deps, :input_guard_last_checked, -1)
-
-    ctx.messages
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn {msg, idx} ->
-      if msg.role == :user && idx > last_checked do
-        {extract_text(msg), idx}
-      end
-    end)
-  end
-
-  defp extract_text(%Message{content: content}) when is_binary(content), do: content
-
-  defp extract_text(%Message{content: parts}) when is_list(parts) do
-    parts
-    |> Enum.filter(fn
-      %{type: :text} -> true
-      _ -> false
-    end)
-    |> Enum.map_join(" ", & &1.content)
-  end
-
-  defp extract_text(_), do: ""
-
   defp skip_empty?(config), do: Map.get(config, :skip_empty, true)
 
   defp blank?(str), do: String.trim(str) == ""
-
-  defp run_guard(input, ctx, tools, config) do
-    strategies = Map.get(config, :strategies, [{__MODULE__.Strategies.Pattern, []}])
-    short_circuit = Map.get(config, :short_circuit, false)
-
-    timeout = Map.get(config, :strategy_timeout, 30_000)
-    {results, dropped} = run_strategies(strategies, input, ctx, short_circuit, timeout)
-
-    aggregated =
-      results
-      |> aggregate(length(strategies), config)
-      |> apply_fail_closed(dropped, config)
-
-    # Fire on_violation callback if flagged
-    if aggregated.severity != :safe do
-      fire_on_violation(aggregated, config)
-    end
-
-    # Apply policy
-    Policy.apply(aggregated, ctx, tools, config)
-  end
-
-  # Both variants return {results, dropped_count}. A "dropped" strategy is one
-  # that errored, timed out, or returned `{:error, reason}` — it produced no
-  # verdict, which must not be mistaken for a :safe verdict (see
-  # apply_fail_closed/3). Strategies skipped by short-circuiting after a
-  # :blocked result are NOT drops.
-  defp run_strategies(strategies, input, ctx, true = _short_circuit, _timeout) do
-    {results, dropped} =
-      Enum.reduce_while(strategies, {[], 0}, fn {mod, opts}, {acc, dropped} ->
-        case safe_check(mod, input, opts, ctx) do
-          {:ok, %Result{severity: :blocked} = result} ->
-            {:halt, {[result | acc], dropped}}
-
-          {:ok, result} ->
-            {:cont, {[result | acc], dropped}}
-
-          :error ->
-            {:cont, {acc, dropped + 1}}
-        end
-      end)
-
-    {Enum.reverse(results), dropped}
-  end
-
-  defp run_strategies(strategies, input, ctx, false = _short_circuit, timeout) do
-    {results, dropped} =
-      Task.Supervisor.async_stream_nolink(
-        Nous.TaskSupervisor,
-        strategies,
-        fn {mod, opts} -> safe_check(mod, input, opts, ctx) end,
-        timeout: timeout,
-        on_timeout: :kill_task
-      )
-      |> Enum.zip(strategies)
-      |> Enum.reduce({[], 0}, fn
-        {{:ok, {:ok, result}}, _strategy}, {acc, dropped} ->
-          {[result | acc], dropped}
-
-        {{:ok, :error}, _strategy}, {acc, dropped} ->
-          # safe_check already logged the failure in-process
-          {acc, dropped + 1}
-
-        {{:exit, reason}, {mod, _opts}}, {acc, dropped} ->
-          # Timeout kills bypass safe_check's rescue — log here
-          Logger.warning(
-            "InputGuard: Strategy #{inspect(mod)} dropped (exit: #{inspect(reason)})"
-          )
-
-          {acc, dropped + 1}
-      end)
-
-    {Enum.reverse(results), dropped}
-  end
-
-  # A dropped strategy produced no verdict. Under :any aggregation a single
-  # surviving detector decides, so a crashed/timed-out detector silently
-  # letting input through is a fail-open hole — upgrade :safe to :suspicious
-  # unless the user explicitly opted out. :majority/:all already count drops
-  # against the configured denominator, so they default to fail-open-tolerant.
-  defp apply_fail_closed(aggregated, 0, _config), do: aggregated
-
-  defp apply_fail_closed(aggregated, dropped, config) do
-    mode = Map.get(config, :aggregation, :any)
-    fail_closed = Map.get(config, :fail_closed, mode == :any)
-
-    :telemetry.execute([:nous, :input_guard, :strategy_dropped], %{count: dropped}, %{
-      aggregation: mode,
-      fail_closed: fail_closed
-    })
-
-    Logger.warning(
-      "InputGuard: #{dropped} strateg#{if dropped == 1, do: "y", else: "ies"} dropped " <>
-        "(error/timeout); fail_closed=#{fail_closed}"
-    )
-
-    if fail_closed and aggregated.severity == :safe do
-      %Result{
-        severity: :suspicious,
-        reason:
-          "#{dropped} input-guard strateg#{if dropped == 1, do: "y", else: "ies"} " <>
-            "did not complete (error or timeout); failing closed",
-        metadata: %{dropped_strategies: dropped, fail_closed: true}
-      }
-    else
-      aggregated
-    end
-  end
-
-  # Normalises every way a strategy can fail to produce a verdict — raise,
-  # throw/exit, or the contract's own `{:error, reason}` — to `:error`, so the
-  # two run_strategies/5 variants count all of them as dropped.
-  defp safe_check(mod, input, opts, ctx) do
-    case mod.check(input, opts, ctx) do
-      {:ok, %Result{}} = ok ->
-        ok
-
-      {:error, reason} ->
-        Logger.warning("InputGuard: Strategy #{inspect(mod)} dropped: #{inspect(reason)}")
-        :error
-    end
-  rescue
-    e ->
-      Logger.warning("InputGuard: Strategy #{inspect(mod)} failed: #{Exception.message(e)}")
-      :error
-  catch
-    kind, reason ->
-      Logger.warning(
-        "InputGuard: Strategy #{inspect(mod)} failed: #{inspect(kind)} #{inspect(reason)}"
-      )
-
-      :error
-  end
-
-  defp aggregate([], _configured_count, _config), do: %Result{severity: :safe}
-
-  defp aggregate(results, configured_count, config) do
-    mode = Map.get(config, :aggregation, :any)
-    do_aggregate(results, configured_count, mode)
-  end
-
-  defp do_aggregate(results, _configured_count, :any) do
-    # Return the most severe result
-    results
-    |> Enum.sort_by(&severity_rank/1, :desc)
-    |> List.first()
-    |> case do
-      %Result{severity: :safe} = r -> r
-      result -> result
-    end
-  end
-
-  defp do_aggregate(results, configured_count, :majority) do
-    # Denominator is the number of CONFIGURED strategies, not survivors —
-    # otherwise an attacker who makes benign strategies error/time-out shrinks
-    # the vote and flips the outcome.
-    flagged = Enum.count(results, &(&1.severity != :safe))
-
-    if flagged > configured_count / 2 do
-      most_severe(results)
-    else
-      %Result{severity: :safe}
-    end
-  end
-
-  defp do_aggregate(results, configured_count, :all) do
-    # Require EVERY configured strategy to have run AND flagged. A dropped or
-    # errored strategy means unanimity can't be confirmed, so don't block.
-    flagged = Enum.count(results, &(&1.severity != :safe))
-
-    if flagged == configured_count and length(results) == configured_count do
-      most_severe(results)
-    else
-      %Result{severity: :safe}
-    end
-  end
-
-  defp most_severe(results) do
-    results
-    |> Enum.reject(&(&1.severity == :safe))
-    |> Enum.sort_by(&severity_rank/1, :desc)
-    |> List.first()
-    |> Kernel.||(%Result{severity: :safe})
-  end
-
-  defp severity_rank(%Result{severity: :safe}), do: 0
-  defp severity_rank(%Result{severity: :suspicious}), do: 1
-  defp severity_rank(%Result{severity: :blocked}), do: 2
-
-  defp fire_on_violation(result, config) do
-    case Map.get(config, :on_violation) do
-      fun when is_function(fun, 1) -> fun.(result)
-      _ -> :ok
-    end
-  rescue
-    e ->
-      Logger.warning("InputGuard: on_violation callback failed: #{Exception.message(e)}")
-  end
 end

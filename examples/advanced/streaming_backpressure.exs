@@ -215,7 +215,7 @@ else
     :hackney is an optional dependency. To measure the pull-mode backend,
     add it to your deps and re-run:
 
-        {:hackney, "~> 4.0"}
+        {:hackney, "~> 4.9"}
 
     The Req half below still runs.\
   """)
@@ -502,7 +502,7 @@ if hackney_run do
 else
   IO.puts("""
     Only the Req half ran. Its producer stops at the 8 MB in-flight window;
-    the "ahead" column above plateaus there. Add {:hackney, "~> 4.0"} to
+    the "ahead" column above plateaus there. Add {:hackney, "~> 4.9"} to
     compare against strict pull-mode backpressure.\
   """)
 end

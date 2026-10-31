@@ -101,10 +101,13 @@ defmodule Nous.Fallback do
 
   @doc """
   Build the full model chain: primary model followed by fallback models.
+
+  A fallback equal to the primary is dropped, so a chain that starts at a
+  sticky fallback does not retry that same model a second time.
   """
   @spec build_model_chain(Model.t(), [Model.t()]) :: [Model.t()]
   def build_model_chain(primary, fallbacks) do
-    [primary | fallbacks]
+    [primary | Enum.reject(fallbacks, &(&1 == primary))]
   end
 
   # Telemetry

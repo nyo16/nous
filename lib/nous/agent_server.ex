@@ -168,6 +168,8 @@ defmodule Nous.AgentServer do
   alias Nous.Session.{Inbox, Recovery}
 
   @type agent_config :: %{
+          optional(:hooks) => [Nous.Hook.t()],
+          optional(:plugins) => [module()],
           model: String.t(),
           instructions: String.t(),
           tools: list(),
@@ -231,6 +233,8 @@ defmodule Nous.AgentServer do
   - `:type` - `:standard` or `:react` (default: :standard)
   - `:model_settings` - Model settings map
   - `:deps` - Initial dependencies for tools
+  - `:hooks` - List of `Nous.Hook` structs (default: `[]`). The registry is
+    rebuilt from these on every run, including inbox runs after a restore.
 
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -387,23 +391,20 @@ defmodule Nous.AgentServer do
     # Create agent based on type
     agent_type = Map.get(agent_config, :type, :standard)
 
+    # `:plugins` is passed only when configured, so a ReAct agent keeps its
+    # default plugin set otherwise.
+    agent_opts =
+      [
+        instructions: Map.get(agent_config, :instructions, ""),
+        tools: Map.get(agent_config, :tools, []),
+        model_settings: Map.get(agent_config, :model_settings, %{}),
+        hooks: Map.get(agent_config, :hooks, [])
+      ] ++ Enum.to_list(Map.take(agent_config, [:plugins]))
+
     agent =
       case agent_type do
-        :react ->
-          Nous.ReActAgent.new(
-            agent_config.model,
-            instructions: Map.get(agent_config, :instructions, ""),
-            tools: Map.get(agent_config, :tools, []),
-            model_settings: Map.get(agent_config, :model_settings, %{})
-          )
-
-        :standard ->
-          Nous.Agent.new(
-            agent_config.model,
-            instructions: Map.get(agent_config, :instructions, ""),
-            tools: Map.get(agent_config, :tools, []),
-            model_settings: Map.get(agent_config, :model_settings, %{})
-          )
+        :react -> Nous.ReActAgent.new(agent_config.model, agent_opts)
+        :standard -> Nous.Agent.new(agent_config.model, agent_opts)
       end
 
     # Start with a fresh context; restore persisted state in handle_continue
