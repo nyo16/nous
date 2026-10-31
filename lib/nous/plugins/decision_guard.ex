@@ -232,7 +232,7 @@ defmodule Nous.Plugins.DecisionGuard do
       surface: :user_input,
       content: input,
       reason: result.reason,
-      probabilities: (result.metadata || %{}) |> Map.get(:probabilities, %{})
+      probabilities: Map.get(result.metadata, :probabilities, %{})
     }
 
     case escalate(surface[:on_escalate], info) do

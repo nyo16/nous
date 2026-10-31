@@ -509,7 +509,7 @@ defmodule Nous.AgentRunner.IterationLoop do
         iteration: ctx.iteration,
         content: Message.extract_text(response),
         tool_calls:
-          Enum.map(response.tool_calls || [], fn call ->
+          Enum.map(response.tool_calls, fn call ->
             %{name: ToolCall.field(call, :name), arguments: ToolCall.field(call, :arguments)}
           end)
       }
