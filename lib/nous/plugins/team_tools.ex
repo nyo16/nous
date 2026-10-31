@@ -91,9 +91,11 @@ defmodule Nous.Plugins.TeamTools do
     agent_name = ctx.deps[:agent_name]
     role = ctx.deps[:team_role]
 
+    # The role's system_prompt itself is already prepended to the agent's
+    # instructions by Nous.Teams.Role.apply_to_config/2; only name it here.
     role_info =
       if role do
-        "Your role: #{role.name}. #{role.system_prompt || ""}"
+        "Your role: #{role.name}."
       else
         ""
       end

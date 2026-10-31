@@ -70,13 +70,78 @@ defmodule Nous.Teams.RoleTest do
       assert length(filtered) == 4
     end
 
-    test "allowed_tools takes precedence over denied_tools", %{tools: tools} do
-      # When allowed_tools is set, denied_tools is ignored
-      role = Role.new(name: :mixed, allowed_tools: ["search"], denied_tools: ["search"])
+    test "denied_tools applies on top of allowed_tools", %{tools: tools} do
+      role =
+        Role.new(name: :mixed, allowed_tools: ["search", "read_file"], denied_tools: ["search"])
+
       filtered = Role.apply_tool_filter(role, tools)
 
-      assert length(filtered) == 1
-      assert hd(filtered).name == "search"
+      assert Enum.map(filtered, & &1.name) == ["read_file"]
+    end
+
+    test "an empty allowed_tools list allows nothing", %{tools: tools} do
+      assert Role.apply_tool_filter(Role.new(name: :none, allowed_tools: []), tools) == []
+    end
+  end
+
+  describe "to_policy/1" do
+    test "is nil for an unrestricted role" do
+      assert Role.to_policy(Role.lead()) == nil
+      assert Role.to_policy(Role.new(name: :x, denied_tools: [])) == nil
+    end
+
+    test "an empty allowlist denies every tool (fails closed)" do
+      policy = Role.to_policy(Role.new(name: :none, allowed_tools: []))
+
+      assert Nous.Permissions.blocked?(policy, "search")
+      assert Nous.Permissions.blocked?(policy, "anything")
+    end
+
+    test "Role.researcher/0 allows the real read-only tools by their actual names" do
+      policy = Role.to_policy(Role.researcher())
+
+      names =
+        Enum.map([Nous.Tools.FileRead, Nous.Tools.FileGlob, Nous.Tools.FileGrep], fn mod ->
+          Tool.from_module(mod).name
+        end) ++
+          [
+            Tool.from_function(&Nous.Tools.TavilySearch.search/2).name,
+            Tool.from_function(&Nous.Tools.BraveSearch.web_search/2).name
+          ]
+
+      for name <- names, do: refute(Nous.Permissions.blocked?(policy, name), name)
+
+      for name <- ["bash", "file_write", "file_edit"],
+          do: assert(Nous.Permissions.blocked?(policy, name), name)
+    end
+  end
+
+  describe "apply_to_config/2" do
+    test "combines with an existing policy, strictest wins" do
+      existing = Nous.Permissions.build_policy(deny: ["fetch_page"])
+      config = Role.apply_to_config(Role.researcher(), %{permissions: existing})
+
+      # fetch_page is on the researcher allowlist; the existing deny still wins.
+      assert Nous.Permissions.blocked?(config.permissions, "fetch_page")
+      assert Nous.Permissions.blocked?(config.permissions, "delete_file")
+      refute Nous.Permissions.blocked?(config.permissions, "search")
+    end
+
+    test "prepends the system prompt and keeps the lower iteration cap" do
+      role = Role.new(name: :r, system_prompt: "ROLE PROMPT", max_iterations: 5)
+
+      assert %{instructions: "ROLE PROMPT\n\nmine", max_iterations: 3} =
+               Role.apply_to_config(role, %{instructions: "mine", max_iterations: 3})
+
+      assert %{instructions: "ROLE PROMPT", max_iterations: 5} =
+               Role.apply_to_config(role, %{})
+    end
+
+    test "leaves the config untouched apart from max_iterations for an unrestricted role" do
+      role = Role.new(name: :plain)
+
+      assert Role.apply_to_config(role, %{instructions: "mine"}) ==
+               %{instructions: "mine", max_iterations: 15}
     end
   end
 

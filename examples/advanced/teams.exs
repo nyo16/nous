@@ -103,7 +103,8 @@ IO.puts(
 
 IO.puts("Spawned 'bob' as #{Role.coder().name}")
 
-# A custom role: whitelist via Role.new/1. allowed_tools wins over denied_tools.
+# A custom role via Role.new/1. With both lists set, a tool must be allowed AND
+# not denied (denied_tools always wins).
 reviewer = Role.new(name: :reviewer, system_prompt: "Review carefully", max_iterations: 10)
 
 {:ok, _carol} =
