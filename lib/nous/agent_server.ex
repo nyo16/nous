@@ -170,6 +170,8 @@ defmodule Nous.AgentServer do
   @type agent_config :: %{
           optional(:hooks) => [Nous.Hook.t()],
           optional(:plugins) => [module()],
+          optional(:permissions) => Nous.Permissions.Policy.t() | nil,
+          optional(:max_iterations) => pos_integer(),
           model: String.t(),
           instructions: String.t(),
           tools: list(),
@@ -192,14 +194,16 @@ defmodule Nous.AgentServer do
           inactivity_timer_ref: reference() | nil,
           persistence: module() | nil,
           run_state: :idle | :running,
-          inbox: Inbox.t()
+          inbox: Inbox.t(),
+          max_iterations: pos_integer()
         }
 
   # Client API
 
   @default_inactivity_timeout :timer.minutes(5)
 
-  # Iteration ceiling for every run this server starts.
+  # Default iteration ceiling for every run this server starts; the
+  # `:max_iterations` agent config key overrides it.
   @max_run_iterations 15
 
   # An inbox claim is a queue read on a process that is never blocked waiting on
@@ -235,6 +239,10 @@ defmodule Nous.AgentServer do
   - `:deps` - Initial dependencies for tools
   - `:hooks` - List of `Nous.Hook` structs (default: `[]`). The registry is
     rebuilt from these on every run, including inbox runs after a restore.
+  - `:permissions` - Optional `Nous.Permissions.Policy` set on the agent (see
+    `Nous.Agent.new/2`). Blocked tools are hidden from the model and from
+    Code Mode bindings on every run.
+  - `:max_iterations` - Iteration ceiling for each run (default: 15).
 
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -381,6 +389,15 @@ defmodule Nous.AgentServer do
     inactivity_timeout = Keyword.get(opts, :inactivity_timeout, @default_inactivity_timeout)
     persistence = Keyword.get(opts, :persistence)
 
+    # Validated up front: a nil/zero/non-integer value reaching the run loop
+    # would disable the iteration cap rather than enforce one.
+    max_iterations = Map.get(agent_config, :max_iterations, @max_run_iterations)
+
+    unless is_integer(max_iterations) and max_iterations > 0 do
+      raise ArgumentError,
+            ":max_iterations must be a positive integer, got: #{inspect(max_iterations)}"
+    end
+
     # Subscribe to messages for this session. Use the helper so the topic
     # matches what publishers via Nous.PubSub.agent_topic/1 send to —
     # previously this was a bare "agent:#{id}" string while the helper
@@ -399,7 +416,7 @@ defmodule Nous.AgentServer do
         tools: Map.get(agent_config, :tools, []),
         model_settings: Map.get(agent_config, :model_settings, %{}),
         hooks: Map.get(agent_config, :hooks, [])
-      ] ++ Enum.to_list(Map.take(agent_config, [:plugins]))
+      ] ++ Enum.to_list(Map.take(agent_config, [:plugins, :permissions]))
 
     agent =
       case agent_type do
@@ -461,7 +478,8 @@ defmodule Nous.AgentServer do
       # announces its end through three different messages, so "is the agent
       # working?" was spread too thin to base a wake decision on.
       run_state: :idle,
-      inbox: Inbox.new()
+      inbox: Inbox.new(),
+      max_iterations: max_iterations
     }
 
     {:ok, state, {:continue, :load_persisted_context}}
@@ -1115,20 +1133,20 @@ defmodule Nous.AgentServer do
       | deps: Map.put(state.context.deps, :claim_inbox, claim_inbox_fun(server_pid, generation))
     }
 
-    result = run_agent(state.agent, ctx, kind, server_pid, cancelled_ref, generation)
+    result = run_agent(state, ctx, kind, server_pid, cancelled_ref, generation)
     report_run(result, server_pid, state, cancelled_ref, generation)
   end
 
-  defp run_agent(agent, ctx, {:prompt, message}, server_pid, cancelled_ref, generation) do
-    Nous.AgentRunner.run(agent, message,
+  defp run_agent(state, ctx, {:prompt, message}, server_pid, cancelled_ref, generation) do
+    Nous.AgentRunner.run(state.agent, message,
       context: ctx,
       notify_pid: server_pid,
-      max_iterations: @max_run_iterations,
+      max_iterations: state.max_iterations,
       cancellation_check: cancellation_check_fun(cancelled_ref, generation)
     )
   end
 
-  defp run_agent(agent, ctx, :inbox, server_pid, cancelled_ref, generation) do
+  defp run_agent(state, ctx, :inbox, server_pid, cancelled_ref, generation) do
     # No prompt to append: this run's input arrives through the claim
     # boundaries, so run_with_context/3 — "continue this conversation" — is the
     # right entry.
@@ -1140,11 +1158,11 @@ defmodule Nous.AgentServer do
     # removes the closure again when the run's context is persisted.
     ctx = %{
       ctx
-      | max_iterations: @max_run_iterations,
+      | max_iterations: state.max_iterations,
         cancellation_check: cancellation_check_fun(cancelled_ref, generation)
     }
 
-    Nous.AgentRunner.run_with_context(agent, ctx, notify_pid: server_pid)
+    Nous.AgentRunner.run_with_context(state.agent, ctx, notify_pid: server_pid)
   end
 
   # Cancelled when the flag is set OR this task's generation is no longer

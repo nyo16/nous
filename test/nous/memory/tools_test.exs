@@ -175,6 +175,50 @@ defmodule Nous.Memory.ToolsTest do
       {:ok, result, _update} = Tools.forget(ctx, %{"id" => "some-id"})
       assert result.status == "error"
     end
+
+    # Issue #88: driven through Nous.ToolExecutor with a RunContext, as the
+    # agent loop calls it, against one store shared by two users.
+    test "can't delete a memory outside the configured scope", %{config: config} do
+      foreign =
+        Nous.Memory.Entry.new(%{
+          content: "other user's memory",
+          agent_id: "test_agent",
+          user_id: "other_user"
+        })
+
+      {:ok, _} = Store.ETS.store(config.store_state, foreign)
+
+      result = run_forget(config, foreign.id)
+
+      assert result.status == "not_found"
+      assert {:ok, %{id: id}} = Store.ETS.fetch(config.store_state, foreign.id)
+      assert id == foreign.id
+    end
+
+    test "deletes a memory inside the configured scope", %{config: config} do
+      own =
+        Nous.Memory.Entry.new(%{
+          content: "my memory",
+          agent_id: "test_agent",
+          user_id: "test_user"
+        })
+
+      {:ok, _} = Store.ETS.store(config.store_state, own)
+
+      assert run_forget(config, own.id).status == "forgotten"
+      assert {:error, :not_found} = Store.ETS.fetch(config.store_state, own.id)
+    end
+
+    test "an unknown id reports not_found", %{config: config} do
+      assert run_forget(config, "no-such-id").status == "not_found"
+    end
+  end
+
+  defp run_forget(config, id) do
+    tool = Enum.find(Tools.all_tools(), &(&1.name == "forget"))
+    ctx = Nous.RunContext.new(%{memory_config: config})
+    {:ok, result, _update} = Nous.ToolExecutor.execute(tool, %{"id" => id}, ctx)
+    result
   end
 
   describe "all_tools/0" do

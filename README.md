@@ -65,7 +65,7 @@ tool and `:command` hooks execute through
 it both refuse to run (fail closed) rather than executing unconfined:
 
 ```elixir
-{:net_runner, "~> 1.0"}  # required only for Nous.Tools.Bash and :command hooks
+{:net_runner, "~> 1.4.1"}  # required only for Nous.Tools.Bash and :command hooks
 ```
 
 ## Quick Start

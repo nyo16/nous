@@ -57,6 +57,47 @@ defmodule Nous.Decisions.Store.ETSTest do
     end
   end
 
+  describe "update_node/3 field allowlist (#86)" do
+    test "unknown, string, and crafted keys raise and leave the node unchanged", %{state: state} do
+      node = Node.new(%{type: :goal, label: "A"})
+      {:ok, state} = ETS.add_node(state, node)
+
+      for updates <- [
+            %{"status = $2 WHERE id <> $3 OR id = $3 --" => 1},
+            %{"label" => "x"},
+            %{bogus: 1},
+            %{id: "other"}
+          ] do
+        assert_raise ArgumentError, fn -> ETS.update_node(state, node.id, updates) end
+      end
+
+      assert {:ok, ^node} = ETS.get_node(state, node.id)
+    end
+
+    test "every allowed field round-trips", %{state: state} do
+      node = Node.new(%{type: :goal, label: "A"})
+      {:ok, state} = ETS.add_node(state, node)
+      created = ~U[2020-01-02 03:04:05Z]
+
+      {:ok, state} =
+        ETS.update_node(state, node.id, %{
+          type: :decision,
+          label: "B",
+          status: :completed,
+          confidence: 0.25,
+          rationale: "why",
+          metadata: %{k: "v"},
+          created_at: created
+        })
+
+      {:ok, got} = ETS.get_node(state, node.id)
+
+      assert {got.type, got.label, got.status, got.confidence, got.rationale, got.metadata,
+              got.created_at} ==
+               {:decision, "B", :completed, 0.25, "why", %{k: "v"}, created}
+    end
+  end
+
   describe "delete_node/2" do
     test "removes a node and its edges", %{state: state} do
       n1 = Node.new(%{type: :goal, label: "Goal"})

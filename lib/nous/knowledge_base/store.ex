@@ -8,6 +8,17 @@ defmodule Nous.KnowledgeBase.Store do
 
   All list/search callbacks accept a `:kb_id` option for scoping.
 
+  ## Namespace (`kb_id`) isolation
+
+  The agent tools (`Nous.KnowledgeBase.Tools`) never return or modify an
+  entry whose `kb_id` differs from the configured one: every point lookup
+  (`fetch_entry/2`, `fetch_entry_by_slug/2`) is checked against the
+  configured `kb_id` after the fetch, and a mismatch is reported as not
+  found. Slugs are derived from titles, so two namespaces sharing a store
+  can hold the same slug; implement the optional `fetch_entry_by_slug/3`
+  so a lookup finds the entry in the caller's namespace rather than
+  whichever namespace last wrote that slug.
+
   ## State threading caveat
 
   Several call sites (`kb_link`, `persist_to_store`) read `store_state`
@@ -57,6 +68,18 @@ defmodule Nous.KnowledgeBase.Store do
   @callback fetch_entry_by_slug(state :: term(), slug :: String.t()) ::
               {:ok, Entry.t()} | {:error, :not_found}
 
+  @doc """
+  Optional scoped variant of `fetch_entry_by_slug/2`.
+
+  Accepts a `:kb_id` option and returns only an entry in that namespace
+  (`{:error, :not_found}` otherwise), even when another namespace in the same
+  store holds an entry with the same slug. A `nil` (or absent) `:kb_id` means
+  no scope. When not implemented, the tools fall back to
+  `fetch_entry_by_slug/2` and reject a result from another namespace.
+  """
+  @callback fetch_entry_by_slug(state :: term(), slug :: String.t(), opts :: keyword()) ::
+              {:ok, Entry.t()} | {:error, :not_found}
+
   @callback update_entry(state :: term(), id :: String.t(), updates :: map()) ::
               {:ok, term()} | {:error, term()}
 
@@ -95,5 +118,10 @@ defmodule Nous.KnowledgeBase.Store do
   @callback link_counts_by_source(state :: term()) ::
               {:ok, %{optional(String.t()) => non_neg_integer()}}
 
-  @optional_callbacks [search_entries: 3, related_entries: 3, link_counts_by_source: 1]
+  @optional_callbacks [
+    search_entries: 3,
+    related_entries: 3,
+    link_counts_by_source: 1,
+    fetch_entry_by_slug: 3
+  ]
 end

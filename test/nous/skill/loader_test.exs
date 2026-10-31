@@ -99,6 +99,57 @@ defmodule Nous.Skill.LoaderTest do
       assert {:ok, skill} = Loader.parse_skill(content)
       assert skill.allowed_tools == ["read_file", "grep", "glob"]
     end
+
+    test "parses a comma/space-separated allowed_tools string instead of dropping it" do
+      content = """
+      ---
+      name: test
+      allowed_tools: read_file, grep
+      ---
+      Instructions
+      """
+
+      assert {:ok, skill} = Loader.parse_skill(content)
+      assert skill.allowed_tools == ["read_file", "grep"]
+    end
+
+    test "a malformed allowed_tools value fails closed (allows nothing)" do
+      content = """
+      ---
+      name: test
+      allowed_tools:
+        read_file: true
+      ---
+      Instructions
+      """
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, skill} = Loader.parse_skill(content)
+          assert skill.allowed_tools == []
+        end)
+
+      assert log =~ "Invalid allowed_tools"
+    end
+
+    test "a present but empty allowed_tools allows nothing" do
+      for value <- ["", " ~", " null"] do
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            assert {:ok, skill} =
+                     Loader.parse_skill("---\nname: test\nallowed_tools:#{value}\n---\nI\n")
+
+            assert skill.allowed_tools == [], inspect(value)
+          end)
+
+        assert log =~ "Empty allowed_tools"
+      end
+    end
+
+    test "omitted allowed_tools stays unrestricted" do
+      assert {:ok, skill} = Loader.parse_skill("---\nname: test\n---\nInstructions\n")
+      assert skill.allowed_tools == nil
+    end
   end
 
   describe "load_directory/1" do

@@ -61,10 +61,17 @@ defmodule Nous.Decisions.Store do
   The `updates` map contains only the fields to change. The implementation
   must also set `updated_at` to the current time.
 
+  Keys must be atoms from `Nous.Decisions.Node.updatable_fields/0`.
+  Implementations must call `Nous.Decisions.Node.validate_updates!/1`
+  before touching storage, so unknown keys (including string keys)
+  raise `ArgumentError` and nothing is written.
+
   ## Returns
 
   - `{:ok, state}` on success
   - `{:error, :not_found}` if the node does not exist
+
+  Raises `ArgumentError` on an unknown field.
   """
   @callback update_node(state :: term(), id :: String.t(), updates :: map()) ::
               {:ok, term()} | {:error, term()}

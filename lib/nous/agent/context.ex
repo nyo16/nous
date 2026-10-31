@@ -531,7 +531,8 @@ defmodule Nous.Agent.Context do
       here; `nil` leaves resolution to application config.
     * `:permissions` - `Nous.Permissions.Policy` to carry onto the run context
       so delegating tools can inherit the effective policy. The agent runner
-      passes `agent.permissions` here; enforcement stays in the runner.
+      passes `agent.permissions` narrowed by the request-scoped policy (e.g.
+      active skills' `allowed_tools`); enforcement stays in the runner.
     * `:agent_name` - the agent name `:decision` hooks fired from the run
       context see in their env (defaults to `ctx.agent_name`).
 
@@ -1104,25 +1105,107 @@ defmodule Nous.Agent.Context do
   # Credential-shaped dep keys that must never be written to the persistence
   # backend. Persistence auto-saves the context after every response, and the
   # ETS backend table is :public, so a plain-string api_key in deps would leak.
-  @sensitive_dep_key_substrings ~w(
-    api_key apikey token secret password passwd authorization
-    credential private_key access_key auth_token bearer
+  #
+  # The documented configs put credentials below the top level
+  # (`memory_config: %{embedding_opts: %{api_key: ...}}`, `%Nous.Model{}` in
+  # `sub_agent_templates`, `%Nous.DecisionModel{opts: [api_key: ...]}`), so the
+  # scrub recurses through maps, structs, lists and tuples. A restored context
+  # does not need the secrets: `AgentServer` merges the caller's runtime deps
+  # back over the persisted ones on restore.
+  #
+  # A key is credential-shaped by whole segments, not substrings, so token
+  # *counts* (`max_tokens`, `input_tokens`, `token_count`, `tokenizer`) keep
+  # persisting. The key is split into segments on `_`, `-`, `.` and camelCase
+  # boundaries, lowercased, then it matches when:
+  #   * the rejoined key contains a compound below (`x-api-key`, `apiKey`), or
+  #   * a segment is a credential word below, unless the LAST segment is a
+  #     counter suffix (`token_count`, `token_limit`, `token_budget`).
+  # The plural `tokens` is deliberately not a credential word.
+  @credential_compounds ~w(
+    api_key apikey private_key access_key auth_token access_token
+    refresh_token client_secret signing_key encryption_key master_key
+    client_key session_key
   )
+  # `auth` covers Req's `auth: {:bearer, token}` option (also inside a stored
+  # `%Req.Request{}`) and gateway headers such as `helicone-auth`; segments
+  # are whole words, so `author` and `oauth_scopes` are unaffected.
+  @credential_segments ~w(
+    token secret secrets password passwords passwd pwd passphrase
+    authorization auth credential credentials bearer cookie cookies
+  )
+  @counter_suffixes ~w(count limit budget)
 
   defp serialize_deps(deps) when is_map(deps) do
-    deps
-    |> Enum.reject(fn {k, v} ->
-      is_function(v) or is_pid(v) or is_port(v) or sensitive_dep_key?(k)
-    end)
-    |> Map.new()
+    for {k, v} <- deps,
+        not (is_function(v) or is_pid(v) or is_port(v) or sensitive_dep_key?(k)),
+        into: %{},
+        do: {k, scrub_secrets(v)}
   end
 
   defp serialize_deps(_), do: %{}
 
-  defp sensitive_dep_key?(key) do
-    name = key |> to_string() |> String.downcase()
-    Enum.any?(@sensitive_dep_key_substrings, &String.contains?(name, &1))
+  # `headers` carries whatever auth an intermediary needs under any header
+  # name (`helicone-auth`, `cf-aig-authorization`, ...), so it goes wholesale.
+  defp scrub_secrets(%Nous.Model{} = model) do
+    %{scrub_struct(model) | api_key: nil, headers: []}
   end
+
+  # A MapSet's elements are its internal map's keys: scrub them as values
+  # rather than dropping set members whose text looks credential-shaped.
+  defp scrub_secrets(%MapSet{} = set), do: MapSet.new(set, &scrub_secrets/1)
+
+  defp scrub_secrets(%_{} = struct), do: scrub_struct(struct)
+
+  defp scrub_secrets(map) when is_map(map) do
+    for {k, v} <- map, not sensitive_dep_key?(k), into: %{}, do: {k, scrub_secrets(v)}
+  end
+
+  defp scrub_secrets(list) when is_list(list), do: scrub_list(list)
+
+  defp scrub_secrets(tuple) when is_tuple(tuple) do
+    tuple |> Tuple.to_list() |> Enum.map(&scrub_secrets/1) |> List.to_tuple()
+  end
+
+  defp scrub_secrets(other), do: other
+
+  # Struct fields are nilled rather than dropped so the struct keeps its shape.
+  defp scrub_struct(struct) do
+    fields =
+      for {k, v} <- Map.from_struct(struct), into: %{} do
+        if sensitive_dep_key?(k), do: {k, nil}, else: {k, scrub_secrets(v)}
+      end
+
+    Map.merge(struct, fields)
+  end
+
+  # Keyword lists and `{name, value}` header lists: a credential-shaped pair
+  # is dropped. Improper tails are scrubbed as plain values.
+  defp scrub_list([{k, v} | rest]) when is_atom(k) or is_binary(k) do
+    if sensitive_dep_key?(k),
+      do: scrub_list(rest),
+      else: [{k, scrub_secrets(v)} | scrub_list(rest)]
+  end
+
+  defp scrub_list([head | rest]), do: [scrub_secrets(head) | scrub_list(rest)]
+  defp scrub_list([]), do: []
+  defp scrub_list(tail), do: scrub_secrets(tail)
+
+  defp sensitive_dep_key?(key) when is_atom(key) or is_binary(key) do
+    segments =
+      key
+      |> to_string()
+      |> String.replace(~r/([a-z0-9])([A-Z])/, "\\1_\\2")
+      |> String.downcase()
+      |> String.split(["_", "-", "."], trim: true)
+
+    joined = Enum.join(segments, "_")
+
+    Enum.any?(@credential_compounds, &String.contains?(joined, &1)) or
+      (List.last(segments) not in @counter_suffixes and
+         Enum.any?(segments, &(&1 in @credential_segments)))
+  end
+
+  defp sensitive_dep_key?(_key), do: false
 
   defp deserialize_usage(data) when is_map(data) do
     data = atomize_keys(data)

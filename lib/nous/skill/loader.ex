@@ -13,11 +13,20 @@ defmodule Nous.Skill.Loader do
       tags: [code, review]
       group: review
       activation: auto
-      allowed_tools: [read_file, grep]
+      allowed_tools: [file_read, file_grep]
       priority: 100
       ---
 
       You are a code review specialist...
+
+  `allowed_tools` confines the agent to the listed tool names while the skill
+  is active (see `Nous.Plugins.Skills`). It also accepts a comma- or
+  space-separated string (`allowed_tools: file_read, file_grep`). Omit it to leave
+  the tool set unrestricted; any other value restricts to nothing rather than
+  silently allowing everything.
+
+  `model_override` is parsed but **not applied** — requests always use the
+  agent's model. A skill that sets it logs a one-time warning.
   """
 
   alias Nous.Skill
@@ -116,7 +125,7 @@ defmodule Nous.Skill.Loader do
           source: :file,
           source_ref: source_path,
           model_override: Map.get(metadata, "model_override"),
-          allowed_tools: parse_string_list(Map.get(metadata, "allowed_tools")),
+          allowed_tools: parse_allowed_tools(Map.fetch(metadata, "allowed_tools")),
           priority: Map.get(metadata, "priority", 100),
           status: :loaded
         }
@@ -204,7 +213,32 @@ defmodule Nous.Skill.Loader do
   defp parse_activation(:manual), do: :manual
   defp parse_activation(_), do: :manual
 
-  defp parse_string_list(nil), do: nil
-  defp parse_string_list(list) when is_list(list), do: Enum.map(list, &to_string/1)
-  defp parse_string_list(_), do: nil
+  # allowed_tools is a security control, so a malformed value fails CLOSED: a
+  # bare string (`allowed_tools: file_read`) is split into names rather than
+  # dropped, and any other shape restricts to nothing instead of reading as
+  # "unrestricted". Only an ABSENT key leaves the skill unrestricted; a key
+  # that is present but empty (`allowed_tools:`, `~`, `null`) allows nothing.
+  defp parse_allowed_tools(:error), do: nil
+
+  defp parse_allowed_tools({:ok, nil}) do
+    Logger.warning("Empty allowed_tools in skill file; allowing no tools")
+    []
+  end
+
+  defp parse_allowed_tools({:ok, value}), do: parse_string_list(value)
+
+  defp parse_string_list(list) when is_list(list) do
+    list
+    |> Enum.filter(&(is_binary(&1) or is_atom(&1) or is_number(&1)))
+    |> Enum.map(&to_string/1)
+  end
+
+  defp parse_string_list(value) when is_binary(value) do
+    String.split(value, ~r/[\s,]+/, trim: true)
+  end
+
+  defp parse_string_list(other) do
+    Logger.warning("Invalid allowed_tools #{inspect(other)} in skill file; allowing no tools")
+    []
+  end
 end

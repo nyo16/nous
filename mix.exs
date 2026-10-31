@@ -1,7 +1,7 @@
 defmodule Nous.MixProject do
   use Mix.Project
 
-  @version "0.18.1"
+  @version "0.18.2"
   @source_url "https://github.com/nyo16/nous"
 
   def project do
@@ -50,6 +50,13 @@ defmodule Nous.MixProject do
       # bump surfaces the stale ignore by itself. The `deps.audit` CI step
       # carries the same id (see .github/workflows/ci.yml). Never add a
       # runtime dep here — that is exactly what the gate exists to catch.
+      #
+      # hex.audit and deps.audit only check *this* lock. What a consumer
+      # resolves is governed by the floors in deps/0: direct deps (mint,
+      # hackney, net_runner) and, via optional floor-only entries, the
+      # transitive ones (ssl_verify_fun, jose, decimal). When an advisory
+      # lands for a package Nous reaches indirectly, add a floor there too —
+      # a patched lock alone does not protect downstream apps.
       hex: [ignore_advisories: ["CVE-2026-43966"]],
       dialyzer: [
         plt_file: {:no_warn, "priv/plts/dialyzer.plt"},
@@ -155,13 +162,39 @@ defmodule Nous.MixProject do
 
       # Process execution for command hooks and the Bash tool. A NIF-based
       # runner is used (over System.cmd/Port) for fine-grained process-tree
-      # control and reliable kill-on-timeout of child processes. `~> 1.0` (not
-      # the tighter `~> 1.0.4`) so downstream apps can pick up 1.x fixes without
-      # waiting on a nous release. optional: true keeps the NIF out of
-      # downstream builds that use neither the Bash tool nor :command hooks;
-      # both paths fail closed (refuse to run, never execute unconfined) when
-      # net_runner is absent — see Nous.Hook.Runner and Nous.Tools.Bash.
-      {:net_runner, "~> 1.0", optional: true},
+      # control and reliable kill-on-timeout of child processes. 1.4.1 is the
+      # floor, not a preference: 1.4.0 fixed 1.3.x leaving the child behind
+      # when the `run/2` caller is killed (the tool executor `brutal_kill`s a
+      # tool on deadline), and 1.4.1 is the first release whose shepherd
+      # creates the `net_runner/` cgroup parent that Nous.Tools.Bash's
+      # `net_runner/nous_bash_<n>` cgroup_path lives under (1.4.0 rejects the
+      # flat path and fails ENOENT on the prefixed one). optional: true keeps
+      # the NIF out of downstream builds that use neither the Bash tool nor
+      # :command hooks; both paths fail closed (refuse to run, never execute
+      # unconfined) when net_runner is absent — see Nous.Hook.Runner and
+      # Nous.Tools.Bash.
+      {:net_runner, "~> 1.4.1", optional: true},
+
+      # Transitive security floors. optional: true means these never add a
+      # package to a consumer's graph; they only bind when something else
+      # (ecto, hackney, goth) already pulls the package in, and then they make
+      # the consumer's resolver refuse the vulnerable line — same reasoning as
+      # the mint/hackney floors above, for deps Nous only reaches indirectly.
+      #   ssl_verify_fun < 1.1.8  EEF-CVE-2026-117666: a partial-label
+      #                           wildcard matched across a label boundary.
+      #                           It is hackney's TLS hostname check for
+      #                           provider calls that carry API keys.
+      #   jose < 1.11.13          EEF-CVE-2026-65625..65632 (via goth, which
+      #                           signs Vertex AI service-account JWTs).
+      #   decimal < 3.1.2         EEF-CVE-2026-32686 (unbounded exponent DoS,
+      #                           all of 2.x) and EEF-CVE-2026-97853
+      #                           (`Decimal.round/3` DoS, through 3.1.1);
+      #                           Nous.OutputSchema casts model output into
+      #                           :decimal fields. Implies ecto >= 3.13.6,
+      #                           the first ecto that admits decimal 3.x.
+      {:ssl_verify_fun, "~> 1.1 and >= 1.1.8", optional: true},
+      {:jose, "~> 1.11 and >= 1.11.13", optional: true},
+      {:decimal, "~> 3.1 and >= 3.1.2", optional: true},
 
       # Telemetry
       {:telemetry, "~> 1.2"},

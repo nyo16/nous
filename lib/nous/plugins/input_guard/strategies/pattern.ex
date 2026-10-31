@@ -48,41 +48,48 @@ defmodule Nous.Plugins.InputGuard.Strategies.Pattern do
 
   alias Nous.Plugins.InputGuard.Result
 
-  @default_patterns [
-    # Instruction override attempts
-    {~r/ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?|directions?)/i,
-     "instruction override"},
-    {~r/disregard\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?)/i,
-     "instruction override"},
-    {~r/forget\s+(all\s+)?(your\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?)/i,
-     "instruction override"},
+  # A function, not a module attribute: on Erlang/OTP 28 a compiled regex holds a
+  # reference that Elixir 1.18 cannot escape into an attribute ("cannot inject
+  # attribute @default_patterns … cannot escape #Reference<…>"), which made the
+  # whole library fail to compile there. Regex literals in a function body are
+  # rebuilt at runtime on that combination and stay compile-time elsewhere.
+  defp default_patterns do
+    [
+      # Instruction override attempts
+      {~r/ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?|directions?)/i,
+       "instruction override"},
+      {~r/disregard\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?)/i,
+       "instruction override"},
+      {~r/forget\s+(all\s+)?(your\s+)?(previous|prior|above|earlier)\s+(instructions?|prompts?|rules?)/i,
+       "instruction override"},
 
-    # Role reassignment
-    {~r/you\s+are\s+now\s+(a|an|the)\s+/i, "role reassignment"},
-    {~r/act\s+as\s+(a|an|if\s+you\s+are)\s+/i, "role reassignment"},
-    {~r/pretend\s+(you\s+are|to\s+be)\s+/i, "role reassignment"},
-    {~r/from\s+now\s+on[,\s]+you\s+(are|will|should|must)/i, "role reassignment"},
+      # Role reassignment
+      {~r/you\s+are\s+now\s+(a|an|the)\s+/i, "role reassignment"},
+      {~r/act\s+as\s+(a|an|if\s+you\s+are)\s+/i, "role reassignment"},
+      {~r/pretend\s+(you\s+are|to\s+be)\s+/i, "role reassignment"},
+      {~r/from\s+now\s+on[,\s]+you\s+(are|will|should|must)/i, "role reassignment"},
 
-    # DAN / jailbreak patterns
-    {~r/\bDAN\b.*\bmode\b/i, "DAN jailbreak"},
-    {~r/\bjailbreak(ed|ing)?\b/i, "jailbreak attempt"},
-    {~r/developer\s+mode\s+(enabled|on|activated)/i, "developer mode jailbreak"},
-    {~r/do\s+anything\s+now/i, "DAN jailbreak"},
+      # DAN / jailbreak patterns
+      {~r/\bDAN\b.*\bmode\b/i, "DAN jailbreak"},
+      {~r/\bjailbreak(ed|ing)?\b/i, "jailbreak attempt"},
+      {~r/developer\s+mode\s+(enabled|on|activated)/i, "developer mode jailbreak"},
+      {~r/do\s+anything\s+now/i, "DAN jailbreak"},
 
-    # Prompt extraction
-    {~r/reveal\s+(your|the|system)\s+(system\s+)?(prompt|instructions?|rules?)/i,
-     "prompt extraction"},
-    {~r/show\s+me\s+(your|the)\s+(system\s+)?(prompt|instructions?)/i, "prompt extraction"},
-    {~r/what\s+(are|is)\s+your\s+(system\s+)?(prompt|instructions?|rules?)/i,
-     "prompt extraction"},
-    {~r/repeat\s+(your|the)\s+(system\s+)?(prompt|instructions?|rules?)\s+(back|verbatim)/i,
-     "prompt extraction"},
+      # Prompt extraction
+      {~r/reveal\s+(your|the|system)\s+(system\s+)?(prompt|instructions?|rules?)/i,
+       "prompt extraction"},
+      {~r/show\s+me\s+(your|the)\s+(system\s+)?(prompt|instructions?)/i, "prompt extraction"},
+      {~r/what\s+(are|is)\s+your\s+(system\s+)?(prompt|instructions?|rules?)/i,
+       "prompt extraction"},
+      {~r/repeat\s+(your|the)\s+(system\s+)?(prompt|instructions?|rules?)\s+(back|verbatim)/i,
+       "prompt extraction"},
 
-    # Encoding / obfuscation evasion
-    {~r/base64[:\s]+(decode|encode)/i, "encoding evasion"},
-    {~r/\[SYSTEM\]/i, "system tag injection"},
-    {~r/<\|?(system|im_start|im_end)\|?>/i, "special token injection"}
-  ]
+      # Encoding / obfuscation evasion
+      {~r/base64[:\s]+(decode|encode)/i, "encoding evasion"},
+      {~r/\[SYSTEM\]/i, "system tag injection"},
+      {~r/<\|?(system|im_start|im_end)\|?>/i, "special token injection"}
+    ]
+  end
 
   @impl true
   def check(input, config, _ctx) do
@@ -107,7 +114,7 @@ defmodule Nous.Plugins.InputGuard.Strategies.Pattern do
     case Keyword.get(config, :patterns) do
       nil ->
         extra = Keyword.get(config, :extra_patterns, [])
-        @default_patterns ++ extra
+        default_patterns() ++ extra
 
       patterns ->
         patterns

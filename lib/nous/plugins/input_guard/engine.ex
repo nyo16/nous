@@ -9,11 +9,31 @@ defmodule Nous.Plugins.InputGuard.Engine do
   their meaning and defaults): `:strategies`, `:aggregation`,
   `:short_circuit`, `:fail_closed`, `:strategy_timeout`, `:on_violation`.
 
+  ## Dropped strategies
+
+  A strategy that errors, times out or returns `{:error, reason}` is
+  *dropped*: it produced no verdict. With `:fail_closed` (default `true`) a
+  drop counts as a flagging vote against the configured strategy count, and
+  when that could change the outcome — under `:any` always, under
+  `:majority` when the drops could make up the majority, under `:all` when
+  every survivor flagged (including when every strategy dropped) — the result
+  is a fail-closed one: severity `:suspicious`, `metadata: %{fail_closed:
+  true, dropped_strategies: n}`. Callers map that marker to their own action
+  (`Nous.Plugins.InputGuard.Policy` blocks by default). With `fail_closed:
+  false` a drop counts as a vote that did not flag, so if every strategy
+  drops the input is `:safe`.
+
   ## Options
 
     * `:telemetry_prefix` - prefix of the dropped-strategy event; the event is
       `prefix ++ [:strategy_dropped]`. Default: `[:nous, :input_guard]`.
     * `:label` - prefix of log messages. Default: `"InputGuard"`.
+    * `:fail_closed_on` - the survivors' verdicts a fail-closed result may
+      replace. Default: `[:safe]`. `Nous.Plugins.InputGuard` passes
+      `[:safe, :suspicious]`, so a `:suspicious` survivor cannot downgrade a
+      detector outage to a warning; `Nous.Plugins.DecisionGuard` keeps the
+      default and escalates a `:suspicious` verdict. A `:blocked` verdict is
+      never replaced.
 
   ## Telemetry
 
@@ -36,27 +56,26 @@ defmodule Nous.Plugins.InputGuard.Engine do
 
   @doc """
   Runs the configured strategies over `input` and returns the aggregated
-  `Nous.Plugins.InputGuard.Result`, after the fail-closed upgrade for dropped
-  strategies. Calls `config[:on_violation]` when the result is not `:safe`.
+  `Nous.Plugins.InputGuard.Result`, after the fail-closed check for dropped
+  strategies (see the moduledoc). Calls `config[:on_violation]` when the
+  result is not `:safe`.
 
   `ctx` is handed to every strategy; it is `nil` on surfaces that have no
   agent context (see `c:Nous.Plugins.InputGuard.Strategy.check/3`).
   """
   @spec run(String.t(), Context.t() | nil, map(), keyword()) :: Result.t()
   def run(input, ctx, config, opts \\ []) do
-    prefix = Keyword.get(opts, :telemetry_prefix, @default_prefix)
-    label = Keyword.get(opts, :label, @default_label)
-
     strategies = Map.get(config, :strategies, [{Pattern, []}])
     short_circuit = Map.get(config, :short_circuit, false)
     timeout = Map.get(config, :strategy_timeout, 30_000)
+    label = Keyword.get(opts, :label, @default_label)
 
     {results, dropped} = run_strategies(strategies, input, ctx, short_circuit, timeout, label)
 
     aggregated =
       results
       |> aggregate(length(strategies), config)
-      |> apply_fail_closed(dropped, config, prefix, label)
+      |> apply_fail_closed(results, length(strategies), dropped, config, opts)
 
     if aggregated.severity != :safe, do: fire_on_violation(aggregated, config, label)
 
@@ -211,7 +230,7 @@ defmodule Nous.Plugins.InputGuard.Engine do
   # Both variants return {results, dropped_count}. A "dropped" strategy is one
   # that errored, timed out, or returned `{:error, reason}` — it produced no
   # verdict, which must not be mistaken for a :safe verdict (see
-  # apply_fail_closed/5). Strategies skipped by short-circuiting after a
+  # apply_fail_closed/6). Strategies skipped by short-circuiting after a
   # :blocked result are NOT drops.
   defp run_strategies(strategies, input, ctx, true = _short_circuit, _timeout, label) do
     {results, dropped} =
@@ -259,16 +278,22 @@ defmodule Nous.Plugins.InputGuard.Engine do
     {Enum.reverse(results), dropped}
   end
 
-  # A dropped strategy produced no verdict. Under :any aggregation a single
-  # surviving detector decides, so a crashed/timed-out detector silently
-  # letting input through is a fail-open hole — upgrade :safe to :suspicious
-  # unless the user explicitly opted out. :majority/:all already count drops
-  # against the configured denominator, so they default to fail-open-tolerant.
-  defp apply_fail_closed(aggregated, 0, _config, _prefix, _label), do: aggregated
+  # A dropped strategy produced no verdict, and counting it as :safe is a
+  # fail-open hole: an attacker who can make the real detector error or time
+  # out (a large input, a judge endpoint that is down) would pass. With
+  # :fail_closed (the default in every mode) a drop is counted as a flagging
+  # vote against the configured denominator; if that changes the outcome the
+  # survivors decided, the result is the fail-closed marker, which the caller
+  # maps to its own action. With `fail_closed: false` a drop is a vote that
+  # did not flag (the explicit fail-open opt-out).
+  defp apply_fail_closed(aggregated, _results, _configured, 0, _config, _opts), do: aggregated
 
-  defp apply_fail_closed(aggregated, dropped, config, prefix, label) do
+  defp apply_fail_closed(aggregated, results, configured, dropped, config, opts) do
+    prefix = Keyword.get(opts, :telemetry_prefix, @default_prefix)
+    label = Keyword.get(opts, :label, @default_label)
+    replaceable = Keyword.get(opts, :fail_closed_on, [:safe])
     mode = Map.get(config, :aggregation, :any)
-    fail_closed = Map.get(config, :fail_closed, mode == :any)
+    fail_closed = Map.get(config, :fail_closed, true)
 
     :telemetry.execute(prefix ++ [:strategy_dropped], %{count: dropped}, %{
       aggregation: mode,
@@ -280,7 +305,8 @@ defmodule Nous.Plugins.InputGuard.Engine do
         "(error/timeout); fail_closed=#{fail_closed}"
     )
 
-    if fail_closed and aggregated.severity == :safe do
+    if fail_closed and aggregated.severity != :blocked and aggregated.severity in replaceable and
+         drops_could_flag?(mode, results, configured, dropped) do
       %Result{
         severity: :suspicious,
         reason:
@@ -292,6 +318,17 @@ defmodule Nous.Plugins.InputGuard.Engine do
       aggregated
     end
   end
+
+  # Would the input be flagged if every dropped strategy had flagged it?
+  defp drops_could_flag?(:any, _results, _configured, dropped), do: dropped > 0
+
+  defp drops_could_flag?(:majority, results, configured, dropped),
+    do: flagged_count(results) + dropped > configured / 2
+
+  defp drops_could_flag?(:all, results, configured, dropped),
+    do: flagged_count(results) + dropped == configured
+
+  defp flagged_count(results), do: Enum.count(results, &(&1.severity != :safe))
 
   # Normalises every way a strategy can fail to produce a verdict — raise,
   # throw/exit, or the contract's own `{:error, reason}` — to `:error`, so the
@@ -318,6 +355,9 @@ defmodule Nous.Plugins.InputGuard.Engine do
       :error
   end
 
+  # The survivors' verdict, with drops counted as votes that did not flag.
+  # Whether the drops could change it is apply_fail_closed/6's call, so an
+  # all-dropped run is :safe here and fail-closed there.
   defp aggregate([], _configured_count, _config), do: %Result{severity: :safe}
 
   defp aggregate(results, configured_count, config) do
@@ -336,7 +376,7 @@ defmodule Nous.Plugins.InputGuard.Engine do
     # Denominator is the number of CONFIGURED strategies, not survivors —
     # otherwise an attacker who makes benign strategies error/time-out shrinks
     # the vote and flips the outcome.
-    flagged = Enum.count(results, &(&1.severity != :safe))
+    flagged = flagged_count(results)
 
     if flagged > configured_count / 2 do
       most_severe(results)
@@ -346,9 +386,10 @@ defmodule Nous.Plugins.InputGuard.Engine do
   end
 
   defp do_aggregate(results, configured_count, :all) do
-    # Require EVERY configured strategy to have run AND flagged. A dropped or
-    # errored strategy means unanimity can't be confirmed, so don't block.
-    flagged = Enum.count(results, &(&1.severity != :safe))
+    # Require EVERY configured strategy to have run AND flagged. Unanimity
+    # that only the dropped strategies could complete is a fail-closed
+    # outcome (apply_fail_closed/6), not a verdict.
+    flagged = flagged_count(results)
 
     if flagged == configured_count and length(results) == configured_count do
       most_severe(results)

@@ -61,6 +61,24 @@ defmodule Nous.Skill do
 
       You are a code review specialist...
 
+  ## Restricting Tools
+
+  `allowed_tools` (file frontmatter or the struct field) confines the agent to
+  the listed tool names while the skill is active; `nil` (the default) leaves
+  the tool set alone. When several active skills declare it, the union of
+  their lists is allowed. Enforcement lives in `Nous.Plugins.Skills`.
+
+      %Nous.Skill{
+        name: "read_only_review",
+        instructions: "Review the code; do not modify files.",
+        activation: :auto,
+        allowed_tools: ["file_read", "file_grep"]
+      }
+
+  `model_override` is parsed but **not applied**: requests always use the
+  agent's model (or its `Nous.Router`). A skill that sets it logs a one-time
+  warning.
+
   ## Usage
 
       agent = Agent.new("openai:gpt-4",

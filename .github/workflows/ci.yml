@@ -221,6 +221,81 @@ jobs:
       - name: Optional-dependency backends
         run: mix test --only sqlite --only duckdb --only prom_ex
 
+  # The suite against the NEWEST versions mix.exs admits, not the lock. A
+  # consumer's resolver picks those, so CI that only ever tests mix.lock is how
+  # net_runner 1.4.0 (which rejected Bash's flat cgroup path) shipped
+  # unnoticed (audit Deps M2, issue #84). No cache: a restored deps/_build
+  # would be built against the locked versions.
+  test_newest_deps:
+    name: Tests (newest admitted deps)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - run: mix deps.unlock --all
+      - run: mix deps.get
+      - name: Resolved versions
+        run: mix deps | grep -E '^\* (net_runner|hackney|mint|req|finch|ecto|decimal) '
+      - run: mix deps.compile
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
+  # Bash's cgroup-v2 confinement (`net_runner/nous_bash_<n>`) is only taken on
+  # a Linux host with a writable cgroup v2 root. The runner's user cannot
+  # write /sys/fs/cgroup, root can — so build as the runner user and run just
+  # the tagged tests under sudo. `--only` fails when no test ran, so a host
+  # where the compile-time gate in bash_cgroup_integration_test.exs compiles
+  # the test out is a red build, not a silent skip. Runs against both the
+  # lock and the newest admitted net_runner.
+  cgroup_integration:
+    name: Bash cgroup confinement (${{ matrix.deps }} net_runner)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        deps: [locked, newest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - if: matrix.deps == 'newest'
+        run: mix deps.unlock net_runner
+      - run: mix deps.get
+      - run: mix deps | grep -E '^\* net_runner '
+      - run: mix deps.compile
+      - run: mix compile
+      - name: cgroup integration tests (as root)
+        run: sudo --preserve-env env "PATH=$PATH" mix test --only cgroup_integration
+
+  # mix.exs admits Elixir ~> 1.18, and OTP 28 is current. On that pair a
+  # compiled regex cannot be escaped into a module attribute, which made 0.18.1
+  # fail to compile entirely (input_guard/strategies/pattern.ex) while the
+  # OTP 27 matrix stayed green. Full suite, not just compile: regexes that
+  # compile can still misbehave at runtime.
+  test_otp28:
+    name: Tests (Elixir 1.18 / OTP 28)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "28"
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
@@ -295,7 +370,20 @@ jobs:
   publish:
     name: Publish to Hex
     runs-on: ubuntu-latest
-    needs: [compile, format, credo, deps_audit, docs, test, coverage, dialyzer]
+    needs:
+      [
+        compile,
+        format,
+        credo,
+        deps_audit,
+        docs,
+        test,
+        test_newest_deps,
+        test_otp28,
+        cgroup_integration,
+        coverage,
+        dialyzer
+      ]
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v6

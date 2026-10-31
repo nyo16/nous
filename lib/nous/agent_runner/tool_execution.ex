@@ -57,11 +57,17 @@ defmodule Nous.AgentRunner.ToolExecution do
 
         # Build run context for tool execution. This is the single construction
         # site for both the sequential and parallel paths below, so the session
-        # sandbox and permission policies only have to be attached here.
+        # sandbox and permission policies only have to be attached here. The
+        # permission policy is the agent's narrowed by any `allowed_tools` the
+        # active skills impose this request, so delegating tools inherit both.
         run_ctx =
           Context.to_run_context(ctx,
             sandbox: agent.sandbox,
-            permissions: agent.permissions,
+            permissions:
+              Permissions.Policy.strictest(
+                agent.permissions,
+                Permissions.request_policy(ctx)
+              ),
             agent_name: agent.name
           )
 

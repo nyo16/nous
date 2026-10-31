@@ -92,6 +92,8 @@ if Code.ensure_loaded?(Duckdbex) do
     @impl true
     @spec update_node(map(), String.t(), map()) :: {:ok, map()} | {:error, term()}
     def update_node(%{conn: conn} = state, id, updates) when is_map(updates) do
+      Node.validate_updates!(updates)
+
       case get_node(state, id) do
         {:ok, node} ->
           now = DateTime.utc_now()
@@ -392,9 +394,20 @@ if Code.ensure_loaded?(Duckdbex) do
     defp edge_type("supersedes"), do: :supersedes
     defp edge_type(_other), do: :leads_to
 
-    defp field_to_column(:type), do: "node_type"
-    defp field_to_column(:metadata), do: "metadata_json"
-    defp field_to_column(field), do: to_string(field)
+    # Explicit allowlist: column names are interpolated into SQL, so never
+    # derive them from caller-supplied keys.
+    @column_map %{
+      type: "node_type",
+      label: "label",
+      status: "status",
+      confidence: "confidence",
+      rationale: "rationale",
+      metadata: "metadata_json",
+      created_at: "created_at",
+      updated_at: "updated_at"
+    }
+
+    defp field_to_column(field), do: Map.fetch!(@column_map, field)
 
     defp encode_field(:metadata, val), do: JSON.encode!(val || %{})
     defp encode_field(:type, val), do: to_string(val)

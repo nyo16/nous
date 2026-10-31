@@ -8,6 +8,10 @@
 # :decision_model — opt-in decision-model accuracy evals (DecisionGuard corpus);
 # require NOUS_DECISION_TEST_MODEL. Run with:
 #   NOUS_DECISION_TEST_MODEL=~/Downloads/clef.gguf mix test --only decision_model
-ExUnit.configure(exclude: [:llm, :llama, :decision_model])
+#
+# :cgroup_integration — Bash's cgroup-v2 confinement on Linux; needs a writable
+# cgroup v2 root (privileged container or delegated cgroup). Run with:
+#   mix test --only cgroup_integration
+ExUnit.configure(exclude: [:llm, :llama, :decision_model, :cgroup_integration])
 
 ExUnit.start()

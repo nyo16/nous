@@ -8,7 +8,7 @@ A team is built from these layers:
 
 - **Supervision** -- `Teams.Supervisor` (one per team), a per-team agent `DynamicSupervisor`, and the team-internal processes registered under deterministic names.
 - **Lifecycle** -- `Teams.Coordinator` (GenServer) spawns, stops, lists, and monitors agents; it broadcasts membership events and dissolves the team.
-- **Roles** -- `Teams.Role` (plain struct) configures system prompt, tool whitelist/blacklist, and iteration limits. Built-ins: `researcher/0`, `coder/0`, `lead/0`.
+- **Roles** -- `Teams.Role` (plain struct) sets an agent's system prompt, tool allowlist/denylist, and iteration limit; `spawn_agent/4` enforces it through the agent's `Nous.Permissions.Policy`. Built-ins: `researcher/0`, `coder/0`, `lead/0`.
 - **Shared state** -- `Teams.SharedState` (GenServer + private ETS table) stores discoveries and file-region claims with a ~5-minute TTL.
 - **Rate limiting** -- `Teams.RateLimiter` (GenServer) reserves tokens/requests before each LLM call and reconciles actual usage afterward.
 - **Comms** -- `Teams.Comms` builds the `nous:team:<id>` topic scheme and wraps `Nous.PubSub`.
@@ -95,7 +95,7 @@ All agent lifecycle goes through `Teams.Coordinator`, which takes the Coordinato
 ```
 
 - **`spawn_agent/4`** -- starts a `Nous.AgentServer` under the team's `DynamicSupervisor`, registers it in `Nous.AgentRegistry` with a `{:team, team_id, name}` key, and gives it `inactivity_timeout: :infinity`. The agent's session id is `"team:<team_id>:<name>"`. Spawning the same name twice returns `{:error, :already_exists}`. Supported opts:
-  - `:role` -- a `Teams.Role` struct, threaded into the agent's deps as `:team_role`.
+  - `:role` -- a `Teams.Role` struct, enforced on the spawned agent (see [Roles](#roles)) and also threaded into the agent's deps as `:team_role`. Anything other than `nil` or a `%Teams.Role{}` returns `{:error, {:invalid_role, value}}` rather than spawning an unrestricted agent.
   - `:plugins` -- list of plugin modules for the agent.
 
   On success the Coordinator monitors the new process and broadcasts `{:agent_joined, name}` to the team topic.
@@ -140,24 +140,35 @@ role = Role.new(
 )
 ```
 
-Fields: `name`, `system_prompt`, `allowed_tools` (whitelist, `nil` = all), `denied_tools` (blacklist, `nil` = none), `max_iterations` (default `15`).
+Fields: `name`, `system_prompt`, `allowed_tools` (allowlist, `nil` = all), `denied_tools` (denylist, `nil` = none), `max_iterations` (default `15`).
 
-`apply_tool_filter/2` filters a tool list against the role:
+### How a role is enforced
+
+`spawn_agent/4` passes the agent config through `Role.apply_to_config/2` before starting the `AgentServer`:
+
+- **Tool access.** `allowed_tools`/`denied_tools` are translated by `Role.to_policy/1` into a `Nous.Permissions.Policy` (`allow:`/`deny:`) and set as the agent's `:permissions`. If the agent config already carries `:permissions`, the two are combined with `Nous.Permissions.Policy.strictest/2`, so a role can only narrow an existing policy, never widen it. Because it is the agent's own policy, the runner enforces it on every path:
+  - blocked tools (including plugin tools such as `Plugins.TeamTools`' `claim_region` for the researcher) are removed from the tool list sent to the model;
+  - a model call to a blocked tool is refused and the tool function never runs;
+  - under Code Mode, a program's call to a blocked tool gets an error from its binding instead of running it;
+  - sub-agents spawned via `Plugins.SubAgent` inherit the policy.
+
+  Names match case-insensitively. When both lists are set, a tool must be in `allowed_tools` **and** not in `denied_tools`. An empty `allowed_tools: []` allows nothing.
+- **System prompt.** `system_prompt` is **prepended** to the agent's `:instructions`, separated by a blank line (`"<role prompt>\n\n<instructions>"`).
+- **Iterations.** `max_iterations` becomes the `AgentServer`'s per-run iteration ceiling. If the agent config already sets `:max_iterations`, the lower value wins.
+
+Spawning without `:role` leaves the agent config untouched.
+
+`apply_tool_filter/2` filters a tool list by the same rules (it runs the list through `Role.to_policy/1`), for callers that want to preview a role's tool set:
 
 ```elixir
 @spec apply_tool_filter(t(), [Nous.Tool.t()]) :: [Nous.Tool.t()]
 ```
 
-- If `allowed_tools` is set, only those tools are kept.
-- Otherwise, if `denied_tools` is set, those tools are removed.
-- Otherwise all tools pass through.
-- `allowed_tools` takes precedence over `denied_tools` (the function head matches the allowed clause first).
-
 ### Built-in roles
 
 | Role | Tool access | `max_iterations` |
 |------|-------------|------------------|
-| `Role.researcher/0` | whitelist: `search`, `read_file`, `web_fetch`, `recall`, `share_discovery`, `peer_message`, `broadcast_message`, `list_team` | 15 |
+| `Role.researcher/0` | whitelist: `file_read`, `file_glob`, `file_grep`, `search`, `web_search`, `news_search`, `fetch_page`, `scrape_results`, `kb_search`, `kb_read`, `kb_list`, `kb_backlinks`, `recall`, `share_discovery`, `peer_message`, `broadcast_message`, `list_team` | 15 |
 | `Role.coder/0` | denies `delete_file`, `drop_table` | 15 |
 | `Role.lead/0` | unrestricted | 20 |
 

@@ -152,6 +152,24 @@ defmodule Nous.AgentServerTest do
       assert [%{role: :user, content: "Previously saved"}] = loaded_ctx.messages
       GenServer.stop(pid)
     end
+
+    test "refuses a :max_iterations that would disable the iteration cap" do
+      Process.flag(:trap_exit, true)
+
+      for bad <- [nil, 0, -1, "15"] do
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:error, {%ArgumentError{message: message}, _stack}} =
+                   AgentServer.start_link(
+                     session_id: "test_bad_iter_#{System.unique_integer([:positive])}",
+                     agent_config: Map.put(@agent_config, :max_iterations, bad),
+                     pubsub: nil,
+                     inactivity_timeout: :infinity
+                   )
+
+          assert message =~ ":max_iterations"
+        end)
+      end
+    end
   end
 
   describe "get_context/1 and get_history/1" do

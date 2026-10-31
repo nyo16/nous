@@ -71,9 +71,19 @@ defmodule Nous.Plugins.InputGuard.Strategies.SemanticTest do
   end
 
   describe "embedding failure handling" do
-    test "fails open (:safe) by default" do
-      assert {:ok, %Result{severity: :safe} = r} = Semantic.check("boom", config(), %{})
-      assert r.reason =~ "fail-safe"
+    test "drops by default, so InputGuard fails closed instead of reading it as :safe" do
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, _reason} = Semantic.check("boom", config(), %{})
+      end)
+    end
+
+    test "fails open (:safe) only when on_error: :safe" do
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, %Result{severity: :safe} = r} =
+                 Semantic.check("boom", config(on_error: :safe), %{})
+
+        assert r.reason =~ "fail-safe"
+      end)
     end
 
     test "fails closed (:blocked) when on_error: :blocked" do

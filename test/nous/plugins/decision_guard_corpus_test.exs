@@ -25,15 +25,11 @@ defmodule Nous.Plugins.DecisionGuardCorpusTest do
   @moduletag timeout: 3_600_000
   @moduletag :capture_log
 
-  alias Nous.DecisionModel.Backend.LlamaCpp
-  alias Nous.Plugins.InputGuard.Strategies.{DecisionModel, Pattern}
-
   @clef_path System.get_env("NOUS_DECISION_TEST_MODEL")
   @runnable Code.ensure_loaded?(LlamaCppEx.Decision) and is_binary(@clef_path) and
               File.exists?(Path.expand(@clef_path || "/nonexistent"))
 
   @corpus Path.expand("../../fixtures/decision_guard/user_input.jsonl", __DIR__)
-  @min_holdout_accuracy 0.80
 
   test "the corpus records carry provenance and a split" do
     records = records()
@@ -53,6 +49,11 @@ defmodule Nous.Plugins.DecisionGuardCorpusTest do
   end
 
   if @runnable do
+    alias Nous.DecisionModel.Backend.LlamaCpp
+    alias Nous.Plugins.InputGuard.Strategies.{DecisionModel, Pattern}
+
+    @min_holdout_accuracy 0.80
+
     setup_all do
       :ok = LlamaCppEx.init()
 

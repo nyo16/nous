@@ -238,8 +238,9 @@ defmodule Nous.Sandbox.Bwrap do
 
     # No `:stderr` option: the probe reads the exit status only, and `:redirect`
     # does not exist in net_runner 1.0 — passing it disables the `:consume`
-    # drain and leaves the stderr pipe unread.
-    result = NetRunner.run(argv, timeout: timeout_ms)
+    # drain and leaves the stderr pipe unread. `Nous.Sandbox.run/2` bounds a
+    # hung probe to timeout + Nous.Sandbox.kill_timeout_ms/0, like every spawn.
+    result = Nous.Sandbox.run(argv, timeout: timeout_ms)
 
     # Only reachable on a host where the write was *not* refused, in which case
     # this base is about to be rejected. Do not leave the file behind.

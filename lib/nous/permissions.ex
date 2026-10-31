@@ -269,6 +269,28 @@ defmodule Nous.Permissions do
     end
   end
 
+  # ctx.deps key for a policy that narrows the tools of the current request
+  # only (set by plugins in `before_request/3`, e.g. `Nous.Plugins.Skills` for
+  # skill `allowed_tools`). Owned here so the runner never depends on a
+  # specific plugin.
+  @request_policy_key :__request_permissions__
+
+  @doc false
+  # The request-scoped policy a plugin set on `ctx.deps`, or `nil`. The agent
+  # runner combines it with the agent's own policy (`Policy.strictest/2`) when
+  # it builds the tool `Nous.RunContext`, so delegating tools inherit it.
+  @spec request_policy(%{optional(:deps) => map()} | term()) :: Policy.t() | nil
+  def request_policy(%{deps: deps}) when is_map(deps), do: Map.get(deps, @request_policy_key)
+  def request_policy(_ctx), do: nil
+
+  @doc false
+  # Set (or, with `nil`, clear) the request-scoped policy in `deps`.
+  @spec put_request_policy(map(), Policy.t() | nil) :: map()
+  def put_request_policy(deps, nil) when is_map(deps), do: Map.delete(deps, @request_policy_key)
+
+  def put_request_policy(deps, %Policy{} = policy) when is_map(deps),
+    do: Map.put(deps, @request_policy_key, policy)
+
   @doc """
   Ask an approval handler about one tool call and normalise its answer.
 

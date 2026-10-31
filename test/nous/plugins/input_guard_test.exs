@@ -3,9 +3,11 @@ defmodule Nous.Plugins.InputGuardTest do
 
   alias Nous.Agent
   alias Nous.Agent.Context
+  alias Nous.AgentRunner
   alias Nous.Message
   alias Nous.Plugins.InputGuard
   alias Nous.Plugins.InputGuard.Result
+  alias Nous.Plugins.InputGuard.Strategies.{LLMJudge, Pattern}
 
   # --- Helper: build a context with a user message and config ---
 
@@ -424,27 +426,27 @@ defmodule Nous.Plugins.InputGuardTest do
   end
 
   describe "fail-closed on dropped strategies" do
-    test "dropped strategy upgrades :safe to :suspicious under default :any (warn policy injects warning)" do
+    # Was "upgrades :safe to :suspicious (warn policy injects warning)": that
+    # pinned the fail-open default of #89. A fail-closed result now has its own
+    # policy key, `:dropped`, which defaults to :block.
+    test "dropped strategy fails closed and blocks under the default policy" do
       ctx =
         build_ctx("safe input", %{
           strategies: [
             {__MODULE__.ErrorStrategy, []},
             {__MODULE__.SafeStrategy, []}
           ]
-          # no policy key → default %{suspicious: :warn, blocked: :block}
-          # no fail_closed key → defaults true for :any
+          # no policy key → default %{suspicious: :warn, blocked: :block, dropped: :block}
+          # no fail_closed key → defaults true
         })
 
       ctx = InputGuard.init(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
-      # Warn action injects a system warning message
-      assert result_ctx.needs_response == true
-      assert length(result_ctx.messages) == 2
-      [_user, warning] = result_ctx.messages
-      assert warning.role == :system
-      assert warning.content =~ "flagged as suspicious"
+      assert result_ctx.needs_response == false
+      assert [_user, %{role: :assistant, content: content}] = result_ctx.messages
+      assert content =~ "did not complete"
     end
 
     # The Strategy contract allows `{:error, reason}` (LLMJudge's default when
@@ -464,8 +466,9 @@ defmodule Nous.Plugins.InputGuardTest do
         ctx = InputGuard.init(dummy_agent(), ctx)
         {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
-        assert [_user, %{role: :system, content: content}] = result_ctx.messages
-        assert content =~ "flagged as suspicious"
+        assert result_ctx.needs_response == false
+        assert [_user, %{role: :assistant, content: content}] = result_ctx.messages
+        assert content =~ "can't process"
       end
     end
 
@@ -520,7 +523,7 @@ defmodule Nous.Plugins.InputGuardTest do
       assert Enum.any?(result_ctx.messages, &(&1.content =~ "can't process"))
     end
 
-    test ":majority aggregation does not fail closed by default" do
+    test "a drop that cannot change the :majority vote does not fail closed" do
       ctx =
         build_ctx("safe input", %{
           strategies: [
@@ -563,6 +566,219 @@ defmodule Nous.Plugins.InputGuardTest do
 
       assert_receive {:strategy_dropped, %{count: 1}, %{aggregation: :any, fail_closed: true}}
     end
+  end
+
+  # --- Fail closed on the request path (#89) ---
+  #
+  # A real run against a Bypass chat endpoint: whether the guarded request
+  # reaches the model, not what the plugin callback returns.
+
+  describe "fail-closed on the request path" do
+    setup do
+      %{chat: Bypass.open(), judge: Bypass.open(), test_pid: self()}
+    end
+
+    test "a judge that errors: no chat request is sent and the block message is returned",
+         %{chat: chat, judge: judge, test_pid: pid} do
+      chat_endpoint(chat, pid)
+
+      Bypass.stub(judge, "POST", "/v1/chat/completions", fn conn ->
+        send(pid, :judge_request)
+        Plug.Conn.resp(conn, 503, "judge unavailable")
+      end)
+
+      result = guarded_run(chat, %{strategies: [{Pattern, []}, judge_strategy(judge)]})
+
+      assert_received :judge_request
+      refute_received :chat_request
+      assert_block_message(result)
+    end
+
+    # A detector killed at :strategy_timeout. A custom strategy rather than a
+    # slow Bypass judge: Cowboy kills a handler whose client went away, and
+    # Bypass reports that as a test failure.
+    test "a strategy that times out: no chat request is sent and the block message is returned",
+         %{chat: chat, test_pid: pid} do
+      chat_endpoint(chat, pid)
+
+      result =
+        guarded_run(chat, %{
+          strategies: [{Pattern, []}, {__MODULE__.SleepStrategy, []}],
+          strategy_timeout: 100
+        })
+
+      refute_received :chat_request
+      assert_block_message(result)
+    end
+
+    test "a :suspicious survivor does not turn a drop into a warning",
+         %{chat: chat, test_pid: pid} do
+      chat_endpoint(chat, pid)
+
+      result =
+        guarded_run(chat, %{
+          strategies: [{__MODULE__.SuspiciousStrategy, []}, {__MODULE__.ErrorTupleStrategy, []}]
+        })
+
+      refute_received :chat_request
+      assert_block_message(result)
+    end
+
+    for mode <- [:majority, :all] do
+      test "#{mode}: every strategy dropped is not safe", %{chat: chat, test_pid: pid} do
+        chat_endpoint(chat, pid)
+
+        result =
+          guarded_run(chat, %{
+            strategies: [
+              {__MODULE__.ErrorStrategy, []},
+              {__MODULE__.ErrorTupleStrategy, []},
+              {__MODULE__.SleepStrategy, []}
+            ],
+            aggregation: unquote(mode),
+            strategy_timeout: 100
+          })
+
+        refute_received :chat_request
+        assert_block_message(result)
+      end
+
+      test "#{mode}: every strategy dropped passes with fail_closed: false",
+           %{chat: chat, test_pid: pid} do
+        chat_endpoint(chat, pid)
+
+        result =
+          guarded_run(chat, %{
+            strategies: [{__MODULE__.ErrorStrategy, []}, {__MODULE__.ErrorTupleStrategy, []}],
+            aggregation: unquote(mode),
+            fail_closed: false
+          })
+
+        assert_received :chat_request
+        assert result.output == "the answer"
+      end
+    end
+
+    test ":majority: drops that could make up the majority fail closed",
+         %{chat: chat, test_pid: pid} do
+      chat_endpoint(chat, pid)
+
+      result =
+        guarded_run(chat, %{
+          strategies: [
+            {__MODULE__.AlwaysBlockStrategy, []},
+            {__MODULE__.ErrorStrategy, []},
+            {__MODULE__.SafeStrategy, []}
+          ],
+          aggregation: :majority
+        })
+
+      refute_received :chat_request
+      assert_block_message(result)
+    end
+
+    test ":all: unanimity only the drops could complete fails closed",
+         %{chat: chat, test_pid: pid} do
+      chat_endpoint(chat, pid)
+
+      result =
+        guarded_run(chat, %{
+          strategies: [{__MODULE__.AlwaysBlockStrategy, []}, {__MODULE__.ErrorStrategy, []}],
+          aggregation: :all
+        })
+
+      refute_received :chat_request
+      assert_block_message(result)
+    end
+
+    test ":all: a drop beside a :safe survivor cannot reach unanimity and passes",
+         %{chat: chat, test_pid: pid} do
+      chat_endpoint(chat, pid)
+
+      result =
+        guarded_run(chat, %{
+          strategies: [{__MODULE__.SafeStrategy, []}, {__MODULE__.ErrorStrategy, []}],
+          aggregation: :all
+        })
+
+      assert_received :chat_request
+      assert result.output == "the answer"
+    end
+
+    test "policy dropped: :warn restores warn-and-proceed",
+         %{chat: chat, judge: judge, test_pid: pid} do
+      chat_endpoint(chat, pid)
+      Bypass.stub(judge, "POST", "/v1/chat/completions", &Plug.Conn.resp(&1, 503, "down"))
+
+      result =
+        guarded_run(chat, %{
+          strategies: [{Pattern, []}, judge_strategy(judge)],
+          policy: %{suspicious: :warn, blocked: :block, dropped: :warn}
+        })
+
+      assert_received {:chat_request, body}
+      assert result.output == "the answer"
+
+      assert Enum.any?(
+               body["messages"],
+               &(&1["role"] == "system" and &1["content"] =~ "InputGuard warning")
+             )
+    end
+  end
+
+  defp guarded_run(chat, config) do
+    agent =
+      Agent.new("lmstudio:test-model",
+        base_url: "http://localhost:#{chat.port}/v1",
+        plugins: [InputGuard]
+      )
+
+    assert {:ok, result} =
+             AgentRunner.run(agent, "what is 2 + 2?", deps: %{input_guard_config: config})
+
+    result
+  end
+
+  defp judge_strategy(judge) do
+    model = Nous.Model.parse("lmstudio:judge", base_url: "http://localhost:#{judge.port}/v1")
+    {LLMJudge, model: model}
+  end
+
+  defp chat_endpoint(chat, test_pid) do
+    Bypass.stub(chat, "POST", "/v1/chat/completions", fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      send(test_pid, :chat_request)
+      send(test_pid, {:chat_request, JSON.decode!(raw)})
+      json(conn, completion("the answer"))
+    end)
+  end
+
+  defp completion(text) do
+    %{
+      "id" => "chatcmpl-1",
+      "object" => "chat.completion",
+      "model" => "test-model",
+      "choices" => [
+        %{
+          "index" => 0,
+          "message" => %{"role" => "assistant", "content" => text},
+          "finish_reason" => "stop"
+        }
+      ],
+      "usage" => %{"prompt_tokens" => 5, "completion_tokens" => 5, "total_tokens" => 10}
+    }
+  end
+
+  defp json(conn, body) do
+    conn
+    |> Plug.Conn.put_resp_header("content-type", "application/json")
+    |> Plug.Conn.resp(200, JSON.encode!(body))
+  end
+
+  defp assert_block_message(result) do
+    assert %{role: :assistant, content: content} = List.last(result.context.messages)
+    assert content =~ "can't process"
+    assert content =~ "did not complete (error or timeout); failing closed"
   end
 
   # --- Custom strategy with extra_patterns ---

@@ -257,12 +257,19 @@ defmodule Nous.Memory.Tools do
     else
       id = Map.fetch!(args, "id")
 
-      case store_mod.delete(store_state, id) do
-        {:ok, new_state} ->
-          updated_config = Map.put(config, :store_state, new_state)
+      # Same scope recall searches in: a memory the agent could not recall is
+      # one it may not delete. Out-of-scope and missing ids get the same reply
+      # so the tool doesn't confirm that a foreign id exists.
+      with {:ok, _entry} <-
+             Scope.fetch_in_scope(store_mod, store_state, id, build_search_scope(config)),
+           {:ok, new_state} <- store_mod.delete(store_state, id) do
+        updated_config = Map.put(config, :store_state, new_state)
 
-          {:ok, %{status: "forgotten", id: id},
-           ContextUpdate.new() |> ContextUpdate.set(:memory_config, updated_config)}
+        {:ok, %{status: "forgotten", id: id},
+         ContextUpdate.new() |> ContextUpdate.set(:memory_config, updated_config)}
+      else
+        {:error, :not_found} ->
+          {:ok, %{status: "not_found", message: "Memory '#{id}' not found"}, ContextUpdate.new()}
 
         {:error, reason} ->
           {:ok, %{status: "error", message: "Failed to forget: #{inspect(reason)}"},

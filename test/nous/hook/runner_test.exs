@@ -421,6 +421,37 @@ defmodule Nous.Hook.RunnerTest do
       assert %Hook{timeout: :infinity} =
                Hook.new(:pre_tool_use, handler: fn _, _ -> :allow end, timeout: :infinity)
     end
+
+    test "a :command hook that ignores SIGTERM stays within timeout + kill grace" do
+      # On `:timeout` NetRunner SIGTERMs and waits a fixed 5 s before SIGKILL,
+      # so a hook that traps TERM used to overrun its timeout by 5 s. The runner
+      # spawns through `Nous.Sandbox.run/2`, which caps that wait.
+      timeout = 300
+
+      hook = %Hook{
+        event: :pre_tool_use,
+        type: :command,
+        handler: ["/bin/sh", "-c", "trap '' TERM; cat >/dev/null; sleep 30"],
+        name: "term_ignorer",
+        timeout: timeout,
+        fail_closed: true
+      }
+
+      {elapsed_us, _log} =
+        :timer.tc(fn ->
+          ExUnit.CaptureLog.capture_log(fn ->
+            send(
+              self(),
+              {:hook_result,
+               Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"})}
+            )
+          end)
+        end)
+
+      assert_received {:hook_result, {:deny, reason}}
+      assert reason =~ "timeout"
+      assert div(elapsed_us, 1_000) < timeout + Nous.Sandbox.kill_timeout_ms() + 1_500
+    end
   end
 
   defmodule SlowHook do

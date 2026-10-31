@@ -5,7 +5,7 @@ defmodule Nous.Tools.Bash do
   Uses `NetRunner` for safe process execution with automatic timeout
   handling and output size limits. Zero zombie processes guaranteed.
   `:net_runner` is an optional dependency: without it this tool refuses to
-  run any command (fail closed) — add `{:net_runner, "~> 1.0"}` to your deps.
+  run any command (fail closed) — add `{:net_runner, "~> 1.4.1"}` to your deps.
 
   ## Security
 
@@ -18,12 +18,16 @@ defmodule Nous.Tools.Bash do
   `Nous.Tools.Env.with_scrubbed_env/1` — an `/usr/bin/env -i` prefix on the
   argv — so it cannot `printenv` its way to `OPENAI_API_KEY` and friends.
 
-  The argv detour is not stylistic. `NetRunner` has **no `:env` option**: it
-  forwards unknown options to a port layer that ignores them and the shepherd
-  `execvp`s, so the child inherits the BEAM's entire environment. This tool
-  passed `env: Nous.Tools.Env.scrubbed()` for its whole existence and that
-  option was silently discarded the entire time — `printenv` returned every key.
-  Do not "restore" it.
+  The argv detour is not stylistic. Through 1.3.x `NetRunner` had **no `:env`
+  option**: it forwarded unknown options to a port layer that ignored them, so
+  this tool's old `env: Nous.Tools.Env.scrubbed()` was silently discarded and
+  `printenv` returned every key. 1.4 added `:env`, but it is still the wrong
+  tool here: it is an *overlay* on the BEAM's environment (a name maps to a
+  value, or to `nil` to unset it), so an allowlist would mean enumerating and
+  unsetting every inherited variable, and it applies to the process NetRunner
+  spawns — the sandbox runner (`bwrap`, `sandbox-exec`) — rather than to the
+  model's shell inside it. `env -i` in the argv is a true allowlist and runs
+  inside the confinement. Do not "restore" `:env`.
 
   ### Working directory
 
@@ -141,9 +145,16 @@ defmodule Nous.Tools.Bash do
   # command budget. Whichever of the two timers fires first decides what the
   # model is told, and this tool's own timeout says "Command timed out after
   # 120000ms" while the executor's is an untrappable kill of the whole tool
-  # process, reported with no idea what the command was doing. Same ordering,
-  # and the same slack, as `Nous.CodeMode.tool_timeout_ms/0`.
-  @tool_deadline @default_timeout + :timer.seconds(5)
+  # process, reported with no idea what the command was doing.
+  #
+  # A timed-out command is SIGTERMed and, if it ignores that, SIGKILLed only
+  # after `Nous.Sandbox.kill_timeout_ms/0`, so NetRunner.run/2 can return as
+  # late as budget + kill grace. The headroom covers that grace plus the same
+  # 5 s slack as `Nous.CodeMode.tool_timeout_ms/0` for spawn, sandbox probe and
+  # output classification — it must always exceed the grace, or a
+  # SIGTERM-ignoring command races the executor's kill again.
+  @kill_timeout Nous.Sandbox.kill_timeout_ms()
+  @tool_deadline @default_timeout + @kill_timeout + :timer.seconds(5)
 
   @max_output_size 1_000_000
 
@@ -220,7 +231,7 @@ defmodule Nous.Tools.Bash do
       {:error,
        "Refusing to run: the optional :net_runner dependency is not available, " <>
          "and the Bash tool executes exclusively through NetRunner. The command " <>
-         "was NOT executed. Add {:net_runner, \"~> 1.0\"} to your deps to enable " <>
+         "was NOT executed. Add {:net_runner, \"~> 1.4.1\"} to your deps to enable " <>
          "this tool."}
     end
   end
@@ -291,18 +302,24 @@ defmodule Nous.Tools.Bash do
   end
 
   defp spawn_confined(%Confined{} = confined, ctx, timeout) do
-    # No `:env` option: NetRunner has none, and passing one was how this tool
-    # spent its whole existence believing it had scrubbed the environment. The
-    # scrubbing is in the argv (`Nous.Tools.Env.with_scrubbed_env/1`).
+    # No `:env` option: through net_runner 1.3 there was none (passing one was
+    # how this tool spent its early life believing it had scrubbed the
+    # environment), and 1.4's is an overlay applied to the sandbox runner, not
+    # an allowlist for the model's shell. The scrubbing is the `env -i` in the
+    # argv (`Nous.Tools.Env.with_scrubbed_env/1`) — see the moduledoc.
     # No `:stderr` option either — the merge wrapper does that job, and
     # `max_output_size` bounds the merged stream, which is what we want.
+    # `Sandbox.run/2` rather than `NetRunner.run/2`: on timeout NetRunner waits
+    # a fixed 5 s before SIGKILLing a child that ignores SIGTERM; this bounds
+    # the wait at `Nous.Sandbox.kill_timeout_ms/0`, so such a command still
+    # returns "Command timed out" well inside @tool_deadline.
     opts =
       [
         timeout: timeout,
         max_output_size: @max_output_size
       ] ++ cgroup_opts()
 
-    case NetRunner.run(Sandbox.merge_stderr(confined.argv), opts) do
+    case Sandbox.run(Sandbox.merge_stderr(confined.argv), opts) do
       {:error, :timeout} ->
         {:error, "Command timed out after #{timeout}ms"}
 
@@ -434,18 +451,19 @@ defmodule Nous.Tools.Bash do
   # write fence and nothing else, and a backgrounded child survives the call
   # (still fenced, but alive).
   #
-  # The name is deliberately FLAT. The shepherd creates the cgroup with a single
-  # non-recursive `mkdir("/sys/fs/cgroup/<path>")` (shepherd.c), so a nested
-  # `nous/bash/<n>` could never be created: it would fail with ENOENT, the
-  # shepherd would log and carry on, and the whole feature would be a silent
-  # no-op. One level, or nothing.
+  # The path is `net_runner/nous_bash_<n>`: net_runner 1.4 requires every
+  # cgroup to live under its `net_runner/` parent (an unprefixed path is
+  # rewritten with a deprecation warning, and raises from 2.0), and 1.4.1's
+  # shepherd creates that parent on demand, so nothing is pre-created here.
+  # Keep the leaf a single level below the prefix: the shepherd creates the
+  # parent and then the leaf, not arbitrary intermediate directories.
   #
   # Gated on cgroup v2 actually being delegated to us, so we do not attempt a
   # mkdir that cannot work and do not spray shepherd error logs on hosts without
   # delegation. The path is relative and `..`-free; the shepherd re-validates.
   defp cgroup_opts do
     if cgroup_v2_delegated?() do
-      [cgroup_path: "nous_bash_#{System.unique_integer([:positive, :monotonic])}"]
+      [cgroup_path: "net_runner/nous_bash_#{System.unique_integer([:positive, :monotonic])}"]
     else
       []
     end

@@ -20,19 +20,19 @@ defmodule Nous.Hook.DecisionLlamaSmokeTest do
   @moduletag timeout: 900_000
   @moduletag :capture_log
 
-  alias Nous.{DecisionModel, Hook}
-  alias Nous.DecisionModel.Backend.LlamaCpp
-  alias Nous.Errors.ResponseDenied
-
   @chat_path System.get_env("NOUS_LLAMACPP_TEST_MODEL")
   @clef_path System.get_env("NOUS_DECISION_TEST_MODEL")
   @runnable Code.ensure_loaded?(LlamaCppEx.Decision) and
               Enum.all?([@chat_path, @clef_path], &(&1 && File.exists?(Path.expand(&1))))
 
-  @load_timeout 600_000
-  @secret "sk-live-4242-ORCHID-7781"
-
   if @runnable do
+    alias Nous.{DecisionModel, Hook}
+    alias Nous.DecisionModel.Backend.LlamaCpp
+    alias Nous.Errors.ResponseDenied
+
+    @load_timeout 600_000
+    @secret "sk-live-4242-ORCHID-7781"
+
     setup_all do
       :ok = LlamaCppEx.init()
       {:ok, chat} = LlamaCppEx.load_model(Path.expand(@chat_path), n_gpu_layers: -1)

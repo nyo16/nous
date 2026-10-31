@@ -155,7 +155,7 @@ description: RESTful API design best practices
 tags: [api, rest, design]
 group: planning
 activation: auto
-allowed_tools: [read_file, grep]
+allowed_tools: [file_read, file_grep]
 priority: 50
 ---
 
@@ -175,9 +175,53 @@ When designing APIs:
 | `tags` | list | `[]` | Categorization tags |
 | `group` | string | `nil` | Skill group |
 | `activation` | string | `"manual"` | `"manual"` or `"auto"` |
-| `allowed_tools` | list | `nil` | Restrict available tools |
+| `allowed_tools` | list | `nil` | Confine the agent to these tool names while the skill is active (see [Restricting Tools](#restricting-tools-allowed_tools)) |
 | `priority` | integer | `100` | Lower = higher priority |
-| `model_override` | string | `nil` | Override model for this skill |
+| `model_override` | string | `nil` | **Not applied.** Parsed only; requests use the agent's model. Setting it logs a one-time warning |
+
+### Restricting Tools (`allowed_tools`)
+
+While a skill with `allowed_tools` is active, the agent can only see and call
+the tools named in it. `Nous.Plugins.Skills` enforces this on every request:
+other tools are left out of the request sent to the model, a call to one of them
+is refused as an unknown tool (its function never runs), and Code Mode's
+`run_code` can only reach the allowed tools. A sub-agent spawned while the skill
+is active inherits the restriction like any other permission policy.
+
+```markdown
+---
+name: read_only_review
+description: Review code without changing it
+activation: auto
+allowed_tools: [file_read, file_grep]
+---
+```
+
+Rules:
+
+- **No `allowed_tools`** (or `nil` on an inline `%Nous.Skill{}`): no restriction.
+  Such a skill does not widen another active skill's restriction either.
+- **Several active skills declare it**: the **union** of their lists is allowed.
+  Skills are additive. Each one was activated because the task needs it, so each
+  keeps its tools. An intersection would let two skills with disjoint lists
+  remove every tool.
+- **`allowed_tools: []`** allows nothing, unless another active skill allows
+  something. A value that is neither a list nor a string also allows nothing.
+  A string is split on commas and spaces: `allowed_tools: file_read, file_grep`.
+- **Names are exact** (case-insensitive) and apply to every tool, including the
+  ones the skill itself provides. List those as well.
+- **It only narrows.** The agent's own `:permissions` policy still applies on top,
+  and approval requirements are unchanged.
+- The restriction runs in the Skills plugin's `before_request/3`. A plugin listed
+  *after* `Nous.Plugins.Skills` that adds tools in its own `before_request/3` is
+  not covered. The Skills plugin is appended last by default.
+
+### `model_override` is not applied
+
+The field is parsed but Nous does not switch models per skill. If it did, a
+skill file (possibly third-party) could choose which provider the whole
+conversation is sent to. Requests use the agent's model, or its `Nous.Router`
+if one is configured. Any skill that sets the field logs a one-time warning.
 
 ### Walkthrough: Creating a File-Based Skill
 
@@ -557,7 +601,7 @@ The plugin hooks into four stages:
 | `init` | Resolves all skill specs into a registry, auto-activates `:auto` skills |
 | `system_prompt` | Collects instructions from all active skills, injects them into the system prompt |
 | `tools` | Collects tools from all active skills, adds them to the tool list |
-| `before_request` | Matches the latest user message against skills with `{:on_match, fn}` activation, auto-activates matches |
+| `before_request` | Matches the latest user message against skills with `{:on_match, fn}` activation, auto-activates matches, then removes tools outside the active skills' `allowed_tools` |
 
 ### How the registry is stored
 

@@ -100,6 +100,39 @@ defmodule Nous.Decisions.Node do
     }
   end
 
+  @updatable_fields [
+    :type,
+    :label,
+    :status,
+    :confidence,
+    :rationale,
+    :metadata,
+    :created_at,
+    :updated_at
+  ]
+
+  @doc """
+  Fields a store's `update_node/3` accepts (atom keys only; `:id` is immutable).
+  """
+  @spec updatable_fields() :: [atom()]
+  def updatable_fields, do: @updatable_fields
+
+  @doc """
+  Validate an `update_node/3` updates map. Raises `ArgumentError` on any key
+  that is not in `updatable_fields/0` (including string keys), so every store
+  rejects unknown fields before touching storage.
+  """
+  @spec validate_updates!(map()) :: :ok
+  def validate_updates!(updates) when is_map(updates) do
+    Enum.each(updates, fn {key, _} ->
+      unless key in @updatable_fields do
+        raise ArgumentError,
+              "unknown decision node field #{inspect(key)} — not in the allowlist " <>
+                "(#{Enum.map_join(@updatable_fields, ", ", &inspect/1)})"
+      end
+    end)
+  end
+
   defp generate_id do
     :crypto.strong_rand_bytes(16) |> Base.encode16(case: :lower)
   end

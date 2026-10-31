@@ -66,7 +66,9 @@ defmodule Nous.Decisions.Store.ETS do
 
   @impl true
   @spec update_node(map(), String.t(), map()) :: {:ok, map()} | {:error, :not_found}
-  def update_node(%{nodes: nodes} = state, id, updates) do
+  def update_node(%{nodes: nodes} = state, id, updates) when is_map(updates) do
+    Node.validate_updates!(updates)
+
     case get_node(state, id) do
       {:ok, node} ->
         now = DateTime.utc_now()

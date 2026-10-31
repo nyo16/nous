@@ -42,7 +42,7 @@ defmodule Nous.Teams.Coordinator do
   use GenServer
   require Logger
 
-  alias Nous.Teams.Comms
+  alias Nous.Teams.{Comms, Role}
 
   @type agent_info :: %{
           name: String.t(),
@@ -80,7 +80,12 @@ defmodule Nous.Teams.Coordinator do
 
   ## Options
 
-  - `:role` — a `Nous.Teams.Role` struct to apply
+  - `:role` — a `Nous.Teams.Role` struct to apply. It is enforced through
+    `Nous.Teams.Role.apply_to_config/2`: its tool restrictions become the
+    agent's `Nous.Permissions.Policy` (combined with any `:permissions` in
+    `agent_config`, strictest wins), its `system_prompt` is prepended to the
+    agent's `:instructions`, and its `max_iterations` caps each run. Any other
+    value returns `{:error, {:invalid_role, value}}`.
   - `:plugins` — list of plugin modules for the agent
 
   ## Examples
@@ -178,56 +183,22 @@ defmodule Nous.Teams.Coordinator do
 
   @impl true
   def handle_call({:spawn_agent, agent_name, agent_config, opts}, _from, state) do
-    if Map.has_key?(state.agents, agent_name) do
-      {:reply, {:error, :already_exists}, state}
-    else
-      session_id = "team:#{state.team_id}:#{agent_name}"
-      registry_key = {:team, state.team_id, agent_name}
+    role = Keyword.get(opts, :role)
 
-      # Build deps with team context
-      base_deps = Map.get(agent_config, :deps, %{})
+    cond do
+      Map.has_key?(state.agents, agent_name) ->
+        {:reply, {:error, :already_exists}, state}
 
-      team_deps =
-        Map.merge(base_deps, %{
-          team_id: state.team_id,
-          team_name: state.team_name,
-          team_role: Keyword.get(opts, :role),
-          shared_state_pid: state.shared_state,
-          rate_limiter_pid: state.rate_limiter,
-          team_coordinator_pid: self(),
-          agent_name: agent_name
-        })
+      # Fail closed: a role that is not a well-formed %Role{} must not spawn an
+      # unrestricted agent, nor crash the coordinator while being applied.
+      not (is_nil(role) or (is_struct(role, Role) and Role.validate(role) == :ok)) ->
+        {:reply, {:error, {:invalid_role, role}}, state}
 
-      enriched_config = Map.put(agent_config, :deps, team_deps)
+      not valid_permissions?(Map.get(agent_config, :permissions)) ->
+        {:reply, {:error, {:invalid_permissions, Map.get(agent_config, :permissions)}}, state}
 
-      child_spec =
-        {Nous.AgentServer,
-         session_id: session_id,
-         agent_config: enriched_config,
-         pubsub: state.pubsub,
-         name: Nous.AgentRegistry.via_tuple(registry_key),
-         inactivity_timeout: :infinity}
-
-      case DynamicSupervisor.start_child(state.agent_supervisor, child_spec) do
-        {:ok, pid} ->
-          ref = Process.monitor(pid)
-
-          agents = Map.put(state.agents, agent_name, %{pid: pid, status: :running})
-          monitors = Map.put(state.monitors, ref, agent_name)
-
-          Logger.info("Spawned agent '#{agent_name}' in team '#{state.team_name}'")
-
-          Comms.broadcast_team(state.pubsub, state.team_id, {:agent_joined, agent_name})
-
-          {:reply, {:ok, pid}, %{state | agents: agents, monitors: monitors}}
-
-        {:error, reason} = error ->
-          Logger.error(
-            "Failed to spawn agent '#{agent_name}' in team '#{state.team_name}': #{inspect(reason)}"
-          )
-
-          {:reply, error, state}
-      end
+      true ->
+        do_spawn_agent(agent_name, agent_config, role, state)
     end
   end
 
@@ -324,6 +295,64 @@ defmodule Nous.Teams.Coordinator do
 
   # Private
 
+  defp do_spawn_agent(agent_name, agent_config, role, state) do
+    session_id = "team:#{state.team_id}:#{agent_name}"
+    registry_key = {:team, state.team_id, agent_name}
+
+    # Build deps with team context
+    base_deps = Map.get(agent_config, :deps, %{})
+
+    team_deps =
+      Map.merge(base_deps, %{
+        team_id: state.team_id,
+        team_name: state.team_name,
+        team_role: role,
+        shared_state_pid: state.shared_state,
+        rate_limiter_pid: state.rate_limiter,
+        team_coordinator_pid: self(),
+        agent_name: agent_name
+      })
+
+    enriched_config =
+      agent_config
+      |> apply_role(role)
+      |> Map.put(:deps, team_deps)
+
+    child_spec =
+      {Nous.AgentServer,
+       session_id: session_id,
+       agent_config: enriched_config,
+       pubsub: state.pubsub,
+       name: Nous.AgentRegistry.via_tuple(registry_key),
+       inactivity_timeout: :infinity}
+
+    case DynamicSupervisor.start_child(state.agent_supervisor, child_spec) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+
+        agents = Map.put(state.agents, agent_name, %{pid: pid, status: :running})
+        monitors = Map.put(state.monitors, ref, agent_name)
+
+        Logger.info("Spawned agent '#{agent_name}' in team '#{state.team_name}'")
+
+        Comms.broadcast_team(state.pubsub, state.team_id, {:agent_joined, agent_name})
+
+        {:reply, {:ok, pid}, %{state | agents: agents, monitors: monitors}}
+
+      {:error, reason} = error ->
+        Logger.error(
+          "Failed to spawn agent '#{agent_name}' in team '#{state.team_name}': #{inspect(reason)}"
+        )
+
+        {:reply, error, state}
+    end
+  end
+
+  # The role is enforced on the agent itself (permissions policy, prompt,
+  # iteration cap), not only recorded in deps, so every run path honours it.
+  defp apply_role(agent_config, nil), do: agent_config
+  defp apply_role(agent_config, %Role{} = role), do: Role.apply_to_config(role, agent_config)
+
   defp remove_agent(state, agent_name) do
     {removed, agents} = Map.pop(state.agents, agent_name)
 
@@ -342,4 +371,7 @@ defmodule Nous.Teams.Coordinator do
 
     {%{state | agents: agents, monitors: monitors}, removed}
   end
+
+  defp valid_permissions?(permissions),
+    do: is_nil(permissions) or is_struct(permissions, Nous.Permissions.Policy)
 end
