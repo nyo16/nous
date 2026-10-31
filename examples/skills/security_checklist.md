@@ -4,7 +4,7 @@ description: Security review checklist for web applications
 tags: [security, review]
 group: review
 activation: manual
-allowed_tools: [read_file, grep]
+allowed_tools: [file_read, file_grep]
 priority: 75
 ---
 
