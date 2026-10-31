@@ -54,15 +54,22 @@ defmodule Nous.Hook.Decision do
         classified and the verdict is at least `:escalate`.
       * `:suspicious` - do not classify; the verdict is `:escalate`.
       * `:head_tail` - classify the head and tail of the content only.
+        **The middle is never classified**, so an injection placed
+        mid-content is missed and the verdict is not floored; use it only
+        when that is acceptable (prefer `:chunk` or `:suspicious` for
+        security surfaces).
     * `:max_chunks` - default 8.
     * `:on_escalate` - `(info -> :allow | :deny | {:edit, changes})`, called
       when the verdict is `:escalate`. `{:edit, changes}` becomes
-      `{:modify, changes}` (e.g. `%{arguments: ...}`, `%{result: ...}`,
-      `%{response: ...}`). Without it, `:pre_tool_use` asks the run's approval
-      handler through `Nous.Permissions.consult_handler/2` (no handler
-      rejects), and every other event denies (`:post_tool_use`: withholds the
-      result). `info` is `%{event, payload, env, hook_name, reason,
-      probabilities}`.
+      `{:modify, changes}` only when `changes` carries the event's rewrite
+      key: a map `:arguments` (`:pre_tool_use`), `:result`
+      (`:post_tool_use`) or a binary `:response` (`:post_response`). Any
+      other edit is treated as not approved: the event is denied
+      (`:post_tool_use`: the result is withheld). Without `:on_escalate`,
+      `:pre_tool_use` asks the run's approval handler through
+      `Nous.Permissions.consult_handler/2` (no handler rejects), and every
+      other event denies (`:post_tool_use`: withholds the result). `info` is
+      `%{event, payload, env, hook_name, reason, probabilities}`.
     * `:combine` - `(answers, verdict -> verdict)`, applied per chunk after
       the bands, with `answers :: %{question_id => %Nous.DecisionModel.Answer{}}`.
       It can only raise the verdict (the worse of the two wins), e.g. "deny
@@ -88,11 +95,16 @@ defmodule Nous.Hook.Decision do
 
   ## Timeouts
 
-  Each decision-model call runs in its own task bounded by the hook's
-  `:timeout` (`Nous.Hook`, default 10 s); a timeout follows `:on_error`.
-  Chunked content makes one call per chunk, sequentially, stopping at the
-  first deny. With `:canary`, each chunk makes a second call. Escalation
-  (which may wait on a human) is not bounded.
+  Building the state, counting tokens and planning the windows run in one
+  task bounded by the hook's `:timeout` (`Nous.Hook`, default 10 s). Each
+  decision-model call then runs in its own task bounded by the same timeout
+  (plus a 250 ms margin, so a backend's own timeout error surfaces first). A
+  timeout follows `:on_error`. Chunked content makes one call per chunk,
+  sequentially, stopping at the first deny; at most `:max_chunks` windows are
+  planned. With `:canary`, each chunk makes a second call. These tasks die
+  with the process running the hook. Escalation (which may wait on a human)
+  is not bounded; in the concurrent pre-tool stage of `parallel_tool_calls:
+  true` it runs in the agent run process, one escalation at a time.
 
   ## Telemetry
 
@@ -117,13 +129,17 @@ defmodule Nous.Hook.Decision do
   @typedoc """
   The runner context a decision hook receives beside the payload (see
   `Nous.Hook.Runner.run/4`). It is never part of the payload, so payloads stay
-  JSON-encodable.
+  JSON-encodable. `:escalate_via` is set by the concurrent pre-tool stage
+  (`parallel_tool_calls: true`): an escalation is sent to that process and
+  resolved there, one at a time, instead of in the hook's task.
   """
   @type env :: %{
-          approval_handler: Nous.RunContext.approval_handler() | nil,
-          agent_name: String.t() | nil,
-          task: String.t() | nil,
-          tool: %{name: String.t(), description: String.t() | nil, category: atom() | nil} | nil
+          required(:approval_handler) => Nous.RunContext.approval_handler() | nil,
+          required(:agent_name) => String.t() | nil,
+          required(:task) => String.t() | nil,
+          required(:tool) =>
+            %{name: String.t(), description: String.t() | nil, category: atom() | nil} | nil,
+          optional(:escalate_via) => {pid(), reference()}
         }
 
   @type t :: %__MODULE__{
@@ -161,6 +177,11 @@ defmodule Nous.Hook.Decision do
   @task_limit 1_000
   @overlap_tokens 128
   @slack_tokens 64
+  # Added to the outer wait on a decision-model call, so a backend that honours
+  # `:timeout` reports its own typed timeout before the task is killed.
+  @yield_margin 250
+  # The key an escalation `{:edit, changes}` must carry to rewrite each event.
+  @edit_keys %{pre_tool_use: :arguments, post_tool_use: :result, post_response: :response}
 
   @doc """
   Builds and validates a decision hook config. Raises `ArgumentError` on an
@@ -432,7 +453,7 @@ defmodule Nous.Hook.Decision do
   end
 
   defp safe_verdict(d, hook, event, payload, env) do
-    verdict(d, build_state(d, event, payload, env), timeout: hook.timeout)
+    run_verdict(d, fn -> build_state(d, event, payload, env) end, hook.timeout)
   rescue
     e -> {:error, e, empty_info()}
   catch
@@ -466,7 +487,9 @@ defmodule Nous.Hook.Decision do
 
   ## Options
 
-    * `:timeout` - per decision-model call, in ms (default `10_000`).
+    * `:timeout` - per decision-model call, in ms (default `10_000`). The
+      token counting and window planning before the calls are bounded by it
+      too.
 
   Returns `{:ok, verdict, info}` or `{:error, reason, info}`, where `info` is
   `%{probabilities: %{id => [{key, p}]}, chunk_count: integer, canary_failed:
@@ -476,9 +499,11 @@ defmodule Nous.Hook.Decision do
   @spec verdict(t(), term(), keyword()) ::
           {:ok, verdict(), map()} | {:error, term(), map()}
   def verdict(%__MODULE__{} = d, state, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 10_000)
+    run_verdict(d, fn -> state end, Keyword.get(opts, :timeout, 10_000))
+  end
 
-    case plan_states(d, state) do
+  defp run_verdict(d, state_fun, timeout) do
+    case plan_bounded(d, state_fun, timeout) do
       {:error, reason} ->
         {:error, reason, empty_info()}
 
@@ -507,6 +532,54 @@ defmodule Nous.Hook.Decision do
     do: default_state(event, payload, env)
 
   defp build_state(%__MODULE__{state: builder}, _event, payload, env), do: builder.(payload, env)
+
+  # Building the state, counting tokens and planning the windows can each be
+  # slow (a custom state builder, a backend counting through a busy server), so
+  # they run in one task under the same bound as a decision-model call.
+  defp plan_bounded(d, state_fun, timeout) do
+    case bounded_call(timeout, fn -> plan_states(d, state_fun.()) end) do
+      {:ok, plan} -> plan
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # `fun` in a task that dies with this process, waited on for `timeout` plus
+  # `@yield_margin`. Returns `{:ok, value}` or `{:error, reason}`; a raise or
+  # throw in `fun` is an error, not a crashed task.
+  defp bounded_call(timeout, fun) do
+    task =
+      Nous.Hook.Runner.async_task(fn ->
+        try do
+          {:ok, fun.()}
+        rescue
+          e -> {:error, e}
+        catch
+          kind, reason -> {:error, {kind, reason}}
+        end
+      end)
+
+    case Task.yield(task, yield_timeout(timeout)) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, {:exit, reason}}
+      nil -> {:error, :timeout}
+    end
+  end
+
+  defp yield_timeout(timeout) when is_integer(timeout), do: timeout + @yield_margin
+  defp yield_timeout(timeout), do: timeout
+
+  @doc false
+  # The longest one evaluation of `d` can take outside an escalation, in ms:
+  # the planning task plus every decision-model call (`:max_chunks` windows,
+  # two calls each with `:canary`), each bounded by `timeout` plus the margin.
+  # `Nous.AgentRunner.ToolExecution` sizes the concurrent hook stage with it.
+  @spec budget(t(), non_neg_integer() | :infinity) :: non_neg_integer() | :infinity
+  def budget(%__MODULE__{}, :infinity), do: :infinity
+
+  def budget(%__MODULE__{} = d, timeout) when is_integer(timeout) do
+    calls = 1 + d.max_chunks * if(d.canary, do: 2, else: 1)
+    calls * (timeout + @yield_margin)
+  end
 
   # Classify chunk by chunk, stopping at the first deny. The worst verdict wins
   # and its probabilities are the ones reported.
@@ -600,20 +673,16 @@ defmodule Nous.Hook.Decision do
   defp canary_state(state, n) when is_map(state), do: Map.put(state, "check", n)
   defp canary_state(state, n), do: %{"check" => n, "state" => state}
 
+  # The backend gets `timeout`; the outer wait adds `@yield_margin`, so a
+  # backend that honours it returns its typed timeout error before the kill.
   defp decide_bounded(dm, timeout, state, questions) do
     opts = if is_integer(timeout), do: [timeout: timeout], else: []
 
-    task =
-      Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-        DecisionModel.decide(dm, state, questions, opts)
-      end)
-
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+    case bounded_call(timeout, fn -> DecisionModel.decide(dm, state, questions, opts) end) do
       {:ok, {:ok, %Result{}} = ok} -> ok
       {:ok, {:error, reason}} -> {:error, reason}
       {:ok, other} -> {:error, {:invalid_result, other}}
-      {:exit, reason} -> {:error, {:exit, reason}}
-      nil -> {:error, :timeout}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -705,14 +774,8 @@ defmodule Nous.Hook.Decision do
         {[Map.put(state, "untrusted_content", head_tail(dm, content, window))], :allow}
 
       true ->
-        chunks = chunk(dm, content, window, content_tokens)
-
-        if length(chunks) > d.max_chunks do
-          kept = Enum.take(chunks, d.max_chunks - 1) ++ [List.last(chunks)]
-          {Enum.map(kept, &Map.put(state, "untrusted_content", &1)), :escalate}
-        else
-          {Enum.map(chunks, &Map.put(state, "untrusted_content", &1)), :allow}
-        end
+        {chunks, floor} = chunk(dm, content, window, content_tokens, d.max_chunks)
+        {Enum.map(chunks, &Map.put(state, "untrusted_content", &1)), floor}
     end
   end
 
@@ -738,23 +801,74 @@ defmodule Nous.Hook.Decision do
   # whitespace near the end of each window. Byte offsets are estimated from
   # the measured bytes-per-token of the whole content, then verified with the
   # model's own counter and shrunk until each window fits.
-  defp chunk(dm, content, window, content_tokens) do
+  #
+  # The work is bounded by `max_chunks`, not by the size of the content: at
+  # most `max_chunks - 1` windows are cut from the head. If the rest then fits
+  # one window, it is the last one and every byte is classified (floor
+  # `:allow`); otherwise the last window is cut backwards from the end, the
+  # middle is never classified and the verdict is floored at `:escalate`.
+  # Returns `{chunks, floor}`.
+  defp chunk(dm, content, window, content_tokens, max_chunks) do
     bytes_per_token = byte_size(content) / max(content_tokens, 1)
     window_bytes = max(trunc(window * bytes_per_token), 1)
     overlap_bytes = trunc(@overlap_tokens * bytes_per_token)
-    do_chunk(dm, content, 0, window, window_bytes, overlap_bytes, [])
+    do_chunk(dm, content, 0, {window, window_bytes, overlap_bytes}, max_chunks - 1, [])
   end
 
-  defp do_chunk(dm, content, pos, window, window_bytes, overlap_bytes, acc) do
+  defp do_chunk(dm, content, pos, {window, window_bytes, overlap_bytes} = sizes, head_left, acc) do
     size = byte_size(content)
+    rest = binary_part(content, pos, size - pos)
 
-    if size - pos <= window_bytes and fits?(dm, binary_part(content, pos, size - pos), window) do
-      Enum.reverse([binary_part(content, pos, size - pos) | acc])
-    else
-      {piece, stop} = fitting_piece(dm, content, pos, window, window_bytes)
-      next = utf8_floor(content, max(stop - overlap_bytes, pos + 1))
-      next = if next <= pos, do: stop, else: next
-      do_chunk(dm, content, next, window, window_bytes, overlap_bytes, [piece | acc])
+    cond do
+      size - pos <= window_bytes and fits?(dm, rest, window) ->
+        {Enum.reverse([rest | acc]), :allow}
+
+      head_left == 0 ->
+        {Enum.reverse([tail_piece(dm, content, window, window_bytes) | acc]), :escalate}
+
+      true ->
+        {piece, stop} = fitting_piece(dm, content, pos, window, window_bytes)
+        # Overlap at most half the piece, so a dense region (a piece shrunk
+        # below the overlap) still advances by half a piece, never one byte.
+        overlap = min(overlap_bytes, div(stop - pos, 2))
+        next = utf8_floor(content, stop - overlap)
+        next = if next <= pos, do: stop, else: next
+        do_chunk(dm, content, next, sizes, head_left - 1, [piece | acc])
+    end
+  end
+
+  # The last window, cut backwards from the end of the content: it starts on
+  # a newline or whitespace near its front, else on a UTF-8 boundary, and is
+  # shrunk until it fits.
+  defp tail_piece(dm, content, window, window_bytes) do
+    size = byte_size(content)
+    start = tail_cut(content, max(size - window_bytes, 0))
+    piece = binary_part(content, start, size - start)
+
+    if window_bytes <= 16 or fits?(dm, piece, window),
+      do: piece,
+      else: tail_piece(dm, content, window, trunc(window_bytes * 0.9))
+  end
+
+  defp tail_cut(content, lo) do
+    region = binary_part(content, lo, div(byte_size(content) - lo, 4))
+
+    case first_break(region) do
+      nil -> utf8_ceil(content, lo)
+      offset -> lo + offset + 1
+    end
+  end
+
+  defp first_break(region) do
+    case :binary.match(region, "\n") do
+      {offset, _} ->
+        offset
+
+      :nomatch ->
+        case :binary.match(region, [" ", "\t"]) do
+          {offset, _} -> offset
+          :nomatch -> nil
+        end
     end
   end
 
@@ -815,6 +929,16 @@ defmodule Nous.Hook.Decision do
     end
   end
 
+  # Smallest index >= n that does not split a UTF-8 sequence.
+  defp utf8_ceil(content, n) when n >= byte_size(content), do: byte_size(content)
+
+  defp utf8_ceil(content, n) do
+    case :binary.at(content, n) do
+      byte when byte >= 0x80 and byte < 0xC0 -> utf8_ceil(content, n + 1)
+      _ -> n
+    end
+  end
+
   defp head_tail(dm, content, window) do
     marker = "\n[…]\n"
     half_tokens = div(window, 2)
@@ -850,12 +974,58 @@ defmodule Nous.Hook.Decision do
       probabilities: probs
     }
 
-    case escalate(d, event, payload, env, info) do
+    case serialized(env, fn -> escalate(d, event, payload, env, info) end) do
       :allow -> :allow
-      {:edit, changes} when is_map(changes) -> {:modify, changes}
+      {:edit, changes} when is_map(changes) -> apply_edit(event, hook, changes, why)
       _deny -> deny(event, hook, "escalated (#{reason_text(why)}) and not approved")
     end
   end
+
+  # An edit rewrites the event only through its own key (`@edit_keys`). Any
+  # other edit - a `%{content: _}` meant for user input, `%{}`, a non-binary
+  # `:response`, or an edit on an event with nothing to rewrite - asked for a
+  # rewrite that cannot happen, so it is not an approval: passing the original
+  # through would fail open.
+  defp apply_edit(event, hook, changes, why) do
+    case {Map.get(@edit_keys, event), changes} do
+      {:arguments, %{arguments: args}} when is_map(args) -> {:modify, %{arguments: args}}
+      {:result, %{result: result}} -> {:modify, %{result: result}}
+      {:response, %{response: text}} when is_binary(text) -> {:modify, %{response: text}}
+      {key, _} -> reject_edit(event, hook, changes, why, key)
+    end
+  end
+
+  defp reject_edit(event, hook, changes, why, key) do
+    expected = if key, do: "a usable #{inspect(key)}", else: "nothing (#{event} cannot be edited)"
+
+    Logger.warning(
+      "Decision hook #{inspect(hook.name)} escalation edit on #{event} has keys " <>
+        "#{inspect(Map.keys(changes))}, expected #{expected}; treating it as not approved"
+    )
+
+    deny(event, hook, "escalated (#{reason_text(why)}) and not approved: unusable edit")
+  end
+
+  # In the concurrent pre-tool stage, `env.escalate_via` is `{pid, tag}`: the
+  # escalation is sent to that process (the agent run, see
+  # `Nous.AgentRunner.ToolExecution`), which resolves one at a time, so human
+  # prompts and `on_escalate` calls never interleave. If that process dies, the
+  # escalation is not approved. Elsewhere it runs here.
+  defp serialized(%{escalate_via: {pid, tag}}, fun) when is_pid(pid) and pid != self() do
+    ref = Process.monitor(pid)
+    send(pid, {tag, {self(), ref}, fun})
+
+    receive do
+      {^ref, reply} ->
+        Process.demonitor(ref, [:flush])
+        reply
+
+      {:DOWN, ^ref, _, _, _} ->
+        :deny
+    end
+  end
+
+  defp serialized(_env, fun), do: fun.()
 
   defp escalate(%__MODULE__{on_escalate: fun}, _event, _payload, _env, info)
        when is_function(fun, 1) do

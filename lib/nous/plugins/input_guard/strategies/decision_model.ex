@@ -42,7 +42,8 @@ defmodule Nous.Plugins.InputGuard.Strategies.DecisionModel do
       `:chunk`, 8).
     * `:timeout` — per decision-model call, in ms. Default `10_000`.
     * `:on_error` — what happens when the model cannot produce a verdict
-      (error, timeout, missing answer), as in
+      (error, timeout, missing answer, a raise or an exit such as a
+      llama.cpp process that is down), as in
       `Nous.Plugins.InputGuard.Strategies.LLMJudge`:
         * `:drop` (default) — return `{:error, reason}`; InputGuard counts
           the strategy as dropped, which under `:any` fails closed
@@ -58,7 +59,8 @@ defmodule Nous.Plugins.InputGuard.Strategies.DecisionModel do
         model: "workers_ai:clef-flash",
         on_error: :blocked}
 
-  Results carry `metadata: %{probabilities, chunk_count, canary_failed, why}`.
+  Results carry `metadata: %{probabilities, chunk_count, canary_failed, why}`;
+  an `:on_error` verdict carries `metadata: %{error: reason}`.
   """
 
   @behaviour Nous.Plugins.InputGuard.Strategy
@@ -97,7 +99,17 @@ defmodule Nous.Plugins.InputGuard.Strategies.DecisionModel do
         error_result(on_error, reason)
     end
   rescue
-    e -> error_result(Keyword.get(config, :on_error, @default_on_error), Exception.message(e))
+    e -> failed(config, Exception.message(e))
+  catch
+    # An exit (the llama.cpp process down or still loading, a GenServer call
+    # timing out while counting tokens) is a decision-model error like any
+    # other: it follows :on_error instead of escaping as a dropped strategy.
+    kind, reason -> failed(config, {kind, reason})
+  end
+
+  defp failed(config, reason) do
+    report(config, nil, %{probabilities: %{}, chunk_count: 0, canary_failed: 0}, reason)
+    error_result(Keyword.get(config, :on_error, @default_on_error), reason)
   end
 
   defp decision(config) do
@@ -138,6 +150,9 @@ defmodule Nous.Plugins.InputGuard.Strategies.DecisionModel do
     end
   rescue
     e -> Logger.warning("InputGuard.DecisionModel: on_verdict raised: #{Exception.message(e)}")
+  catch
+    kind, reason ->
+      Logger.warning("InputGuard.DecisionModel: on_verdict #{kind}: #{inspect(reason)}")
   end
 
   # `:drop` hands the failure to the engine, whose dropped-strategy accounting
@@ -155,7 +170,8 @@ defmodule Nous.Plugins.InputGuard.Strategies.DecisionModel do
      %Result{
        severity: on_error,
        reason: "decision model error (fail-#{on_error})",
-       strategy: __MODULE__
+       strategy: __MODULE__,
+       metadata: %{error: reason}
      }}
   end
 end

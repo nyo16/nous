@@ -62,8 +62,11 @@ deps = %{
   strategy and, with `pattern_ensemble: true` (the default),
   `Nous.Plugins.InputGuard.Strategies.Pattern` through
   `Nous.Plugins.InputGuard.Engine` under `:any`: a Pattern hit blocks even when
-  the model says safe. Each new user message is checked once, including the
-  initial prompt of `Nous.run/3`.
+  the model says safe. Every user message added since the last check is
+  checked once, oldest first, including the initial prompt of `Nous.run/3`. A
+  step boundary can add several at once (two `Nous.AgentServer.steer/2` calls
+  claimed together, say); the worst verdict wins, so one denied message
+  refuses the whole batch.
 - **Tool call, tool result and model output** are `:decision` hooks
   contributed through the plugin's `hooks/2` callback at priority **900**
   (late, so they judge what earlier hooks produced) with `fail_closed: true`.
@@ -74,9 +77,13 @@ An escalation goes to `:on_escalate` (global or per surface):
 
 - user input: `fn info -> :allow | :deny | {:edit, %{content: text}} end`,
   where `info` has `:surface`, `:content`, `:reason` and `:probabilities`.
-  `{:edit, ...}` replaces the user message before the model sees it.
+  `{:edit, %{content: text}}` replaces that user message before the model
+  sees it; an edit without a string `:content` is not an approval and blocks.
 - hook surfaces: the `Nous.Hook.Decision` callback (`info.event` names the
-  event); `{:edit, changes}` becomes `{:modify, changes}`.
+  event); `{:edit, changes}` becomes `{:modify, changes}` and must carry the
+  event's key (`:arguments` on `:tool_call`, `:result` on `:tool_result`, a
+  string `:response` on `:model_output`), otherwise it denies. One shared
+  handler therefore needs to branch on `info.surface` / `info.event`.
 
 Without a handler, a tool-call escalation asks the run's approval handler
 through `Nous.Permissions.consult_handler/2` (no handler rejects), and every
@@ -85,7 +92,20 @@ other surface denies. With no `:on_escalate`, **an escalation blocks**.
 ### Failure is closed
 
 A decision-model error or timeout follows `:on_error`: `:deny` (default),
-`:escalate` or `:allow`. A model that is down never reads as "safe".
+`:escalate` or `:allow`. A model that is down never reads as "safe". On user
+input this includes a strategy that exits (a llama.cpp process that is down
+or still loading) or is killed at its timeout: that is an error, not an
+escalation, so an `:on_escalate` handler is never asked about input nobody
+classified.
+
+### `oversize: :head_tail` skips the middle
+
+Content larger than the model's window is chunked by default (`oversize:
+:chunk`). `oversize: :head_tail` instead classifies only the head and the
+tail: **the middle is never seen**, so an injection placed mid-content (a long
+web page or tool result) is missed, and nothing marks the verdict as partial.
+It is an explicit opt-in for cost; prefer `:chunk`, or `:suspicious` to
+escalate everything oversize, wherever the middle matters.
 
 ## Presets and measured trade-offs
 

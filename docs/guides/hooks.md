@@ -69,7 +69,8 @@ Inline functions — simplest for quick logic:
   event: :pre_tool_use,
   type: :function,
   handler: fn _event, %{tool_name: name, arguments: args} ->
-    # Return :allow, :deny, {:deny, reason}, or {:modify, changes}
+    # Return :allow, :deny, {:deny, reason}, or {:modify, changes}. Any other return
+    # value is logged and treated as :allow.
     :allow
   end
 }
@@ -105,21 +106,30 @@ Every hook has a `timeout` (default `10_000` ms). `:function` and `:module` hand
 task under `Nous.TaskSupervisor` and are killed when the timeout elapses. A timeout is a hook
 error, `{:error, :timeout}`, and follows the [`fail_closed`](#fail-closed-hooks) rules. The task
 inherits the caller in `$callers`, so process-scoped seams such as
-`Nous.ModelDispatcher.put_dispatcher/1` still resolve inside the handler.
+`Nous.ModelDispatcher.put_dispatcher/1` still resolve inside the handler. It also dies with the
+process running the hook, so a cancelled run leaves no hook running.
 
 A handler that relies on `self()` being the run process, or on that process's dictionary, can
-opt out with `timeout: :infinity`. It then runs in the calling process, unbounded:
+opt out with `timeout: :infinity`. It then runs in the calling process, unbounded. With
+`parallel_tool_calls: true`, a `:pre_tool_use` hook stage that contains such a hook runs in the
+agent run process, one call at a time, instead of concurrently:
 
 ```elixir
 Nous.Hook.new(:pre_request, handler: &MyApp.Hooks.uses_process_dictionary/2, timeout: :infinity)
 ```
+
+`Nous.Hook.new/2` raises `ArgumentError` for a timeout that is neither a non-negative integer
+nor `:infinity`. A struct-literal hook with such a timeout is a hook error at run time.
 
 ### Decision Hooks
 
 A `:decision` hook classifies the payload with a non-generative decision model
 (`Nous.DecisionModel`: Clef / Clef-Flash, Jev, vLLM / SGLang `/v1/systemone`, OpenAI
 `/v1/decisions`, or a local GGUF through `llama_cpp_ex`) and turns the answers into a verdict
-through per-question probability bands. Its handler is a `Nous.Hook.Decision`:
+through per-question probability bands. Its handler is a `Nous.Hook.Decision`. A decision hook
+can be registered on `:pre_tool_use`, `:post_tool_use`, `:pre_request` and `:post_response`
+only; `Nous.Hook.new/2` raises `ArgumentError` for any other event, where it could not enforce
+its verdict:
 
 ```elixir
 dm = Nous.DecisionModel.parse("workers_ai:clef-flash")
@@ -156,18 +166,29 @@ guard =
   `{:modify, _}`. `on_escalate: fn info -> :allow | :deny | {:edit, changes} end` decides;
   without it, `:pre_tool_use` asks the run's approval handler through
   `Nous.Permissions.consult_handler/2` (no handler rejects), and every other event denies.
-  On `:pre_tool_use` the approval gate and permission policy still run afterwards, so a
-  decision hook never approves a call the policy would refuse.
+  An `{:edit, changes}` applies only through the event's own key: a map `:arguments` on
+  `:pre_tool_use`, `:result` on `:post_tool_use`, a string `:response` on `:post_response`.
+  Any other edit (`%{content: _}`, `%{}`, a non-string `:response`, any edit on
+  `:pre_request`) is not an approval: the event is denied, or on `:post_tool_use` the result
+  is withheld. On `:pre_tool_use` the approval gate and permission policy still run
+  afterwards, so a decision hook never approves a call the policy would refuse.
 - **Failure is closed.** A decision-model error or timeout follows `on_error` (default
   `:deny`; also `:escalate`, `:allow`). On `:post_tool_use` a deny withholds the result as
   `"[tool result withheld by decision hook]"`, and no later hook can put it back.
   `Nous.Hook.new/2` also defaults decision hooks to `fail_closed: true`.
-- **Timeouts.** Each decision-model call runs in its own task bounded by the hook's
-  `timeout`.
+- **Timeouts.** Building the state, counting tokens and planning the windows run in one task
+  bounded by the hook's `timeout`; each decision-model call then runs in its own task bounded
+  by the same timeout (plus a 250 ms margin, so a backend's own timeout error surfaces first).
+  An escalation is not bounded.
+- **Ordering.** A `:post_tool_use` decision hook judges the result as earlier
+  (lower-priority) hooks rewrote it: on every non-blocking event, each hook sees the earlier
+  hooks' `{:modify, changes}` applied.
 - **Oversize content** (`oversize:`): `:chunk` (default) classifies overlapping windows of
-  the model's context and the worst chunk wins; beyond `max_chunks` (default 8) the head and
-  tail chunks are classified and the verdict is at least an escalation. `:suspicious`
-  escalates without classifying; `:head_tail` classifies the head and tail only.
+  the model's context and the worst chunk wins; at most `max_chunks` (default 8) windows are
+  cut, so the work does not grow with the content. Beyond them, the head chunks and a tail
+  chunk are classified, the middle is not, and the verdict is at least an escalation.
+  `:suspicious` escalates without classifying; `:head_tail` classifies the head and tail
+  only, so it never sees the middle of the content.
 - **Canary** (`canary: true`, off by default): each chunk gets a second, separate call asking
   whether a random `check` number added to the state exceeds a random threshold. A wrong
   answer floors that chunk at escalate. It is weak evidence, never a reason to allow.
@@ -386,8 +407,11 @@ Plugin.before_request → Hook(:pre_request) → LLM call → Hook(:post_respons
 
 With `parallel_tool_calls: true`, the `:pre_tool_use` hooks of the calls in one response run
 concurrently (results keep call order); approval checks then run one at a time, in call
-order, and an approval handler a decision hook escalates to is serialised too, so human
-prompts never interleave.
+order. A decision hook's escalation (its `on_escalate`, or the approval handler it asks) is
+sent back to the agent run process and resolved there, one at a time, so human prompts never
+interleave. Each call's hook stage is bounded by the sum of its hooks' budgets (a decision
+hook's covers its planning and every model call), not counting time spent on escalations;
+a stage that overruns denies its call.
 
 ## Telemetry
 

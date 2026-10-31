@@ -124,9 +124,9 @@ defmodule Nous.AgentRunner.ToolExecution do
   #   (a) screen, in call order: on_tool_call callback, invalid-args
   #       short-circuit, Code Mode collapse
   #   (b) pre_tool_use hooks, concurrently per call (pre_tool_hook_stage/4).
-  #       Results keep call order. An approval handler a decision hook
-  #       escalates to is serialised (serialize_handler/1), so human prompts
-  #       never interleave.
+  #       Results keep call order. Escalations from decision hooks (their
+  #       on_escalate, or the approval handler) come back to this process and
+  #       run one at a time (run_stage/4), so human prompts never interleave.
   #   (c) approval check, serially in call order in this process
   #   (d) approved calls execute concurrently under Nous.TaskSupervisor;
   #       async_stream preserves input order. The stream carries a finite
@@ -327,16 +327,17 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   # Stage (b) of the parallel path: run the pre_tool_use hooks of every
   # screened call concurrently, results in call order. Inline when there is
-  # nothing to overlap. The context is NOT copied into the tasks — only the
-  # registry and a pre-built env — and an approval handler a decision hook
-  # escalates to is serialised, so human prompts never interleave. A hook stage
-  # that crashes or overruns its ceiling denies its call (fail closed).
+  # nothing to overlap, and when a hook opted out of bounding with
+  # `timeout: :infinity`: such a hook relies on running in the calling
+  # process, which a stage task is not. The context is NOT copied into the
+  # tasks — only the registry and a pre-built env. A hook stage that crashes or
+  # overruns its ceiling denies its call (fail closed).
   defp run_hook_stage_concurrently(screened, tools, agent, ctx) do
     pending = for {:hooks, call} <- screened, do: call
     registry = ctx.hook_registry
+    hooks = if registry, do: Hook.Registry.hooks_for(registry, :pre_tool_use), else: []
 
-    if length(pending) < 2 or is_nil(registry) or
-         not Hook.Registry.has_hooks?(registry, :pre_tool_use) do
+    if length(pending) < 2 or hooks == [] or Enum.any?(hooks, &(&1.timeout == :infinity)) do
       env = hook_env(ctx, agent)
 
       Enum.map(screened, fn
@@ -344,31 +345,25 @@ defmodule Nous.AgentRunner.ToolExecution do
         done -> done
       end)
     else
+      tag = make_ref()
+
       base_env =
         if Hook.Registry.has_type?(registry, :decision),
-          do:
-            Hook.Decision.env(
-              %{ctx | approval_handler: serialize_handler(ctx.approval_handler)},
-              agent.name
-            ),
+          do: ctx |> Hook.Decision.env(agent.name) |> Map.put(:escalate_via, {self(), tag}),
           else: %{}
 
       env = fn tool -> Hook.Decision.with_tool(base_env, tool) end
-      timeout = hook_stage_timeout(registry)
 
       staged =
-        Nous.TaskSupervisor
-        |> Task.Supervisor.async_stream_nolink(
-          pending,
+        pending
+        |> run_stage(
           &pre_tool_hook_stage(&1, tools, registry, env),
-          ordered: true,
-          timeout: timeout,
-          on_timeout: :kill_task,
-          zip_input_on_exit: true
+          hook_stage_timeout(hooks),
+          tag
         )
-        |> Enum.map(fn
-          {:ok, staged} -> staged
-          {:exit, {call, reason}} -> {:done, hook_stage_failed(call, reason)}
+        |> Enum.zip_with(pending, fn
+          {:ok, staged}, _call -> staged
+          {:exit, reason}, call -> {:done, hook_stage_failed(call, reason)}
         end)
 
       {decisions, []} =
@@ -385,16 +380,27 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   defp find_tool(tools, name), do: Enum.find(tools, fn t -> t.name == name end)
 
-  # Outer ceiling for one call's hook stage. Every :function/:module/:command
-  # hook is bounded by its own timeout, so the sum (plus headroom) is a safety
-  # net. A decision hook may escalate to a human, and `:infinity` opts a hook
-  # out of bounding, so either makes the stage unbounded.
-  defp hook_stage_timeout(registry) do
-    hooks = Hook.Registry.hooks_for(registry, :pre_tool_use)
+  # Outer ceiling for one call's hook stage, excluding time spent on
+  # escalations (run_stage/4 pauses it while one runs). Every hook is bounded
+  # on its own — a :function/:module/:command hook by its timeout, a decision
+  # hook by `Nous.Hook.Decision.budget/2` — so the sum plus headroom is a
+  # safety net that is always finite.
+  defp hook_stage_timeout(hooks) do
+    hooks
+    |> Enum.map(fn
+      %Hook{type: :decision, handler: %Hook.Decision{} = d, timeout: timeout}
+      when is_integer(timeout) ->
+        Hook.Decision.budget(d, timeout)
 
-    if Enum.any?(hooks, &(&1.type == :decision or &1.timeout == :infinity)),
-      do: :infinity,
-      else: Enum.sum(Enum.map(hooks, & &1.timeout)) + @timeout_headroom_ms
+      %Hook{timeout: timeout} when is_integer(timeout) ->
+        timeout
+
+      # An invalid timeout is a hook error the runner returns at once.
+      %Hook{} ->
+        0
+    end)
+    |> Enum.sum()
+    |> Kernel.+(@timeout_headroom_ms)
   end
 
   defp hook_stage_failed(call, reason) do
@@ -407,14 +413,107 @@ defmodule Nous.AgentRunner.ToolExecution do
     )
   end
 
-  # One approval prompt at a time across the concurrent hook stage. The lock
-  # is per batch, so unrelated runs never wait on each other.
-  defp serialize_handler(handler) when is_function(handler, 1) do
-    lock = {__MODULE__, :approval, make_ref()}
-    fn info -> :global.trans({lock, self()}, fn -> handler.(info) end, [node()], :infinity) end
+  # Runs `fun` on every item in its own task (`Nous.Hook.Runner.async_task/1`:
+  # it dies with this process, so a cancelled run leaves no stage running) and
+  # returns `{:ok, value}` or `{:exit, reason}` per item, in item order.
+  #
+  # While it waits, this process serves the stage's escalations: a decision
+  # hook in a task sends `{tag, {pid, ref}, fun}` (`Nous.Hook.Decision` does,
+  # via `env.escalate_via`) and blocks until `{ref, reply}`. They run here, one
+  # at a time, which is what keeps human prompts from interleaving; an
+  # escalation that raises is not approved. Each task is killed `timeout` ms
+  # after it started, with time spent on escalations added back, so a human
+  # who takes a while does not time the batch out.
+  defp run_stage(items, fun, timeout, tag) do
+    now = System.monotonic_time(:millisecond)
+
+    running =
+      items
+      |> Enum.with_index()
+      |> Map.new(fn {item, index} ->
+        task = Hook.Runner.async_task(fn -> fun.(item) end)
+        {task.ref, {index, task, now + timeout}}
+      end)
+
+    results = await_stage(running, %{}, tag)
+    flush_escalations(tag)
+    for index <- 0..(length(items) - 1)//1, do: Map.fetch!(results, index)
   end
 
-  defp serialize_handler(handler), do: handler
+  defp await_stage(running, results, _tag) when map_size(running) == 0, do: results
+
+  defp await_stage(running, results, tag) do
+    next_deadline = running |> Map.values() |> Enum.map(&elem(&1, 2)) |> Enum.min()
+    wait = max(next_deadline - System.monotonic_time(:millisecond), 0)
+
+    receive do
+      {ref, value} when is_map_key(running, ref) ->
+        Process.demonitor(ref, [:flush])
+        {{index, _task, _deadline}, running} = Map.pop!(running, ref)
+        await_stage(running, Map.put(results, index, {:ok, value}), tag)
+
+      {:DOWN, ref, :process, _pid, reason} when is_map_key(running, ref) ->
+        {{index, _task, _deadline}, running} = Map.pop!(running, ref)
+        await_stage(running, Map.put(results, index, {:exit, reason}), tag)
+
+      {^tag, {pid, reply_ref}, escalation} ->
+        if Enum.any?(running, fn {_ref, {_index, task, _deadline}} -> task.pid == pid end) do
+          started = System.monotonic_time(:millisecond)
+          send(pid, {reply_ref, run_escalation(escalation)})
+          paused = System.monotonic_time(:millisecond) - started
+
+          running =
+            Map.new(running, fn {ref, {i, t, deadline}} -> {ref, {i, t, deadline + paused}} end)
+
+          await_stage(running, results, tag)
+        else
+          await_stage(running, results, tag)
+        end
+    after
+      wait -> await_stage_timeouts(running, results, tag)
+    end
+  end
+
+  defp await_stage_timeouts(running, results, tag) do
+    now = System.monotonic_time(:millisecond)
+
+    {expired, running} =
+      Map.split_with(running, fn {_ref, {_index, _task, deadline}} -> deadline <= now end)
+
+    results =
+      Enum.reduce(expired, results, fn {_ref, {index, task, _deadline}}, acc ->
+        result =
+          case Task.shutdown(task, :brutal_kill) do
+            {:ok, value} -> {:ok, value}
+            _ -> {:exit, :timeout}
+          end
+
+        Map.put(acc, index, result)
+      end)
+
+    await_stage(running, results, tag)
+  end
+
+  defp run_escalation(escalation) do
+    escalation.()
+  rescue
+    e ->
+      Logger.warning("Decision hook escalation raised: #{Exception.message(e)}; denying")
+      :deny
+  catch
+    kind, reason ->
+      Logger.warning("Decision hook escalation #{kind}: #{inspect(reason)}; denying")
+      :deny
+  end
+
+  # Escalations from tasks that were killed before theirs was served.
+  defp flush_escalations(tag) do
+    receive do
+      {^tag, _from, _escalation} -> flush_escalations(tag)
+    after
+      0 -> :ok
+    end
+  end
 
   def approval_decision(call, tools, agent, ctx) do
     call_id = ToolCall.field(call, :id)

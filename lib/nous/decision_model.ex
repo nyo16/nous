@@ -102,8 +102,6 @@ defmodule Nous.DecisionModel do
         }
 
   @default_max_state_tokens 16_384
-  # Measured base64 worst case for Clef's tokenizer (research/packs.md §6).
-  @bytes_per_token 1.3
 
   @doc """
   Creates a decision model for `backend`, a `Nous.DecisionModel.Backend`
@@ -267,9 +265,9 @@ defmodule Nous.DecisionModel do
   would send).
 
   Uses the backend's `c:Nous.DecisionModel.Backend.count_tokens/2` when it has
-  one (exact, for `Backend.LlamaCpp`); otherwise estimates
-  #{@bytes_per_token} bytes per token, the measured worst case (base64) for
-  Clef's tokenizer, so the estimate errs towards too many tokens.
+  one (exact, for `Backend.LlamaCpp`); otherwise one token per byte, an upper
+  bound for byte-level BPE tokenizers, so the estimate never undercounts and
+  chunking never relies on a server truncating the state.
   """
   @spec count_tokens(t(), String.t()) :: non_neg_integer()
   def count_tokens(%__MODULE__{backend: backend} = dm, text) when is_binary(text) do
@@ -278,7 +276,12 @@ defmodule Nous.DecisionModel do
     if exported?(backend, :count_tokens, 2) do
       backend.count_tokens(dm, text)
     else
-      ceil(byte_size(text) / @bytes_per_token)
+      # One token per byte: the hard upper bound for a byte-level BPE once
+      # specials are defanged. A measured average (1.3 bytes/token for
+      # base64) undercounts digit runs and rare code points, which Clef's
+      # Qwen3.5 tokenizer splits one token per digit or byte, and an HTTP
+      # server truncates an oversize state silently.
+      byte_size(text)
     end
   end
 

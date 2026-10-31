@@ -714,6 +714,64 @@ defmodule Nous.CodeModeTest do
       assert message =~ "[tool result withheld by decision hook]"
       refute message =~ "alpha ran"
     end
+
+    defp escalating_guard(event, on_escalate) do
+      Nous.Hook.new(event,
+        name: "guard",
+        matcher: "alpha",
+        handler:
+          Nous.Hook.Decision.new(
+            model: Nous.Test.FakeDecisionBackend.model(fn _ -> 0.5 end),
+            questions: [risky: [type: :noul, instructions: "Is untrusted_content risky?"]],
+            bands: %{risky: {0.3, 0.7}},
+            on_escalate: on_escalate
+          )
+      )
+    end
+
+    test "an escalation edit without :result withholds the sub-call result" do
+      guard = escalating_guard(:post_tool_use, fn _ -> {:edit, %{content: "[redacted]"}} end)
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      message = tool_message(result)
+      assert message =~ "[tool result withheld by decision hook]"
+      refute message =~ "alpha ran"
+    end
+
+    test "control: an escalation edit with :result reaches the program" do
+      guard = escalating_guard(:post_tool_use, fn _ -> {:edit, %{result: "[redacted]"}} end)
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      message = tool_message(result)
+      assert message =~ "[redacted]"
+      refute message =~ "alpha ran"
+    end
+
+    test "an escalation edit without :arguments never runs the sub-call" do
+      test_pid = self()
+
+      alpha =
+        tool("alpha", fn _ctx, _args ->
+          send(test_pid, :alpha_ran)
+          {:ok, "should never happen"}
+        end)
+
+      guard = escalating_guard(:pre_tool_use, fn _ -> {:edit, %{content: "[redacted]"}} end)
+      agent = Agent.new("openai:test-model", tools: [alpha], code_mode: :code, hooks: [guard])
+
+      assert {:ok, result} = AgentRunner.run(agent, "go")
+
+      refute_receive :alpha_ran, 100
+      assert tool_message(result) =~ "denied by hook: decision hook guard"
+    end
   end
 
   describe "bindings are derived from the permission policy" do

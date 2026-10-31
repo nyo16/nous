@@ -167,7 +167,10 @@ defmodule Nous.DecisionModelTest do
         DecisionModel.decide(echo(reply: :raise), "s", a: [type: :noul])
       end
 
-      assert_receive {[:nous, :decision_model, :decide, :exception], ^ref, _, %{kind: :error}}
+      # Pinned to this backend and model: the handler is global, and other
+      # async suites emit :exception events with kind: :error too.
+      assert_receive {[:nous, :decision_model, :decide, :exception], ^ref, _,
+                      %{kind: :error, backend: EchoBackend, model: "echo"}}
     end
 
     test "llamacpp: with no such registered process fails closed as :unavailable" do
@@ -196,12 +199,24 @@ defmodule Nous.DecisionModelTest do
                512
     end
 
-    test "without callbacks: 16,384-token budget and a 1.3 bytes/token estimate" do
+    test "without callbacks: 16,384-token budget and one token per byte" do
       dm = echo()
       assert DecisionModel.max_state_tokens(dm) == 16_384
-      assert DecisionModel.count_tokens(dm, String.duplicate("a", 13)) == 10
-      assert DecisionModel.count_tokens(dm, String.duplicate("a", 14)) == 11
+      assert DecisionModel.count_tokens(dm, String.duplicate("a", 13)) == 13
       assert DecisionModel.count_tokens(dm, "") == 0
+    end
+
+    test "the estimate never undercounts digit runs or rare code points" do
+      dm = echo()
+
+      # Clef's Qwen3.5 tokenizer spends a token per digit, and byte fallback
+      # a token per byte of a rare code point: the estimate must cover both,
+      # or an HTTP backend gets an oversize state it truncates silently.
+      digits = String.duplicate("7", 80_000)
+      assert DecisionModel.count_tokens(dm, digits) >= 80_000
+
+      rare = String.duplicate("\u{1D11E}", 1_000)
+      assert DecisionModel.count_tokens(dm, rare) >= byte_size(rare)
     end
   end
 

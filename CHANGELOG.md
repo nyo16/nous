@@ -68,9 +68,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now run in a task under `Nous.TaskSupervisor` (with `$callers` propagated)
   and are killed when the timeout (default 10 s) elapses; the timeout becomes
   `{:error, :timeout}` and follows the hook's `fail_closed` rules. Previously
-  only `:command` hooks were bounded and a hung handler hung the run. A hook
-  that relies on `self()` or the run process's dictionary can opt out with
-  `timeout: :infinity`, which keeps in-process, unbounded execution.
+  only `:command` hooks were bounded and a hung handler hung the run. Hook
+  tasks die with the process that started them, so a cancelled run no longer
+  keeps calling hooks. A hook that relies on `self()` or the run process's
+  dictionary can opt out with `timeout: :infinity`, which keeps in-process,
+  unbounded execution. `Nous.Hook.new/2` now raises `ArgumentError` for a
+  timeout that is neither a non-negative integer nor `:infinity` (a
+  hand-built struct with one is `{:error, {:invalid_timeout, t}}` and follows
+  `fail_closed`).
+- **A blocking hook that returns a non-result value is `:allow`.** A
+  `:pre_tool_use`, `:pre_request` or `:post_response` hook returning anything
+  other than `:allow | :deny | {:deny, reason} | {:modify, map} |
+  {:error, reason}` (typically `:ok` from a logging hook) is logged and
+  treated as `:allow`; it used to crash the run with `CaseClauseError`. A
+  non-string `{:deny, reason}` is rendered with `inspect/1` instead of
+  raising.
+- **Non-blocking hooks see earlier hooks' modifications.** Each
+  `:post_tool_use` (and other non-blocking) hook now receives the payload with
+  the preceding hooks' `{:modify, …}` applied, so a later hook judges the
+  result the model will actually receive rather than the raw one.
 - **`fail_closed: true` now applies to `:post_tool_use`.** An erroring (or
   timed-out) `fail_closed` `:post_tool_use` hook replaces the tool result
   with `"[tool result withheld: hook error]"` and stops later
@@ -104,7 +120,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`parallel_tool_calls: true` runs the `:pre_tool_use` hooks of one
   response concurrently.** Results keep call order, and approval checks stay
   serial in call order; hooks that assumed the calls of one response are
-  judged one after another may now overlap.
+  judged one after another may now overlap. Decision-hook escalations
+  (`on_escalate`, or the approval handler they consult) are sent back to the
+  run process and handled one at a time, so human prompts never interleave.
+  The stage is always bounded (the sum of the hooks' budgets plus 5 s), and
+  a stage containing a `timeout: :infinity` hook runs in the run process,
+  one call at a time.
 - **Minimum `llama_cpp_ex` is 0.8.58.** The optional dependency is now
   `{:llama_cpp_ex, "~> 0.8.58", optional: true}` (locked at 0.8.62, from
   0.8.45). 0.8.58 is the first release with `LlamaCppEx.Decision`, which
@@ -124,16 +145,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `new/2`, `max_state_tokens/1`, `count_tokens/2`. Ids and option keys
   round-trip exactly as declared; nothing from a response is turned into an
   atom. Every string in the state is defanged against special-token
-  injection (`Nous.DecisionModel.Defang`) before every backend call.
+  injection (`Nous.DecisionModel.Defang`: `<|…|>`, `<think>`, `<tool_call>`,
+  `<tool_response>`, `<tts_*>`, `[INST]`, `<s>`, BERT-style `[CLS]`-family
+  markers) before every backend call. A backend without a tokenizer is
+  counted at one token per byte, an upper bound, so chunking never relies on
+  server-side truncation.
   Backends (`Nous.DecisionModel.Backend` behaviour):
   - `Backend.SystemOne`: `/v1/systemone` (vLLM, SGLang, llama-server,
     LiteLLM), plus a Cloudflare Workers AI preset (`"workers_ai:clef-flash"`,
     `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN`).
   - `Backend.OpenAIDecisions`: OpenAI and vLLM `/v1/decisions`.
   - `Backend.LlamaCpp`: in-process GGUF decision models through
-    `LlamaCppEx.Decision`. A supervised process per model serialises calls.
+    `LlamaCppEx.Decision`. A supervised process per model serialises calls,
+    skips requests whose caller already timed out or exited, and also
+    defangs anything the loaded vocabulary reads as a single special token.
     `n_batch` defaults to 4096 and is capped at 32,768 (the macOS GPU
-    watchdog poisons the context above that). A dead context is recreated.
+    watchdog poisons the context above that). A dead context is freed and
+    recreated; if that fails the process exits so its supervisor reloads the
+    model. `"llamacpp:<name>"` and `server:` reach only processes started by
+    `Backend.LlamaCpp` (tracked in `Nous.DecisionModel.Registry`), never an
+    arbitrary registered process. Child specs default to
+    `shutdown: 30_000` (`:shutdown` option).
 
   Failures are `{:error, %Nous.Errors.DecisionModelError{}}` (`:oversize`,
   `:timeout`, `:backend_dead`, `:http`, `:invalid_response`,
@@ -150,10 +182,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on `:pre_tool_use` the run's approval handler through
   `Nous.Permissions.consult_handler/2`; no handler rejects), so `Hook.result`
   is unchanged. It is fail-closed (`on_error: :deny` by default; on
-  `:post_tool_use` a deny withholds the result), bounds each decision-model
-  call by the hook's `timeout`, windows oversize content (`oversize: :chunk |
-  :suspicious | :head_tail`, `max_chunks`), and emits
-  `[:nous, :hook, :decision]`. Code Mode sub-calls fire it too.
+  `:post_tool_use` a deny withholds the result), bounds state building, token
+  counting, window planning and each decision-model call by the hook's
+  `timeout`, windows oversize content (`oversize: :chunk | :suspicious |
+  :head_tail`, `max_chunks`; `:head_tail` never classifies the middle), and
+  emits `[:nous, :hook, :decision]`. Code Mode sub-calls fire it too. An
+  escalation `{:edit, changes}` applies only through the event's own key
+  (`:arguments` map, `:result`, string `:response`); any other edit counts as
+  not approved. `Nous.Hook.new/2` raises `ArgumentError` for a `:decision`
+  hook on an event other than `:pre_tool_use`, `:post_tool_use`,
+  `:pre_request` or `:post_response`, where it could not enforce a verdict.
 - **`Nous.Hook.Runner.run/4`** takes an `env`
   (`%{approval_handler, agent_name, task, tool}`, or a zero-arity function
   returning it) that only `:decision` handlers receive; `run/3` is unchanged.
@@ -169,9 +207,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Packs.UserInput`, `ToolCall`, `ToolResult`, `ModelOutput`, all tuned for
   the `"clef"` family, which refuse default bands for any other family):
   `:user_input` (default; in `before_request/3`, with the Pattern strategy
-  under `:any`, blocking like InputGuard's `:block`), and `:tool_call`,
-  `:tool_result`, `:model_output` as `:decision` hooks at priority 900 with
-  `fail_closed: true`. User-input presets `:balanced` (default, 0.3 / 0.7) and
+  under `:any`, blocking like InputGuard's `:block`; every user message added
+  since the last check is classified and one deny refuses the batch), and
+  `:tool_call`, `:tool_result`, `:model_output` as `:decision` hooks at
+  priority 900 with `fail_closed: true`. A strategy exit (llama.cpp process
+  down or still loading) or an engine timeout follows `:on_error`, never
+  `:on_escalate`. User-input presets `:balanced` (default, 0.3 / 0.7) and
   `:strict` (0.06 / 0.53); the other surfaces' bands are provisional. Opt-in
   canary as a separate call. Telemetry `[:nous, :decision_guard, :verdict]`,
   `[:nous, :decision_guard, :canary_failed]`,
@@ -203,7 +244,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provider; the fallback chain is `[routed | agent.fallback]`, and a routed
   tier is never labelled a fallback. A fallback that answered stays sticky
   until the next routing boundary. `:default`, an error or a crashing router
-  uses `agent.model` (fails open). The decision is runtime-only (never in
+  uses `agent.model` (fails open). Under `:escalate_only`, `Nous.Router.new/1`
+  rejects a `tiers/1` that raises or returns no models, and a `tiers/1`
+  failing mid-run leaves that request unrouted instead of crashing the run.
+  The decision is runtime-only (never in
   `result.deps` or a persisted context). Per-run override: `Nous.run(agent,
   prompt, router: nil | {module, opts})`. `run_stream/3` is not routed.
   Telemetry: `[:nous, :router, :route]` (tier, probabilities, confidence,

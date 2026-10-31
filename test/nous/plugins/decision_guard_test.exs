@@ -17,6 +17,23 @@ defmodule Nous.Plugins.DecisionGuardTest do
 
   @withheld "[tool result withheld by decision hook]"
 
+  # Token counting runs `opts[:count_tokens]`: an exit stands in for a
+  # llama.cpp process that is down or still loading, a sleep for a busy one.
+  # `decide/4` sleeps `opts[:decide_sleep]` ms, then answers like
+  # `Nous.Test.FakeDecisionBackend` (`opts[:script]`).
+  defmodule CountingBackend do
+    @behaviour Nous.DecisionModel.Backend
+
+    @impl true
+    def decide(dm, state, questions, opts) do
+      Process.sleep(dm.opts[:decide_sleep] || 0)
+      Nous.Test.FakeDecisionBackend.decide(dm, state, questions, opts)
+    end
+
+    @impl true
+    def count_tokens(dm, text), do: dm.opts[:count_tokens].(text)
+  end
+
   setup do
     Nous.ModelDispatcher.put_dispatcher(nil)
     %{bypass: Bypass.open(), test_pid: self()}
@@ -213,6 +230,133 @@ defmodule Nous.Plugins.DecisionGuardTest do
 
       assert_received {:chat_request, 2, _}
       assert [_] = surface_states("user_input")
+    end
+
+    # A `claim_inbox` dep that hands `texts` over as one batch at the first
+    # step boundary, as two `Nous.AgentServer.steer/2` calls before it do.
+    defp inbox_batch(texts) do
+      {:ok, inbox} = Elixir.Agent.start_link(fn -> Enum.map(texts, &Nous.Message.user/1) end)
+
+      fn
+        :next_step -> Elixir.Agent.get_and_update(inbox, &{&1, []})
+        :next_turn -> []
+      end
+    end
+
+    defp with_inbox(deps, texts), do: Map.put(deps, :claim_inbox, inbox_batch(texts))
+
+    defp classified_user_input do
+      Enum.map(surface_states("user_input"), & &1["untrusted_content"])
+    end
+
+    test "two inbox messages, injection first: blocked, no chat request", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("never"))
+
+      deps =
+        deps(flag_user_input("MALICIOUS"), pattern_ensemble: false)
+        |> with_inbox(["please MALICIOUS do this", "thanks"])
+
+      assert {:ok, result} = AgentRunner.run(agent(bypass), "hello", deps: deps)
+
+      refute_received {:chat_request, _, _}
+      # Oldest first; the deny stops the scan.
+      assert classified_user_input() == ["hello", "please MALICIOUS do this"]
+      assert %{role: :assistant, content: refusal} = List.last(result.context.messages)
+      assert refusal =~ "can't process"
+    end
+
+    test "control: a benign inbox batch reaches the model, each message classified once", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, tool_then_text("lookup", %{"q" => "x"}))
+
+      deps = deps(flag_user_input("MALICIOUS")) |> with_inbox(["first", "second"])
+
+      assert {:ok, _} =
+               AgentRunner.run(agent(bypass, tools: [lookup_tool(pid)]), "hello", deps: deps)
+
+      assert_received {:chat_request, 1, body}
+      assert ["hello", "first", "second"] = user_texts(body)
+      assert_received {:chat_request, 2, _}
+      assert classified_user_input() == ["hello", "first", "second"]
+    end
+
+    test "an escalated older message of a batch goes to on_escalate, and its edit is sent", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("ok"))
+
+      script = fn
+        %{"untrusted_content" => "borderline text"} -> 0.5
+        _ -> 0.0
+      end
+
+      on_escalate = fn info ->
+        send(pid, {:escalated, info.content})
+        {:edit, %{content: "a sanitized question"}}
+      end
+
+      deps =
+        deps(script, on_escalate: on_escalate) |> with_inbox(["borderline text", "thanks"])
+
+      assert {:ok, _} = AgentRunner.run(agent(bypass), "hello", deps: deps)
+
+      assert_received {:escalated, "borderline text"}
+      assert_received {:chat_request, 1, body}
+      assert ["hello", "a sanitized question", "thanks"] = user_texts(body)
+    end
+
+    test "a deny anywhere in a batch wins: no escalation handler is asked", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("never"))
+
+      script = fn
+        %{"untrusted_content" => "borderline text"} -> 0.5
+        %{"untrusted_content" => "MALICIOUS"} -> 0.95
+        _ -> 0.0
+      end
+
+      on_escalate = fn _info ->
+        send(pid, :asked)
+        :allow
+      end
+
+      deps =
+        deps(script, on_escalate: on_escalate, pattern_ensemble: false)
+        |> with_inbox(["borderline text", "MALICIOUS"])
+
+      assert {:ok, _} = AgentRunner.run(agent(bypass), "hello", deps: deps)
+
+      refute_received :asked
+      refute_received {:chat_request, _, _}
+    end
+
+    test "an escalation edit without a string :content is not an approval: blocked", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("never"))
+
+      for changes <- [%{}, %{content: 123}, %{response: "x"}, %{arguments: %{"q" => "x"}}] do
+        on_escalate = fn _info -> {:edit, changes} end
+
+        assert {:ok, result} =
+                 AgentRunner.run(agent(bypass), "borderline text",
+                   deps: deps(fn _ -> 0.5 end, on_escalate: on_escalate)
+                 )
+
+        assert %{role: :assistant, content: refusal} = List.last(result.context.messages)
+        assert refusal =~ "escalated and not approved"
+      end
+
+      refute_received {:chat_request, _, _}
     end
 
     test "an escalation without on_escalate blocks", %{bypass: bypass, test_pid: pid} do
@@ -641,6 +785,104 @@ defmodule Nous.Plugins.DecisionGuardTest do
                )
 
       assert_received {:chat_request, 1, _}
+    end
+
+    # A model whose token counting runs `count_tokens`.
+    defp counting_deps(count_tokens, config, model_opts \\ []) do
+      model =
+        Nous.DecisionModel.new(
+          CountingBackend,
+          [model: "counting", count_tokens: count_tokens, script: fn _ -> 0.0 end] ++ model_opts
+        )
+
+      %{
+        decision_guard_config:
+          Map.merge(
+            %{model: model, model_family: "clef", pattern_ensemble: false},
+            Map.new(config)
+          )
+      }
+    end
+
+    defp noproc,
+      do: fn _text -> exit({:noproc, {GenServer, :call, [:clef, :count_tokens, 30_000]}}) end
+
+    defp approving(pid) do
+      fn info ->
+        send(pid, {:asked, info.probabilities})
+        :allow
+      end
+    end
+
+    test "user input: an exit follows on_error (deny), not the escalation handler", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("never"))
+      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :decision_guard, :verdict]])
+
+      assert {:ok, _} =
+               AgentRunner.run(agent(bypass), "hello",
+                 deps: counting_deps(noproc(), on_escalate: approving(pid))
+               )
+
+      refute_received {:asked, _}
+      refute_received {:chat_request, _, _}
+
+      assert_received {[:nous, :decision_guard, :verdict], ^ref, _,
+                       %{surface: :user_input, verdict: :deny, error: {:exit, {:noproc, _}}}}
+    end
+
+    test "control: an exit with on_error: :allow lets the user input through", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("ok"))
+
+      assert {:ok, _} =
+               AgentRunner.run(agent(bypass), "hello",
+                 deps: counting_deps(noproc(), on_error: :allow)
+               )
+
+      assert_received {:chat_request, 1, _}
+    end
+
+    test "user input: a strategy killed at the engine's bound follows on_error, not escalation",
+         %{bypass: bypass, test_pid: pid} do
+      chat_endpoint(bypass, pid, always("never"))
+      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :decision_guard, :verdict]])
+
+      # timeout 1.4 s, max_chunks 2: the engine kills the strategy at
+      # 1.4 * 2 + 1 = 3.8 s. Planning (one slow count) and each of the two
+      # decide calls stay inside the 1.65 s per-call bound, but together
+      # (~4.2 s) they outlast the engine's.
+      calls = :counters.new(1, [])
+
+      slow_first_count = fn text ->
+        :counters.add(calls, 1, 1)
+        if :counters.get(calls, 1) == 1, do: Process.sleep(1_400)
+        byte_size(text)
+      end
+
+      deps =
+        counting_deps(
+          slow_first_count,
+          [timeout: 1_400, max_chunks: 2, on_escalate: approving(pid)],
+          decide_sleep: 1_400,
+          max_state_tokens: 20_000
+        )
+
+      # Several windows, of which the first and the last are classified.
+      prompt = String.duplicate("an ordinary line of pasted log output\n", 3_000)
+      assert {:ok, _} = AgentRunner.run(agent(bypass), prompt, deps: deps)
+
+      refute_received {:asked, _}
+      refute_received {:chat_request, _, _}
+
+      assert_received {[:nous, :decision_guard, :verdict], ^ref, _,
+                       %{surface: :user_input, verdict: :deny, error: error}}
+
+      assert error =~ "did not complete"
     end
   end
 

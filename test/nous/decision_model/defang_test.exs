@@ -18,6 +18,23 @@ defmodule Nous.DecisionModel.DefangTest do
                "<¦s>[¦INST] hi [¦/INST] there<¦/s>"
     end
 
+    test "breaks the Qwen3.5 specials Clef-Flash parses that are not <|...|>" do
+      # The 6 user-defined tokens (single tokens even without special-token
+      # parsing) and the 4 <tts_*> control tokens of Clef-Flash's vocabulary.
+      assert Defang.defang(
+               "<think>x</think><tool_call>{}</tool_call><tool_response>r</tool_response>"
+             ) ==
+               "<¦think>x<¦/think><¦tool_call>{}<¦/tool_call><¦tool_response>r<¦/tool_response>"
+
+      assert Defang.defang("<tts_pad><tts_text_bos><tts_text_eod><tts_text_bos_single>") ==
+               "<¦tts_pad><¦tts_text_bos><¦tts_text_eod><¦tts_text_bos_single>"
+    end
+
+    test "breaks the BERT markers" do
+      assert Defang.defang("[CLS] a [SEP] [PAD][MASK][UNK]") ==
+               "[¦CLS] a [¦SEP] [¦PAD][¦MASK][¦UNK]"
+    end
+
     test "leaves text that only looks similar alone" do
       for text <- [
             "a | b || c",
@@ -32,8 +49,32 @@ defmodule Nous.DecisionModel.DefangTest do
     end
 
     test "is idempotent" do
-      once = Defang.defang("<|im_start|>[INST]</s>")
+      once = Defang.defang("<|im_start|>[INST]</s><think><tts_pad>[CLS]")
       assert Defang.defang(once) == once
+    end
+  end
+
+  describe "defang_tokens/2" do
+    test "breaks every candidate the predicate calls special, including nested ones" do
+      special? = &(&1 in ["<think>", "[CLS]", "|||IP_ADDRESS|||"])
+
+      assert Defang.defang_tokens("[<think>] <div> [CLS] |||IP_ADDRESS||| [x]", special?) ==
+               "[<¦think>] <div> [¦CLS] |¦||IP_ADDRESS||| [x]"
+    end
+
+    test "asks once per distinct candidate and leaves text without specials alone" do
+      test_pid = self()
+
+      special? = fn candidate ->
+        send(test_pid, {:asked, candidate})
+        false
+      end
+
+      text = "<a> <a> <b>"
+      assert Defang.defang_tokens(text, special?) == text
+      assert_received {:asked, "<a>"}
+      assert_received {:asked, "<b>"}
+      refute_received {:asked, _}
     end
   end
 

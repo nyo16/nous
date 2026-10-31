@@ -21,10 +21,13 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
         dm = Nous.DecisionModel.parse("llamacpp:clef")
         {:ok, result} = Nous.DecisionModel.decide(dm, state, questions)
 
-    `"llamacpp:<name>"` resolves `<name>` with `String.to_existing_atom/1`; the
-    atom exists because the process registered it. Pass `server:` (any
-    `t:GenServer.server/0`) to `Nous.DecisionModel.new/2` or `parse/2` to use
-    another name form.
+    `"llamacpp:<name>"` resolves `<name>` with `String.to_existing_atom/1`
+    and then only to a process this module started: each process registers
+    its name in a registry this module owns, and a name that is not there
+    (any other registered process included) is `:unavailable`, never called.
+    Pass `server:` (a pid or any `t:GenServer.server/0`) to
+    `Nous.DecisionModel.new/2` or `parse/2` for another name form; it is
+    checked the same way and must be a process of this module on this node.
 
     ## Start options
 
@@ -39,19 +42,32 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
       * `:n_gpu_layers` - default `-1` (all).
       * `:decision_opts` - extra `LlamaCppEx.Decision.new/2` tuning options
         (`:n_threads`, `:flash_attn`, ...).
+      * `:shutdown` - the child spec's shutdown, in ms. Default `30_000`, time
+        for an in-flight decode to finish so the model is freed cleanly.
 
     `:n_ctx` and `:n_batch` are capped at 32,768: above that, the macOS GPU
     watchdog kills the single command buffer and poisons the context. A
     larger value raises `ArgumentError` at start.
 
     The model loads in `handle_continue/2`, so start-up does not block the
-    supervisor; calls made while it loads wait for it.
+    supervisor; calls made while it loads wait for it. The loaded model is
+    published in the process's registry entry, which goes away with the
+    process however it exits, so the model's memory is freed with it.
+
+    ## Special tokens
+
+    Before tokenizing, every `<...>`, `[...]` or `|||...|||` sequence in the
+    state that the loaded vocabulary parses as one token (control and
+    user-defined tokens, such as Clef's `<tts_pad>` and `</think>`) is broken
+    with `Nous.DecisionModel.Defang.defang_tokens/2`, on top of the generic
+    `Nous.DecisionModel.Defang` pass. `count_tokens/2` counts the same text.
 
     ## Decide options
 
       * `:timeout` - how long to wait for the serialised call, in ms. Default
         `30_000`. Calls queue behind each other: one Clef-Flash check takes
-        ~0.5–1 s on an M1 Max.
+        ~0.5–1 s on an M1 Max. A request whose timeout has passed, or whose
+        caller has exited, by the time the process reaches it is not decoded.
 
     ## Errors
 
@@ -59,9 +75,11 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
         `n_batch`, or chunk the state (`max_state_tokens/1` is the budget).
       * `"decision decode failed with code: -3"` (macOS GPU watchdog) and
         other negative decode codes → `:backend_dead`; the context is
-        recreated before the next call.
-      * the call timing out → `:timeout`; the process not running →
-        `:unavailable`.
+        recreated before the next call. If recreating it fails, that call
+        gets `:backend_dead` and the process exits, so its supervisor
+        restarts it with a fresh model.
+      * the call timing out → `:timeout`; the process not running, or the
+        name not belonging to this module → `:unavailable`.
     """
 
     use GenServer
@@ -72,11 +90,18 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
 
     alias LlamaCppEx.Decision
     alias Nous.DecisionModel
-    alias Nous.DecisionModel.{Backend, Question, Result, SystemOneWire}
+    alias Nous.DecisionModel.{Backend, Defang, Question, Result, SystemOneWire}
+
+    # Started by Nous.Application. Each process registers its name here with
+    # %{n_batch: _, model: _} as the value: the entry is the only way a caller
+    # resolves a process, and it disappears with the process (any exit,
+    # `:kill` included), taking its reference to the model with it.
+    @registry Nous.DecisionModel.Registry
 
     @default_n_batch 4096
     @max_n 32_768
     @default_call_timeout 30_000
+    @default_shutdown 30_000
 
     @oversize ~r/must be evaluated in one batch|does not fit in the context|do not fit in the context|must fit in one batch|too large to process/
     @dead ~r/decision decode failed with code: -\d+/
@@ -88,9 +113,9 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
       timeout =
         Keyword.get(call_opts, :timeout) || Keyword.get(dm.opts, :timeout, @default_call_timeout)
 
-      with {:ok, server} <- server(dm) do
+      with {:ok, pid, _info} <- lookup(dm) do
         try do
-          case GenServer.call(server, {:decide, state, questions}, timeout) do
+          case GenServer.call(pid, {:decide, state, questions, deadline(timeout)}, timeout) do
             {:ok, raw} -> build_result(dm, raw, questions)
             {:error, _} = error -> error
           end
@@ -100,7 +125,7 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
              Backend.error(__MODULE__, :timeout, "decision call timed out after #{timeout} ms")}
 
           :exit, {:noproc, _} ->
-            {:error, unavailable(server)}
+            {:error, unavailable(label(dm))}
 
           :exit, reason ->
             {:error,
@@ -108,6 +133,9 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
         end
       end
     end
+
+    defp deadline(:infinity), do: :infinity
+    defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
 
     @doc """
     The request budget: the process's `n_batch` (Clef evaluates state plus
@@ -117,43 +145,56 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
     """
     @impl Backend
     def max_state_tokens(%DecisionModel{} = dm) do
-      server = server!(dm)
-
-      case info(server) do
-        %{n_batch: n_batch} -> n_batch
-        nil -> GenServer.call(server, :n_batch, @default_call_timeout)
-      end
+      {_pid, %{n_batch: n_batch}} = lookup!(dm)
+      n_batch
     end
 
     @doc """
     Exact token count of `text` with the model's tokenizer
-    (`add_special: false, parse_special: false`).
+    (`add_special: false, parse_special: false`), after breaking the
+    vocabulary's special tokens (see "Special tokens").
 
     Tokenizes in the caller once the model is loaded; before that it waits
     for the load. Exits if the process is not running.
     """
     @impl Backend
     def count_tokens(%DecisionModel{} = dm, text) when is_binary(text) do
-      server = server!(dm)
-
-      case info(server) do
-        %{model: %LlamaCppEx.Model{} = model} -> token_count(model, text)
-        _ -> GenServer.call(server, {:count_tokens, text}, @default_call_timeout)
+      case lookup!(dm) do
+        {_pid, %{model: %LlamaCppEx.Model{} = model}} -> token_count(model, text)
+        {pid, _} -> GenServer.call(pid, {:count_tokens, text}, @default_call_timeout)
       end
     end
 
     defp token_count(model, text) do
       {:ok, tokens} =
-        LlamaCppEx.Tokenizer.encode(model, text, add_special: false, parse_special: false)
+        LlamaCppEx.Tokenizer.encode(model, defang_vocab(model, text),
+          add_special: false,
+          parse_special: false
+        )
 
       length(tokens)
+    end
+
+    # Breaks every delimited sequence the vocabulary parses as one token:
+    # control tokens (`<|im_start|>`, `<tts_pad>`) and user-defined ones
+    # (`<think>`, which llama.cpp matches even without special parsing).
+    # Normal BPE tokens never span such a sequence, since the pre-tokenizer
+    # splits `<word>` into `<word` and `>`.
+    defp defang_vocab(model, text) do
+      Defang.defang_tokens(text, fn candidate ->
+        match?(
+          {:ok, [_]},
+          LlamaCppEx.Tokenizer.encode(model, candidate, add_special: false, parse_special: true)
+        )
+      end)
     end
 
     @impl Backend
     def child_spec(opts) do
       %{
         id: {__MODULE__, Keyword.get(opts, :name)},
-        start: {__MODULE__, :start_link, [opts]}
+        start: {__MODULE__, :start_link, [opts]},
+        shutdown: Keyword.get(opts, :shutdown, @default_shutdown)
       }
     end
 
@@ -170,9 +211,13 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
 
     @impl GenServer
     def init(config) do
-      Process.flag(:trap_exit, true)
-      :persistent_term.put(info_key(config.name), %{n_batch: config.n_batch, model: nil})
-      {:ok, Map.merge(config, %{model: nil, decision: nil}), {:continue, :load}}
+      case Registry.register(@registry, config.name, %{n_batch: config.n_batch, model: nil}) do
+        {:ok, _owner} ->
+          {:ok, Map.merge(config, %{model: nil, decision: nil}), {:continue, :load}}
+
+        {:error, reason} ->
+          {:stop, reason}
+      end
     end
 
     @impl GenServer
@@ -181,7 +226,7 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
 
       with {:ok, model} <- load(state.source, state.n_gpu_layers),
            {:ok, decision} <- new_decision(model, state) do
-        :persistent_term.put(info_key(state.name), %{n_batch: state.n_batch, model: model})
+        {_new, _old} = Registry.update_value(@registry, state.name, &%{&1 | model: model})
         {:noreply, %{state | model: model, decision: decision}}
       else
         {:error, reason} ->
@@ -191,14 +236,14 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
     end
 
     @impl GenServer
-    def handle_call({:decide, decision_state, questions}, _from, state) do
-      case ensure_decision(state) do
-        {:ok, state} ->
-          {reply, state} = run_decide(state, decision_state, questions)
-          {:reply, reply, state}
-
-        {:error, error} ->
-          {:reply, {:error, error}, state}
+    def handle_call({:decide, decision_state, questions, deadline}, {caller, _tag}, state) do
+      if expired?(deadline, caller) do
+        {:reply,
+         {:error,
+          Backend.error(__MODULE__, :timeout, "the request expired before it was decoded")},
+         state}
+      else
+        decide_now(state, decision_state, questions)
       end
     end
 
@@ -206,12 +251,31 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
       {:reply, token_count(model, text), state}
     end
 
-    def handle_call(:n_batch, _from, state), do: {:reply, state.n_batch, state}
+    # A queued request whose caller already gave up (its timeout passed, or it
+    # exited) gets no decode: the reply would go nowhere, and the work would
+    # only push the live requests behind it past their own deadlines.
+    defp expired?(deadline, caller) do
+      (deadline != :infinity and System.monotonic_time(:millisecond) >= deadline) or
+        (node(caller) == node() and not Process.alive?(caller))
+    end
 
-    @impl GenServer
-    def terminate(_reason, state) do
-      :persistent_term.erase(info_key(state.name))
-      :ok
+    defp decide_now(state, decision_state, questions) do
+      case ensure_decision(state) do
+        {:ok, state} ->
+          decision_state = Defang.defang_term(decision_state, &defang_vocab(state.model, &1))
+          {reply, state} = run_decide(state, decision_state, questions)
+          {:reply, reply, state}
+
+        {:error, reason} ->
+          error =
+            Backend.error(__MODULE__, :backend_dead, "could not recreate the decision context",
+              details: reason
+            )
+
+          # Exit so the supervisor restarts the process with a fresh model,
+          # rather than answering :backend_dead forever.
+          {:stop, {:context_recreate_failed, reason}, {:error, error}, state}
+      end
     end
 
     defp run_decide(state, decision_state, questions) do
@@ -253,17 +317,15 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
     end
 
     # The context that failed with a negative decode code is unusable; build a
-    # fresh one before the next call.
+    # fresh one before the next call. The dead one is garbage by now (only the
+    # previous state held it): collect it first so its KV cache is freed
+    # before a second one is allocated.
     defp ensure_decision(%{decision: nil, model: model} = state) do
-      case new_decision(model, state) do
-        {:ok, decision} ->
-          {:ok, %{state | decision: decision}}
+      :erlang.garbage_collect()
 
-        {:error, reason} ->
-          {:error,
-           Backend.error(__MODULE__, :backend_dead, "could not recreate the decision context",
-             details: reason
-           )}
+      case new_decision(model, state) do
+        {:ok, decision} -> {:ok, %{state | decision: decision}}
+        {:error, reason} -> {:error, reason}
       end
     end
 
@@ -383,33 +445,59 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
               "(the macOS GPU watchdog kills larger batches), got: #{inspect(n)}"
     end
 
-    defp server(%DecisionModel{opts: opts, model: model}) do
+    # Resolves only processes this module started (they are in @registry);
+    # any other process, whatever its name, is :unavailable and never called.
+    defp lookup(%DecisionModel{opts: opts, model: model} = dm) do
       case Keyword.fetch(opts, :server) do
         {:ok, server} ->
-          {:ok, server}
+          lookup_pid(GenServer.whereis(server), dm)
 
         :error when is_binary(model) ->
-          try do
-            {:ok, String.to_existing_atom(model)}
-          rescue
-            ArgumentError -> {:error, unavailable(model)}
-          end
+          lookup_name(existing_atom(model), dm)
 
         :error ->
           {:error, Backend.error(__MODULE__, :unavailable, "no decision process name given")}
       end
     end
 
-    defp server!(dm) do
-      case server(dm) do
-        {:ok, server} -> server
+    # The registry drops an entry asynchronously after its process exits;
+    # the liveness check closes that window, so a dead process's model is
+    # never used.
+    defp lookup_name({:ok, name}, dm) do
+      case Registry.lookup(@registry, name) do
+        [{pid, info}] ->
+          if Process.alive?(pid), do: {:ok, pid, info}, else: lookup_name(:error, dm)
+
+        [] ->
+          lookup_name(:error, dm)
+      end
+    end
+
+    defp lookup_name(:error, dm), do: {:error, unavailable(label(dm))}
+
+    defp lookup_pid(pid, dm) when is_pid(pid) and node(pid) == node() do
+      case Registry.keys(@registry, pid) do
+        [name] -> lookup_name({:ok, name}, dm)
+        [] -> {:error, unavailable(label(dm))}
+      end
+    end
+
+    defp lookup_pid(_other, dm), do: {:error, unavailable(label(dm))}
+
+    defp lookup!(dm) do
+      case lookup(dm) do
+        {:ok, pid, info} -> {pid, info}
         {:error, error} -> exit({:noproc, error.message})
       end
     end
 
-    defp info(server), do: :persistent_term.get(info_key(server), nil)
+    defp existing_atom(string) do
+      {:ok, String.to_existing_atom(string)}
+    rescue
+      ArgumentError -> :error
+    end
 
-    defp info_key(name), do: {__MODULE__, name}
+    defp label(%DecisionModel{opts: opts, model: model}), do: Keyword.get(opts, :server, model)
 
     defp unavailable(server) do
       Backend.error(

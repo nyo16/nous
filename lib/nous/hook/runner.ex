@@ -12,9 +12,15 @@ defmodule Nous.Hook.Runner do
     `:module` handlers run in a task under `Nous.TaskSupervisor` (with
     `$callers` propagated, so process-scoped test seams still resolve) and are
     killed when the timeout elapses; the timeout becomes `{:error, :timeout}`
-    and follows the hook's `fail_closed` rules. `timeout: :infinity` runs the
-    handler in the calling process, for hooks that rely on `self()` or the
-    process dictionary.
+    and follows the hook's `fail_closed` rules. The task also dies with the
+    process that runs the hook, so a cancelled run leaves no hook running.
+    `timeout: :infinity` runs the handler in the process that runs the hooks,
+    for hooks that rely on `self()` or the process dictionary; with
+    `parallel_tool_calls: true` a `:pre_tool_use` hook stage that contains one
+    runs in the agent run process, one call at a time. A timeout that is
+    neither a non-negative integer nor `:infinity` is a hook error.
+  - A hook that returns something other than a `t:Nous.Hook.result/0` is
+    logged and treated as `:allow`.
 
   ## `fail_closed`
 
@@ -91,6 +97,7 @@ defmodule Nous.Hook.Runner do
   alias Nous.Sandbox
   alias Nous.Sandbox.{Confined, Policy}
 
+  require Hook
   require Logger
 
   @withheld_tool_result "[tool result withheld: hook error]"
@@ -191,7 +198,11 @@ defmodule Nous.Hook.Runner do
 
         :deny
 
-      {:deny, reason} = denied ->
+      {:deny, reason} ->
+        # The reason reaches log lines, tool messages and
+        # `Nous.Errors.ResponseDenied` (a `String.t()`), so a non-string one
+        # (a function hook may return `{:deny, %{code: :pii}}`) is inspected.
+        reason = if is_binary(reason), do: reason, else: inspect(reason)
         Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}: #{reason}")
 
         :telemetry.execute(
@@ -200,7 +211,7 @@ defmodule Nous.Hook.Runner do
           %{event: event, hook_name: hook.name, hook_type: hook.type, reason: reason}
         )
 
-        denied
+        {:deny, reason}
 
       {:modify, new_changes} ->
         # Apply modification to payload, continue with remaining hooks
@@ -233,16 +244,34 @@ defmodule Nous.Hook.Runner do
         else
           run_blocking(rest, event, payload, env, changes)
         end
+
+      other ->
+        # Not a hook result (an observer hook returning `:ok` or `nil`, say).
+        # Treated as `:allow`, the same as on non-blocking events.
+        Logger.warning(
+          "Hook #{inspect(hook.name || hook.type)} returned #{inspect(other)} on #{event}; " <>
+            "treating it as :allow"
+        )
+
+        run_blocking(rest, event, payload, env, changes)
     end
   end
 
-  # For non-blocking events, run all hooks and collect modifications. The
-  # exceptions are a `fail_closed` hook erroring on `:post_tool_use` and a
+  # For non-blocking events, run all hooks and collect modifications. Each
+  # hook sees the payload with every earlier hook's modifications applied, so a
+  # later (e.g. decision) hook judges what the caller will actually receive.
+  # The exceptions are a `fail_closed` hook erroring on `:post_tool_use` and a
   # decision hook withholding a result: the result is withheld and no later
   # hook runs (a later `{:modify, %{result: _}}` must not put the unredacted
   # value back).
   defp run_non_blocking(hooks, event, payload, env) do
     Enum.reduce_while(hooks, :allow, fn hook, acc ->
+      current =
+        case acc do
+          {:modify, changes} -> Map.merge(payload, changes)
+          _ -> payload
+        end
+
       start_time = System.monotonic_time()
 
       :telemetry.execute(
@@ -251,7 +280,7 @@ defmodule Nous.Hook.Runner do
         %{event: event, hook_name: hook.name, hook_type: hook.type}
       )
 
-      result = execute_hook(hook, event, payload, env)
+      result = execute_hook(hook, event, current, env)
       duration = System.monotonic_time() - start_time
 
       :telemetry.execute(
@@ -301,6 +330,18 @@ defmodule Nous.Hook.Runner do
   end
 
   # Execute a single hook based on its type. Only :decision handlers see env.
+  # A timeout nothing can enforce (e.g. `nil` on a struct-literal hook) is a
+  # hook error, returned before any task is spawned.
+  defp execute_hook(%Hook{timeout: timeout} = hook, event, _payload, _env)
+       when not Hook.valid_timeout?(timeout) do
+    Logger.warning(
+      "Hook #{inspect(hook.name || hook.type)} has an invalid timeout #{inspect(timeout)} " <>
+        "on #{event}; expected a non-negative integer or :infinity"
+    )
+
+    {:error, {:invalid_timeout, timeout}}
+  end
+
   defp execute_hook(
          %Hook{type: :decision, handler: %Decision{} = decision} = hook,
          event,
@@ -522,11 +563,12 @@ defmodule Nous.Hook.Runner do
   # sets `$callers` to this process's caller chain, so `Nous.ModelDispatcher`
   # and other process-scoped seams resolve inside the handler as they would
   # in-process. Unlinked so a handler crash cannot take the run down; killed
-  # outright on timeout so a hung handler cannot outlive it.
+  # outright on timeout, or when the caller dies, so a hung handler cannot
+  # outlive it (`async_task/1`).
   defp bounded(%Hook{timeout: :infinity}, label, fun), do: contained(label, fun)
 
   defp bounded(%Hook{timeout: timeout}, label, fun) do
-    task = Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn -> contained(label, fun) end)
+    task = async_task(fn -> contained(label, fun) end)
 
     case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
       {:ok, result} ->
@@ -540,6 +582,35 @@ defmodule Nous.Hook.Runner do
         Logger.warning("#{label} timed out after #{timeout}ms")
         {:error, :timeout}
     end
+  end
+
+  @doc false
+  # `Task.Supervisor.async_nolink/2` under `Nous.TaskSupervisor`, plus a
+  # watcher that kills the task when the calling process dies. An unlinked task
+  # keeps a handler crash away from the caller, but would otherwise keep
+  # running after the caller is gone: a cancelled run (`Nous.AgentServer`
+  # exits the run with `:shutdown`) could still be calling a decision model or
+  # prompting a human. The watcher monitors both processes and exits with
+  # whichever goes first, so it never outlives the task.
+  @spec async_task((-> term())) :: Task.t()
+  def async_task(fun) when is_function(fun, 0) do
+    caller = self()
+
+    Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
+      task = self()
+
+      spawn(fn ->
+        caller_ref = Process.monitor(caller)
+        task_ref = Process.monitor(task)
+
+        receive do
+          {:DOWN, ^caller_ref, _, _, _} -> Process.exit(task, :kill)
+          {:DOWN, ^task_ref, _, _, _} -> :ok
+        end
+      end)
+
+      fun.()
+    end)
   end
 
   # Run a hook body with full containment: hooks execute arbitrary user code,

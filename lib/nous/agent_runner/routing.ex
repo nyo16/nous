@@ -27,13 +27,20 @@ defmodule Nous.AgentRunner.Routing do
   def route(%Agent{router: {module, opts}} = agent, %Context{} = ctx, turn) do
     granularity = Router.granularity(opts)
     current = Map.get(ctx.deps, @route_key)
-    tiers = if granularity == :escalate_only, do: module.tiers(opts), else: []
 
-    if boundary?(granularity, current, turn, tiers) do
-      decision = decide(agent, ctx, turn, granularity, current, tiers)
-      {:boundary, %{ctx | deps: Map.put(ctx.deps, @route_key, decision)}}
-    else
-      {:hold, ctx}
+    case tiers(module, opts, granularity) do
+      {:ok, tiers} ->
+        if boundary?(granularity, current, turn, tiers) do
+          decision = decide(agent, ctx, turn, granularity, current, tiers)
+          {:boundary, %{ctx | deps: Map.put(ctx.deps, @route_key, decision)}}
+        else
+          {:hold, ctx}
+        end
+
+      # Routing fails open: without usable tiers the request goes to the
+      # current routed model, or to agent.model before the first decision.
+      :error ->
+        {:hold, ctx}
     end
   end
 
@@ -51,6 +58,26 @@ defmodule Nous.AgentRunner.Routing do
   @doc false
   @spec clear(Context.t()) :: Context.t()
   def clear(%Context{} = ctx), do: %{ctx | deps: Map.delete(ctx.deps, @route_key)}
+
+  # `Router.new/1` checked the tiers once, but `tiers/1` is user code that runs
+  # again for every request: a raise, an exit or a return that is not a
+  # non-empty list of models must not take the run down.
+  defp tiers(module, opts, :escalate_only) do
+    case Router.tiers(module, opts) do
+      {:ok, tiers} ->
+        {:ok, tiers}
+
+      {:error, reason} ->
+        Logger.warning(
+          "Nous.Router: #{inspect(module)}.tiers/1 failed (#{inspect(reason)}); " <>
+            "not routing this request"
+        )
+
+        :error
+    end
+  end
+
+  defp tiers(_module, _opts, _granularity), do: {:ok, []}
 
   # ── boundaries ─────────────────────────────────────────────────────────────
 

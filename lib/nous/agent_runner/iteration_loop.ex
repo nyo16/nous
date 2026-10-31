@@ -465,8 +465,10 @@ defmodule Nous.AgentRunner.IterationLoop do
     # be recalled.
     case run_post_response_hooks(agent, ctx, response) do
       {:deny, reason} ->
+        # The runner hands back a string reason (`Nous.Hook.Runner` inspects
+        # any other). The run ends here, so there is no context to close the
+        # step on.
         Logger.info("Model response denied by post_response hook: #{reason}")
-        _ctx = log_step_end(ctx, :error)
         {:error, Errors.ResponseDenied.exception(reason: reason)}
 
       {:ok, response} ->

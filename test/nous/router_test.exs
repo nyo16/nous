@@ -56,6 +56,22 @@ defmodule Nous.RouterTest do
     def route(_agent, _info, _opts), do: raise("router bug")
   end
 
+  # `tiers/1` answers from `opts[:tiers]`, a 0-arity function, so a test can
+  # make it fail after `Router.new/1` validated it. `route/3` reports every
+  # consultation and keeps the current tier.
+  defmodule TiersRouter do
+    @behaviour Nous.Router
+
+    @impl true
+    def route(_agent, _info, opts) do
+      send(opts[:test_pid], :router_consulted)
+      :default
+    end
+
+    @impl true
+    def tiers(opts), do: opts[:tiers].()
+  end
+
   def weather(_args), do: {:ok, "sunny"}
 
   defp weather_tool do
@@ -735,6 +751,61 @@ defmodule Nous.RouterTest do
 
       assert_raise ArgumentError, ~r/route\/3/, fn ->
         Nous.Agent.new("openai:gpt-4o", router: {String, []})
+      end
+    end
+
+    test ":escalate_only rejects tiers/1 that is empty, not models, or raises" do
+      model = Model.parse("openai:gpt-4o")
+
+      for tiers <- [fn -> [] end, fn -> [model, "openai:gpt-4o"] end, fn -> raise "no" end] do
+        assert_raise ArgumentError, ~r/non-empty list of %Nous.Model\{\}/, fn ->
+          Nous.Agent.new("openai:gpt-4o",
+            router: {TiersRouter, granularity: :escalate_only, tiers: tiers, test_pid: self()}
+          )
+        end
+      end
+    end
+  end
+
+  # ── tiers/1 failing at run time ────────────────────────────────────────────
+
+  describe "tiers/1 failing after the agent was built" do
+    setup %{oai: oai, test_pid: pid} do
+      openai_compat(oai, pid, fn _ -> {200, {:text, "done"}} end)
+      :ok
+    end
+
+    # Valid when `Router.new/1` checks it (first call), `failure` afterwards.
+    defp flaky_tiers(oai, failure) do
+      calls = :counters.new(1, [])
+      small = lmstudio(oai, "small")
+
+      fn ->
+        :counters.add(calls, 1, 1)
+        if :counters.get(calls, 1) == 1, do: [small], else: failure.()
+      end
+    end
+
+    for {label, failure} <- [
+          raise: quote(do: fn -> raise "tiers bug" end),
+          exit: quote(do: fn -> exit(:noproc) end),
+          empty: quote(do: fn -> [] end)
+        ] do
+      test "#{label}: the run fails open on the agent's model", %{oai: oai} do
+        agent =
+          Nous.Agent.new("lmstudio:main",
+            base_url: "http://localhost:#{oai.port}/v1",
+            api_key: "not-needed",
+            router:
+              {TiersRouter,
+               granularity: :escalate_only,
+               tiers: flaky_tiers(oai, unquote(failure)),
+               test_pid: self()}
+          )
+
+        assert {:ok, %{output: "done"}} = run_quietly(agent, "hi")
+        assert [{:openai, 1, %{"model" => "main"}}] = hits()
+        refute_received :router_consulted
       end
     end
   end

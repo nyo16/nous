@@ -88,6 +88,7 @@ defmodule Nous.Hook do
   @type t :: %Hook{
           event: event(),
           matcher: matcher(),
+          type: hook_type(),
           handler:
             (event(), map() -> result()) | module() | [String.t()] | Nous.Hook.Decision.t(),
           priority: integer(),
@@ -129,6 +130,12 @@ defmodule Nous.Hook do
 
   @blocking_events [:pre_tool_use, :pre_request, :post_response]
 
+  # The events a `:decision` hook can enforce on: the blocking events, plus
+  # `:post_tool_use`, where a deny withholds the result. Anywhere else its deny
+  # would be dropped (non-blocking events) or it would never be called as a
+  # decision hook at all (the workflow engine calls `handler` as a function).
+  @decision_events [:pre_tool_use, :post_tool_use, :pre_request, :post_response]
+
   @doc """
   Returns whether an event type supports blocking (returning `:deny`).
   """
@@ -158,6 +165,11 @@ defmodule Nous.Hook do
 
   def matches?(_hook, _payload), do: true
 
+  @doc false
+  # Whether `timeout` is a value `Nous.Hook.Runner` can enforce.
+  defguard valid_timeout?(timeout)
+           when timeout == :infinity or (is_integer(timeout) and timeout >= 0)
+
   @doc """
   Create a new hook.
 
@@ -168,6 +180,11 @@ defmodule Nous.Hook do
         name: "output_guard",
         handler: Nous.Hook.Decision.new(model: dm, questions: questions, bands: bands)
       )
+
+  Raises `ArgumentError` when `:timeout` is not a non-negative integer or
+  `:infinity`, or when a `:decision` hook is registered on an event it cannot
+  enforce on (anything but `:pre_tool_use`, `:post_tool_use`, `:pre_request`
+  and `:post_response`).
   """
   @spec new(event(), keyword()) :: t()
   def new(event, opts \\ []) do
@@ -178,13 +195,28 @@ defmodule Nous.Hook do
         if match?(%Nous.Hook.Decision{}, handler), do: :decision, else: :function
       end)
 
+    timeout = Keyword.get(opts, :timeout, 10_000)
+
+    unless valid_timeout?(timeout),
+      do:
+        raise(
+          ArgumentError,
+          ":timeout must be a non-negative integer or :infinity, got: #{inspect(timeout)}"
+        )
+
+    if type == :decision and event not in @decision_events do
+      raise ArgumentError,
+            "a :decision hook cannot enforce on #{inspect(event)}; " <>
+              "use one of #{inspect(@decision_events)}"
+    end
+
     %Hook{
       event: event,
       type: type,
       handler: handler,
       matcher: Keyword.get(opts, :matcher),
       priority: Keyword.get(opts, :priority, 100),
-      timeout: Keyword.get(opts, :timeout, 10_000),
+      timeout: timeout,
       name: Keyword.get(opts, :name),
       # Reachable via the constructor so a security-gating hook can opt into
       # fail-closed (a crashing/timing-out hook on a blocking event denies).

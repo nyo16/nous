@@ -54,8 +54,11 @@ defmodule Nous.Router do
   `:default` (or `{:default, meta}`), an `{:error, reason}`, an invalid
   return value or a raise all mean "no route": the request goes to
   `agent.model` (except under `:escalate_only`, which keeps its current
-  tier). Routing fails open by design; a router is a cost/latency control,
-  not a security control.
+  tier). Under `:escalate_only`, a `c:tiers/1` that raises or returns
+  anything but a non-empty list of `%Nous.Model{}` fails `new/1`; if it
+  does so later, during a run, that request is not routed (current tier, or
+  `agent.model` before the first decision). Routing fails open by design; a
+  router is a cost/latency control, not a security control.
 
   ## Not routed
 
@@ -164,7 +167,8 @@ defmodule Nous.Router do
 
   Accepts `nil`, a module, or `{module, opts}`. Raises `ArgumentError` when the
   module does not implement `c:route/3`, the granularity is unknown, or
-  `:escalate_only` is asked of a router without `c:tiers/1`.
+  `:escalate_only` is asked of a router without `c:tiers/1` or whose
+  `c:tiers/1` does not return a non-empty list of `%Nous.Model{}`.
   """
   @spec new(t() | module() | nil) :: t() | nil
   def new(nil), do: nil
@@ -185,17 +189,50 @@ defmodule Nous.Router do
               inspect(@granularities)
     end
 
-    if granularity == :escalate_only and not exported?(module, :tiers, 1) do
-      raise ArgumentError,
-            "granularity: :escalate_only needs ordered tiers, but #{inspect(module)} " <>
-              "does not implement tiers/1"
-    end
+    if granularity == :escalate_only, do: validate_tiers!(module, opts)
 
     {module, opts}
   end
 
   def new(other) do
     raise ArgumentError, "router must be nil, a module or {module, opts}, got: #{inspect(other)}"
+  end
+
+  @doc false
+  # The router's ordered tiers, checked: a non-empty list of `%Nous.Model{}`.
+  # A raise, an exit or any other return is `{:error, reason}`, so the runner
+  # can fail open on it.
+  @spec tiers(module(), keyword()) :: {:ok, [Model.t(), ...]} | {:error, term()}
+  def tiers(module, opts) do
+    case module.tiers(opts) do
+      [_ | _] = tiers ->
+        if Enum.all?(tiers, &match?(%Model{}, &1)),
+          do: {:ok, tiers},
+          else: {:error, {:invalid_tiers, tiers}}
+
+      other ->
+        {:error, {:invalid_tiers, other}}
+    end
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp validate_tiers!(module, opts) do
+    unless exported?(module, :tiers, 1) do
+      raise ArgumentError,
+            "granularity: :escalate_only needs ordered tiers, but #{inspect(module)} " <>
+              "does not implement tiers/1"
+    end
+
+    case tiers(module, opts) do
+      {:ok, _tiers} ->
+        :ok
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "granularity: :escalate_only needs a non-empty list of %Nous.Model{} from " <>
+                "#{inspect(module)}.tiers/1, got: #{inspect(reason)}"
+    end
   end
 
   @doc "The configured granularity (default `:per_turn`)."

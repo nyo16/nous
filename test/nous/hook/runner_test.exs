@@ -375,6 +375,52 @@ defmodule Nous.Hook.RunnerTest do
 
       assert Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"}) == :allow
     end
+
+    test "a hook task dies with the process running the hook" do
+      test_pid = self()
+
+      hook =
+        make_hook(:pre_tool_use, fn _, _ ->
+          send(test_pid, {:hook_pid, self()})
+          Process.sleep(:infinity)
+        end)
+
+      caller =
+        spawn(fn -> Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"}) end)
+
+      assert_receive {:hook_pid, hook_pid}, 1_000
+      ref = Process.monitor(hook_pid)
+
+      # How Nous.AgentServer cancels a run.
+      Process.exit(caller, :shutdown)
+
+      assert_receive {:DOWN, ^ref, :process, ^hook_pid, _}, 1_000
+    end
+
+    test "an invalid timeout is a hook error, not a crash" do
+      hook = make_hook(:pre_tool_use, fn _, _ -> :allow end, timeout: nil, fail_closed: true)
+
+      assert {:deny, reason} =
+               Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"})
+
+      assert reason =~ "invalid_timeout"
+    end
+
+    test "control: an invalid timeout without fail_closed fails open" do
+      hook = make_hook(:pre_tool_use, fn _, _ -> :deny end, timeout: nil)
+      assert Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"}) == :allow
+    end
+
+    test "Hook.new/2 rejects a timeout the runner cannot enforce" do
+      for timeout <- [nil, -1, "10s", 1.5] do
+        assert_raise ArgumentError, ~r/:timeout/, fn ->
+          Hook.new(:pre_tool_use, handler: fn _, _ -> :allow end, timeout: timeout)
+        end
+      end
+
+      assert %Hook{timeout: :infinity} =
+               Hook.new(:pre_tool_use, handler: fn _, _ -> :allow end, timeout: :infinity)
+    end
   end
 
   defmodule SlowHook do

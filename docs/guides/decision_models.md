@@ -58,7 +58,13 @@ answer.probabilities
 - **Defang.** `decide/4` runs `Nous.DecisionModel.Defang` over every string in
   the state before every backend call. llama.cpp's decision prompt parses
   special tokens in the state, so `<|im_start|>`-style text in untrusted
-  content would otherwise become real template tokens.
+  content would otherwise become real template tokens. Defang inserts a `¦`
+  so the markers stay visible but no longer tokenize as specials:
+  `<|...|>` tokens, `<think>`, `<tool_call>`, `<tool_response>` (and their
+  closing forms), `<tts_...>`, `[INST]` / `[/INST]`, `<s>` / `</s>`, and
+  `[CLS]`, `[SEP]`, `[PAD]`, `[MASK]`, `[UNK]`. `Backend.LlamaCpp` also asks
+  the loaded vocabulary and breaks any `<...>`, `[...]` or `|||...|||`
+  sequence it parses as one token.
 - **Timeout.** `decide/4` takes `timeout:` (ms). The default is 5 s for the
   HTTP backends and 30 s for `Backend.LlamaCpp`.
 
@@ -162,15 +168,20 @@ dm = Nous.DecisionModel.parse("llamacpp:clef")
 | `:n_ctx` | `:n_batch` | context size |
 | `:n_gpu_layers` | `-1` (all) | layers offloaded to the GPU |
 | `:decision_opts` | `[]` | extra `LlamaCppEx.Decision.new/2` options (`:n_threads`, `:flash_attn`, ...) |
+| `:shutdown` | `30_000` | child-spec shutdown in ms, so an in-flight decode can finish and the model is freed cleanly |
 
 - **Start-up.** The model loads in `handle_continue/2`, so starting the child
   does not block the supervisor. Calls made while it loads wait for it, up
   to their `timeout:`. Loading Clef-Flash Q8_0 takes about a second from a
   warm page cache and longer from a cold disk. Make one warm-up call with a
   long timeout before taking traffic.
-- **Other names.** `"llamacpp:<name>"` resolves `<name>` with
-  `String.to_existing_atom/1`. Pass `server:` to `parse/2` or `new/2` for any
-  other `GenServer.server()` form.
+- **Names.** `"llamacpp:<name>"` resolves `<name>` with
+  `String.to_existing_atom/1`, and then only to a process that
+  `Backend.LlamaCpp` itself started: each one registers in
+  `Nous.DecisionModel.Registry`. Any other registered process with that name
+  is `:unavailable` and is never called. `server:` on `parse/2` or `new/2`
+  (a pid or any `GenServer.server()` form) is checked the same way and must
+  be a `Backend.LlamaCpp` process on this node.
 
 ### GGUF sources
 
@@ -198,7 +209,8 @@ Clef evaluates the whole prompt (state plus questions) in **one batch**, so
 `n_batch` is the largest request the process can answer. A larger prompt
 fails with `reason: :oversize`. `Nous.DecisionModel.max_state_tokens/1`
 returns the budget and `Nous.DecisionModel.count_tokens/2` counts tokens with
-the model's own tokenizer.
+the model's own tokenizer. A backend without a tokenizer is estimated at one
+token per byte, the upper bound for a byte-level BPE.
 
 Measured on an M1 Max (64 GB) with Clef-Flash Q8_0, with `n_ctx = n_batch`
 and a state that fills about 95% of the batch:

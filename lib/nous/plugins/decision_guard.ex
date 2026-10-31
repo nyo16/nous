@@ -27,8 +27,10 @@ defmodule Nous.Plugins.DecisionGuard do
   The user-input surface runs `Nous.Plugins.InputGuard.Strategies.DecisionModel`
   and (with `:pattern_ensemble`) `Nous.Plugins.InputGuard.Strategies.Pattern`
   through `Nous.Plugins.InputGuard.Engine` under `:any`: a Pattern hit blocks
-  even when the model says safe. It checks each new user message once (the
-  InputGuard message scan), including the initial prompt of `Nous.run/3`.
+  even when the model says safe. It checks every user message added since its
+  last check once, oldest first, including the initial prompt of
+  `Nous.run/3`. A step boundary can add several at once (an inbox batch);
+  the worst verdict wins, so one denied message refuses the whole batch.
 
   The other surfaces are `:decision` hooks (`Nous.Hook.Decision`) contributed
   through `c:Nous.Plugin.hooks/2` at priority **900** with `fail_closed:
@@ -65,8 +67,13 @@ defmodule Nous.Plugins.DecisionGuard do
         handler (`Nous.Permissions.consult_handler/2`; none rejects) and the
         other surfaces deny.
     * `:on_error` — `:deny` (default), `:escalate` or `:allow`: what a
-      decision-model error or timeout means.
+      decision-model error or timeout means, including a user-input strategy
+      that exits (e.g. a llama.cpp process that is down) or is killed at its
+      timeout.
     * `:oversize` — `:chunk` (default), `:suspicious` or `:head_tail`.
+      **`:head_tail` never classifies the middle of the content**, so an
+      injection placed mid-content is missed and nothing floors the verdict.
+      It trades coverage for cost; do not use it where the middle matters.
     * `:max_chunks` — default 8.
     * `:timeout` — per decision-model call, in ms. Default `10_000`; size it
       for your backend (seconds for a laptop-local model).
@@ -170,12 +177,16 @@ defmodule Nous.Plugins.DecisionGuard do
   def before_request(_agent, ctx, tools) do
     with %{} = config <- config(ctx),
          %{} = surface <- config.surfaces[:user_input],
-         {input, index} <- Engine.unchecked_user_input(ctx, @last_checked) do
-      ctx = Context.merge_deps(ctx, %{@last_checked => index})
+         [_ | _] = inputs <- Engine.unchecked_user_inputs(ctx, @last_checked) do
+      {_input, newest} = List.last(inputs)
+      ctx = Context.merge_deps(ctx, %{@last_checked => newest})
 
-      if config.skip_empty and String.trim(input) == "",
-        do: {ctx, tools},
-        else: check_user_input(input, index, ctx, tools, config, surface)
+      inputs =
+        if config.skip_empty,
+          do: Enum.reject(inputs, fn {input, _index} -> String.trim(input) == "" end),
+          else: inputs
+
+      check_user_inputs(inputs, ctx, tools, config, surface)
     else
       _ -> {ctx, tools}
     end
@@ -183,9 +194,34 @@ defmodule Nous.Plugins.DecisionGuard do
 
   # ── user input ─────────────────────────────────────────────────────────────
 
-  defp check_user_input(input, index, ctx, tools, config, surface) do
-    start = System.monotonic_time()
+  # A step boundary can add several user messages at once (an inbox batch, or
+  # a run started with several new messages), so every one of them is
+  # classified, oldest first. The worst verdict wins: the first deny stops the
+  # scan and refuses the whole batch. Escalations are resolved only when
+  # nothing was denied, so no handler is asked about a batch that is refused
+  # anyway.
+  defp check_user_inputs([], ctx, tools, _config, _surface), do: {ctx, tools}
+
+  defp check_user_inputs(inputs, ctx, tools, config, surface) do
+    surface = Map.put_new(surface, :on_escalate, config.on_escalate)
+    checks = classify_all(inputs, ctx, config, surface)
+
+    {ctx_and_tools, outcomes} =
+      case Enum.find(checks, &(&1.verdict == :deny)) do
+        %{result: result} ->
+          {block(result.reason, ctx, tools), Enum.map(checks, fn _ -> :deny end)}
+
+        nil ->
+          resolve_escalations(checks, ctx, tools, surface)
+      end
+
+    Enum.zip_with(checks, outcomes, &emit_check/2)
+    ctx_and_tools
+  end
+
+  defp classify_all(inputs, ctx, config, surface) do
     opts = strategy_opts(config, surface)
+    on_error = surface[:on_error] || config.on_error
 
     strategies =
       [{Strategies.DecisionModel, opts}] ++
@@ -198,54 +234,94 @@ defmodule Nous.Plugins.DecisionGuard do
       strategy_timeout: engine_timeout(opts)
     }
 
+    inputs
+    |> Enum.reduce_while([], fn {input, index}, checks ->
+      check = classify(input, index, ctx, engine_config, on_error)
+      if check.verdict == :deny, do: {:halt, [check | checks]}, else: {:cont, [check | checks]}
+    end)
+    |> Enum.reverse()
+  end
+
+  defp classify(input, index, ctx, engine_config, on_error) do
+    start = System.monotonic_time()
+
     result =
       Engine.run(input, ctx, engine_config,
         telemetry_prefix: [:nous, :decision_guard],
         label: "DecisionGuard"
       )
 
-    verdict = Map.fetch!(@verdicts, result.severity)
-    surface = Map.put_new(surface, :on_escalate, config.on_escalate)
-    {ctx_and_tools, outcome} = act(verdict, result, input, index, ctx, tools, surface)
-
     model_info = if result.strategy == Strategies.DecisionModel, do: result.metadata, else: %{}
 
-    emit_verdict(:user_input, System.monotonic_time() - start, %{
-      verdict: verdict,
-      result: outcome,
-      probabilities: Map.get(model_info, :probabilities, %{}),
-      canary_failed: Map.get(model_info, :canary_failed, 0),
-      chunk_count: Map.get(model_info, :chunk_count, 0),
-      error: nil
-    })
+    # A strategy that produced no verdict (killed at the engine's timeout) is
+    # a decision-model error: it follows :on_error, never an escalation whose
+    # handler would judge input nobody classified.
+    {verdict, error} =
+      if result.metadata[:fail_closed],
+        do: {on_error, result.reason},
+        else: {Map.fetch!(@verdicts, result.severity), Map.get(model_info, :error)}
 
-    ctx_and_tools
+    %{
+      input: input,
+      index: index,
+      result: result,
+      verdict: verdict,
+      error: error,
+      model_info: model_info,
+      duration: System.monotonic_time() - start
+    }
   end
 
-  defp act(:allow, _result, _input, _index, ctx, tools, _surface), do: {{ctx, tools}, :allow}
+  # → {{ctx, tools}, [outcome per check]}. The first escalation that is not
+  # approved refuses the batch.
+  defp resolve_escalations(checks, ctx, tools, surface) do
+    checks
+    |> Enum.reduce_while({ctx, []}, fn check, {ctx, outcomes} ->
+      case resolve(check, ctx, surface) do
+        {:ok, ctx, outcome} -> {:cont, {ctx, [outcome | outcomes]}}
+        {:block, reason} -> {:halt, {:block, reason, ctx}}
+      end
+    end)
+    |> case do
+      {:block, reason, ctx} -> {block(reason, ctx, tools), Enum.map(checks, fn _ -> :deny end)}
+      {ctx, outcomes} -> {{ctx, tools}, Enum.reverse(outcomes)}
+    end
+  end
 
-  defp act(:deny, result, _input, _index, ctx, tools, _surface),
-    do: {block(result.reason, ctx, tools), :deny}
+  defp resolve(%{verdict: :allow}, ctx, _surface), do: {:ok, ctx, :allow}
 
-  defp act(:escalate, result, input, index, ctx, tools, surface) do
+  defp resolve(%{verdict: :escalate, result: result} = check, ctx, surface) do
     info = %{
       surface: :user_input,
-      content: input,
+      content: check.input,
       reason: result.reason,
       probabilities: Map.get(result.metadata, :probabilities, %{})
     }
 
+    # Only a string :content is an edit of user input; any other edit (an
+    # empty map, a hook surface's :arguments / :result / :response) is not an
+    # approval and blocks.
     case escalate(surface[:on_escalate], info) do
       :allow ->
-        {{ctx, tools}, :allow}
+        {:ok, ctx, :allow}
 
       {:edit, %{content: content}} when is_binary(content) ->
-        {{replace_content(ctx, index, content), tools}, :modify}
+        {:ok, replace_content(ctx, check.index, content), :modify}
 
       _ ->
-        reason = "#{result.reason || "flagged"}; escalated and not approved"
-        {block(reason, ctx, tools), :deny}
+        {:block, "#{result.reason || "flagged"}; escalated and not approved"}
     end
+  end
+
+  defp emit_check(check, outcome) do
+    emit_verdict(:user_input, check.duration, %{
+      verdict: check.verdict,
+      result: outcome,
+      probabilities: Map.get(check.model_info, :probabilities, %{}),
+      canary_failed: Map.get(check.model_info, :canary_failed, 0),
+      chunk_count: Map.get(check.model_info, :chunk_count, 0),
+      error: check.error
+    })
   end
 
   defp escalate(fun, info) when is_function(fun, 1) do

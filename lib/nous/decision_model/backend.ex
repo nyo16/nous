@@ -38,7 +38,7 @@ defmodule Nous.DecisionModel.Backend do
       questions) must fit in. Without it, `Nous.DecisionModel.max_state_tokens/1`
       returns a default.
     * `c:count_tokens/2` - exact token count for a text. Without it,
-      `Nous.DecisionModel.count_tokens/2` estimates 1.3 bytes per token.
+      `Nous.DecisionModel.count_tokens/2` assumes one token per byte.
     * `c:child_spec/1` - for backends that own a process (a loaded model).
 
   ## Example
