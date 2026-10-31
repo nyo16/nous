@@ -1,0 +1,25 @@
+{
+  "result": {
+    "model": "clef-flash",
+    "answers": {
+      "prompt_injection": {"type": "noul", "noul": 0.031},
+      "verdict": {
+        "type": "choice",
+        "choice": "safe",
+        "probabilities": {"safe": 0.91, "suspicious": 0.06, "blocked": 0.03},
+        "confidence": 0.82
+      },
+      "severity": {
+        "type": "score",
+        "score": 0.4,
+        "legend": {"0": "none", "1": "minor", "2": "major"},
+        "probabilities": {"0": 0.7, "1": 0.2, "2": 0.1},
+        "confidence": 0.41
+      }
+    },
+    "usage": {"input_tokens": 187, "output_tokens": 0}
+  },
+  "success": true,
+  "errors": [],
+  "messages": []
+}

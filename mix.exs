@@ -368,6 +368,17 @@ defmodule Nous.MixProject do
           Nous.ModelDispatcher,
           Nous.Fallback
         ],
+        "Decision Models": [
+          Nous.DecisionModel,
+          Nous.DecisionModel.Question,
+          Nous.DecisionModel.Answer,
+          Nous.DecisionModel.Result,
+          Nous.DecisionModel.Defang,
+          Nous.DecisionModel.Backend,
+          Nous.DecisionModel.Backend.SystemOne,
+          Nous.DecisionModel.Backend.OpenAIDecisions,
+          Nous.DecisionModel.Backend.LlamaCpp
+        ],
         Providers: [
           Nous.Provider,
           Nous.Providers.HTTP,
@@ -466,6 +477,7 @@ defmodule Nous.MixProject do
           Nous.Errors.ConfigurationError,
           Nous.Errors.ModelError,
           Nous.Errors.ProviderError,
+          Nous.Errors.DecisionModelError,
           Nous.Errors.ToolError,
           Nous.Errors.ToolTimeout,
           Nous.Errors.ValidationError,
