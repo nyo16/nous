@@ -108,7 +108,8 @@ defmodule Nous.AgentRunner do
     * `:message_history` - Previous messages
     * `:usage_limits` - Usage limits (not implemented yet)
     * `:model_settings` - Override model settings
-    * `:max_iterations` - Maximum iterations (default: 10)
+    * `:max_iterations` - Maximum iterations (default: the agent's
+      `:max_iterations`, else 10)
     * `:cancellation_check` - Function to check if execution should be cancelled.
       Under `stream: true`, also invoked between every streamed chunk; on
       cancellation the consumer aborts cleanly without partial tool execution.
@@ -552,7 +553,8 @@ defmodule Nous.AgentRunner do
           messages: messages,
           system_prompt: system_prompt,
           deps: Keyword.get(opts, :deps, %{}),
-          max_iterations: Keyword.get(opts, :max_iterations, @max_iterations),
+          max_iterations:
+            Keyword.get(opts, :max_iterations, agent.max_iterations || @max_iterations),
           callbacks: Keyword.get(opts, :callbacks, %{}),
           notify_pid: Keyword.get(opts, :notify_pid),
           agent_name: agent.name,
