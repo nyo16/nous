@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`kb_health_check` and the health workflow only count this knowledge
+  base's links** (#97). In a store shared by several `kb_id`s,
+  `total_links` summed every knowledge base's links, and an entry linked
+  only from another knowledge base was not reported as an orphan. A link
+  now counts only when both of its ends are entries of the configured
+  `kb_id`. Two orphan-check bugs are fixed with it:
+  - An entry with only incoming links was reported as an orphan, because
+    incoming links were read through a callback no store implements.
+  - On a store module that had not been loaded yet, the link callback was
+    never found, so the check saw zero links and flagged every entry
+    without source documents.
+
+### Changed
+
+- **`Nous.KnowledgeBase.Store`: the optional `link_endpoints/1` callback
+  replaces `link_counts_by_source/1`** (#97). Per-source counts cannot tell
+  whether a link stays inside a knowledge base; `{from, to}` pairs can. The
+  ETS store implements it. A custom backend that only defines
+  `link_counts_by_source/1` keeps compiling and keeps getting correct
+  results, through the per-entry `outlinks/2` path; implement
+  `link_endpoints/1` for the single-scan path.
+
 ## [0.19.0] - 2026-10-31
 
 Tool calling for local `llamacpp:` models, a security floor for

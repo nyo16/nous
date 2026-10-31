@@ -107,21 +107,22 @@ defmodule Nous.KnowledgeBase.Store do
               {:ok, [Entry.t()]}
 
   @doc """
-  Optional bulk callback for getting all link counts grouped by source entry.
+  Optional bulk callback: every link as `{from_entry_id, to_entry_id}`.
 
-  Backends that can answer "for every entry, how many outgoing links does
-  it have?" with a single scan should implement this for O(L) instead of
-  O(E*L) health checks. Falls back to per-entry `outlinks/2` when not
-  implemented (the default in the macro below). Returns
-  `{:ok, %{entry_id => count}}`.
+  The health check (`kb_health_check`) and the health workflow scope links
+  to one knowledge base by keeping only pairs with both ends among its
+  entries. A backend that can list the pairs in a single scan should
+  implement this. Without it they call `outlinks/2` once per entry of the
+  knowledge base, which is O(entries × links) on a backend whose
+  `outlinks/2` scans the link table.
   """
-  @callback link_counts_by_source(state :: term()) ::
-              {:ok, %{optional(String.t()) => non_neg_integer()}}
+  @callback link_endpoints(state :: term()) ::
+              {:ok, [{from_entry_id :: String.t(), to_entry_id :: String.t()}]}
 
   @optional_callbacks [
     search_entries: 3,
     related_entries: 3,
-    link_counts_by_source: 1,
+    link_endpoints: 1,
     fetch_entry_by_slug: 3
   ]
 end
