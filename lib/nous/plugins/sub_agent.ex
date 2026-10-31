@@ -135,7 +135,9 @@ defmodule Nous.Plugins.SubAgent do
     # generation that hands out queued operator steering messages. Forwarding
     # it under `:all` would let a sub-agent consume the operator's steering
     # intended for the parent run.
-    :claim_inbox
+    :claim_inbox,
+    # DecisionGuard's "checked up to here" marker belongs to the parent's log.
+    :decision_guard_checked
   ]
 
   # Confinement deps are execution policy, not data: a sub-agent must stay

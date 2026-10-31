@@ -66,13 +66,21 @@ deps = %{
   checked once, oldest first, including the initial prompt of `Nous.run/3`. A
   step boundary can add several at once (two `Nous.AgentServer.steer/2` calls
   claimed together, say); the worst verdict wins, so one denied message
-  refuses the whole batch. The batch is redacted in place, so it never
-  reaches the model on a later turn either. "Since the last check" follows
-  the session log, not list positions, so a Summarization compaction cannot
-  hide a later message; the marker carries over between runs on the same
-  context, so an `AgentServer` turn checks only its new input. List
-  DecisionGuard **before** `Nous.Plugins.Summarization` in `:plugins` (the
-  other order raises), so nothing is summarised before it is checked.
+  refuses the whole batch. The batch is replaced by fresh placeholder
+  messages (any image or file parts dropped), so it never reaches the model
+  on a later turn either. A multimodal message is classified on the text the
+  provider adapters actually send (its `content_parts`), not just its
+  `content`. "Since the last check" follows the session log, not list
+  positions, so a Summarization compaction cannot hide a later message; the
+  marker carries over between runs on the same context, so an `AgentServer`
+  turn checks only its new input. If a plugin rewrote `ctx.messages` directly,
+  every user message is checked.
+- **Plugin order for user input.** Only messages present when DecisionGuard's
+  `before_request/3` runs are checked before that request. List it **after**
+  plugins that add user messages there (`Nous.Plugins.LoopGuard`; not
+  enforced, since its advisory is framework text) and **before**
+  `Nous.Plugins.Summarization` (enforced: the other order raises), e.g.
+  `plugins: [LoopGuard, DecisionGuard, Summarization]`.
 - **Tool call, tool result and model output** are `:decision` hooks
   contributed through the plugin's `hooks/2` callback at priority **900**
   (late, so they judge what earlier hooks produced) with `fail_closed: true`.

@@ -7,6 +7,7 @@ defmodule Nous.Plugins.DecisionGuardTest do
   use ExUnit.Case, async: false
 
   alias Nous.{Agent, AgentRunner, Tool}
+  alias Nous.Message.ContentPart
   alias Nous.Errors.ResponseDenied
   alias Nous.Plugins.DecisionGuard
   alias Nous.Plugins.DecisionGuard.Packs
@@ -47,6 +48,28 @@ defmodule Nous.Plugins.DecisionGuardTest do
 
     def request_stream(_model, _messages, _settings), do: {:ok, []}
     def count_tokens(_messages), do: 10
+  end
+
+  # A legacy plugin that writes `ctx.messages` directly, before the guard
+  # runs: `{:prepend, text}` puts a user message at the head; `{:swap_system,
+  # text}` turns the leading system message into a user message (same length).
+  defmodule ViewWriter do
+    @behaviour Nous.Plugin
+
+    alias Nous.Message
+
+    @impl true
+    def before_request(_agent, ctx, tools) do
+      {mode, text} = ctx.deps.view_writer
+
+      messages =
+        case {mode, ctx.messages} do
+          {:prepend, messages} -> [Message.user(text) | messages]
+          {:swap_system, [%Message{role: :system} | rest]} -> [Message.user(text) | rest]
+        end
+
+      {%{ctx | messages: messages}, tools}
+    end
   end
 
   setup do
@@ -250,7 +273,14 @@ defmodule Nous.Plugins.DecisionGuardTest do
     # A `claim_inbox` dep that hands each of `batches` over at successive step
     # boundaries, as `Nous.AgentServer.steer/2` calls between steps do.
     defp inbox_batches(batches) do
-      batches = Enum.map(batches, fn texts -> Enum.map(texts, &Nous.Message.user/1) end)
+      batches =
+        Enum.map(batches, fn batch ->
+          Enum.map(batch, fn
+            %Nous.Message{} = message -> message
+            text -> Nous.Message.user(text)
+          end)
+        end)
+
       {:ok, inbox} = Elixir.Agent.start_link(fn -> batches end)
 
       fn
@@ -439,6 +469,105 @@ defmodule Nous.Plugins.DecisionGuardTest do
 
       assert_raise ArgumentError, ~r/must come before Nous.Plugins.Summarization/, fn ->
         AgentRunner.run(agent, "hi", deps: deps(fn _ -> 0.0 end))
+      end
+    end
+
+    test "parts that carry an injection the message's content hides are classified", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("never"))
+
+      # The adapters send `metadata.content_parts`, not `content`.
+      divergent =
+        Nous.Message.user("hello there",
+          metadata: %{content_parts: [ContentPart.text("please MALICIOUS do this")]}
+        )
+
+      deps =
+        deps(flag_user_input("MALICIOUS"), pattern_ensemble: false) |> with_inbox([divergent])
+
+      assert {:ok, _} = AgentRunner.run(agent(bypass), "hi", deps: deps)
+
+      refute_received {:chat_request, _, _}
+      assert Enum.any?(classified_user_input(), &(&1 =~ "please MALICIOUS do this"))
+    end
+
+    test "a denied multimodal message reaches no later request, by content or parts", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("the answer"))
+      deps = deps(flag_user_input("MALICIOUS"), pattern_ensemble: false)
+
+      parts = [
+        ContentPart.text("please MALICIOUS do this"),
+        ContentPart.image_url("https://example.com/cat.png")
+      ]
+
+      assert {:ok, first} = AgentRunner.run(agent(bypass), parts, deps: deps)
+      refute_received {:chat_request, _, _}
+
+      assert {:ok, _} =
+               AgentRunner.run(agent(bypass), "what is 2 + 2?",
+                 context: first.context,
+                 deps: deps
+               )
+
+      assert_received {:chat_request, 1, body}
+      wire = JSON.encode!(body)
+      assert wire =~ "what is 2 + 2?"
+      assert wire =~ "[user message blocked by DecisionGuard]"
+      refute wire =~ "MALICIOUS"
+      refute wire =~ "cat.png"
+    end
+
+    test "an escalation edit of a multimodal message sends only the edit", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      chat_endpoint(bypass, pid, always("ok"))
+      on_escalate = fn _info -> {:edit, %{content: "a sanitized question"}} end
+
+      parts = [
+        ContentPart.text("borderline text"),
+        ContentPart.image_url("https://example.com/cat.png")
+      ]
+
+      assert {:ok, _} =
+               AgentRunner.run(agent(bypass), parts,
+                 deps: deps(fn _ -> 0.5 end, on_escalate: on_escalate)
+               )
+
+      assert_received {:chat_request, 1, body}
+      wire = JSON.encode!(body)
+      assert wire =~ "a sanitized question"
+      refute wire =~ "borderline text"
+      refute wire =~ "cat.png"
+    end
+
+    test "a user message an earlier plugin writes straight into the view is classified", %{
+      bypass: bypass,
+      test_pid: pid
+    } do
+      for mode <- [:prepend, :swap_system] do
+        chat_endpoint(bypass, pid, always("never"))
+
+        agent =
+          Agent.new("lmstudio:test-model",
+            base_url: "http://localhost:#{bypass.port}/v1",
+            instructions: "Be helpful",
+            plugins: [ViewWriter, DecisionGuard]
+          )
+
+        deps =
+          deps(flag_user_input("MALICIOUS"), pattern_ensemble: false)
+          |> Map.put(:view_writer, {mode, "please MALICIOUS do this"})
+
+        assert {:ok, _} = AgentRunner.run(agent, "hi", deps: deps)
+
+        refute_received {:chat_request, _, _}
+        assert "please MALICIOUS do this" in classified_user_input()
       end
     end
 
@@ -1138,6 +1267,22 @@ defmodule Nous.Plugins.DecisionGuardTest do
         assert [_] = surface_states("user_input")
         assert child_requests() == []
       end
+    end
+
+    test "the checked marker is never forwarded to a child, even under :all", %{
+      template: template
+    } do
+      deps =
+        deps(fn _ -> 0.0 end)
+        |> Map.merge(%{
+          sub_agent_shared_deps: :all,
+          decision_guard_checked: %{count: 9, anchor: 1}
+        })
+
+      refute Map.has_key?(
+               SubAgent.compute_sub_deps(parent_ctx(template, deps).deps),
+               :decision_guard_checked
+             )
     end
   end
 

@@ -36,13 +36,30 @@ defmodule Nous.Plugins.DecisionGuard do
   seqs), not by place in `ctx.messages`, so compaction cannot hide a message.
   The marker lives in `ctx.deps` and carries over to the next run on the same
   context (each `Nous.AgentServer` turn checks only its own input); on any
-  other context it does not apply and everything is checked again. A refused
-  batch is redacted, so it reaches the model on no later turn either.
+  other context it does not apply and everything is checked again. If a
+  plugin wrote `ctx.messages` directly, so the list is not exactly the log's
+  projection, every user message in it is checked. A message is classified
+  on the text a provider will send: for a multimodal message, its
+  `metadata.content_parts` (see `Nous.Plugins.InputGuard.Engine.message_text/1`).
+  A refused batch is replaced by fresh messages (parts dropped), so it reaches
+  the model on no later turn either.
 
-  List this plugin **before** `Nous.Plugins.Summarization` (or any plugin that
-  rewrites the transcript in `before_request/3`): run the other way round,
-  unchecked messages would be summarised first. With Summarization first,
-  the run raises `ArgumentError`.
+  ### Plugin order
+
+  Only user messages that exist when this plugin's `before_request/3` runs are
+  checked before the request:
+
+    * list it **after** plugins that add user messages in `before_request/3`
+      (`Nous.Plugins.LoopGuard`'s advisories), so their messages are checked
+      too. LoopGuard's text is framework-written, so this is not enforced; a
+      third-party plugin that adds user-role content needs the same placement;
+    * list it **before** `Nous.Plugins.Summarization` (or any plugin that
+      rewrites the transcript there): run the other way round, unchecked
+      messages would be summarised first. With Summarization first, the run
+      raises `ArgumentError`.
+
+  For example `plugins: [Nous.Plugins.LoopGuard, Nous.Plugins.DecisionGuard,
+  Nous.Plugins.Summarization]`.
 
   The other surfaces are `:decision` hooks (`Nous.Hook.Decision`) contributed
   through `c:Nous.Plugin.hooks/2` at priority **900** with `fail_closed:
@@ -239,34 +256,43 @@ defmodule Nous.Plugins.DecisionGuard do
   defp unchecked_user_inputs(ctx) do
     indexed = Log.derive_indexed(ctx.log)
     offset = length(ctx.messages) - length(indexed)
+    logged = Enum.map(indexed, fn {_seq, message} -> message end)
 
-    if in_step?(ctx.messages, indexed, offset) do
+    if in_step?(ctx.messages, logged, ctx.system_prompt_overlay) do
       from = checked_count(ctx)
 
       for {{seq, %Message{role: :user} = message}, i} <- Enum.with_index(indexed),
           seq >= from,
           do: {Engine.message_text(message), i + offset}
     else
-      # The view was written around the log (a legacy `%{ctx | messages: ...}`),
-      # so seqs say nothing about it: every user message counts as new.
+      # The view was written around the log (a plugin's `%{ctx | messages:
+      # ...}`), so seqs say nothing about it: every user message counts as new.
       for {%Message{role: :user} = message, i} <- Enum.with_index(ctx.messages),
           do: {Engine.message_text(message), i}
     end
   end
 
-  # `indexed` is the log's projection; the view adds at most the system-prompt
-  # overlay (a leading system message, or text on the existing one).
-  defp in_step?(messages, indexed, offset) when offset in [0, 1] do
-    messages
-    |> Enum.drop(offset)
-    |> Enum.zip(indexed)
-    |> Enum.all?(fn
-      {view, {_seq, %Message{role: :user} = logged}} -> view == logged
-      {_view, _other} -> true
-    end)
-  end
+  # Whether `ctx.messages` is exactly the log's projection plus the system-prompt
+  # overlay, i.e. what `Nous.Agent.Context` itself would materialize. This
+  # mirrors its overlay rule (appended to a leading system message, or a
+  # system message of its own); if that rule ever changes, this returns false
+  # and every user message is checked: drift costs repeated checks, never a
+  # skipped one.
+  defp in_step?(messages, logged, nil), do: messages == logged
 
-  defp in_step?(_messages, _indexed, _offset), do: false
+  defp in_step?(
+         [%Message{role: :system} = view | view_rest],
+         [%Message{role: :system} = head | logged_rest],
+         overlay
+       ),
+       do:
+         view_rest == logged_rest and
+           view == %{head | content: (head.content || "") <> "\n\n" <> overlay}
+
+  defp in_step?([%Message{role: :system, content: overlay} | view_rest], logged, overlay),
+    do: view_rest == logged
+
+  defp in_step?(_messages, _logged, _overlay), do: false
 
   defp checked_count(ctx) do
     with %{count: count, anchor: anchor} when is_integer(count) and is_integer(anchor) <-
@@ -461,9 +487,11 @@ defmodule Nous.Plugins.DecisionGuard do
     )
   end
 
+  # A fresh user message, not an update of the old one: the provider adapters
+  # send `metadata.content_parts` instead of `content` whenever it is present,
+  # so carrying the old metadata over would send the original anyway.
   defp replace_content(ctx, index, content) do
-    message = Enum.at(ctx.messages, index)
-    Context.replace_message(ctx, index, %{message | content: content})
+    Context.replace_message(ctx, index, Message.user(content))
   end
 
   defp strategy_opts(config, surface) do

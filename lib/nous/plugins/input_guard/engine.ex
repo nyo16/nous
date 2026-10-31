@@ -27,6 +27,7 @@ defmodule Nous.Plugins.InputGuard.Engine do
 
   alias Nous.Agent.Context
   alias Nous.Message
+  alias Nous.Message.ContentPart
   alias Nous.Plugins.InputGuard.Result
   alias Nous.Plugins.InputGuard.Strategies.Pattern
 
@@ -81,11 +82,33 @@ defmodule Nous.Plugins.InputGuard.Engine do
   end
 
   @doc """
-  The text a guard classifies for `message`: its content, or its text parts
-  joined with spaces.
+  The text a guard classifies for `message`: what a provider will read.
+
+  The OpenAI, Anthropic and Gemini adapters send `metadata.content_parts`
+  instead of `content` whenever it is a list, so for such a message the parts
+  are classified (each as the adapters render it as text, joined with spaces).
+  `content` is added when it says something the parts do not: a message whose
+  two halves disagree must not pass on the half that is never sent. Otherwise
+  this is `content`, or its text parts joined with spaces.
   """
   @spec message_text(Message.t()) :: String.t()
+  def message_text(%Message{metadata: %{content_parts: parts}} = message) when is_list(parts) do
+    parts_text = Enum.map_join(parts, " ", &part_text/1)
+    content = extract_text(message)
+
+    # `Message.user/2` stores `ContentPart.to_text(parts)` as `content`.
+    if content in ["", parts_text, Enum.map_join(parts, &part_text/1)],
+      do: parts_text,
+      else: content <> "\n" <> parts_text
+  end
+
   def message_text(%Message{} = message), do: extract_text(message)
+
+  # `ContentPart.to_text/1` of one part is exactly what the OpenAI adapter sends
+  # for a part it has no native shape for. Anything that is not a part is
+  # classified as inspected rather than crashing the guard.
+  defp part_text(%ContentPart{} = part), do: ContentPart.to_text([part])
+  defp part_text(other), do: inspect(other)
 
   defp extract_text(%Message{content: content}) when is_binary(content), do: content
 
