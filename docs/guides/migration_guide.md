@@ -9,19 +9,21 @@ to change something.
 
 | | |
 |---|---|
-| Current version | `0.17.0` |
+| Current version | `0.18.0` |
 | Elixir | `~> 1.18` |
 
 ```elixir
 defp deps do
-  [{:nous, "~> 0.17.0"}]
+  [{:nous, "~> 0.18.0"}]
 end
 ```
 
 Boundaries are cumulative: if you are skipping versions, read every section
-between your current version and your target in order. Only **0.16.1** is
-formally breaking. **0.16.3** and **0.16.5** tighten security defaults, which
-can change the behaviour of a working setup — those are called out inline.
+between your current version and your target in order. **0.16.1** and
+**0.18.0** are formally breaking, and **0.17.1** / **0.17.2** shipped breaking
+removals and renames despite their patch numbers. **0.16.3**, **0.16.5** and
+**0.17.2** tighten security defaults, which can change the behaviour of a
+working setup — those are called out inline.
 
 ## Contents
 
@@ -30,6 +32,8 @@ can change the behaviour of a working setup — those are called out inline.
 - [0.16.1 to 0.16.2](#0161-to-0162) — four deprecations, AgentServer PubSub topic
 - [0.16.2 to 0.16.5](#0162-to-0165) — approval-gate and InputGuard defaults
 - [0.16.5 to 0.17.0](#0165-to-0170) — `parallel_tool_calls`, AgentRunner split
+- [0.17.0 to 0.17.3](#0170-to-0173) — **breaking**: dead memory stores removed, guard modules renamed, `net_runner` optional, sub-agent and LLMJudge defaults
+- [0.17.3 to 0.18.0](#0173-to-0180) — **breaking**: hook semantics, `:post_response` blocking, dependency floors
 - [Related guides](#related-guides)
 
 ## 0.15.x to 0.16.0
@@ -512,6 +516,109 @@ match on module names in stack traces or telemetry metadata.
   `floki` is an optional dependency (`{:floki, "~> 0.36", optional: true}`); if
   you use either tool, declare it in your own `mix.exs`. Apps that do not
   depend on Floki now compile without the undefined-module warnings.
+
+## 0.17.0 to 0.17.3
+
+These shipped as patch releases but contain breaking removals and renames.
+Read this section if you are coming from 0.17.0.
+
+### 0.17.1: three memory stores deleted
+
+`Nous.Memory.Store.Muninn`, `Nous.Memory.Store.Zvec` and
+`Nous.Memory.Store.Hybrid` are gone. They called functions no published
+`muninn` or `zvec` release has ever exported, so no working code can have
+depended on them. For Tantivy BM25 or HNSW vector search, implement the
+`Nous.Memory.Store` behaviour in your application (see the
+[memory guide](memory.md)).
+
+### 0.17.2: Bumblebee embeddings move to an example
+
+`Nous.Memory.Embedding.Bumblebee` moved to
+`examples/memory/bumblebee_embedding.ex`. Copy it into your app, add
+`bumblebee`/`exla` to your deps, start its `Registry` and `ServingSupervisor`
+in your supervision tree, and replace
+`embedding: Nous.Memory.Embedding.Bumblebee` with your module.
+
+### 0.17.2: guard and Code Mode modules renamed
+
+| Before | After |
+|---|---|
+| `Nous.Tools.UrlGuard` | `Nous.UrlGuard` |
+| `Nous.Tools.PathGuard` | `Nous.PathGuard` |
+| `Nous.Tools.RunCode` | `Nous.CodeMode.RunCodeTool` |
+
+Behaviour is unchanged and there are no aliases: search and replace. Apps
+rarely reference `RunCode` directly, since the runner injects it.
+
+### 0.17.2: `net_runner` is optional
+
+`Nous.Tools.Bash` and `:command` hooks need it. If you use either, add
+`{:net_runner, "~> 1.0"}` to your deps. Without it both fail closed: Bash
+refuses to run and `:command` hooks deny their events.
+
+### 0.17.2: security defaults that change behaviour
+
+- **Sub-agents inherit confinement and execution policy.** The parent's
+  `:workspace_root`, `:session_id`, sandbox, permission policy and approval
+  handler now always reach `delegate_task` / `spawn_agents` children; a
+  template can only narrow them. Sub-agents that used to run unsandboxed under
+  a sandboxed parent are now confined.
+- **Sub-agent spawning is bounded.** An inline `model` argument must be in
+  `:sub_agent_allowed_models` (default: the parent's model), a `spawn_agents`
+  call may carry at most `:sub_agent_max_tasks` (10) tasks, and delegation
+  stops at `:sub_agent_max_depth` (2). Each limit refuses with a tool error.
+- **`InputGuard.Strategies.LLMJudge` defaults to `on_error: :drop`.** A judge
+  that can't produce a verdict no longer reads as `:safe`; under `:any`
+  aggregation the input is flagged `:suspicious`. Set `on_error: :safe` to
+  restore fail-open.
+
+## 0.17.3 to 0.18.0
+
+Breaking hook semantics and two dependency floors, plus the new decision-model
+features (additive; see [Decision Models](decision_models.md),
+[DecisionGuard](decision_guard.md)).
+
+### Dependency floors
+
+- **`hackney ~> 4.9`** (optional HTTP backend; security fixes). If your app
+  pins an older 4.x, raise it. hackney 4.9 caps bodies it buffers at 512 MiB.
+- **`llama_cpp_ex ~> 0.8.58`** (optional local inference). Apps pinning an
+  older release must update; the `llamacpp:` chat provider is otherwise
+  unchanged.
+
+### Hooks
+
+- **`:post_response` is blocking.** A `:deny` now ends the run with
+  `{:error, %Nous.Errors.ResponseDenied{}}` (previously ignored), and the hook
+  runs *before* `:on_llm_new_message` callbacks and plugins'
+  `after_response/3`. `{:modify, %{response: text}}` rewrites the response.
+  A logging hook that returns `:ok` is treated as `:allow`. Under
+  `stream: true`, deltas already emitted cannot be recalled.
+- **`Hook.timeout` is enforced for `:function` / `:module` hooks** (default
+  10 s). The handler runs in a task, so `self()` and the process dictionary are
+  not the run's. Set `timeout: :infinity` for a hook that needs them.
+  `Hook.new/2` raises on a timeout that is neither a non-negative integer nor
+  `:infinity`.
+- **Equal-priority hooks run in registration order** (they ran in reverse).
+  Agent hooks run before plugin-contributed hooks at the same priority.
+- **The hook registry is rebuilt every run** from `agent.hooks` plus every
+  plugin's `c:Nous.Plugin.hooks/2`. A `ctx.hook_registry` you set by hand is
+  kept only when neither contributes a hook; put your hooks in `:hooks`
+  instead.
+- **`fail_closed: true` applies to `:post_tool_use`:** an erroring hook
+  withholds the tool result instead of leaking it.
+- **Non-blocking hooks see earlier hooks' modifications.**
+- **With `parallel_tool_calls: true`, `:pre_tool_use` hooks of one response
+  run concurrently.** Approvals stay serial.
+
+### Fallback and runs
+
+- `:active_model` is runtime-only: it is no longer in `result.deps` or a
+  persisted context, and every run starts at the primary model. Code that read
+  `result.deps[:active_model]` should use the `[:nous, :agent, :fallback,
+  :used]` telemetry event instead.
+- `run_with_context/3` (and `Nous.AgentServer` inbox runs) now build the hook
+  registry from `agent.hooks`, so hooks fire after a session restore.
 
 ## Related guides
 

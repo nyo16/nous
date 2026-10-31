@@ -4,7 +4,7 @@
 
 ```elixir
 Mix.install([
-  {:nous, "~> 0.17"},
+  {:nous, "~> 0.18"},
   {:kino, "~> 0.14"}
 ])
 ```
