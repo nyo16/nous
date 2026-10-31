@@ -278,4 +278,121 @@ defmodule Nous.KnowledgeBase.ToolsTest do
       assert String.contains?(result.content, "marp: true")
     end
   end
+
+  # Issue #88: two namespaces sharing one store. Driven through
+  # Nous.ToolExecutor with a RunContext, the way the agent loop calls the tools.
+  describe "kb_id isolation (#88)" do
+    # A third-party store that predates fetch_entry_by_slug/3: only the
+    # unscoped /2 lookups exist, so isolation rests on the post-fetch check.
+    defmodule LegacySlugStore do
+      alias Nous.KnowledgeBase.Store.ETS
+
+      defdelegate fetch_entry_by_slug(state, slug), to: ETS
+      defdelegate fetch_entry(state, id), to: ETS
+      defdelegate store_link(state, link), to: ETS
+      defdelegate backlinks(state, entry_id), to: ETS
+    end
+
+    setup %{state: state} do
+      # Same title -> same slug in both namespaces. "b" writes last, so the
+      # store-wide slug index points at b's entry.
+      a_notes = Entry.new(%{title: "Shared Notes", content: "a's notes", kb_id: "a"})
+      a_other = Entry.new(%{title: "Roadmap", content: "a's roadmap", kb_id: "a"})
+      b_notes = Entry.new(%{title: "Shared Notes", content: "b's notes", kb_id: "b"})
+      b_secret = Entry.new(%{title: "Q3 Board Minutes", content: "b secret", kb_id: "b"})
+
+      for entry <- [a_notes, a_other, b_notes, b_secret], do: ETS.store_entry(state, entry)
+
+      %{a_notes: a_notes, a_other: a_other, b_notes: b_notes, b_secret: b_secret}
+    end
+
+    defp run_tool(state, kb_id, name, args, store \\ ETS) do
+      tool = Enum.find(Tools.all_tools(), &(&1.name == name))
+      ctx = Nous.RunContext.new(%{kb_config: %{store: store, store_state: state, kb_id: kb_id}})
+      {:ok, result, _update} = Nous.ToolExecutor.execute(tool, args, ctx)
+      result
+    end
+
+    test "kb_read can't see another namespace's entry by slug or id",
+         %{state: state, b_secret: b_secret} do
+      for key <- [b_secret.slug, b_secret.id] do
+        result = run_tool(state, "a", "kb_read", %{"slug_or_id" => key})
+        assert result.status == "not_found"
+        refute Map.has_key?(result, :content)
+      end
+    end
+
+    test "kb_read resolves a shared slug to the caller's own namespace",
+         %{state: state, a_notes: a_notes, b_notes: b_notes} do
+      result = run_tool(state, "a", "kb_read", %{"slug_or_id" => "shared-notes"})
+      assert result.id == a_notes.id
+      assert result.content == "a's notes"
+
+      result = run_tool(state, "b", "kb_read", %{"slug_or_id" => "shared-notes"})
+      assert result.id == b_notes.id
+
+      assert run_tool(state, "a", "kb_read", %{"slug_or_id" => a_notes.id}).id == a_notes.id
+    end
+
+    test "kb_link can't attach a link to another namespace's entry",
+         %{state: state, a_notes: a_notes, b_secret: b_secret} do
+      for {from, to} <- [{"shared-notes", b_secret.slug}, {b_secret.id, a_notes.id}] do
+        result = run_tool(state, "a", "kb_link", %{"from_slug" => from, "to_slug" => to})
+        assert result.status == "error"
+      end
+
+      assert {:ok, []} = ETS.backlinks(state, b_secret.id)
+      assert {:ok, []} = ETS.outlinks(state, b_secret.id)
+    end
+
+    test "kb_link within the namespace still links",
+         %{state: state, a_notes: a_notes, a_other: a_other} do
+      result =
+        run_tool(state, "a", "kb_link", %{"from_slug" => "roadmap", "to_slug" => "shared-notes"})
+
+      assert result.status == "linked"
+      assert {:ok, [link]} = ETS.backlinks(state, a_notes.id)
+      assert link.from_entry_id == a_other.id
+      assert link.kb_id == "a"
+    end
+
+    test "kb_backlinks can't see another namespace's entry or its links",
+         %{state: state, a_notes: a_notes, a_other: a_other, b_secret: b_secret} do
+      ETS.store_link(state, Link.new(%{from_entry_id: a_notes.id, to_entry_id: b_secret.id}))
+      # A cross-namespace link written straight into the store (e.g. before
+      # kb_link was scoped): its foreign source must not be listed.
+      ETS.store_link(state, Link.new(%{from_entry_id: b_secret.id, to_entry_id: a_notes.id}))
+      ETS.store_link(state, Link.new(%{from_entry_id: a_other.id, to_entry_id: a_notes.id}))
+
+      result = run_tool(state, "a", "kb_backlinks", %{"slug_or_id" => b_secret.slug})
+      assert result.status == "not_found"
+
+      result = run_tool(state, "a", "kb_backlinks", %{"slug_or_id" => "shared-notes"})
+      assert result.entry == "shared-notes"
+      assert Enum.map(result.backlinks, & &1.slug) == ["roadmap"]
+    end
+
+    test "a store without fetch_entry_by_slug/3 still never returns a foreign entry",
+         %{state: state, b_secret: b_secret} do
+      result =
+        run_tool(state, "a", "kb_read", %{"slug_or_id" => b_secret.slug}, LegacySlugStore)
+
+      assert result.status == "not_found"
+
+      result =
+        run_tool(
+          state,
+          "a",
+          "kb_link",
+          %{"from_slug" => "roadmap", "to_slug" => b_secret.id},
+          LegacySlugStore
+        )
+
+      assert result.status == "error"
+      assert {:ok, []} = ETS.backlinks(state, b_secret.id)
+
+      result = run_tool(state, "a", "kb_read", %{"slug_or_id" => "roadmap"}, LegacySlugStore)
+      assert result.content == "a's roadmap"
+    end
+  end
 end

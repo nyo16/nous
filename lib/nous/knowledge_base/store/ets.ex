@@ -153,6 +153,39 @@ defmodule Nous.KnowledgeBase.Store.ETS do
     end
   end
 
+  # The slug index is store-wide (slug -> id), so when two namespaces hold the
+  # same slug it points at whichever wrote last (and deleting one namespace's
+  # entry drops the slug for both). Serve an in-namespace index hit in O(1);
+  # otherwise fall back to a matchspec select on (slug, kb_id), which scans
+  # without copying non-matching rows - the same order of cost as kb_list.
+  @impl true
+  def fetch_entry_by_slug(state, slug, opts) do
+    case Keyword.get(opts, :kb_id) do
+      nil ->
+        fetch_entry_by_slug(state, slug)
+
+      kb_id ->
+        case fetch_entry_by_slug(state, slug) do
+          {:ok, %Entry{kb_id: ^kb_id}} = ok -> ok
+          _ -> select_entry_by_slug(state, slug, kb_id)
+        end
+    end
+  end
+
+  # slug is caller-supplied (LLM tool args), so compare it in a guard as a
+  # constant instead of splicing it into the match pattern.
+  defp select_entry_by_slug(state, slug, kb_id) do
+    spec = [
+      {{:_, %{slug: :"$1", kb_id: :"$2"}},
+       [{:"=:=", :"$1", {:const, slug}}, {:"=:=", :"$2", {:const, kb_id}}], [:"$_"]}
+    ]
+
+    case :ets.select(state.entries, spec, 1) do
+      {[{_id, entry}], _continuation} -> {:ok, entry}
+      :"$end_of_table" -> {:error, :not_found}
+    end
+  end
+
   @impl true
   def update_entry(state, id, updates) do
     case fetch_entry(state, id) do

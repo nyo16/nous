@@ -357,11 +357,7 @@ defmodule Nous.KnowledgeBase.Tools do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       slug_or_id = Map.fetch!(args, "slug_or_id")
 
-      result =
-        case store_mod.fetch_entry_by_slug(store_state, slug_or_id) do
-          {:ok, _} = ok -> ok
-          {:error, :not_found} -> store_mod.fetch_entry(store_state, slug_or_id)
-        end
+      result = resolve_entry(store_mod, store_state, slug_or_id, get_kb_id(ctx))
 
       case result do
         {:ok, entry} ->
@@ -498,15 +494,17 @@ defmodule Nous.KnowledgeBase.Tools do
       from_slug = Map.fetch!(args, "from_slug")
       to_slug = Map.fetch!(args, "to_slug")
 
-      with {:ok, from_entry} <- resolve_entry(store_mod, store_state, from_slug),
-           {:ok, to_entry} <- resolve_entry(store_mod, store_state, to_slug) do
+      kb_id = get_kb_id(ctx)
+
+      with {:ok, from_entry} <- resolve_entry(store_mod, store_state, from_slug, kb_id),
+           {:ok, to_entry} <- resolve_entry(store_mod, store_state, to_slug, kb_id) do
         link =
           Link.new(%{
             from_entry_id: from_entry.id,
             to_entry_id: to_entry.id,
             link_type: parse_link_type(Map.get(args, "link_type")),
             label: Map.get(args, "label"),
-            kb_id: get_kb_id(ctx)
+            kb_id: kb_id
           })
 
         case store_mod.store_link(store_state, link) do
@@ -538,14 +536,16 @@ defmodule Nous.KnowledgeBase.Tools do
   def kb_backlinks(ctx, args) do
     with {:ok, store_mod, store_state} <- get_store(ctx) do
       slug_or_id = Map.fetch!(args, "slug_or_id")
+      kb_id = get_kb_id(ctx)
 
-      with {:ok, entry} <- resolve_entry(store_mod, store_state, slug_or_id),
+      with {:ok, entry} <- resolve_entry(store_mod, store_state, slug_or_id, kb_id),
            {:ok, links} <- store_mod.backlinks(store_state, entry.id) do
-        # Fetch the source entries for each backlink
+        # Fetch the source entries for each backlink, dropping any outside
+        # this namespace (links created before kb_link was scoped).
         entries =
           links
           |> Enum.map(fn link ->
-            case store_mod.fetch_entry(store_state, link.from_entry_id) do
+            case in_kb(store_mod.fetch_entry(store_state, link.from_entry_id), kb_id) do
               {:ok, e} ->
                 %{
                   slug: e.slug,
@@ -742,12 +742,35 @@ defmodule Nous.KnowledgeBase.Tools do
     config[:kb_id]
   end
 
-  defp resolve_entry(store_mod, store_state, slug_or_id) do
-    case store_mod.fetch_entry_by_slug(store_state, slug_or_id) do
+  # Every point lookup an agent can trigger goes through here. An entry from
+  # another namespace is reported as :not_found (never returned, never linked),
+  # whether the store implements the scoped slug lookup or only the legacy /2
+  # callbacks. A nil kb_id means no namespace is configured - the same
+  # "unscoped" meaning kb_list/kb_search give it.
+  defp resolve_entry(store_mod, store_state, slug_or_id, kb_id) do
+    by_slug = fetch_by_slug(store_mod, store_state, slug_or_id, kb_id)
+
+    case in_kb(by_slug, kb_id) do
       {:ok, _} = ok -> ok
-      {:error, :not_found} -> store_mod.fetch_entry(store_state, slug_or_id)
+      {:error, :not_found} -> in_kb(store_mod.fetch_entry(store_state, slug_or_id), kb_id)
     end
   end
+
+  defp fetch_by_slug(store_mod, store_state, slug, nil),
+    do: store_mod.fetch_entry_by_slug(store_state, slug)
+
+  defp fetch_by_slug(store_mod, store_state, slug, kb_id) do
+    if function_exported?(store_mod, :fetch_entry_by_slug, 3) do
+      store_mod.fetch_entry_by_slug(store_state, slug, kb_id: kb_id)
+    else
+      store_mod.fetch_entry_by_slug(store_state, slug)
+    end
+  end
+
+  defp in_kb(result, nil), do: result
+  defp in_kb({:ok, %{kb_id: kb_id}} = ok, kb_id), do: ok
+  defp in_kb({:ok, _foreign}, _kb_id), do: {:error, :not_found}
+  defp in_kb(error, _kb_id), do: error
 
   defp update_store_state(ctx, new_state) do
     config = ctx.deps[:kb_config] || %{}

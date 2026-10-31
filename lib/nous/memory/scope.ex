@@ -40,4 +40,34 @@ defmodule Nous.Memory.Scope do
       scope -> scope
     end
   end
+
+  @doc """
+  Fetch the entry `id` from the store, but only if it lies inside `scope`
+  (as returned by `build/1`).
+
+  An entry outside the scope is reported as `{:error, :not_found}`, the same
+  as a missing one, so a caller acting on a model-supplied id can neither
+  touch nor confirm the existence of another scope's memory. Any other store
+  error is passed through.
+  """
+  @spec fetch_in_scope(module(), term(), String.t(), :global | map()) ::
+          {:ok, Nous.Memory.Entry.t()} | {:error, term()}
+  def fetch_in_scope(store_mod, store_state, id, scope) do
+    case store_mod.fetch(store_state, id) do
+      {:ok, entry} -> if contains?(scope, entry), do: {:ok, entry}, else: {:error, :not_found}
+      error -> error
+    end
+  end
+
+  @doc """
+  Whether `entry` lies inside `scope`: every scope field equals the entry's
+  field, the same exact-match filter the stores apply to `scope:` in
+  `search_text/3` and `list/2`. `:global` contains every entry.
+  """
+  @spec contains?(:global | map(), Nous.Memory.Entry.t()) :: boolean()
+  def contains?(:global, _entry), do: true
+
+  def contains?(scope, entry) when is_map(scope) do
+    Enum.all?(scope, fn {field, value} -> Map.get(entry, field) == value end)
+  end
 end

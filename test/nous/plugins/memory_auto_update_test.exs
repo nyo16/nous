@@ -22,6 +22,18 @@ defmodule Nous.Plugins.MemoryAutoUpdateTest do
     def count_tokens(_messages), do: 0
   end
 
+  # Scripted reflection model: replies with whatever JSON the test put in the
+  # process dictionary (the reflection call runs in the caller's process).
+  defmodule ScriptedReflection do
+    @moduledoc false
+
+    def request(_model, _messages, _settings),
+      do: {:ok, Nous.Message.assistant(Process.get(:reflection_json, "[]"))}
+
+    def request_stream(_model, _messages, _settings), do: {:error, :not_scripted}
+    def count_tokens(_messages), do: 0
+  end
+
   setup do
     Nous.ModelDispatcher.put_dispatcher(OfflineDispatcher)
 
@@ -258,6 +270,66 @@ defmodule Nous.Plugins.MemoryAutoUpdateTest do
       # That's OK — we just verify the counter incremented
       ctx3 = MemoryPlugin.after_run(agent, %{output: "hi"}, ctx2)
       assert ctx3.deps[:memory_config][:_run_count] == 3
+    end
+  end
+
+  # Issue #88: reflection update/forget act on model-produced ids, so they must
+  # stay inside the configured scope. Driven through after_run/3 with a
+  # scripted reflection model, against one store shared by two users.
+  describe "after_run/3 — reflection scope" do
+    setup %{agent: agent} do
+      Nous.ModelDispatcher.put_dispatcher(ScriptedReflection)
+
+      config = %{
+        store: Store.ETS,
+        auto_update_memory: true,
+        auto_update_every: 1,
+        agent_id: "agent",
+        user_id: "alice"
+      }
+
+      ctx = MemoryPlugin.init(agent, Context.new(deps: %{memory_config: config}))
+      store_state = ctx.deps[:memory_config][:store_state]
+
+      entries =
+        for {key, user} <- [mine_upd: "alice", mine_del: "alice", bob_upd: "bob", bob_del: "bob"],
+            into: %{} do
+          entry = Entry.new(%{content: "#{key} original", agent_id: "agent", user_id: user})
+          {:ok, _} = Store.ETS.store(store_state, entry)
+          {key, entry}
+        end
+
+      %{ctx: ctx, store_state: store_state, entries: entries}
+    end
+
+    defp reflect(agent, ctx, ops) do
+      Process.put(:reflection_json, JSON.encode!(ops))
+      MemoryPlugin.after_run(agent, %{output: "hi"}, ctx)
+    end
+
+    test "leaves another scope's memories untouched",
+         %{agent: agent, ctx: ctx, store_state: store_state, entries: entries} do
+      reflect(agent, ctx, [
+        %{"action" => "update", "id" => entries.bob_upd.id, "content" => "hijacked"},
+        %{"action" => "forget", "id" => entries.bob_del.id}
+      ])
+
+      assert {:ok, %{content: "bob_upd original"}} =
+               Store.ETS.fetch(store_state, entries.bob_upd.id)
+
+      assert {:ok, %{content: "bob_del original"}} =
+               Store.ETS.fetch(store_state, entries.bob_del.id)
+    end
+
+    test "still applies operations on the configured scope's memories",
+         %{agent: agent, ctx: ctx, store_state: store_state, entries: entries} do
+      reflect(agent, ctx, [
+        %{"action" => "update", "id" => entries.mine_upd.id, "content" => "updated"},
+        %{"action" => "forget", "id" => entries.mine_del.id}
+      ])
+
+      assert {:ok, %{content: "updated"}} = Store.ETS.fetch(store_state, entries.mine_upd.id)
+      assert {:error, :not_found} = Store.ETS.fetch(store_state, entries.mine_del.id)
     end
   end
 end

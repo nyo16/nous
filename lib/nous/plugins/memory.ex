@@ -398,10 +398,43 @@ defmodule Nous.Plugins.Memory do
     end
   end
 
+  # update/forget act on model-produced ids, so they are confined to the same
+  # scope the reflection prompt listed memories from (build_memory_scope/1):
+  # an id outside it is skipped as not found, never modified or deleted.
   defp apply_single_operation(ctx, config, %{"action" => "update", "id" => id} = op)
        when is_binary(id) do
     store_mod = config[:store]
     store_state = (ctx.deps[:memory_config] || config)[:store_state]
+
+    result =
+      with {:ok, _entry} <-
+             Scope.fetch_in_scope(store_mod, store_state, id, build_memory_scope(config)) do
+        store_mod.update(store_state, id, reflection_updates(config, op))
+      end
+
+    apply_store_result(result, ctx, config, "updated #{id}", "update failed for #{id}")
+  end
+
+  defp apply_single_operation(ctx, config, %{"action" => "forget", "id" => id})
+       when is_binary(id) do
+    store_mod = config[:store]
+    store_state = (ctx.deps[:memory_config] || config)[:store_state]
+
+    result =
+      with {:ok, _entry} <-
+             Scope.fetch_in_scope(store_mod, store_state, id, build_memory_scope(config)) do
+        store_mod.delete(store_state, id)
+      end
+
+    apply_store_result(result, ctx, config, "forgot #{id}", "forget failed for #{id}")
+  end
+
+  defp apply_single_operation(ctx, _config, op) do
+    Logger.warning("Memory auto-update: unrecognized operation: #{inspect(op)}")
+    ctx
+  end
+
+  defp reflection_updates(config, op) do
     content = op["content"]
 
     updates =
@@ -415,34 +448,14 @@ defmodule Nous.Plugins.Memory do
       end)
 
     # Re-embed if content changed
-    updates =
-      if content do
-        case maybe_embed(config, content) do
-          nil -> updates
-          emb -> Map.put(updates, :embedding, emb)
-        end
-      else
-        updates
+    if content do
+      case maybe_embed(config, content) do
+        nil -> updates
+        emb -> Map.put(updates, :embedding, emb)
       end
-
-    store_state
-    |> store_mod.update(id, updates)
-    |> apply_store_result(ctx, config, "updated #{id}", "update failed for #{id}")
-  end
-
-  defp apply_single_operation(ctx, config, %{"action" => "forget", "id" => id})
-       when is_binary(id) do
-    store_mod = config[:store]
-    store_state = (ctx.deps[:memory_config] || config)[:store_state]
-
-    store_state
-    |> store_mod.delete(id)
-    |> apply_store_result(ctx, config, "forgot #{id}", "forget failed for #{id}")
-  end
-
-  defp apply_single_operation(ctx, _config, op) do
-    Logger.warning("Memory auto-update: unrecognized operation: #{inspect(op)}")
-    ctx
+    else
+      updates
+    end
   end
 
   # Persist the new store state on success; log and leave ctx unchanged on
