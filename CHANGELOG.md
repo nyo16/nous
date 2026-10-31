@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-31
+
+Tool calling for local `llamacpp:` models, a security floor for
+`llama_cpp_ex`, and `Nous.new(max_iterations:)` finally applying. Read the
+"0.18.3 to 0.19.0" section of the migration guide: `llamacpp:` agents with
+tools behave differently.
+
 ### Security
 
 - **`llama_cpp_ex` floor raised to `~> 0.8.63`** (#83). Earlier releases
@@ -3616,7 +3623,8 @@ Initial public release with multi-provider LLM support:
 - ReAct agent implementation
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/nyo16/nous/compare/v0.18.3...HEAD
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/nyo16/nous/compare/v0.18.3...v0.19.0
 [0.18.3]: https://github.com/nyo16/nous/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/nyo16/nous/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nyo16/nous/compare/v0.18.0...v0.18.1

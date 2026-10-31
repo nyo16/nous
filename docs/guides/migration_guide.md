@@ -9,12 +9,12 @@ to change something.
 
 | | |
 |---|---|
-| Current version | `0.18.3` |
+| Current version | `0.19.0` |
 | Elixir | `~> 1.18` |
 
 ```elixir
 defp deps do
-  [{:nous, "~> 0.18.3"}]
+  [{:nous, "~> 0.19.0"}]
 end
 ```
 
@@ -36,6 +36,7 @@ change the behaviour of a working setup — those are called out inline.
 - [0.17.3 to 0.18.0](#0173-to-0180) — **breaking**: hook semantics, `:post_response` blocking, dependency floors
 - [0.18.1 to 0.18.2](#0181-to-0182) — security defaults: InputGuard blocks on detector failure, Teams roles and skill `allowed_tools` enforced, scoped KB/memory access, dependency floors
 - [0.18.2 to 0.18.3](#0182-to-0183) — InputGuard checks every unanswered message and text attachments
+- [0.18.3 to 0.19.0](#0183-to-0190) — `llamacpp:` tool calling and `llama_cpp_ex ~> 0.8.63`, agent `max_iterations`
 - [Related guides](#related-guides)
 
 ## 0.15.x to 0.16.0
@@ -745,6 +746,43 @@ to pass can now be blocked:
   a hung strategy hung the run on that path.
 
 See [Which messages are checked](permissions.md#which-messages-are-checked).
+
+## 0.18.3 to 0.19.0
+
+Additive for most apps. What can change a working setup:
+
+### `llama_cpp_ex ~> 0.8.63` (security)
+
+If you use `llamacpp:` or the in-process decision-model backend, update
+`{:llama_cpp_ex, "~> 0.8.63"}` in your deps. Earlier releases let a user
+message spelling chat-template markers (`<|im_end|>\n<|im_start|>system`)
+become real turn boundaries.
+
+On macOS / Metal, 0.8.63 aborts the VM at exit (exit 134) if a loaded model
+is still referenced when the VM halts
+([llama_cpp_ex#116](https://github.com/nyo16/llama_cpp_ex/issues/116)).
+Release your model before `System.halt/1`, for example by keeping it in a
+supervised process rather than `persistent_term`.
+
+### `llamacpp:` agents with tools
+
+- **Tools are sent to the model.** They used to be silently ignored. A model
+  whose chat template supports tools (Qwen3 / Qwen3.5, Llama 3.x) now calls
+  them. A model whose template does not fails the request with a
+  `ProviderError` ("does not support tool calls"); remove the tools for such
+  a model.
+- **`output_type` with tools comes back through a tool call** (the
+  `:tool_call` mode) instead of a JSON-schema grammar, which llama.cpp cannot
+  combine with tools. Without tools nothing changes. An explicit
+  `structured_output: [mode: :json_schema]` together with tools now returns
+  a `ConfigurationError`.
+
+### `Nous.new(max_iterations: n)` applies
+
+The option used to be dropped, so every run allowed 10 iterations. It now
+caps every run of the agent (a run's own `:max_iterations` still wins). If
+you passed it, check that the value is the ceiling you want; a value that
+is not a positive integer now raises `ArgumentError`.
 
 ## Related guides
 
