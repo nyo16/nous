@@ -228,29 +228,56 @@ defmodule Nous.DecisionModel.Backend.SystemOneTest do
                DecisionModel.decide(systemone(base), @state, @questions)
     end
 
-    test "a server that does not answer in time is :timeout",
-         %{bypass: bypass, base: base, plain: plain} do
+    # The Req backend on a Finch pool started for this test only. The shared
+    # Nous.Finch pool keys idle connections by {scheme, host, port}; a pooled
+    # connection to an earlier Bypass server on the same, since-reused port
+    # would be picked and fail as :closed instead of reaching the listener.
+    defmodule FreshPoolReq do
+      @moduledoc false
+      @behaviour Nous.HTTP.Backend
+
+      @impl true
+      def post(url, body, headers, opts) do
+        Nous.HTTP.Backend.Req.post(url, body, headers, Keyword.put(opts, :finch_name, __MODULE__))
+      end
+    end
+
+    # Not Bypass: when the client gives up it closes the socket, Cowboy then
+    # kills the still-running Bypass handler with :shutdown, and Bypass
+    # re-raises that exit in its on_exit check, so the test failed about half
+    # the time depending on which side noticed first. A listener that reads
+    # the request and never answers has no handler to kill.
+    test "a server that does not answer in time is :timeout" do
+      start_supervised!({Finch, name: FreshPoolReq})
+
+      {:ok, listen} =
+        :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true, ip: {127, 0, 0, 1}])
+
+      on_exit(fn -> :gen_tcp.close(listen) end)
+      {:ok, port} = :inet.port(listen)
+
       test_pid = self()
 
-      # The handler holds the response until the test has seen the timeout,
-      # then answers, so Bypass is not torn down mid-request.
-      Bypass.expect_once(bypass, "POST", "/v1/systemone", fn conn ->
-        send(test_pid, {:handler, self()})
+      # The accepted socket is handed to the test process, which outlives the
+      # task: if it closed with the task, the error would be :closed.
+      server =
+        Task.async(fn ->
+          {:ok, socket} = :gen_tcp.accept(listen)
+          {:ok, request} = :gen_tcp.recv(socket, 0)
+          :ok = :gen_tcp.controlling_process(socket, test_pid)
+          {socket, request}
+        end)
 
-        receive do
-          :release -> :ok
-        after
-          2_000 -> :ok
-        end
-
-        json(conn, 200, plain)
-      end)
+      dm = systemone("http://localhost:#{port}", http_backend: FreshPoolReq)
 
       assert {:error, %DecisionModelError{reason: :timeout, retryable?: true}} =
-               DecisionModel.decide(systemone(base), @state, @questions, timeout: 50)
+               DecisionModel.decide(dm, @state, @questions, timeout: 50)
 
-      assert_receive {:handler, handler}
-      send(handler, :release)
+      # The request did reach the server: the timeout is the read, not a
+      # failed connect.
+      {socket, request} = Task.await(server)
+      :gen_tcp.close(socket)
+      assert request =~ "POST /v1/systemone"
     end
 
     test "a refused connection is :unavailable", %{bypass: bypass, base: base} do
