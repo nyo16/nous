@@ -80,6 +80,13 @@ tools behave differently.
   10. A value that is not a positive integer raises `ArgumentError` in
   `Nous.new/2`.
 
+### Tests
+
+- The Summarization telemetry tests forward only their own agent's
+  `[:nous, :compaction, *]` events. Telemetry handlers are global and the
+  module is async, so a concurrent test's `:stop` could break a
+  `refute_received` (it failed master CI once).
+
 ## [0.18.3] - 2026-10-31
 
 InputGuard fixes from the 0.18.2 security review. A message or attachment
