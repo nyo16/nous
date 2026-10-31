@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-10-31
+
+InputGuard fixes from the 0.18.2 security review. A message or attachment
+that used to reach the model unchecked can now be blocked; read the
+"0.18.2 to 0.18.3" section of the migration guide.
+
 ### Security
 
 - **InputGuard checks every unanswered user message, not just the newest.**
@@ -25,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sequential path ran strategies inline, so a hung detector hung the run.
   Each strategy now runs in a task that is killed at the timeout, and the
   timeout counts as a drop (#94).
+
+### Tests
+
+- The Bash SIGTERM test waits up to 3 s for the killed child instead of a
+  fixed 300 ms: the kill after `Nous.Sandbox.run/2`'s timeout is
+  asynchronous, and the fixed sleep flaked on the OTP 28 CI runner.
+- The ToolExecutor timeout test waits up to 2 s for the killed tool's
+  `:DOWN` instead of 100 ms; it still requires the `:killed` reason, so a
+  tool that was not killed fails it.
 
 ## [0.18.2] - 2026-10-31
 
@@ -3535,7 +3550,8 @@ Initial public release with multi-provider LLM support:
 - ReAct agent implementation
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/nyo16/nous/compare/v0.18.2...HEAD
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.18.3...HEAD
+[0.18.3]: https://github.com/nyo16/nous/compare/v0.18.2...v0.18.3
 [0.18.2]: https://github.com/nyo16/nous/compare/v0.18.1...v0.18.2
 [0.18.1]: https://github.com/nyo16/nous/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/nyo16/nous/compare/65f1148...v0.18.0
