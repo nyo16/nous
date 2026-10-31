@@ -263,7 +263,13 @@ defmodule Nous.Plugins.Memory do
     # 2. Fetch existing memories — the newest `max_memories`. The store honours
     # :limit (see Nous.Memory.Store.list/2); without :order the bound would
     # keep an arbitrary N, which is worse than useless for reflection.
-    scope = build_memory_scope(config)
+    # Store.list/2 takes a field map, so an unscoped (`:global`) config lists
+    # with the empty map; the SQL stores raised on the bare atom.
+    scope =
+      case build_memory_scope(config) do
+        :global -> %{}
+        fields -> fields
+      end
 
     existing_memories =
       case store_mod.list(store_state, scope: scope, order: :newest, limit: max_memories) do

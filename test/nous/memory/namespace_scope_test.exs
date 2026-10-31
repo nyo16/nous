@@ -160,6 +160,28 @@ defmodule Nous.Memory.NamespaceScopeTest do
         assert {:ok, %{content: "updated"}} = @store.fetch(state, entries.fact_a.id)
         assert {:error, :not_found} = @store.fetch(state, entries.note_a.id)
       end
+
+      # The unscoped single-tenant default: reflection lists, updates and
+      # forgets across the whole store.
+      test "reflection without a namespace stays global",
+           %{base: base, state: state, entries: entries} do
+        agent = Agent.new("openai:gpt-4", plugins: [MemoryPlugin])
+        config = config(base, %{auto_update_memory: true, auto_update_every: 1})
+        ctx = MemoryPlugin.init(agent, Context.new(deps: %{memory_config: config}))
+
+        Process.put(
+          :reflection_json,
+          JSON.encode!([
+            %{"action" => "update", "id" => entries.fact_b.id, "content" => "updated"},
+            %{"action" => "forget", "id" => entries.note_a.id}
+          ])
+        )
+
+        MemoryPlugin.after_run(agent, %{output: "hi"}, ctx)
+
+        assert {:ok, %{content: "updated"}} = @store.fetch(state, entries.fact_b.id)
+        assert {:error, :not_found} = @store.fetch(state, entries.note_a.id)
+      end
     end
   end
 
