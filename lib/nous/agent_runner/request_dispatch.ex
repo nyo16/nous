@@ -206,6 +206,18 @@ defmodule Nous.AgentRunner.RequestDispatch do
     max(div(chars, 4), 1)
   end
 
+  # Provider-specific keys Nous.OutputSchema adds for an `output_type`
+  # (`:response_format` goes in rebuild_tool_settings/4). They are the source
+  # provider's and are re-injected for the target; left in, a source's
+  # `:json_schema` (SGLang, llamacpp) reaches a llamacpp fallback with tools,
+  # where llama.cpp cannot combine it with the tool-call grammar.
+  @structured_output_keys [
+    :json_schema,
+    :guided_json,
+    :guided_regex,
+    :guided_grammar,
+    :guided_choice
+  ]
   # Rebuild model settings when falling back to a different provider.
   # Tool schemas must be re-converted for the target provider's format.
   def rebuild_settings_for_model(model, model_settings, all_tools, agent) do
@@ -220,7 +232,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
         # Use a temporary agent with the fallback model so provider-specific settings are correct
         PromptAssembly.inject_structured_output_settings(
           %{agent | model: model},
-          settings,
+          Map.drop(settings, @structured_output_keys),
           all_tools
         )
       else

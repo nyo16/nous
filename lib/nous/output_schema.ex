@@ -23,8 +23,8 @@ defmodule Nous.OutputSchema do
   | Mode | Mechanism | Providers |
   |------|-----------|-----------|
   | `:auto` | Pick best for provider | All |
-  | `:tool_call` | Synthetic tool + tool_choice | All (native for Anthropic) |
-  | `:json_schema` | `response_format: {type: "json_schema", ...}` | OpenAI, vLLM, SGLang |
+  | `:tool_call` | Synthetic tool + tool_choice | All (native for Anthropic; `:auto` for llamacpp when the agent has tools) |
+  | `:json_schema` | `response_format: {type: "json_schema", ...}` | OpenAI, vLLM, SGLang; llamacpp compiles it to a grammar (`:auto` without tools) |
   | `:json` | `response_format: {type: "json_object"}` | OpenAI-compatible |
   | `:md_json` | Prompt + markdown fence + stop token | All (fallback) |
 
@@ -120,7 +120,7 @@ defmodule Nous.OutputSchema do
   def to_provider_settings(:string, _provider, _opts), do: %{}
 
   def to_provider_settings(output_type, provider, opts) do
-    mode = resolve_mode(Keyword.get(opts, :mode, :auto), provider)
+    mode = resolve_mode(Keyword.get(opts, :mode, :auto), provider, opts)
 
     case output_type do
       {:regex, pattern} ->
@@ -691,13 +691,21 @@ defmodule Nous.OutputSchema do
 
   # --- Mode resolution ---
 
-  defp resolve_mode(:auto, :openai), do: :json_schema
-  defp resolve_mode(:auto, :anthropic), do: :tool_call
-  defp resolve_mode(:auto, :vllm), do: :json_schema
-  defp resolve_mode(:auto, :sglang), do: :json_schema
-  defp resolve_mode(:auto, :gemini), do: :json_schema
-  defp resolve_mode(:auto, _provider), do: :json_schema
-  defp resolve_mode(explicit, _provider), do: explicit
+  defp resolve_mode(:auto, :openai, _opts), do: :json_schema
+  defp resolve_mode(:auto, :anthropic, _opts), do: :tool_call
+  defp resolve_mode(:auto, :vllm, _opts), do: :json_schema
+  defp resolve_mode(:auto, :sglang, _opts), do: :json_schema
+  defp resolve_mode(:auto, :gemini, _opts), do: :json_schema
+
+  # In-process llama.cpp cannot combine a JSON-schema grammar with tools: the
+  # chat template supplies the tool-call grammar. With tools, the output is a
+  # synthetic tool call instead (its arguments constrained by that grammar);
+  # without, the schema is compiled to a grammar as before.
+  defp resolve_mode(:auto, :llamacpp, opts),
+    do: if(Keyword.get(opts, :has_other_tools, false), do: :tool_call, else: :json_schema)
+
+  defp resolve_mode(:auto, _provider, _opts), do: :json_schema
+  defp resolve_mode(explicit, _provider, _opts), do: explicit
 
   # --- Mode-specific settings ---
 

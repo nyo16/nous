@@ -249,6 +249,22 @@ defmodule Nous.OutputSchemaTest do
       settings = OutputSchema.to_provider_settings(SimpleSchema, :llamacpp, mode: :json_schema)
       assert settings[:json_schema] == settings.response_format["json_schema"]["schema"]
     end
+
+    test "llama.cpp :auto compiles the schema without tools and uses a synthetic tool with them" do
+      # llama.cpp cannot apply a schema grammar and the template's tool-call
+      # grammar at once, so with other tools the output comes back as a call.
+      without = OutputSchema.to_provider_settings(SimpleSchema, :llamacpp, has_other_tools: false)
+      assert without[:json_schema]
+      refute without[:__structured_output_tool__]
+
+      with_tools =
+        OutputSchema.to_provider_settings(SimpleSchema, :llamacpp, has_other_tools: true)
+
+      refute with_tools[:json_schema]
+
+      assert %{"function" => %{"name" => "__structured_output__"}} =
+               with_tools[:__structured_output_tool__]
+    end
   end
 
   # --- parse_and_validate/2 ---

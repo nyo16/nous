@@ -5,7 +5,7 @@ if Code.ensure_loaded?(LlamaCppEx.Decision) do
     `/v1/systemone`, ported into the NIF): Clef / Clef-Flash, OpenJev, Laya and
     the other decision GGUFs, with no server.
 
-    Requires the optional dep `{:llama_cpp_ex, "~> 0.8.58"}`.
+    Requires the optional dep `{:llama_cpp_ex, "~> 0.8.63"}`.
 
     ## The process owns the model
 
@@ -515,12 +515,12 @@ else
     @moduledoc """
     In-process decision backend on `LlamaCppEx.Decision`.
 
-    **Not available** - add `{:llama_cpp_ex, "~> 0.8.58"}` to your mix.exs deps.
+    **Not available** - add `{:llama_cpp_ex, "~> 0.8.63"}` to your mix.exs deps.
     """
 
     @behaviour Nous.DecisionModel.Backend
 
-    @not_available "LlamaCppEx.Decision is not available. Add {:llama_cpp_ex, \"~> 0.8.58\"} to your mix.exs deps."
+    @not_available "LlamaCppEx.Decision is not available. Add {:llama_cpp_ex, \"~> 0.8.63\"} to your mix.exs deps."
 
     @impl true
     def decide(_dm, _state, _questions, _opts) do

@@ -523,7 +523,7 @@ and returns a probability per answer for a list of typed questions (`:noul`
 yes/no, `:choice`, `:score`). Backends: Cloudflare Workers AI
 (`"workers_ai:clef-flash"`), self-hosted `/v1/systemone` (vLLM, SGLang,
 llama-server), OpenAI-style `/v1/decisions`, and in-process GGUF through
-`llama_cpp_ex` (`>= 0.8.58`).
+`llama_cpp_ex` (`~> 0.8.63`).
 
 Guard an agent with it:
 

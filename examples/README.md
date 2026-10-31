@@ -95,7 +95,7 @@ Test, benchmark, and optimize agents:
 
 ## Decision Model Examples
 
-Fully local, through `llama_cpp_ex` (needs `{:llama_cpp_ex, "~> 0.8.58"}` and GGUF files; see each script's header):
+Fully local, through `llama_cpp_ex` (needs `{:llama_cpp_ex, "~> 0.8.63"}` and GGUF files; see each script's header):
 
 | File | Description |
 |------|-------------|

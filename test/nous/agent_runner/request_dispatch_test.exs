@@ -94,4 +94,44 @@ defmodule Nous.AgentRunner.RequestDispatchTest do
                %{temperature: 0.5}
     end
   end
+
+  describe "rebuild_settings_for_model/4" do
+    # An SGLang agent's output_type adds `:json_schema`. Falling back to
+    # llamacpp with tools, that key must not survive: llama.cpp cannot combine
+    # a schema grammar with the tool-call grammar, and the provider refuses
+    # the pair with a ConfigurationError, failing a valid fallback.
+    test "drops the source provider's structured-output keys before re-injecting" do
+      agent =
+        Nous.Agent.new("sglang:qwen",
+          base_url: "http://localhost:30000/v1",
+          tools: [sample_tool()],
+          output_type: %{city: :string}
+        )
+
+      source_settings =
+        Nous.AgentRunner.PromptAssembly.inject_structured_output_settings(
+          agent,
+          %{tools: [Tool.to_openai_schema(sample_tool())]},
+          [sample_tool()]
+        )
+
+      assert source_settings[:json_schema]
+
+      target = Nous.Model.parse("llamacpp:local")
+
+      settings =
+        RequestDispatch.rebuild_settings_for_model(
+          target,
+          source_settings,
+          [sample_tool()],
+          agent
+        )
+
+      refute Map.has_key?(settings, :json_schema)
+      refute Map.has_key?(settings, :response_format)
+
+      assert "__structured_output__" in Enum.map(settings.tools, & &1["function"]["name"])
+      assert "search" in Enum.map(settings.tools, & &1["function"]["name"])
+    end
+  end
 end

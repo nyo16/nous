@@ -359,7 +359,7 @@ agent =
 
 Local decision models run in-process: start a
 `{Nous.DecisionModel.Backend.LlamaCpp, name: :clef, source: {:path, gguf}}`
-child (needs `{:llama_cpp_ex, "~> 0.8.58"}`) and use `"llamacpp:clef"`. A
+child (needs `{:llama_cpp_ex, "~> 0.8.63"}`) and use `"llamacpp:clef"`. A
 local check costs ~0.5–1 s. See `docs/guides/decision_models.md` and
 `docs/guides/decision_guard.md`.
 

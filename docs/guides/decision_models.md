@@ -126,13 +126,14 @@ on Workers AI.
 
 `Nous.DecisionModel.Backend.LlamaCpp` runs a decision GGUF in-process through
 `LlamaCppEx.Decision`, with no server. It needs the optional dependency at
-**0.8.58 or later**, the first release with `LlamaCppEx.Decision`:
+**0.8.63 or later**: 0.8.58 added `LlamaCppEx.Decision`, and 0.8.63 stopped
+parsing special-token text in decision inputs as control tokens:
 
 ```elixir
 def deps do
   [
     {:nous, "~> 0.18"},
-    {:llama_cpp_ex, "~> 0.8.58"}
+    {:llama_cpp_ex, "~> 0.8.63"}
   ]
 end
 ```

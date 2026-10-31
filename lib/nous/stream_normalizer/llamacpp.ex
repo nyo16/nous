@@ -4,12 +4,20 @@ if Code.ensure_loaded?(LlamaCppEx) do
     Stream normalizer for LlamaCppEx `%ChatCompletionChunk{}` structs.
 
     Converts NIF-produced chunk structs into normalized Nous stream events.
-    llama.cpp speaks OpenAI's chat.completion wire shape, so complete
-    (non-delta) responses delegate to `Nous.StreamNormalizer.OpenAI` — this
-    also keeps content and tool calls when a stream degenerates into a
-    single complete response object.
+    llama.cpp speaks OpenAI's chat.completion wire shape, so both complete
+    responses and deltas go through `Nous.StreamNormalizer.OpenAI`: text,
+    `reasoning_content` (as `{:thinking_delta, _}`), OpenAI-shaped `tool_calls`
+    deltas (as `{:tool_call_delta, _}`, which
+    `Nous.StreamNormalizer.ToolCallAccumulator` assembles) and the finish
+    reason.
 
-    Requires optional dep: `{:llama_cpp_ex, "~> 0.8"}`
+    LlamaCppEx ends a failed stream with a bare `{:error, reason}` element
+    (an unsupported chat template, a chunk timeout); it becomes an
+    `{:error, %Nous.Errors.ProviderError{provider: :llamacpp}}` event, the same
+    error type the non-streaming path returns, rather than being dropped as
+    unknown.
+
+    Requires optional dep: `{:llama_cpp_ex, "~> 0.8.63"}`
     """
 
     @behaviour Nous.StreamNormalizer
@@ -17,13 +25,21 @@ if Code.ensure_loaded?(LlamaCppEx) do
     alias Nous.StreamNormalizer.OpenAI
 
     @impl true
-    def normalize_chunk(chunk) when is_struct(chunk) or is_map(chunk) do
-      if complete_response?(chunk) do
-        convert_complete_response(chunk)
-      else
-        parse_delta_chunk(chunk)
-      end
+    def normalize_chunk({:error, %Nous.Errors.ProviderError{} = error}), do: [{:error, error}]
+
+    def normalize_chunk({:error, reason}) do
+      [
+        {:error,
+         Nous.Errors.ProviderError.exception(
+           provider: :llamacpp,
+           message: "Stream failed: #{inspect(reason)}",
+           details: reason
+         )}
+      ]
     end
+
+    def normalize_chunk(chunk) when is_struct(chunk) or is_map(chunk),
+      do: OpenAI.normalize_chunk(chunk)
 
     def normalize_chunk(chunk) do
       [{:unknown, chunk}]
@@ -34,38 +50,13 @@ if Code.ensure_loaded?(LlamaCppEx) do
 
     @impl true
     defdelegate convert_complete_response(chunk), to: OpenAI
-
-    defp parse_delta_chunk(chunk) do
-      choices = Map.get(chunk, :choices) || Map.get(chunk, "choices") || []
-
-      case choices do
-        [choice | _] ->
-          delta = Map.get(choice, :delta) || Map.get(choice, "delta")
-          finish_reason = Map.get(choice, :finish_reason) || Map.get(choice, "finish_reason")
-          content = delta && (Map.get(delta, :content) || Map.get(delta, "content"))
-
-          cond do
-            content && content != "" ->
-              [{:text_delta, content}]
-
-            finish_reason ->
-              [{:finish, finish_reason}]
-
-            true ->
-              [{:unknown, chunk}]
-          end
-
-        _ ->
-          [{:unknown, chunk}]
-      end
-    end
   end
 else
   defmodule Nous.StreamNormalizer.LlamaCpp do
     @moduledoc """
     Stream normalizer for LlamaCppEx `%ChatCompletionChunk{}` structs.
 
-    **Not available** - add `{:llama_cpp_ex, "~> 0.8"}` to your mix.exs deps.
+    **Not available** - add `{:llama_cpp_ex, "~> 0.8.63"}` to your mix.exs deps.
     """
 
     @behaviour Nous.StreamNormalizer
