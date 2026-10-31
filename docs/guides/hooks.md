@@ -85,6 +85,21 @@ end
 }
 ```
 
+### Timeouts
+
+Every hook has a `timeout` (default `10_000` ms). `:function` and `:module` handlers run in a
+task under `Nous.TaskSupervisor` and are killed when the timeout elapses. A timeout is a hook
+error, `{:error, :timeout}`, and follows the [`fail_closed`](#fail-closed-hooks) rules. The task
+inherits the caller in `$callers`, so process-scoped seams such as
+`Nous.ModelDispatcher.put_dispatcher/1` still resolve inside the handler.
+
+A handler that relies on `self()` being the run process, or on that process's dictionary, can
+opt out with `timeout: :infinity`. It then runs in the calling process, unbounded:
+
+```elixir
+Nous.Hook.new(:pre_request, handler: &MyApp.Hooks.uses_process_dictionary/2, timeout: :infinity)
+```
+
 ### Command Hooks
 
 Execute external shell commands via NetRunner (zero-zombie-process guarantee):
@@ -150,16 +165,19 @@ matcher: fn %{tool_name: name} -> String.starts_with?(name, "dangerous_") end
 
 `%Nous.Hook{}` carries a `fail_closed` field that defaults to `false`. It does not change what
 a hook *decides* — it changes what happens when a hook *fails*: raises, returns
-`{:error, reason}`, or (for command hooks) times out or exits with a code other than 0 or 2.
+`{:error, reason}`, times out, or (for command hooks) exits with a code other than 0 or 2.
 
 | `fail_closed` | A hook error on a blocking event means |
 |---------------|----------------------------------------|
 | `false` (default) | Warning logged, error ignored, remaining hooks run — a broken hook **allows** the action |
 | `true` | Error becomes `{:deny, "hook errored (fail_closed): ..."}` — a broken hook **blocks** the action |
 
-The field only has an effect on the blocking events (`:pre_tool_use`, `:pre_request`). On
-non-blocking events a hook error is always logged and skipped, because there is nothing left
-to block.
+The field has an effect on the blocking events (`:pre_tool_use`, `:pre_request`) and on
+`:post_tool_use`. There, an erroring `fail_closed: true` hook replaces the tool result with
+`"[tool result withheld: hook error]"` and no later `:post_tool_use` hook runs, so a broken
+redaction hook cannot leak the unredacted result to the model. This applies to direct tool
+calls and to Code Mode sub-calls alike. On the other non-blocking events a hook error is
+always logged and skipped, because there is nothing left to block.
 
 Set it on any hook that gates a security-sensitive operation. Without it, crashing the policy
 hook is enough to bypass the policy:
@@ -186,7 +204,8 @@ leave those at `fail_closed: false` so a logging failure never stalls the agent.
 
 A denial produced this way still emits `[:nous, :hook, :denied]`, with
 `reason: {:fail_closed, reason}` in the metadata, so it is distinguishable from a deliberate
-`:deny`.
+`:deny`. Every fail-closed outcome (a denial or a withheld tool result) also emits
+`[:nous, :hook, :failed_closed]` with `%{event, hook_name, hook_type, reason}`.
 
 ### Modifying Tool Arguments (pre_tool_use)
 
@@ -231,6 +250,8 @@ hooks = [
 agent = Nous.new("openai:gpt-4", tools: [&MyTools.write_file/2], hooks: hooks)
 ```
 
+Hooks with the same priority run in registration order (their order in the `hooks:` list).
+
 For blocking events, execution short-circuits on the first `:deny`.
 
 ## Execution Order
@@ -238,7 +259,7 @@ For blocking events, execution short-circuits on the first `:deny`.
 Hooks integrate with the existing plugin system:
 
 ```
-Plugin.before_request → Hook(:pre_request) → LLM call → Hook(:post_response) → Plugin.after_response
+Plugin.before_request → Hook(:pre_request) → LLM call → Plugin.after_response → Hook(:post_response)
                                                            ↓
                                              For each tool call:
                                                Hook(:pre_tool_use) → approval check → ToolExecutor → Hook(:post_tool_use)

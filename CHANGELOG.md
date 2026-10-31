@@ -43,6 +43,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   two processes. **Migration:** replace `embedding: Nous.Memory.Embedding.Bumblebee`
   with your copy of the example module.
 
+### Changed — Behavioral / breaking
+
+- **Sticky fallback is scoped to one run and built for the model it uses.**
+  After a cross-provider fallback, later iterations of the same run used to
+  send the *primary* provider's tool schemas and structured-output settings to
+  the fallback provider (e.g. Anthropic-shaped tools and no `response_format`
+  to an OpenAI-compatible server), and retried the failing fallback twice.
+  Each iteration now has one effective model: tool schemas, structured-output
+  settings and the fallback chain are all built for it, and the chain holds no
+  duplicate of it. `[:nous, :agent, :fallback, :used]` fires once per change
+  of the answering model instead of on every iteration, and run-stop
+  `fallback_used` derives from the same fact. `:active_model` is now
+  runtime-only: it no longer appears in `result.deps` or `result.context`, and
+  a new run, `run_with_context/3` call or `Nous.AgentServer` turn starts at
+  the primary again instead of skipping it forever. On the `stream: true`
+  path a non-2xx HTTP status from the provider is now a fallback-eligible
+  `Nous.Errors.ProviderError` (it used to surface as a raw map and end the run
+  without trying the fallback).
+- **Hooks with equal priority run in registration order.** They used to run
+  in reverse registration order, contradicting the docs. Hooks with distinct
+  priorities are unaffected.
+- **`Hook.timeout` is enforced for `:function` and `:module` hooks.** Handlers
+  now run in a task under `Nous.TaskSupervisor` (with `$callers` propagated)
+  and are killed when the timeout (default 10 s) elapses; the timeout becomes
+  `{:error, :timeout}` and follows the hook's `fail_closed` rules. Previously
+  only `:command` hooks were bounded and a hung handler hung the run. A hook
+  that relies on `self()` or the run process's dictionary can opt out with
+  `timeout: :infinity`, which keeps in-process, unbounded execution.
+- **`fail_closed: true` now applies to `:post_tool_use`.** An erroring (or
+  timed-out) `fail_closed` `:post_tool_use` hook replaces the tool result
+  with `"[tool result withheld: hook error]"` and stops later
+  `:post_tool_use` hooks, both for direct tool calls and Code Mode sub-calls.
+  It used to fail open, so a broken redaction hook leaked the unredacted
+  result. Every fail-closed outcome emits the new
+  `[:nous, :hook, :failed_closed]` telemetry event. Hooks without
+  `fail_closed` keep the fail-open behaviour.
+- **`run_with_context/3` builds the hook registry from `agent.hooks`.** It used
+  to run with whatever `ctx.hook_registry` held, which is `nil` after a
+  session restore, so an `AgentServer` inbox run (`steer/2`, `followup/2`)
+  after a restore fired no hooks at all. `Nous.AgentServer`'s `agent_config`
+  now also accepts `:hooks`.
+
 ### Added
 
 - **`:headers` model option: extra HTTP headers on every provider request.**

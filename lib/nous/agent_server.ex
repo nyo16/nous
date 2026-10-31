@@ -231,6 +231,8 @@ defmodule Nous.AgentServer do
   - `:type` - `:standard` or `:react` (default: :standard)
   - `:model_settings` - Model settings map
   - `:deps` - Initial dependencies for tools
+  - `:hooks` - List of `Nous.Hook` structs (default: `[]`). The registry is
+    rebuilt from these on every run, including inbox runs after a restore.
 
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -394,7 +396,8 @@ defmodule Nous.AgentServer do
             agent_config.model,
             instructions: Map.get(agent_config, :instructions, ""),
             tools: Map.get(agent_config, :tools, []),
-            model_settings: Map.get(agent_config, :model_settings, %{})
+            model_settings: Map.get(agent_config, :model_settings, %{}),
+            hooks: Map.get(agent_config, :hooks, [])
           )
 
         :standard ->
@@ -402,7 +405,8 @@ defmodule Nous.AgentServer do
             agent_config.model,
             instructions: Map.get(agent_config, :instructions, ""),
             tools: Map.get(agent_config, :tools, []),
-            model_settings: Map.get(agent_config, :model_settings, %{})
+            model_settings: Map.get(agent_config, :model_settings, %{}),
+            hooks: Map.get(agent_config, :hooks, [])
           )
       end
 

@@ -616,6 +616,46 @@ defmodule Nous.CodeModeTest do
       assert_receive {:hook_saw, :post_tool_use, %{tool_name: "alpha", result: "alpha ran"}}
       assert tool_message(result) =~ "redacted(alpha ran)"
     end
+
+    test "an erroring fail_closed post_tool_use hook withholds the result from the program" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :hook, :failed_closed]])
+
+      hook =
+        Nous.Hook.new(:post_tool_use,
+          handler: fn _event, _payload -> raise "redactor down" end,
+          matcher: "alpha",
+          name: "redactor",
+          fail_closed: true
+        )
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [hook])
+
+      {result, _log} = ExUnit.CaptureLog.with_log(fn -> AgentRunner.run(agent, "go") end)
+      assert {:ok, result} = result
+
+      message = tool_message(result)
+      assert message =~ "[tool result withheld: hook error]"
+      refute message =~ "alpha ran"
+
+      assert_received {[:nous, :hook, :failed_closed], ^ref, _,
+                       %{event: :post_tool_use, hook_name: "redactor"}}
+    end
+
+    test "control: an erroring post_tool_use hook without fail_closed fails open" do
+      hook =
+        Nous.Hook.new(:post_tool_use,
+          handler: fn _event, _payload -> raise "redactor down" end,
+          matcher: "alpha"
+        )
+
+      agent =
+        Agent.new("openai:test-model", tools: [tool("alpha")], code_mode: :code, hooks: [hook])
+
+      {result, _log} = ExUnit.CaptureLog.with_log(fn -> AgentRunner.run(agent, "go") end)
+      assert {:ok, result} = result
+      assert tool_message(result) =~ "alpha ran"
+    end
   end
 
   describe "bindings are derived from the permission policy" do

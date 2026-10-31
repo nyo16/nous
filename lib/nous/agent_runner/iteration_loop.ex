@@ -56,6 +56,10 @@ defmodule Nous.AgentRunner.IterationLoop do
   # closes so it never reaches `result.deps` or a persisted context.
   @exit_reason_key :__turn_exit_reason__
 
+  # `ctx.deps` key holding the sticky fallback model once a fallback answered.
+  # Runtime-only: see clear_active_model/1.
+  @active_model_key :active_model
+
   # A turn: opens before its first input is claimed, closes when nothing is
   # owed. `loop/3` is the recursion target — see the moduledoc note.
   def execute_loop(agent, behaviour, ctx) do
@@ -187,15 +191,23 @@ defmodule Nous.AgentRunner.IterationLoop do
     # first claim.
     if ctx.needs_response and not denied?(pre_step_result) do
       ctx = log_step_start(ctx)
-      {ctx, messages, model_settings} = prepare_request(agent, behaviour, ctx, all_tools)
+
+      # One effective model per iteration: tool schemas, structured-output
+      # settings and the dispatch chain are all built for the same model, so a
+      # sticky fallback to another provider gets that provider's formats.
+      request_agent = %{agent | model: effective_model(agent, ctx)}
+
+      {ctx, messages, model_settings} =
+        prepare_request(agent, request_agent, behaviour, ctx, all_tools)
 
       Logger.debug(
         "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
       )
 
-      case dispatch(agent, ctx, messages, model_settings, all_tools) do
+      case dispatch(request_agent, ctx, messages, model_settings, all_tools) do
         {:ok, response, active_model} ->
-          handle_response(agent, behaviour, ctx, response, active_model, all_tools)
+          ctx = record_active_model(agent, ctx, request_agent.model, active_model)
+          handle_response(agent, behaviour, ctx, response, all_tools)
 
         {:error, reason} ->
           # Close the step before the error handler runs, so an unclosed
@@ -255,7 +267,12 @@ defmodule Nous.AgentRunner.IterationLoop do
   # Build the messages and model settings for this iteration's model call.
   # Returns `{ctx, messages, model_settings}` — ctx is threaded back out because
   # the tool-schema memo lives in it.
-  def prepare_request(agent, behaviour, ctx, all_tools) do
+  #
+  # `request_agent` carries the model this request is built for (see
+  # effective_model/2): provider-shaped settings (tool schemas, structured
+  # output) follow it. Messages and the behaviour's `before_request` stay on
+  # the configured `agent`.
+  def prepare_request(agent, request_agent, behaviour, ctx, all_tools) do
     # Build messages via behaviour
     messages = behaviour.build_messages(agent, ctx)
 
@@ -267,14 +284,20 @@ defmodule Nous.AgentRunner.IterationLoop do
       if Enum.empty?(all_tools) do
         {agent.model_settings, ctx}
       else
-        {tool_schemas, ctx} = converted_tool_schemas(ctx, agent.model.provider, all_tools)
+        {tool_schemas, ctx} =
+          converted_tool_schemas(ctx, request_agent.model.provider, all_tools)
+
         {Map.put(agent.model_settings, :tools, tool_schemas), ctx}
       end
 
     # Inject structured output settings
     model_settings =
       if agent.output_type != :string do
-        PromptAssembly.inject_structured_output_settings(agent, model_settings, all_tools)
+        PromptAssembly.inject_structured_output_settings(
+          request_agent,
+          model_settings,
+          all_tools
+        )
       else
         model_settings
       end
@@ -292,23 +315,20 @@ defmodule Nous.AgentRunner.IterationLoop do
     {ctx, messages, model_settings}
   end
 
-  # Make the model request (with fallback chain if configured).
-  #
-  # Sticky-fallback: if a previous iteration already promoted to a fallback
-  # model (recorded in ctx.deps[:active_model]), call into
-  # request_with_fallback with that model first to avoid retrying a known-bad
-  # primary on every iteration.
+  # The model this iteration's request is built for and dispatched to: the
+  # sticky fallback recorded earlier in this run, else the configured model.
+  defp effective_model(agent, ctx) do
+    Map.get(ctx.deps, @active_model_key) || agent.model
+  end
+
+  # Make the model request (with fallback chain if configured). `request_agent`
+  # already carries the effective model (effective_model/2), so the chain starts
+  # there and settings are re-converted only for models of another provider.
   #
   # Enforce a team RateLimiter when one is wired into deps: reserve before the
   # call, reconcile actual usage after (or release on error). A denied acquire
   # surfaces as a normal {:error, reason} request result.
-  def dispatch(agent, ctx, messages, model_settings, all_tools) do
-    request_agent =
-      case get_in(ctx.deps, [:active_model]) do
-        nil -> agent
-        am -> %{agent | model: am}
-      end
-
+  def dispatch(request_agent, ctx, messages, model_settings, all_tools) do
     RequestDispatch.acquire_and_request(
       RequestDispatch.resolve_rate_limiter(ctx),
       request_agent,
@@ -335,34 +355,49 @@ defmodule Nous.AgentRunner.IterationLoop do
     )
   end
 
+  # Record which model answered. A fallback happened only when the answering
+  # model is not the one this request was built for; it becomes sticky for the
+  # rest of the run and is labelled once per change, so a run that stays on the
+  # fallback emits `[:nous, :agent, :fallback, :used]` exactly once. Track it in
+  # ctx for telemetry, but do NOT mutate agent.model: mutating made the
+  # start-of-run telemetry tag one provider and the stop another.
+  defp record_active_model(agent, ctx, intended_model, active_model) do
+    if active_model != intended_model and active_model != Map.get(ctx.deps, @active_model_key) do
+      :telemetry.execute(
+        [:nous, :agent, :fallback, :used],
+        %{system_time: System.system_time()},
+        %{
+          agent_name: agent.name,
+          original_provider: agent.model.provider,
+          original_model: agent.model.model,
+          active_provider: active_model.provider,
+          active_model: active_model.model
+        }
+      )
+
+      %{ctx | deps: Map.put(ctx.deps, @active_model_key, active_model)}
+    else
+      ctx
+    end
+  end
+
+  @doc false
+  # The fallback model this run promoted to, or nil when every request was
+  # answered by the model it was built for.
+  def active_model(%Context{deps: deps}), do: Map.get(deps, @active_model_key)
+
+  @doc false
+  # `:active_model` is runtime-only, like the turn exit reason: dropped at run
+  # start (a new run or AgentServer turn starts at the primary again) and from
+  # the result's deps/context so it is never persisted.
+  def clear_active_model(%Context{} = ctx) do
+    %{ctx | deps: Map.delete(ctx.deps, @active_model_key)}
+  end
+
   # Fold a successful model response into the context (usage, callbacks,
   # plugin/hook after-response, behaviour processing, tool calls) and re-enter
   # the loop.
-  def handle_response(agent, behaviour, ctx, response, active_model, all_tools) do
-    # Track active_model in ctx for downstream telemetry / observability,
-    # but do NOT mutate agent.model. Mutating made the start-of-run
-    # telemetry tag with one provider and the stop with another, with
-    # no fallback_used indicator - operational metrics drifted apart
-    # for any agent that ever fell back.
-    ctx =
-      if active_model != agent.model do
-        :telemetry.execute(
-          [:nous, :agent, :fallback, :used],
-          %{system_time: System.system_time()},
-          %{
-            agent_name: agent.name,
-            original_provider: agent.model.provider,
-            original_model: agent.model.model,
-            active_provider: active_model.provider,
-            active_model: active_model.model
-          }
-        )
-
-        %{ctx | deps: Map.put(ctx.deps, :active_model, active_model)}
-      else
-        ctx
-      end
-
+  def handle_response(agent, behaviour, ctx, response, all_tools) do
     # Update usage
     usage_update = response.metadata.usage || %{}
     ctx = Context.add_usage(ctx, usage_update)

@@ -105,6 +105,11 @@ defmodule Nous.Telemetry do
     * `[:nous, :hook, :denied]` - emitted when a blocking hook returns :deny
       or when a fail_closed hook errors.
       * Metadata: `%{event, hook_name, hook_type, reason?}`
+    * `[:nous, :hook, :failed_closed]` - emitted when a `fail_closed: true` hook
+      errors (including a timeout): the event was denied, or on `:post_tool_use`
+      the tool result was withheld.
+      * Measurement: `%{system_time}`
+      * Metadata: `%{event, hook_name, hook_type, reason}`
 
   ## Skill Events
 

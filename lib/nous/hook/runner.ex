@@ -8,7 +8,21 @@ defmodule Nous.Hook.Runner do
   - **Blocking events** (`:pre_tool_use`, `:pre_request`): short-circuits on first `:deny`
   - **Non-blocking events**: all hooks run, results collected
   - Hooks with the same priority run sequentially (ordered by registration)
-  - Each hook has a configurable timeout (default 10s)
+  - Each hook has a configurable timeout (default 10s). `:function` and
+    `:module` handlers run in a task under `Nous.TaskSupervisor` (with
+    `$callers` propagated, so process-scoped test seams still resolve) and are
+    killed when the timeout elapses; the timeout becomes `{:error, :timeout}`
+    and follows the hook's `fail_closed` rules. `timeout: :infinity` runs the
+    handler in the calling process, for hooks that rely on `self()` or the
+    process dictionary.
+
+  ## `fail_closed`
+
+  On blocking events an erroring `fail_closed: true` hook denies the event.
+  On `:post_tool_use` it replaces the tool result with
+  `"[tool result withheld: hook error]"` and stops running later hooks,
+  so a broken redaction hook cannot leak the unredacted result. Both emit
+  `[:nous, :hook, :failed_closed]`. Other non-blocking events fail open.
 
   ## Handler Types
 
@@ -67,6 +81,8 @@ defmodule Nous.Hook.Runner do
   alias Nous.Sandbox.{Confined, Policy}
 
   require Logger
+
+  @withheld_tool_result "[tool result withheld: hook error]"
 
   @doc """
   Run all matching hooks for an event.
@@ -177,6 +193,8 @@ defmodule Nous.Hook.Runner do
             }
           )
 
+          emit_failed_closed(hook, event, reason)
+
           {:deny, "hook errored (fail_closed): #{inspect(reason)}"}
         else
           run_blocking(rest, event, payload, changes)
@@ -184,9 +202,12 @@ defmodule Nous.Hook.Runner do
     end
   end
 
-  # For non-blocking events, run all hooks and collect modifications
+  # For non-blocking events, run all hooks and collect modifications. The one
+  # exception is a `fail_closed` hook erroring on `:post_tool_use`: the result
+  # is withheld and no later hook runs (a later `{:modify, %{result: _}}` must
+  # not put the unredacted value back).
   defp run_non_blocking(hooks, event, payload) do
-    Enum.reduce(hooks, :allow, fn hook, acc ->
+    Enum.reduce_while(hooks, :allow, fn hook, acc ->
       start_time = System.monotonic_time()
 
       :telemetry.execute(
@@ -206,13 +227,13 @@ defmodule Nous.Hook.Runner do
 
       case result do
         :allow ->
-          acc
+          {:cont, acc}
 
         {:modify, changes} ->
           # Merge modifications (last writer wins for conflicts)
           case acc do
-            {:modify, existing} -> {:modify, Map.merge(existing, changes)}
-            _ -> {:modify, changes}
+            {:modify, existing} -> {:cont, {:modify, Map.merge(existing, changes)}}
+            _ -> {:cont, {:modify, changes}}
           end
 
         {:error, reason} ->
@@ -220,22 +241,36 @@ defmodule Nous.Hook.Runner do
             "Hook #{inspect(hook.name || hook.type)} errored on #{event}: #{inspect(reason)}"
           )
 
-          acc
+          if hook.fail_closed and event == :post_tool_use do
+            emit_failed_closed(hook, event, reason)
+            {:halt, {:modify, %{result: @withheld_tool_result}}}
+          else
+            {:cont, acc}
+          end
 
         _ ->
-          acc
+          {:cont, acc}
       end
     end)
   end
 
-  # Execute a single hook based on its type
-  defp execute_hook(%Hook{type: :function, handler: fun}, event, payload)
-       when is_function(fun, 2) do
-    contained("Function hook", fn -> fun.(event, payload) end)
+  defp emit_failed_closed(hook, event, reason) do
+    :telemetry.execute(
+      [:nous, :hook, :failed_closed],
+      %{system_time: System.system_time()},
+      %{event: event, hook_name: hook.name, hook_type: hook.type, reason: reason}
+    )
   end
 
-  defp execute_hook(%Hook{type: :module, handler: module}, event, payload) when is_atom(module) do
-    contained("Module hook #{inspect(module)}", fn ->
+  # Execute a single hook based on its type
+  defp execute_hook(%Hook{type: :function, handler: fun} = hook, event, payload)
+       when is_function(fun, 2) do
+    bounded(hook, "Function hook", fn -> fun.(event, payload) end)
+  end
+
+  defp execute_hook(%Hook{type: :module, handler: module} = hook, event, payload)
+       when is_atom(module) do
+    bounded(hook, "Module hook #{inspect(module)}", fn ->
       Code.ensure_loaded!(module)
       module.handle(event, payload)
     end)
@@ -432,6 +467,30 @@ defmodule Nous.Hook.Runner do
       {:deny, "command hook exited with code #{exit_code} (fail_closed)"}
     else
       :allow
+    end
+  end
+
+  # Enforce `hook.timeout` on an in-VM handler. `Task.Supervisor.async_nolink/2`
+  # sets `$callers` to this process's caller chain, so `Nous.ModelDispatcher`
+  # and other process-scoped seams resolve inside the handler as they would
+  # in-process. Unlinked so a handler crash cannot take the run down; killed
+  # outright on timeout so a hung handler cannot outlive it.
+  defp bounded(%Hook{timeout: :infinity}, label, fun), do: contained(label, fun)
+
+  defp bounded(%Hook{timeout: timeout}, label, fun) do
+    task = Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn -> contained(label, fun) end)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        Logger.warning("#{label} exited: #{inspect(reason)}")
+        {:error, {:exit, reason}}
+
+      nil ->
+        Logger.warning("#{label} timed out after #{timeout}ms")
+        {:error, :timeout}
     end
   end
 

@@ -45,14 +45,16 @@ defmodule Nous.Hook.Registry do
   @doc """
   Register a hook in the registry.
 
-  Hooks are stored sorted by priority (lower = earlier execution).
+  Hooks are stored sorted by priority (lower = earlier execution). Hooks with
+  equal priority keep registration order (the sort is stable and new hooks are
+  appended).
   """
   @spec register(t(), Hook.t()) :: t()
   def register(%Registry{} = registry, %Hook{} = hook) do
     hooks_for_event = Map.get(registry.hooks, hook.event, [])
 
     updated =
-      [hook | hooks_for_event]
+      (hooks_for_event ++ [hook])
       |> Enum.sort_by(& &1.priority)
 
     %{registry | hooks: Map.put(registry.hooks, hook.event, updated)}

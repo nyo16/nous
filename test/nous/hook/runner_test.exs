@@ -196,6 +196,193 @@ defmodule Nous.Hook.RunnerTest do
     end
   end
 
+  describe "equal priorities" do
+    test "hooks with the same priority run in registration order" do
+      test_pid = self()
+
+      hooks =
+        for name <- ["a", "b", "c"] do
+          make_hook(
+            :pre_tool_use,
+            fn _, _ ->
+              send(test_pid, {:ran, name})
+              :allow
+            end,
+            name: name
+          )
+        end
+
+      assert Runner.run(Registry.from_hooks(hooks), :pre_tool_use, %{tool_name: "t"}) == :allow
+
+      # Each hook runs to completion before the next starts, so mailbox order
+      # is execution order.
+      ran =
+        for _ <- 1..3 do
+          receive do
+            {:ran, name} -> name
+          after
+            1_000 -> :missing
+          end
+        end
+
+      assert ran == ~w(a b c)
+    end
+
+    test "a modification from an earlier-registered equal-priority hook reaches the next one" do
+      hooks = [
+        make_hook(:pre_tool_use, fn _, _ -> {:modify, %{arguments: %{"x" => 1}}} end, name: "a"),
+        make_hook(
+          :pre_tool_use,
+          fn _, %{arguments: args} -> if args == %{"x" => 1}, do: :allow, else: :deny end,
+          name: "b"
+        )
+      ]
+
+      assert {:modify, %{arguments: %{"x" => 1}}} =
+               Runner.run(Registry.from_hooks(hooks), :pre_tool_use, %{
+                 tool_name: "t",
+                 arguments: %{}
+               })
+    end
+  end
+
+  describe "fail_closed on :post_tool_use" do
+    setup do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :hook, :failed_closed]])
+      %{ref: ref}
+    end
+
+    test "an erroring fail_closed hook withholds the result and later hooks cannot restore it",
+         %{ref: ref} do
+      hooks = [
+        make_hook(:post_tool_use, fn _, _ -> raise "boom" end,
+          name: "redactor",
+          priority: 1,
+          fail_closed: true
+        ),
+        make_hook(:post_tool_use, fn _, %{result: r} -> {:modify, %{result: r}} end, priority: 2)
+      ]
+
+      assert Runner.run(Registry.from_hooks(hooks), :post_tool_use, %{
+               tool_name: "t",
+               result: "secret"
+             }) == {:modify, %{result: "[tool result withheld: hook error]"}}
+
+      assert_received {[:nous, :hook, :failed_closed], ^ref, _,
+                       %{event: :post_tool_use, hook_name: "redactor"}}
+    end
+
+    test "a non-fail_closed hook error still fails open", %{ref: ref} do
+      hook = make_hook(:post_tool_use, fn _, _ -> raise "boom" end)
+
+      assert Runner.run(Registry.from_hooks([hook]), :post_tool_use, %{
+               tool_name: "t",
+               result: "ok"
+             }) == :allow
+
+      refute_received {[:nous, :hook, :failed_closed], ^ref, _, _}
+    end
+
+    test "fail_closed on another non-blocking event fails open" do
+      hook = make_hook(:post_response, fn _, _ -> raise "boom" end, fail_closed: true)
+      assert Runner.run(Registry.from_hooks([hook]), :post_response, %{}) == :allow
+    end
+  end
+
+  describe "timeout" do
+    test "a function hook that overruns its timeout is killed and fails closed" do
+      test_pid = self()
+
+      hook =
+        make_hook(
+          :pre_tool_use,
+          fn _, _ ->
+            send(test_pid, {:hook_pid, self()})
+            Process.sleep(:infinity)
+          end,
+          timeout: 50,
+          fail_closed: true
+        )
+
+      {elapsed_us, result} =
+        :timer.tc(fn ->
+          Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"})
+        end)
+
+      assert {:deny, reason} = result
+      assert reason =~ "timeout"
+      assert elapsed_us < 2_000_000
+
+      assert_received {:hook_pid, hook_pid}
+      refute Process.alive?(hook_pid)
+    end
+
+    test "a timed-out hook without fail_closed fails open" do
+      hook = make_hook(:pre_tool_use, fn _, _ -> Process.sleep(:infinity) end, timeout: 20)
+      assert Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"}) == :allow
+    end
+
+    test "a timed-out fail_closed :post_tool_use hook withholds the result" do
+      hook =
+        make_hook(:post_tool_use, fn _, _ -> Process.sleep(:infinity) end,
+          timeout: 20,
+          fail_closed: true
+        )
+
+      assert Runner.run(Registry.from_hooks([hook]), :post_tool_use, %{
+               tool_name: "t",
+               result: "secret"
+             }) == {:modify, %{result: "[tool result withheld: hook error]"}}
+    end
+
+    test "a module hook is bounded too" do
+      hook =
+        make_hook(:pre_tool_use, __MODULE__.SlowHook,
+          type: :module,
+          timeout: 20,
+          fail_closed: true
+        )
+
+      assert {:deny, _} =
+               Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"})
+    end
+
+    test "a bounded hook runs with the caller in $callers" do
+      test_pid = self()
+
+      hook =
+        make_hook(:pre_tool_use, fn _, _ ->
+          if test_pid in Process.get(:"$callers", []), do: :allow, else: :deny
+        end)
+
+      assert Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"}) == :allow
+    end
+
+    test "timeout: :infinity runs the hook in the calling process" do
+      test_pid = self()
+      Process.put(:hook_marker, :present)
+
+      hook =
+        make_hook(
+          :pre_tool_use,
+          fn _, _ ->
+            if self() == test_pid and Process.get(:hook_marker) == :present,
+              do: :allow,
+              else: :deny
+          end,
+          timeout: :infinity
+        )
+
+      assert Runner.run(Registry.from_hooks([hook]), :pre_tool_use, %{tool_name: "t"}) == :allow
+    end
+  end
+
+  defmodule SlowHook do
+    @behaviour Nous.Hook
+    @impl true
+    def handle(_event, _payload), do: Process.sleep(:infinity)
+  end
+
   describe "module-based hooks" do
     defmodule AllowHook do
       @behaviour Nous.Hook

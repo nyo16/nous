@@ -20,7 +20,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
   # that path, and threading a context through it for a bookkeeping check is not
   # worth the churn.
 
-  alias Nous.{Fallback, ModelDispatcher, Tool}
+  alias Nous.{Errors, Fallback, ModelDispatcher, Tool}
   alias Nous.AgentRunner.{PromptAssembly, Streaming}
   alias Nous.Session.Invariant
 
@@ -84,13 +84,34 @@ defmodule Nous.AgentRunner.RequestDispatch do
         |> maybe_inject_include_usage(model.provider)
 
       with {:ok, stream} <- get_dispatcher().request_stream(model, messages, settings),
-           {:ok, message} <- Streaming.consume_stream_into_message(stream, ctx, model.provider) do
+           {:ok, message} <- consume_stream(stream, ctx, model.provider) do
         {:ok, {message, model}}
       end
     end)
     |> case do
       {:ok, {response, active_model}} -> {:ok, response, active_model}
       {:error, _} = err -> err
+    end
+  end
+
+  # Streams open lazily, so a non-2xx HTTP status arrives as the stream's
+  # first event (`%{status: _}`), not from `request_stream/3`. That is still an
+  # initialization failure, so it is wrapped like `request/3` wraps one and
+  # stays fallback-eligible.
+  defp consume_stream(stream, ctx, provider) do
+    case Streaming.consume_stream_into_message(stream, ctx, provider) do
+      {:error, %{status: status} = error} when is_integer(status) ->
+        {:error,
+         Errors.ProviderError.exception(
+           provider: provider,
+           status_code: status,
+           retry_after_ms: Errors.RetryInfo.parse(error),
+           message: "Streaming request failed: #{inspect(error)}",
+           details: error
+         )}
+
+      other ->
+        other
     end
   end
 

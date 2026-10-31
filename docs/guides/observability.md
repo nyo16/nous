@@ -116,6 +116,7 @@ Use these to alert on provider degradation. See the
 | `[:nous, :hook, :execute, :start]` | `system_time` | `event`, `hook_name`, `hook_type` |
 | `[:nous, :hook, :execute, :stop]` | `duration` | `event`, `hook_name`, `hook_type`, `result?` |
 | `[:nous, :hook, :denied]` | — | `event`, `hook_name`, `hook_type`, `reason?` |
+| `[:nous, :hook, :failed_closed]` | `system_time` | `event`, `hook_name`, `hook_type`, `reason` |
 | `[:nous, :skill, :activate]` | — | `skill_name`, `agent_name` |
 | `[:nous, :skill, :deactivate]` | — | `skill_name`, `agent_name` |
 

@@ -159,8 +159,9 @@ defmodule Nous.AgentRunner do
       }
     )
 
-    # Build context from options
-    ctx = build_context(agent, prompt, opts)
+    # Build context from options. A continued context starts at the primary
+    # model again: the sticky fallback is runtime-only (see IterationLoop).
+    ctx = agent |> build_context(prompt, opts) |> IterationLoop.clear_active_model()
 
     # Execute callbacks
     Callbacks.execute(ctx, :on_agent_start, %{agent: agent})
@@ -174,13 +175,7 @@ defmodule Nous.AgentRunner do
     # Initialize context via plugins
     ctx = Plugin.run_init(agent.plugins, agent, ctx)
 
-    # Initialize hooks registry
-    ctx =
-      if agent.hooks != [] do
-        %{ctx | hook_registry: Hook.Registry.from_hooks(agent.hooks)}
-      else
-        ctx
-      end
+    ctx = build_hook_registry(agent, ctx)
 
     # Fire session_start hooks
     Hook.Runner.run(ctx.hook_registry, :session_start, %{agent_name: agent.name})
@@ -224,8 +219,7 @@ defmodule Nous.AgentRunner do
               Requests: #{final_ctx.usage.requests}
             """)
 
-            active_model =
-              get_in(final_ctx.deps, [:active_model]) || agent.model
+            active_model = IterationLoop.active_model(final_ctx)
 
             :telemetry.execute(
               [:nous, :agent, :run, :stop],
@@ -244,9 +238,9 @@ defmodule Nous.AgentRunner do
                 model_name: agent.model.model,
                 # When fallback fired, surface BOTH so observability can
                 # split metrics by original (intended) and active (used).
-                active_model_provider: active_model.provider,
-                active_model_name: active_model.model,
-                fallback_used: active_model != agent.model
+                active_model_provider: (active_model || agent.model).provider,
+                active_model_name: (active_model || agent.model).model,
+                fallback_used: active_model != nil
               }
             )
 
@@ -299,6 +293,11 @@ defmodule Nous.AgentRunner do
       |> maybe_update_stream(opts)
       |> Context.set_needs_response(true)
       |> Context.patch_dangling_tool_calls()
+      |> IterationLoop.clear_active_model()
+
+    # A restored context carries no registry (it is runtime-only), so rebuild
+    # it here exactly as run/3 does; otherwise an inbox run fires no hooks.
+    ctx = build_hook_registry(agent, ctx)
 
     # Get behaviour module
     behaviour = Behaviour.get_module(agent)
@@ -609,7 +608,19 @@ defmodule Nous.AgentRunner do
     prompt_fn.(ctx)
   end
 
+  # Rebuilt from the agent's hook sources on every run, so it is idempotent
+  # across AgentServer turns and survives a session restore (the registry is
+  # runtime-only and not serialized). With no hooks configured, a hand-set
+  # `ctx.hook_registry` is kept.
+  defp build_hook_registry(%Agent{hooks: []}, ctx), do: ctx
+
+  defp build_hook_registry(%Agent{hooks: hooks}, ctx) do
+    %{ctx | hook_registry: Hook.Registry.from_hooks(hooks)}
+  end
+
   defp build_result(_agent, ctx, output) do
+    ctx = IterationLoop.clear_active_model(ctx)
+
     # `ctx.messages` is not a list the runner appended to any more: it is the
     # fold of this session's event log, re-materialized by `Nous.Agent.Context`
     # after every append, plus the assembly-time system-prompt overlay that is

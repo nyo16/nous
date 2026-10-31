@@ -86,7 +86,7 @@ defmodule Nous.Hook do
           type: hook_type(),
           handler: (event(), map() -> result()) | module() | String.t(),
           priority: integer(),
-          timeout: non_neg_integer(),
+          timeout: non_neg_integer() | :infinity,
           name: String.t() | nil,
           fail_closed: boolean()
         }
@@ -99,13 +99,16 @@ defmodule Nous.Hook do
     type: :function,
     matcher: nil,
     priority: 100,
+    # Milliseconds a :function/:module handler may run before it is killed and
+    # treated as `{:error, :timeout}` (also bounds :command hooks). `:infinity`
+    # runs a :function/:module handler in the calling process, unbounded.
     timeout: 10_000,
-    # When set on a hook bound to a blocking event (:pre_tool_use, :pre_request),
-    # runtime errors (raised exceptions, timeouts, non-0/2 exit codes from
-    # command hooks) deny the action instead of allowing it. Defaults to
-    # false to preserve existing fail-open behavior; set to true on hooks
-    # that gate security-sensitive operations so a broken hook can't
-    # silently bypass the check.
+    # When set, runtime errors (raised exceptions, timeouts, non-0/2 exit codes
+    # from command hooks) fail closed: a blocking event (:pre_tool_use,
+    # :pre_request) is denied, and on :post_tool_use the tool result is
+    # withheld. Defaults to false to preserve existing fail-open behavior; set
+    # to true on hooks that gate security-sensitive operations so a broken
+    # hook can't silently bypass the check.
     fail_closed: false
   ]
 
