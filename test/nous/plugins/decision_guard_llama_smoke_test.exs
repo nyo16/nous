@@ -193,8 +193,8 @@ defmodule Nous.Plugins.DecisionGuardLlamaSmokeTest do
         on_exit(fn ->
           :erlang.trace_pattern({LlamaCppEx, :chat_completion, 3}, false, [:local])
           :erlang.trace(:all, false, [:call])
-          # Left alive, the forwarder keeps the traced arguments referenced
-          # until the VM halts, where llama.cpp's Metal teardown asserts.
+          # Left alive, the forwarder keeps the model referenced until the VM
+          # halts, which aborts it on llama_cpp_ex 0.8.63 (nyo16/llama_cpp_ex#116).
           Process.exit(forwarder, :kill)
         end)
       end

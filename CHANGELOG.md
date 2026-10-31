@@ -59,10 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `llamacpp:` provider returns a `ConfigurationError` for an invalid
   `:tool_choice` or a `:tools` value that is not a list of tool maps, instead
   of crashing in llama_cpp_ex.
-- The llamacpp smoke test that traces `LlamaCppEx.chat_completion/3` stops
-  its trace forwarder on exit. Left alive, it kept llama.cpp resources
-  referenced until the VM halted, where llama_cpp_ex 0.8.63's Metal teardown
-  asserts (exit 134 after a green run).
+- The llamacpp smoke tests that trace `LlamaCppEx.chat_completion/3` stop
+  their trace forwarder on exit. Left alive, it kept the model referenced
+  when the VM halted, and on llama_cpp_ex 0.8.63 a model still referenced at
+  halt aborts the VM (exit 134 after a green run; nyo16/llama_cpp_ex#116).
+  Apps that keep a loaded model alive until `System.halt/1` (for example in
+  `persistent_term`) are affected the same way on macOS / Metal until that
+  is fixed upstream.
 
 ## [0.18.3] - 2026-10-31
 
