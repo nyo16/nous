@@ -39,7 +39,7 @@ defmodule Nous.Plugin do
   Plugins are executed in list order. The context flows through each plugin
   sequentially for all hooks:
 
-  1. `init/2` — once at run start
+  1. `init/2` — once at run start (see `c:init/2` for continued contexts)
   2. `hooks/2` — once per run, after `init/2` (and on every
      `Nous.AgentRunner.run_with_context/3`); merged after `agent.hooks`
   3. `system_prompt/2` — once, fragments joined into system message
@@ -62,7 +62,13 @@ defmodule Nous.Plugin do
 
   Use this to set up initial state in `ctx.deps`, register callbacks, etc.
 
-  Called once at the start of each `Nous.Agent.run/3`.
+  Called once at the start of every `Nous.AgentRunner.run/3` and
+  `Nous.AgentRunner.run_stream/3`, including one given a previous run's
+  `:context`. `Nous.AgentRunner.run_with_context/3` (which
+  `Nous.run(agent, messages: [...])` and `Nous.AgentServer` inbox runs use)
+  calls it only for a context that has not been initialised yet: a hand-built
+  or restored context is initialised once, a previous run's `result.context`
+  is continued without re-running `init/2`.
   """
   @callback init(agent :: Nous.Agent.t(), ctx :: Context.t()) :: Context.t()
 

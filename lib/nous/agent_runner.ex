@@ -177,7 +177,7 @@ defmodule Nous.AgentRunner do
     ctx = Behaviour.call(behaviour, :init_context, [agent, ctx], ctx)
 
     # Initialize context via plugins
-    ctx = Plugin.run_init(agent.plugins, agent, ctx)
+    ctx = init_plugins(agent, ctx)
 
     ctx = build_hook_registry(agent, ctx)
 
@@ -286,6 +286,12 @@ defmodule Nous.AgentRunner do
   Run agent with an existing context.
 
   Useful for continuing from a previous run or with pre-built context.
+
+  Plugin `init/2` runs only if the context has not been through it yet: a
+  context built by hand (as `Nous.run(agent, messages: [...])` does) or
+  restored from a serialized session is initialised once here, while a
+  `result.context` from an earlier run is continued as it is, so plugin state
+  such as an activated skill or InputGuard's checked-message index carries over.
   """
   @spec run_with_context(Agent.t(), Context.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_with_context(%Agent{} = agent, %Context{} = ctx, opts \\ []) do
@@ -299,6 +305,11 @@ defmodule Nous.AgentRunner do
       |> Context.set_needs_response(true)
       |> Context.patch_dangling_tool_calls()
       |> IterationLoop.clear_runtime_models()
+
+    # A context that never went through plugin init (built by hand, or
+    # restored: the marker is runtime-only) gets it here, once. A continued
+    # context keeps its plugin state; re-running init would reset it.
+    ctx = if ctx.plugins_initialized, do: ctx, else: init_plugins(agent, ctx)
 
     # A restored context carries no registry (it is runtime-only), so rebuild
     # it here exactly as run/3 does; otherwise an inbox run fires no hooks.
@@ -369,7 +380,7 @@ defmodule Nous.AgentRunner do
     # apply to streaming too. Previously run_stream skipped this entirely, so an
     # InputGuard configured on the agent silently provided ZERO protection for
     # streamed requests — a security control that varied by transport.
-    ctx = Plugin.run_init(agent.plugins, agent, ctx)
+    ctx = init_plugins(agent, ctx)
 
     tools = behaviour.get_tools(agent)
     plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
@@ -488,6 +499,13 @@ defmodule Nous.AgentRunner do
         :error -> a
       end
     end)
+  end
+
+  # The one place plugin `init/2` runs for a run. Marks the context so
+  # run_with_context/3 can tell a context that was initialised (and carries
+  # plugin state) from one that never was.
+  defp init_plugins(agent, ctx) do
+    %{Plugin.run_init(agent.plugins, agent, ctx) | plugins_initialized: true}
   end
 
   defp build_context(agent, prompt, opts) do

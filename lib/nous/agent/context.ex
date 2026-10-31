@@ -102,6 +102,12 @@ defmodule Nous.Agent.Context do
           # Skills (runtime-only, never serialized)
           active_skills: [Nous.Skill.t()],
 
+          # Set once the agent's plugins have run `init/2` on this context
+          # (runtime-only, never serialized). `AgentRunner.run_with_context/3`
+          # initialises plugins only when it is false, so a fresh context is
+          # initialised exactly once and a continued one is not reset.
+          plugins_initialized: boolean(),
+
           # Streaming flag — when true, the LLM call site streams chunks
           # through the new tool-aware path. Runtime-only.
           stream: boolean(),
@@ -132,6 +138,7 @@ defmodule Nous.Agent.Context do
             pubsub_topic: nil,
             hook_registry: nil,
             active_skills: [],
+            plugins_initialized: false,
             stream: false,
             tool_schema_cache: nil
 
