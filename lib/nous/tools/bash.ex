@@ -264,8 +264,10 @@ defmodule Nous.Tools.Bash do
   end
 
   # `$0` is the root, `$1` the command; both are argv entries, never
-  # interpolated into shell source.
-  @cd_then_exec ~s(cd -- "$0" || exit 1; exec #{@shell} -c "$1")
+  # interpolated into shell source. `unset OLDPWD`: dash (Linux /bin/sh)
+  # exports it after `cd`, which would hand the model's shell the BEAM's own
+  # working directory and break the `env -i` allowlist.
+  @cd_then_exec ~s(cd -- "$0" || exit 1; unset OLDPWD; exec #{@shell} -c "$1")
 
   defp in_workspace(root, command), do: [@shell, "-c", @cd_then_exec, root, command]
 
