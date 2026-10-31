@@ -8,13 +8,15 @@ defmodule Nous.Plugins.SkillsAllowedToolsTest do
 
   import ExUnit.CaptureLog
 
-  alias Nous.{Agent, AgentRunner, Permissions, Skill, Tool, Usage}
+  alias Nous.{Agent, AgentRunner, Message, Permissions, Skill, Tool, Usage}
+  alias Nous.Agent.Context
 
   @owner_key :skills_allowed_tools_test_owner
 
-  # Scripted model: reports the tool names of every request to the test
-  # process. When the prompt contains "CALL" and no tool has answered yet, it
-  # calls write_file and read_file; otherwise it answers with text.
+  # Scripted model: reports the tool names and the system prompt of every
+  # request to the test process. When the prompt contains "CALL" and no tool
+  # has answered yet, it calls write_file and read_file; otherwise it answers
+  # with text.
   defmodule ScriptedDispatcher do
     @moduledoc false
 
@@ -22,6 +24,7 @@ defmodule Nous.Plugins.SkillsAllowedToolsTest do
       names = Enum.map(settings[:tools] || [], &get_in(&1, ["function", "name"]))
       send(owner(), {:request_tools, names})
       send(owner(), {:request_model, model.provider, model.model})
+      send(owner(), {:request_system, system_text(messages)})
 
       tool_answered? = Enum.any?(messages, &(&1.role == :tool))
       wants_calls? = Enum.any?(messages, &(&1.role == :user and user_text(&1) =~ "CALL"))
@@ -47,6 +50,10 @@ defmodule Nous.Plugins.SkillsAllowedToolsTest do
 
     defp user_text(%{content: text}) when is_binary(text), do: text
     defp user_text(_), do: ""
+
+    defp system_text(messages) do
+      messages |> Enum.filter(&(&1.role == :system)) |> Enum.map_join("\n", &user_text/1)
+    end
 
     defp response(parts) do
       Nous.Message.from_legacy(%{
@@ -228,6 +235,50 @@ defmodule Nous.Plugins.SkillsAllowedToolsTest do
 
       assert_receive {:request_tools, ["read_file"]}
       refute_receive {:tool_ran, "write_file"}, 100
+    end
+  end
+
+  # #95: `Nous.run(agent, messages: [...])` goes through
+  # AgentRunner.run_with_context/3, which never ran plugin init/2, so the
+  # skill registry was never built and skills were inert on this path.
+  describe "Nous.run(agent, messages: [...])" do
+    test "an :auto skill restricts the request and its instructions reach the system prompt" do
+      agent =
+        Agent.new("openai:test-model",
+          tools: agent_tools(),
+          skills: [skill("reader", ["read_file"])]
+        )
+
+      assert {:ok, _} = Nous.run(agent, messages: [Message.user("hello")])
+
+      assert_receive {:request_tools, ["read_file"]}
+      assert_receive {:request_system, system}
+      assert system =~ "## Skill: reader\n\nreader instructions"
+    end
+
+    test "an {:on_match, fn} skill activated by the message restricts that request" do
+      reviewer = skill("reviewer", ["file_grep"], {:on_match, &String.contains?(&1, "review")})
+      agent = Agent.new("openai:test-model", tools: agent_tools(), skills: [reviewer])
+
+      assert {:ok, _} = Nous.run(agent, messages: [Message.user("please review this")])
+
+      assert_receive {:request_tools, ["file_grep"]}
+    end
+
+    test "continuing the run's context does not re-run plugin init" do
+      reviewer = skill("reviewer", ["file_grep"], {:on_match, &String.contains?(&1, "review")})
+      agent = Agent.new("openai:test-model", tools: agent_tools(), skills: [reviewer])
+
+      assert {:ok, first} = Nous.run(agent, messages: [Message.user("please review this")])
+      assert_receive {:request_tools, ["file_grep"]}
+
+      # The follow-up does not match, so only the registry carried in the
+      # context keeps the skill active; re-running init would rebuild the
+      # registry with the skill inactive and send every tool.
+      ctx = Context.add_message(first.context, Message.user("thanks"))
+      assert {:ok, _} = AgentRunner.run_with_context(agent, ctx)
+
+      assert_receive {:request_tools, ["file_grep"]}
     end
   end
 
