@@ -242,6 +242,13 @@ defmodule Nous.OutputSchemaTest do
       assert settings.response_format
       assert settings[:json_schema]
     end
+
+    test "llama.cpp gets the schema itself, which its provider compiles to a grammar" do
+      # The in-process llamacpp provider ignores `response_format`; without
+      # `:json_schema` an agent's output_type was only prompted, never enforced.
+      settings = OutputSchema.to_provider_settings(SimpleSchema, :llamacpp, mode: :json_schema)
+      assert settings[:json_schema] == settings.response_format["json_schema"]["schema"]
+    end
   end
 
   # --- parse_and_validate/2 ---

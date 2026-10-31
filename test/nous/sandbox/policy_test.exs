@@ -36,14 +36,31 @@ defmodule Nous.Sandbox.PolicyTest do
   end
 
   describe "new/1" do
-    test "accepts a bare mode atom", %{root: _root} do
+    test "accepts a bare mode atom; the root stays unbound until resolved", %{root: root} do
       Application.put_env(:nous, :sandbox_mode, :read_only)
 
       policy = Policy.new(:workspace_write)
       assert policy.mode == :workspace_write
       assert policy.session_id == nil
-      # No :workspace_root given, so the current directory, canonicalised.
-      assert policy.workspace_root == canonical!(File.cwd!())
+      # No :workspace_root given: unbound, so each call can bind its own.
+      assert policy.workspace_root == nil
+
+      # Bound per call: the run's deps first, then the current directory.
+      assert Policy.resolve(%{sandbox: policy, deps: %{workspace_root: root}}).workspace_root ==
+               canonical!(root)
+
+      assert Policy.resolve(%{sandbox: policy, deps: %{}}).workspace_root ==
+               canonical!(File.cwd!())
+
+      assert Policy.bind(policy).workspace_root == canonical!(File.cwd!())
+    end
+
+    test "an explicit root on the session policy still outranks deps", %{root: root} do
+      pinned = Policy.new(mode: :workspace_write, workspace_root: root)
+      other = Path.join(root, "elsewhere")
+
+      assert Policy.resolve(%{sandbox: pinned, deps: %{workspace_root: other}}).workspace_root ==
+               canonical!(root)
     end
 
     test "accepts a keyword list, a map, and an existing policy", %{root: root} do

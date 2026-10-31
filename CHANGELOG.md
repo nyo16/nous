@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-10-31
+
+### Fixed
+
+- **`sandbox: :workspace_write` on an agent confined runs to the wrong
+  directory.** `Nous.Sandbox.Policy.new/1` defaulted a missing
+  `:workspace_root` to `File.cwd!()` *when the policy was built*, and a
+  session policy's root outranks `deps[:workspace_root]`. So
+  `Nous.new(model, sandbox: :workspace_write)` froze the fence to whatever
+  directory the BEAM was in when the agent was created, and every run's
+  `deps: %{workspace_root: ...}` was ignored by the sandbox (sub-agents
+  inherited the same root). A policy built without a root is now **unbound**
+  (`workspace_root: nil`) and `Nous.Sandbox.Policy.resolve/2` binds it per
+  call: `deps[:workspace_root]`, then the current directory. A policy with an
+  explicit root behaves exactly as before. `Nous.Sandbox.confine/2` and
+  `Nous.Sandbox.writable_roots/1` bind an unbound policy to the current
+  directory (new `Nous.Sandbox.Policy.bind/1`), so direct callers are
+  unaffected. If you read `Policy.new(mode).workspace_root` yourself, it is
+  now `nil`; call `bind/1` or `resolve/2` for the effective root.
+- **`Nous.Tools.Bash` runs commands in the workspace root.** It never set a
+  working directory, so a relative path in a command (`echo x > out.txt`)
+  resolved against the BEAM's current directory, not
+  `deps[:workspace_root]`. The shell and the file tools disagreed about where
+  `out.txt` is, and under `sandbox: :workspace_write` such a write was denied
+  by the fence that should allow it, or allowed only because the BEAM's cwd
+  happened to sit under `/tmp`. The command now runs in the same root the
+  file tools and the sandbox use (`ctx.deps[:workspace_root]`, the session's,
+  or the current directory when neither is set — so apps without a workspace
+  root see no change). The command string reaches `/bin/sh -c` unchanged; a
+  workspace root that does not exist fails the command with exit code 1
+  instead of running it elsewhere. Found by a consumer smoke test of 0.18.0.
+- **Structured output on `llamacpp:` is grammar-constrained.** An agent's
+  `output_type` produced only `response_format`, which the in-process
+  llama.cpp provider ignores, so the output was merely prompted toward the
+  schema. `Nous.OutputSchema` now also sets `:json_schema` for `:llamacpp`
+  (as it does for SGLang), and the provider compiles it to a GBNF grammar.
+  A schema llama.cpp cannot compile now returns
+  `{:error, %Nous.Errors.ConfigurationError{}}` instead of raising
+  `ArgumentError` out of the run; this also applies to
+  `Nous.generate_text(..., json_schema: schema)`.
+
 ## [0.18.0] - 2026-10-31
 
 ### Changed — Behavioral / breaking
@@ -3356,7 +3397,8 @@ Initial public release with multi-provider LLM support:
 - ReAct agent implementation
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/nyo16/nous/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/nyo16/nous/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/nyo16/nous/compare/65f1148...v0.18.0
 [0.17.3]: https://github.com/nyo16/nous/compare/848e63e...65f1148
 [0.17.2]: https://github.com/nyo16/nous/compare/v0.17.1...848e63e

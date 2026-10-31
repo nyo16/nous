@@ -38,7 +38,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
     | `:temperature` | `:temp` | Sampling temperature |
     | `:max_tokens` | `:max_tokens` | Maximum tokens to generate |
     | `:top_p` | `:top_p` | Nucleus sampling |
-    | `:json_schema` | `:json_schema` | Constrained JSON output |
+    | `:json_schema` | `:grammar` | Constrained JSON output: the schema is compiled to a GBNF grammar. An agent's `output_type` sets it. A schema llama.cpp cannot compile returns `{:error, %Nous.Errors.ConfigurationError{}}` |
     | `:enable_thinking` | `:enable_thinking` | Enable/disable thinking tokens |
 
     ## Thinking Models
@@ -79,13 +79,16 @@ if Code.ensure_loaded?(LlamaCppEx) do
     def request(model, messages, settings) do
       merged_settings = Map.merge(model.default_settings, settings)
 
-      case merged_settings[:llamacpp_model] do
+      with llamacpp_model when not is_nil(llamacpp_model) <- merged_settings[:llamacpp_model],
+           {:ok, opts} <- build_llamacpp_opts(merged_settings) do
+        do_request(model, messages, opts, llamacpp_model)
+      else
         nil -> {:error, missing_model_error()}
-        llamacpp_model -> do_request(model, messages, merged_settings, llamacpp_model)
+        {:error, _} = error -> error
       end
     end
 
-    defp do_request(model, messages, merged_settings, llamacpp_model) do
+    defp do_request(model, messages, opts, llamacpp_model) do
       start_time = System.monotonic_time()
 
       :telemetry.execute(
@@ -98,8 +101,6 @@ if Code.ensure_loaded?(LlamaCppEx) do
         messages
         |> Nous.Messages.to_provider_format(:llamacpp)
         |> Enum.map(&to_atom_keys/1)
-
-      opts = build_llamacpp_opts(merged_settings)
 
       result =
         case LlamaCppEx.chat_completion(llamacpp_model, provider_messages, opts) do
@@ -160,13 +161,16 @@ if Code.ensure_loaded?(LlamaCppEx) do
     def request_stream(model, messages, settings) do
       merged_settings = Map.merge(model.default_settings, settings)
 
-      case merged_settings[:llamacpp_model] do
+      with llamacpp_model when not is_nil(llamacpp_model) <- merged_settings[:llamacpp_model],
+           {:ok, opts} <- build_llamacpp_opts(merged_settings) do
+        do_request_stream(model, messages, opts, llamacpp_model)
+      else
         nil -> {:error, missing_model_error()}
-        llamacpp_model -> do_request_stream(model, messages, merged_settings, llamacpp_model)
+        {:error, _} = error -> error
       end
     end
 
-    defp do_request_stream(model, messages, merged_settings, llamacpp_model) do
+    defp do_request_stream(model, messages, opts, llamacpp_model) do
       start_time = System.monotonic_time()
 
       :telemetry.execute(
@@ -179,8 +183,6 @@ if Code.ensure_loaded?(LlamaCppEx) do
         messages
         |> Nous.Messages.to_provider_format(:llamacpp)
         |> Enum.map(&to_atom_keys/1)
-
-      opts = build_llamacpp_opts(merged_settings)
 
       # LlamaCppEx.stream_chat_completion/3 is spec'd `:: Enumerable.t()` — it
       # returns a raw lazy stream, never an {:ok,_}/{:error,_} tuple. Generation
@@ -246,7 +248,13 @@ if Code.ensure_loaded?(LlamaCppEx) do
       end)
     end
 
-    # Build LlamaCppEx options from Nous settings
+    # Build LlamaCppEx options from Nous settings.
+    #
+    # `:json_schema` (set by Nous.OutputSchema for `output_type`, or passed
+    # directly) is compiled to a GBNF grammar here rather than handed to
+    # LlamaCppEx as-is: LlamaCppEx compiles it with a raising
+    # `from_json_schema!/1`, so a schema llama.cpp cannot convert would crash the
+    # run. Compiling once here turns that into a typed error.
     defp build_llamacpp_opts(settings) do
       opts = []
 
@@ -258,14 +266,28 @@ if Code.ensure_loaded?(LlamaCppEx) do
       opts = if settings[:top_p], do: [{:top_p, settings[:top_p]} | opts], else: opts
 
       opts =
-        if settings[:json_schema], do: [{:json_schema, settings[:json_schema]} | opts], else: opts
-
-      opts =
         if Map.has_key?(settings, :enable_thinking),
           do: [{:enable_thinking, settings[:enable_thinking]} | opts],
           else: opts
 
-      opts
+      case settings[:json_schema] do
+        nil -> {:ok, opts}
+        schema -> with_grammar(opts, schema)
+      end
+    end
+
+    defp with_grammar(opts, schema) do
+      case LlamaCppEx.Grammar.from_json_schema(schema) do
+        {:ok, gbnf} ->
+          {:ok, [{:grammar, gbnf} | opts]}
+
+        {:error, reason} ->
+          {:error,
+           Nous.Errors.ConfigurationError.exception(
+             message: "llama.cpp cannot compile this JSON schema to a grammar: #{reason}",
+             details: %{provider: :llamacpp, json_schema: schema}
+           )}
+      end
     end
 
     # Convert a %ChatCompletion{} struct to a string-keyed map compatible with from_openai_response/1

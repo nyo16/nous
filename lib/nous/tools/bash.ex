@@ -25,6 +25,13 @@ defmodule Nous.Tools.Bash do
   option was silently discarded the entire time — `printenv` returned every key.
   Do not "restore" it.
 
+  ### Working directory
+
+  Commands run in the workspace root: `ctx.deps[:workspace_root]` (or the
+  session's), falling back to the current working directory — the same root
+  the file tools and the sandbox use. A relative path in a command therefore
+  means the same file it means to `Nous.Tools.FileRead`.
+
   ### Sandbox
 
   Every command is wrapped by `Nous.Sandbox` before it is spawned. The
@@ -224,7 +231,16 @@ defmodule Nous.Tools.Bash do
     # `/bin/sh` absolute: a relative `sh` would resolve through PATH. `env -i`
     # inside the confinement, so the scrubbing applies to the model's shell
     # while the sandbox runner keeps a normal environment.
-    argv = Nous.Tools.Env.with_scrubbed_env([@shell, "-c", command])
+    #
+    # The command runs in the workspace root. `NetRunner` has no working
+    # directory option, so a wrapper shell `cd`s first and then `exec`s a fresh
+    # `/bin/sh -c` on the command, which stays a separate, untouched argument:
+    # no quoting of model text, same exit status, no extra process left behind.
+    # Without this a relative path (`echo x > out.txt`) resolved against the
+    # BEAM's cwd — outside the workspace, so the file tools and the shell
+    # disagreed about where `out.txt` is, and `:workspace_write` denied writes
+    # it should allow (or allowed them only because the cwd was under /tmp).
+    argv = Nous.Tools.Env.with_scrubbed_env(in_workspace(policy.workspace_root, command))
 
     case Sandbox.confine(argv, policy) do
       {:ok, confined} ->
@@ -246,6 +262,12 @@ defmodule Nous.Tools.Bash do
            "The command was NOT executed."}
     end
   end
+
+  # `$0` is the root, `$1` the command; both are argv entries, never
+  # interpolated into shell source.
+  @cd_then_exec ~s(cd -- "$0" || exit 1; exec #{@shell} -c "$1")
+
+  defp in_workspace(root, command), do: [@shell, "-c", @cd_then_exec, root, command]
 
   # ---------------------------------------------------------------------------
 

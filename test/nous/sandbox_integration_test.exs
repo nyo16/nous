@@ -181,6 +181,87 @@ defmodule Nous.SandboxIntegrationTest do
       refute File.exists?(target)
     end
 
+    test "Bash under workspace_write: a relative path is written in the workspace", %{
+      workspace: workspace
+    } do
+      # The reported failure: the shell ran in the BEAM's cwd, so this write
+      # either landed outside the workspace or was denied by the very fence that
+      # should allow it. Through the real tool entry point, with the real
+      # provider selected by the probe.
+      Application.delete_env(:nous, :sandbox_backend)
+      Sandbox.reset_backend_cache()
+
+      ctx =
+        Nous.RunContext.new(%{workspace_root: workspace},
+          approval_gated?: true,
+          sandbox: Policy.new(mode: :workspace_write, workspace_root: workspace)
+        )
+
+      assert {:ok, output} =
+               Nous.Tools.Bash.execute(ctx, %{"command" => "echo inside > rel_probe.txt"})
+
+      refute output =~ "sandbox: file access denied", output
+      assert File.read!(Path.join(workspace, "rel_probe.txt")) == "inside\n"
+      refute File.exists?(Path.join(File.cwd!(), "rel_probe.txt"))
+    end
+
+    defmodule ScriptedBash do
+      @moduledoc false
+      # One bash call with a relative path, then a final answer.
+      def request(_model, messages, _settings) do
+        parts =
+          if Enum.any?(messages, &(&1.role == :tool)),
+            do: [{:text, "done"}],
+            else: [
+              {:tool_call,
+               %{
+                 id: "call_1",
+                 name: "bash",
+                 arguments: %{"command" => "echo agent > agent_probe.txt"}
+               }}
+            ]
+
+        {:ok,
+         Nous.Message.from_legacy(%{
+           parts: parts,
+           usage: %Nous.Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2, requests: 1},
+           model_name: "scripted",
+           timestamp: DateTime.utc_now()
+         })}
+      end
+
+      def request_stream(_model, _messages, _settings), do: {:ok, []}
+      def count_tokens(_messages), do: 10
+    end
+
+    test "an agent built with sandbox: :workspace_write confines each run to its deps root",
+         %{workspace: workspace} do
+      # The consumer-facing shape that 0.18.0 got wrong: the agent's sandbox is
+      # a bare mode, built once, and every run supplies its own workspace_root.
+      # The root used to be frozen to the BEAM's cwd when the agent was built,
+      # so this write went to File.cwd!() (or was denied there).
+      Application.delete_env(:nous, :sandbox_backend)
+      Sandbox.reset_backend_cache()
+      Nous.ModelDispatcher.put_dispatcher(ScriptedBash)
+
+      stray = Path.join(File.cwd!(), "agent_probe.txt")
+      on_exit(fn -> File.rm(stray) end)
+
+      agent =
+        Nous.new("openai:scripted", tools: [Nous.Tools.Bash], sandbox: :workspace_write)
+
+      assert {:ok, result} =
+               Nous.run(agent, "go",
+                 deps: %{workspace_root: workspace},
+                 approval_handler: fn _ -> :approve end
+               )
+
+      tool_msg = Enum.find(result.context.messages, &(&1.role == :tool))
+      refute tool_msg.content =~ "sandbox: file access denied", tool_msg.content
+      assert File.read!(Path.join(workspace, "agent_probe.txt")) == "agent\n"
+      refute File.exists?(stray)
+    end
+
     # `merge_stderr/1` is not optional here: NetRunner's `run/2` collects stdout
     # only, and every denial signature a provider publishes is written to stderr.
     # Without the merge these tests would classify a refused write as `:ok`.

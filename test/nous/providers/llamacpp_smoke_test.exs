@@ -47,6 +47,14 @@ defmodule Nous.Providers.LlamaCppSmokeTest do
       end
     end
 
+    defp forward_traces(pid) do
+      receive do
+        {:trace, _, :call, _} = msg ->
+          send(pid, msg)
+          forward_traces(pid)
+      end
+    end
+
     describe "chat completion" do
       test "generate_text returns a non-empty response", %{model: model} do
         assert {:ok, text} =
@@ -115,6 +123,73 @@ defmodule Nous.Providers.LlamaCppSmokeTest do
         assert is_map(decoded)
         assert Map.has_key?(decoded, "answer")
         assert is_binary(decoded["answer"])
+      end
+
+      test "an agent's output_type reaches llama.cpp as a grammar, not just a prompt", %{
+        model: model
+      } do
+        # Assert on what the provider hands the engine — the llama.cpp analogue
+        # of asserting an HTTP request body. The model's output can't tell
+        # grammar from prompting: the schema is also in the system prompt and
+        # an obedient model copies it. Before 0.18.1 OutputSchema sent only
+        # `response_format`, which this provider ignores, so `:json_schema` was
+        # never in these opts and the output was unconstrained.
+        schema = %{
+          "type" => "object",
+          "properties" => %{
+            "verdict" => %{"type" => "string", "enum" => ["XQZ-ALPHA", "XQZ-BETA"]}
+          },
+          "required" => ["verdict"]
+        }
+
+        # A process cannot be its own tracer, and the run calls the provider from
+        # this test process, so a forwarder relays the trace message.
+        test_pid = self()
+        forwarder = spawn(fn -> forward_traces(test_pid) end)
+        :erlang.trace(:all, true, [:call, {:tracer, forwarder}])
+        :erlang.trace_pattern({LlamaCppEx, :chat_completion, 3}, true, [:local])
+
+        on_exit(fn ->
+          :erlang.trace_pattern({LlamaCppEx, :chat_completion, 3}, false, [:local])
+          :erlang.trace(:all, false, [:call])
+        end)
+
+        agent =
+          Nous.new("llamacpp:local",
+            llamacpp_model: model,
+            model_settings: %{max_tokens: 64, enable_thinking: false},
+            output_type: schema,
+            structured_output: [max_retries: 0]
+          )
+
+        assert {:ok, result} = Nous.run(agent, "Is the sky blue? Answer yes or no.")
+
+        assert_received {:trace, _, :call, {LlamaCppEx, :chat_completion, [_, _, opts]}}
+        assert {:ok, opts[:grammar]} == LlamaCppEx.Grammar.from_json_schema(schema)
+        assert result.output["verdict"] in ["XQZ-ALPHA", "XQZ-BETA"]
+      end
+
+      test "a schema llama.cpp cannot compile is a ConfigurationError, not a crash", %{
+        model: model
+      } do
+        bad = %{
+          "type" => "object",
+          "properties" => %{"a" => %{"$ref" => "#/$defs/Missing"}},
+          "required" => ["a"]
+        }
+
+        agent =
+          Nous.new("llamacpp:local",
+            llamacpp_model: model,
+            model_settings: %{max_tokens: 16, enable_thinking: false},
+            output_type: bad,
+            structured_output: [max_retries: 0]
+          )
+
+        assert {:error, %Nous.Errors.ConfigurationError{message: message}} =
+                 Nous.run(agent, "hi")
+
+        assert message =~ "cannot compile this JSON schema"
       end
     end
 

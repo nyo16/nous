@@ -282,6 +282,51 @@ defmodule Nous.Tools.BashSandboxTest do
     end
   end
 
+  describe "working directory" do
+    setup do
+      Application.put_env(:nous, :sandbox_mode, :danger_full_access)
+      Application.put_env(:nous, :sandbox_backend, Unavailable)
+      :ok
+    end
+
+    test "a command runs in the workspace root, not the BEAM's cwd", ctx do
+      assert {:ok, output} = Bash.execute(ctx.ctx, %{"command" => "pwd -P"})
+      assert String.trim(output) == ctx.canonical_workspace
+      refute String.trim(output) == File.cwd!()
+    end
+
+    test "a relative path in a command lands in the workspace", ctx do
+      stray = Path.join(File.cwd!(), "nous_bash_cwd_probe.txt")
+      on_exit(fn -> File.rm(stray) end)
+
+      assert {:ok, _} =
+               Bash.execute(ctx.ctx, %{"command" => "echo here > nous_bash_cwd_probe.txt"})
+
+      assert File.read!(Path.join(ctx.workspace, "nous_bash_cwd_probe.txt")) == "here\n"
+      refute File.exists?(stray)
+    end
+
+    test "the command text reaches the shell unchanged: quotes, $ and exit status", ctx do
+      assert {:ok, output} =
+               Bash.execute(ctx.ctx, %{
+                 "command" => ~S(x='a "b" $HOME'; printf '%s\n' "$x" "$0"; exit 4)
+               })
+
+      assert output =~ ~S(a "b" $HOME)
+      assert output =~ "/bin/sh"
+      assert output =~ "Exit code: 4"
+    end
+
+    test "a missing workspace root fails loudly instead of running elsewhere", ctx do
+      gone = Path.join(ctx.workspace, "does_not_exist")
+      run_ctx = RunContext.new(%{workspace_root: gone}, approval_gated?: true)
+
+      assert {:ok, output} = Bash.execute(run_ctx, %{"command" => "touch '#{ctx.marker}'"})
+      assert output =~ "Exit code: 1"
+      refute File.exists?(ctx.marker)
+    end
+  end
+
   describe "classification of a finished confined command" do
     test "a denial is appended to the output", ctx do
       Application.put_env(:nous, :sandbox_mode, :read_only)

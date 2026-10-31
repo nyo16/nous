@@ -713,10 +713,11 @@ defmodule Nous.OutputSchema do
       }
     }
 
-    # vLLM also uses guided_json
+    # vLLM also uses guided_json. llama.cpp (in-process) ignores
+    # `response_format` and compiles `:json_schema` into a GBNF grammar.
     case provider do
       :vllm -> Map.put(base, :guided_json, json_schema)
-      :sglang -> Map.put(base, :json_schema, json_schema)
+      provider when provider in [:sglang, :llamacpp] -> Map.put(base, :json_schema, json_schema)
       _ -> base
     end
   end
