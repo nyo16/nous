@@ -13,8 +13,13 @@ defmodule Nous.Plugins.InputGuard.Strategies.Semantic do
     * `:attack_embeddings` — **Required.** List of `{label, embedding_vector}` tuples
       representing known attack patterns. Pre-compute these from your attack corpus.
     * `:threshold` — Cosine similarity threshold for flagging. Default: `0.85`
-    * `:on_error` — Severity to return when embedding fails.
-      `:safe` (fail-open, default) or `:blocked` (fail-closed).
+    * `:on_error` — What happens when the embedding call fails:
+        * `:drop` (default) — the strategy returns `{:error, reason}` and
+          `Nous.Plugins.InputGuard` counts it as *dropped*, which the default
+          policy (`dropped: :block`) blocks. An embedding outage must not read
+          as a "safe" verdict.
+        * `:safe` — fail **open**: return a `:safe` verdict. Explicit opt-in.
+        * `:suspicious` / `:blocked` — return a verdict of that severity.
 
   ## Example
 
@@ -50,22 +55,31 @@ defmodule Nous.Plugins.InputGuard.Strategies.Semantic do
     provider = Keyword.fetch!(config, :embedding_provider)
     attack_embeddings = Keyword.fetch!(config, :attack_embeddings)
     threshold = Keyword.get(config, :threshold, 0.85)
-    on_error = Keyword.get(config, :on_error, :safe)
+    on_error = Keyword.get(config, :on_error, :drop)
 
     case Nous.Memory.Embedding.embed(provider, input) do
       {:ok, input_vec} ->
         check_similarities(input_vec, attack_embeddings, threshold)
 
       {:error, reason} ->
-        Logger.warning("InputGuard.Semantic: Embedding failed: #{inspect(reason)}")
-
-        {:ok,
-         %Result{
-           severity: on_error,
-           reason: "Embedding error (fail-#{on_error})",
-           strategy: __MODULE__
-         }}
+        error_result(on_error, reason)
     end
+  end
+
+  defp error_result(:drop, reason) do
+    Logger.warning("InputGuard.Semantic: Embedding failed: #{inspect(reason)}; strategy dropped")
+    {:error, reason}
+  end
+
+  defp error_result(on_error, reason) do
+    Logger.warning("InputGuard.Semantic: Embedding failed: #{inspect(reason)}")
+
+    {:ok,
+     %Result{
+       severity: on_error,
+       reason: "Embedding error (fail-#{on_error})",
+       strategy: __MODULE__
+     }}
   end
 
   defp check_similarities(input_vec, attack_embeddings, threshold) do

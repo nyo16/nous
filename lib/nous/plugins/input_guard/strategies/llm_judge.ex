@@ -15,10 +15,10 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudge do
       LLM call fails, raises, or returns something without a `VERDICT:` line):
         * `:drop` (default) — the strategy returns `{:error, reason}` and
           `Nous.Plugins.InputGuard` counts it as *dropped*: no verdict was
-          produced, which under the default `:any` aggregation fails closed by
-          upgrading a `:safe` aggregate to `:suspicious` (see `:fail_closed`
-          there). This is the safe default — a judge that is down must not
-          read as a judge that said "safe".
+          produced, which under the default `fail_closed: true` gives a
+          fail-closed result that the default policy (`dropped: :block`)
+          blocks (see `:fail_closed` there). This is the safe default — a
+          judge that is down must not read as a judge that said "safe".
         * `:safe` — fail **open**: return a `:safe` verdict. Explicit opt-in.
         * `:suspicious` / `:blocked` — return a verdict of that severity.
 
@@ -99,7 +99,7 @@ defmodule Nous.Plugins.InputGuard.Strategies.LLMJudge do
   end
 
   # `:drop` hands the failure to InputGuard, whose dropped-strategy accounting
-  # decides (fail closed under :any). Anything else is a verdict the operator
+  # decides (fail closed by default). Anything else is a verdict the operator
   # explicitly asked for in place of one.
   defp error_result(:drop, reason) do
     Logger.warning("InputGuard.LLMJudge: LLM call failed: #{inspect(reason)}; strategy dropped")

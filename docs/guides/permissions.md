@@ -304,8 +304,9 @@ configuration from `ctx.deps[:input_guard_config]`. Each configured
 `{strategy_module, opts}` pair returns a verdict, the verdicts are aggregated
 (`:any` — the default — `:majority`, or `:all`), and the resulting severity is
 mapped to an action by `Nous.Plugins.InputGuard.Policy` (default
-`%{suspicious: :warn, blocked: :block}`: `:warn` injects a system-message
-warning and continues, `:block` halts the loop).
+`%{suspicious: :warn, blocked: :block, dropped: :block}`: `:warn` injects a
+system-message warning and continues, `:block` halts the loop before any chat
+request is sent).
 
 `Nous.Plugins.DecisionGuard` runs the same engine (`Nous.Plugins.InputGuard.Engine`)
 with a decision-model strategy on the user input, and can also guard tool calls,
@@ -320,25 +321,39 @@ fail-open: one flaky LLM-judge call and your only substantive detector is gone.
 
 ### `:fail_closed`
 
-| Aggregation          | `:fail_closed` default |
-| -------------------- | ---------------------- |
-| `:any` (the default) | `true`                 |
-| `:majority`          | `false`                |
-| `:all`               | `false`                |
+`:fail_closed` defaults to `true` in every aggregation mode. A drop is then
+counted as a vote that *flagged* the input, against the *configured* strategy
+count, and when that could change the outcome the survivors decided, the result
+is **fail-closed**:
 
-When `fail_closed` is in effect **and** at least one strategy was dropped, an
-otherwise-`:safe` aggregate is upgraded to `:suspicious`, carrying a reason of
+| Aggregation          | Fails closed when                                                  |
+| -------------------- | ------------------------------------------------------------------ |
+| `:any` (the default) | any strategy dropped and no survivor returned `:blocked`           |
+| `:majority`          | flagged survivors plus drops are more than half the configured count |
+| `:all`               | every survivor flagged (including when every strategy dropped)     |
+
+A fail-closed result has severity `:suspicious`, a reason of
 "N input-guard strategies did not complete (error or timeout); failing closed"
-and `metadata: %{dropped_strategies: n, fail_closed: true}`. Only `:safe` is
-upgraded — a `:suspicious` or `:blocked` aggregate passes through untouched, and
-with zero drops the aggregate is returned as-is.
+and `metadata: %{dropped_strategies: n, fail_closed: true}`. The policy handles
+it with its own key, `:dropped`, which defaults to `:block` — also when your
+policy map leaves it out — so the request never reaches the model. A
+`:blocked` survivor verdict is kept as is, and with zero drops the aggregate is
+returned as-is. Drops that cannot change the outcome (under `:majority`, one
+drop next to two `:safe` votes out of three) do not fail closed: a vote that is
+already decided does not depend on the missing one.
 
-`:majority` and `:all` default to `false` because they already count drops
-against the *configured* strategy count rather than the number of survivors:
-a drop shrinks the numerator, never the denominator, so it can only make those
-modes stricter. (That denominator choice is itself deliberate — otherwise an
-attacker who makes benign strategies error could shrink the vote and flip the
-outcome.)
+A `:suspicious` survivor verdict does not stop it: otherwise an attacker could
+include a mildly suspicious phrase to turn a blocked detector outage into a
+warning. (`Nous.Plugins.DecisionGuard`, which escalates `:suspicious` to a
+handler, keeps such a verdict.)
+
+`fail_closed: false` is the explicit fail-open opt-out: a drop counts as a vote
+that did *not* flag, so the survivors decide, and if every strategy drops the
+input passes as `:safe` in every mode. The denominator is still the configured
+count, so an attacker who makes benign strategies error cannot shrink the vote.
+
+To keep failing closed but let the request through, set `policy[:dropped]` to
+`:warn` (inject the warning and continue) or `:log`.
 
 Every drop — regardless of `fail_closed` — emits a `Logger` warning and the
 `[:nous, :input_guard, :strategy_dropped]` telemetry event, with measurement
@@ -371,22 +386,22 @@ verdict are **not** drops — only errors and timeouts are.
         aggregation: :any,
         fail_closed: true,
         strategy_timeout: 5_000,
-        policy: %{suspicious: :warn, blocked: :block}
+        policy: %{suspicious: :warn, blocked: :block, dropped: :block}
       }
     }
   )
 ```
 
-> **Upgrading from before 0.16.5: your guard just got stricter.** This is a
-> behavior change, not a new opt-in. Previously a dropped strategy was silently
-> ignored, so an `:any` guard whose only real detector errored or timed out
-> returned `:safe` and the input passed. The same run now yields `:suspicious`,
-> which under the default policy injects a system warning into the request — and
-> if you mapped `suspicious: :block`, halts the agent loop instead. A flaky
-> strategy (network-dependent judges are the usual suspect) will therefore start
-> producing warnings or blocks on input that used to pass. Fix the flaky
-> strategy, raise `:strategy_timeout`, or set `fail_closed: false` to restore the
-> old fail-open behavior — and watch
+> **Upgrading from before 0.18.2: a detector outage now blocks.** Since 0.16.5
+> a dropped strategy upgraded a `:safe` aggregate to `:suspicious`, which the
+> default policy only *warned* about: the request still reached the model with
+> every tool. A fail-closed result now goes to `policy[:dropped]`, default
+> `:block`, and `:majority` / `:all` fail closed by default too (they used to
+> treat an all-dropped run as `:safe`). A flaky strategy (network-dependent
+> judges are the usual suspect) will therefore start blocking input that used
+> to pass with a warning. Fix the flaky strategy, raise `:strategy_timeout`, set
+> `policy: %{..., dropped: :warn}` to restore warn-and-proceed, or set
+> `fail_closed: false` to fail open — and watch
 > `[:nous, :input_guard, :strategy_dropped]` to know which you need.
 
 ## Scrubbed Tool Subprocess Environments
@@ -518,10 +533,11 @@ Run either with `mix run examples/<path>.exs`.
 - **`max_turns` ≠ `max_iterations`.** See the section above — they cap different
   loops and neither bounds the other.
 
-- **InputGuard fails closed on dropped strategies since 0.16.5.** Under the
-  default `aggregation: :any`, a strategy that errors or times out upgrades a
-  `:safe` verdict to `:suspicious` — input that used to pass may now warn or
-  block. `fail_closed: false` restores the old behavior.
+- **InputGuard blocks on dropped strategies since 0.18.2.** A strategy that
+  errors or times out, where its vote could have flagged the input, produces a
+  fail-closed result that `policy[:dropped]` (default `:block`) handles, in
+  every aggregation mode. Before 0.18.2 the default policy only warned.
+  `dropped: :warn` restores warn-and-proceed; `fail_closed: false` fails open.
 
 - **A scrubbed env is not a sandbox.** `Nous.Tools.Env.scrubbed/0` controls what
   Nous forwards to a subprocess; it does not unset what the OS child already

@@ -14,9 +14,19 @@ defmodule Nous.Plugins.InputGuard.Policy do
     * `:callback` — Calls the user-provided `on_violation` function from config.
     * `fun/2` — A function `fn result, ctx -> ctx end` for fully custom handling.
 
+  ## Keys
+
+    * `:suspicious`, `:blocked` — the action for a verdict of that severity.
+    * `:dropped` — the action for a fail-closed result: strategies errored or
+      timed out and could have flagged the input (`metadata.fail_closed`, see
+      `Nous.Plugins.InputGuard`). It takes precedence over the severity key
+      and defaults to `:block` when absent, so a detector outage blocks even
+      under a policy that only warns. Set `dropped: :warn` to let the request
+      through with a warning instead.
+
   ## Default Policy
 
-      %{suspicious: :warn, blocked: :block}
+      %{suspicious: :warn, blocked: :block, dropped: :block}
 
   """
 
@@ -26,7 +36,7 @@ defmodule Nous.Plugins.InputGuard.Policy do
   alias Nous.Message
   alias Nous.Plugins.InputGuard.{Engine, Result}
 
-  @default_policy %{suspicious: :warn, blocked: :block}
+  @default_policy %{suspicious: :warn, blocked: :block, dropped: :block}
 
   @doc """
   Apply the configured policy action for the given result.
@@ -36,12 +46,18 @@ defmodule Nous.Plugins.InputGuard.Policy do
   @spec apply(Result.t(), Context.t(), [Nous.Tool.t()], map()) :: {Context.t(), [Nous.Tool.t()]}
   def apply(%Result{severity: :safe}, ctx, tools, _config), do: {ctx, tools}
 
-  def apply(%Result{severity: severity} = result, ctx, tools, config) do
+  def apply(%Result{} = result, ctx, tools, config) do
     policy = Map.get(config, :policy, @default_policy)
-    action = Map.get(policy, severity)
 
-    execute_action(action, result, ctx, tools, config)
+    execute_action(action(policy, result), result, ctx, tools, config)
   end
+
+  # A fail-closed result is not a detector's verdict: it gets its own key so
+  # that `suspicious: :warn` cannot turn a detector outage into a pass.
+  defp action(policy, %Result{metadata: %{fail_closed: true}}),
+    do: Map.get(policy, :dropped, :block)
+
+  defp action(policy, %Result{severity: severity}), do: Map.get(policy, severity)
 
   defp execute_action(nil, _result, ctx, tools, _config), do: {ctx, tools}
 

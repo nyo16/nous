@@ -35,7 +35,7 @@ defmodule Nous.Plugins.InputGuard do
               {Nous.Plugins.InputGuard.Strategies.LLMJudge, model: "openai:gpt-4o-mini"},
               {MyApp.InputGuard.Blocklist, words: ["hack", "exploit"]}
             ],
-            policy: %{suspicious: :warn, blocked: :block},
+            policy: %{suspicious: :warn, blocked: :block, dropped: :block},
             aggregation: :any,
             short_circuit: false,
             on_violation: &MyApp.log_violation/1,
@@ -48,19 +48,29 @@ defmodule Nous.Plugins.InputGuard do
 
     * `:strategies` — List of `{module, keyword_opts}` tuples. Each module must
       implement `Nous.Plugins.InputGuard.Strategy`. Default: `[{Strategies.Pattern, []}]`
-    * `:policy` — Map of severity to action. Default: `%{suspicious: :warn, blocked: :block}`
+    * `:policy` — Map of severity to action, plus `:dropped` for a fail-closed
+      result (see below). Default: `%{suspicious: :warn, blocked: :block, dropped: :block}`;
+      a policy map without `:dropped` still blocks on it. See `Nous.Plugins.InputGuard.Policy`.
     * `:aggregation` — How to combine results from multiple strategies.
       `:any` (default) flags if any strategy flags, `:majority` if more than half flag,
-      `:all` only if every strategy flags.
+      `:all` only if every strategy flags. `:majority` and `:all` count against the
+      number of *configured* strategies, not the ones that produced a verdict.
     * `:short_circuit` — When `true`, stops running strategies on first `:blocked` result.
       Default: `false`
-    * `:fail_closed` — How to treat strategies that error or time out ("dropped"
-      strategies). When `true`, a dropped strategy upgrades an otherwise-`:safe`
-      verdict to `:suspicious`, so a crashed/timed-out detector can't silently
-      let input through. Defaults to `true` when `aggregation: :any` (where a
-      single surviving detector decides), `false` for `:majority`/`:all` (which
-      already count dropped strategies against the configured denominator).
-      Dropped strategies always emit a `Logger` warning and a
+    * `:fail_closed` — How to treat strategies that error, time out or return
+      `{:error, reason}` ("dropped" strategies). Default: `true`, in every
+      aggregation mode. A drop then counts as a vote that *flagged* the input,
+      and if that could change the outcome — under `:any` whenever the
+      survivors did not block, under `:majority` when the drops could make
+      up the majority, under `:all` when every survivor flagged (so also when
+      every strategy dropped) — the result is fail-closed: `:suspicious` with
+      `metadata: %{fail_closed: true, dropped_strategies: n}`, handled by
+      `policy[:dropped]`: with the default `:block` no chat request is sent;
+      `dropped: :warn` lets it through with a warning. A `:blocked` survivor
+      verdict is kept as is. With `fail_closed: false`
+      (explicit fail-open) a drop counts as a vote that did *not* flag: under
+      `:any` the survivors decide, and if every strategy drops the input
+      passes as `:safe`. Dropped strategies always emit a `Logger` warning and a
       `[:nous, :input_guard, :strategy_dropped]` telemetry event.
     * `:strategy_timeout` — Per-strategy timeout in ms for the parallel
       (non-short-circuit) path; a strategy exceeding it is killed and counts
@@ -110,7 +120,11 @@ defmodule Nous.Plugins.InputGuard do
           {ctx, tools}
         else
           input
-          |> Engine.run(ctx, config, telemetry_prefix: [:nous, :input_guard], label: "InputGuard")
+          |> Engine.run(ctx, config,
+            telemetry_prefix: [:nous, :input_guard],
+            label: "InputGuard",
+            fail_closed_on: [:safe, :suspicious]
+          )
           |> Policy.apply(ctx, tools, config)
         end
     end

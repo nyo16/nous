@@ -46,8 +46,8 @@ defmodule Nous.Plugins.InputGuard.Strategies.DecisionModel do
       llama.cpp process that is down), as in
       `Nous.Plugins.InputGuard.Strategies.LLMJudge`:
         * `:drop` (default) — return `{:error, reason}`; InputGuard counts
-          the strategy as dropped, which under `:any` fails closed
-          (`:suspicious`).
+          the strategy as dropped, which by default fails closed (blocked
+          under the default `policy[:dropped]`).
         * `:safe` — fail **open**. Explicit opt-in.
         * `:suspicious` / `:blocked` — return a verdict of that severity.
     * `:on_verdict` — optional `(info -> any)`, called after every check with
@@ -156,7 +156,7 @@ defmodule Nous.Plugins.InputGuard.Strategies.DecisionModel do
   end
 
   # `:drop` hands the failure to the engine, whose dropped-strategy accounting
-  # decides (fail closed under :any). Anything else is a verdict the operator
+  # decides (fail closed by default). Anything else is a verdict the operator
   # explicitly asked for in place of one.
   defp error_result(:drop, reason) do
     Logger.warning("InputGuard.DecisionModel: no verdict: #{inspect(reason)}; strategy dropped")
