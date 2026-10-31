@@ -62,7 +62,11 @@ defmodule Nous.Plugins.SummarizationTest do
   end
 
   # Collects [:nous, :compaction, *] events in order for the calling process.
-  defp attach_compaction_telemetry(name) do
+  # Telemetry handlers are global and this module is async: forward only the
+  # events of this test's own agent, or a concurrent test's compaction (a
+  # :stop from another agent) lands in this mailbox and breaks the
+  # refute_received checks below.
+  defp attach_compaction_telemetry(name, agent_name) do
     test_pid = self()
 
     :telemetry.attach_many(
@@ -72,8 +76,12 @@ defmodule Nous.Plugins.SummarizationTest do
         [:nous, :compaction, :stop],
         [:nous, :compaction, :exception]
       ],
-      fn event, measurements, metadata, _config ->
-        send(test_pid, {:telemetry, event, measurements, metadata})
+      fn
+        event, measurements, %{agent_name: ^agent_name} = metadata, _config ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+
+        _event, _measurements, _metadata, _config ->
+          :ok
       end,
       nil
     )
@@ -541,7 +549,7 @@ defmodule Nous.Plugins.SummarizationTest do
 
   describe "telemetry" do
     test "emits start then stop with the documented metadata", %{agent: agent} do
-      attach_compaction_telemetry("compaction-stop-test")
+      attach_compaction_telemetry("compaction-stop-test", agent.name)
       Nous.ModelDispatcher.put_dispatcher(RecordingDispatcher)
 
       messages = [
@@ -579,7 +587,7 @@ defmodule Nous.Plugins.SummarizationTest do
     end
 
     test "reports llm_called: false when pruning alone cleared the pressure", %{agent: agent} do
-      attach_compaction_telemetry("compaction-prune-only-test")
+      attach_compaction_telemetry("compaction-prune-only-test", agent.name)
 
       messages = [
         Message.user("read"),
@@ -612,7 +620,7 @@ defmodule Nous.Plugins.SummarizationTest do
 
     test "an exception mid-compaction emits :exception and leaves the marker set",
          %{agent: agent} do
-      attach_compaction_telemetry("compaction-exception-test")
+      attach_compaction_telemetry("compaction-exception-test", agent.name)
       Nous.ModelDispatcher.put_dispatcher(RaisingDispatcher)
 
       messages = [
