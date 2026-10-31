@@ -52,7 +52,8 @@ defmodule Nous.Agent do
           permissions: Nous.Permissions.Policy.t() | nil,
           sandbox: Nous.Sandbox.Policy.t() | nil,
           code_mode: Nous.CodeMode.mode() | nil,
-          parallel_tool_calls: boolean()
+          parallel_tool_calls: boolean(),
+          max_iterations: pos_integer() | nil
         }
 
   @enforce_keys [:model]
@@ -84,7 +85,9 @@ defmodule Nous.Agent do
     permissions: nil,
     sandbox: nil,
     code_mode: nil,
-    parallel_tool_calls: false
+    parallel_tool_calls: false,
+    # nil: the runner's default (10). A run's `:max_iterations` option wins.
+    max_iterations: nil
   ]
 
   @doc """
@@ -162,6 +165,10 @@ defmodule Nous.Agent do
       tool loop), but external side effects (HTTP calls, DB writes) will
       interleave — leave this off if your tools depend on sequential
       side-effect ordering within a single response
+    * `:max_iterations` - Iteration ceiling for every run of this agent: how
+      many model requests one `run/3` may make before it fails with
+      `Nous.Errors.MaxIterationsExceeded` (default: 10). A run's own
+      `:max_iterations` option overrides it. Must be a positive integer.
 
   ## Examples
 
@@ -215,7 +222,8 @@ defmodule Nous.Agent do
       permissions: Keyword.get(opts, :permissions),
       sandbox: normalize_sandbox(Keyword.get(opts, :sandbox)),
       code_mode: normalize_code_mode(Keyword.get(opts, :code_mode)),
-      parallel_tool_calls: Keyword.get(opts, :parallel_tool_calls, false)
+      parallel_tool_calls: Keyword.get(opts, :parallel_tool_calls, false),
+      max_iterations: validate_max_iterations(Keyword.get(opts, :max_iterations))
     }
   end
 
@@ -342,7 +350,7 @@ defmodule Nous.Agent do
       Context.new(
         messages: messages,
         deps: Keyword.get(opts, :deps, %{}),
-        max_iterations: Keyword.get(opts, :max_iterations, 10),
+        max_iterations: Keyword.get(opts, :max_iterations, agent.max_iterations || 10),
         callbacks: Keyword.get(opts, :callbacks, %{}),
         notify_pid: Keyword.get(opts, :notify_pid),
         agent_name: agent.name,
@@ -447,6 +455,15 @@ defmodule Nous.Agent do
   @spec normalize_code_mode(term()) :: Nous.CodeMode.mode() | nil
   defp normalize_code_mode(nil), do: nil
   defp normalize_code_mode(mode), do: Nous.CodeMode.new(mode)
+
+  # Fail loudly: a nil/zero/non-integer ceiling would otherwise either be
+  # ignored or reach the iteration loop as "no cap".
+  defp validate_max_iterations(nil), do: nil
+  defp validate_max_iterations(max) when is_integer(max) and max > 0, do: max
+
+  defp validate_max_iterations(other) do
+    raise ArgumentError, ":max_iterations must be a positive integer, got: #{inspect(other)}"
+  end
 
   # Auto-include Skills plugin when skills are configured
   defp ensure_skills_plugin(plugins, []), do: plugins

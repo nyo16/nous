@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Nous.new(model, max_iterations: n)` caps the agent's runs** (#101).
+  `Nous.Agent` had no such field, so the option (shown in AGENTS.md) was
+  silently dropped and every run used the default of 10. It is now an agent
+  option: a run's own `:max_iterations` still wins, then the agent's, then
+  10. A value that is not a positive integer raises `ArgumentError` in
+  `Nous.new/2`.
+
 ## [0.18.3] - 2026-10-31
 
 InputGuard fixes from the 0.18.2 security review. A message or attachment

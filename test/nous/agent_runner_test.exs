@@ -343,6 +343,75 @@ defmodule Nous.AgentRunnerTest do
       end)
     end
 
+    # #101: `Nous.new(max_iterations: n)` used to be dropped (Agent had no such
+    # field), so every run got 10. Counting model requests shows which ceiling
+    # the run actually used.
+    test "the agent's max_iterations caps a run; a run option overrides it", %{
+      model: model,
+      test_tool: test_tool
+    } do
+      test_pid = self()
+
+      mock_dispatcher = fn _model, _messages, _settings ->
+        send(test_pid, :model_request)
+
+        {:ok,
+         Message.from_legacy(%{
+           parts: [
+             {:tool_call,
+              %{
+                id: "call_#{System.unique_integer([:positive])}",
+                name: "test_tool",
+                arguments: %{"input" => "endless"}
+              }}
+           ],
+           usage: %Usage{input_tokens: 1, output_tokens: 1, total_tokens: 2, requests: 1},
+           model_name: "test-model",
+           timestamp: DateTime.utc_now()
+         })}
+      end
+
+      agent = Agent.new(model, tools: [test_tool], max_iterations: 2)
+
+      count_requests = fn ->
+        Stream.repeatedly(fn ->
+          receive do
+            :model_request -> 1
+          after
+            0 -> nil
+          end
+        end)
+        |> Enum.take_while(& &1)
+        |> length()
+      end
+
+      with_mock_dispatcher(mock_dispatcher, fn ->
+        assert {:error, %Errors.MaxIterationsExceeded{max_iterations: 2}} =
+                 AgentRunner.run(agent, "Keep going")
+
+        assert count_requests.() == 2
+
+        assert {:error, %Errors.MaxIterationsExceeded{max_iterations: 3}} =
+                 AgentRunner.run(agent, "Keep going", max_iterations: 3)
+
+        assert count_requests.() == 3
+
+        # The `messages:` entry point builds its context separately.
+        assert {:error, %Errors.MaxIterationsExceeded{max_iterations: 2}} =
+                 Agent.run(agent, messages: [Message.user("Keep going")])
+
+        assert count_requests.() == 2
+      end)
+    end
+
+    test "an invalid agent max_iterations is refused at construction", %{model: model} do
+      for bad <- [0, -1, "10", 1.5] do
+        assert_raise ArgumentError, ~r/:max_iterations/, fn ->
+          Agent.new(model, max_iterations: bad)
+        end
+      end
+    end
+
     test "handles empty tool list when tool calls are made", %{model: model} do
       agent =
         Agent.new(model,
