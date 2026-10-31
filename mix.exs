@@ -138,10 +138,12 @@ defmodule Nous.MixProject do
       {:plug, ">= 1.16.0", optional: true},
 
       # Local LLM inference via llama.cpp NIFs (optional — add to your app's deps
-      # to unlock the LlamaCpp provider). optional: true keeps it out of
-      # downstream apps' builds unless they opt in, while still being available
-      # for Nous's own dev/test (e.g. the tagged llamacpp smoke test).
-      {:llama_cpp_ex, "~> 0.8", optional: true},
+      # to unlock the LlamaCpp provider and the LlamaCpp decision-model
+      # backend). 0.8.58 is the first release with `LlamaCppEx.Decision`.
+      # optional: true keeps it out of downstream apps' builds unless they opt
+      # in, while still being available for Nous's own dev/test (e.g. the
+      # tagged llamacpp smoke test).
+      {:llama_cpp_ex, "~> 0.8.58", optional: true},
 
       # Process execution for command hooks and the Bash tool. A NIF-based
       # runner is used (over System.cmd/Port) for fine-grained process-tree
