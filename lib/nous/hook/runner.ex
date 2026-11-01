@@ -30,6 +30,11 @@ defmodule Nous.Hook.Runner do
   so a broken redaction hook cannot leak the unredacted result. Both emit
   `[:nous, :hook, :failed_closed]`. Other non-blocking events fail open.
 
+  Every hook event (`[:nous, :hook, :execute | :denied | :failed_closed]`)
+  carries the run correlation keys (see `Nous.Telemetry`) and a
+  `tool_call_id`: the `:tool_id` of a `:pre_tool_use` / `:post_tool_use`
+  payload, else the correlation key.
+
   ## Handler Types
 
   - `:function` — Calls the function directly with `(event, payload)`
@@ -96,6 +101,7 @@ defmodule Nous.Hook.Runner do
   alias Nous.Hook.{Decision, Registry}
   alias Nous.Sandbox
   alias Nous.Sandbox.{Confined, Policy}
+  alias Nous.Telemetry.RunScope
 
   require Hook
   require Logger
@@ -171,7 +177,7 @@ defmodule Nous.Hook.Runner do
     :telemetry.execute(
       [:nous, :hook, :execute, :start],
       %{system_time: System.system_time()},
-      %{event: event, hook_name: hook.name, hook_type: hook.type}
+      hook_meta(hook, event, payload)
     )
 
     result = execute_hook(hook, event, payload, env)
@@ -180,7 +186,7 @@ defmodule Nous.Hook.Runner do
     :telemetry.execute(
       [:nous, :hook, :execute, :stop],
       %{duration: duration},
-      %{event: event, hook_name: hook.name, hook_type: hook.type, result: result_type(result)}
+      hook_meta(hook, event, payload, %{result: result_type(result)})
     )
 
     case result do
@@ -190,11 +196,7 @@ defmodule Nous.Hook.Runner do
       :deny ->
         Logger.info("Hook #{inspect(hook.name || hook.type)} denied #{event}")
 
-        :telemetry.execute(
-          [:nous, :hook, :denied],
-          %{},
-          %{event: event, hook_name: hook.name, hook_type: hook.type}
-        )
+        :telemetry.execute([:nous, :hook, :denied], %{}, hook_meta(hook, event, payload))
 
         :deny
 
@@ -209,7 +211,7 @@ defmodule Nous.Hook.Runner do
         :telemetry.execute(
           [:nous, :hook, :denied],
           %{},
-          %{event: event, hook_name: hook.name, hook_type: hook.type, reason: reason}
+          hook_meta(hook, event, payload, %{reason: reason})
         )
 
         {:deny, text}
@@ -231,15 +233,10 @@ defmodule Nous.Hook.Runner do
           :telemetry.execute(
             [:nous, :hook, :denied],
             %{},
-            %{
-              event: event,
-              hook_name: hook.name,
-              hook_type: hook.type,
-              reason: {:fail_closed, reason}
-            }
+            hook_meta(hook, event, payload, %{reason: {:fail_closed, reason}})
           )
 
-          emit_failed_closed(hook, event, reason)
+          emit_failed_closed(hook, event, payload, reason)
 
           {:deny, "hook errored (fail_closed): #{inspect(reason)}"}
         else
@@ -279,7 +276,7 @@ defmodule Nous.Hook.Runner do
       :telemetry.execute(
         [:nous, :hook, :execute, :start],
         %{system_time: System.system_time()},
-        %{event: event, hook_name: hook.name, hook_type: hook.type}
+        hook_meta(hook, event, current)
       )
 
       result = execute_hook(hook, event, current, env)
@@ -288,7 +285,7 @@ defmodule Nous.Hook.Runner do
       :telemetry.execute(
         [:nous, :hook, :execute, :stop],
         %{duration: duration},
-        %{event: event, hook_name: hook.name, hook_type: hook.type, result: result_type(result)}
+        hook_meta(hook, event, current, %{result: result_type(result)})
       )
 
       case result do
@@ -311,7 +308,7 @@ defmodule Nous.Hook.Runner do
           )
 
           if hook.fail_closed and event == :post_tool_use do
-            emit_failed_closed(hook, event, reason)
+            emit_failed_closed(hook, event, current, reason)
             {:halt, {:modify, %{result: @withheld_tool_result}}}
           else
             {:cont, acc}
@@ -324,13 +321,35 @@ defmodule Nous.Hook.Runner do
     end)
   end
 
-  defp emit_failed_closed(hook, event, reason) do
+  defp emit_failed_closed(hook, event, payload, reason) do
     :telemetry.execute(
       [:nous, :hook, :failed_closed],
       %{system_time: System.system_time()},
-      %{event: event, hook_name: hook.name, hook_type: hook.type, reason: reason}
+      hook_meta(hook, event, payload, %{reason: reason})
     )
   end
+
+  # Every hook event: the run's correlation keys, plus the tool call a
+  # `:pre_tool_use` / `:post_tool_use` payload is about (its `:tool_id`),
+  # falling back to the scope's.
+  defp hook_meta(hook, event, payload, extra \\ %{}) do
+    scope = RunScope.metadata()
+
+    scope
+    |> Map.merge(%{
+      event: event,
+      hook_name: hook.name,
+      hook_type: hook.type,
+      tool_call_id: payload_tool_call_id(payload) || scope.tool_call_id
+    })
+    |> Map.merge(extra)
+  end
+
+  @doc false
+  # The provider tool-call id in a tool hook payload, or nil.
+  @spec payload_tool_call_id(term()) :: String.t() | nil
+  def payload_tool_call_id(%{tool_id: id}) when is_binary(id), do: id
+  def payload_tool_call_id(_payload), do: nil
 
   # Execute a single hook based on its type. Only :decision handlers see env.
   # A timeout nothing can enforce (e.g. `nil` on a struct-literal hook) is a
@@ -604,21 +623,26 @@ defmodule Nous.Hook.Runner do
   def async_task(fun) when is_function(fun, 0) do
     caller = self()
 
-    Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-      task = self()
+    Task.Supervisor.async_nolink(
+      Nous.TaskSupervisor,
+      # The run's telemetry scope rides along explicitly, so hook and
+      # decision-model events in the task skip the `$callers` walk.
+      RunScope.bind(fn ->
+        task = self()
 
-      spawn(fn ->
-        caller_ref = Process.monitor(caller)
-        task_ref = Process.monitor(task)
+        spawn(fn ->
+          caller_ref = Process.monitor(caller)
+          task_ref = Process.monitor(task)
 
-        receive do
-          {:DOWN, ^caller_ref, _, _, _} -> Process.exit(task, :kill)
-          {:DOWN, ^task_ref, _, _, _} -> :ok
-        end
+          receive do
+            {:DOWN, ^caller_ref, _, _, _} -> Process.exit(task, :kill)
+            {:DOWN, ^task_ref, _, _, _} -> :ok
+          end
+        end)
+
+        fun.()
       end)
-
-      fun.()
-    end)
+    )
   end
 
   # Run a hook body with full containment: hooks execute arbitrary user code,

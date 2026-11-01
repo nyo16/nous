@@ -88,6 +88,10 @@ defmodule Nous.DecisionModel do
       raise
       * Measurements: `%{duration: native_time}`
       * Metadata: `%{backend, model, question_count, kind: atom, reason: term}`
+
+  Every event also carries the run correlation keys (`trace_id`,
+  `agent_run_id`, `parent_agent_run_id`, `tool_call_id`; see `Nous.Telemetry`),
+  so guard and router classifier cost can be attributed to the run.
   """
 
   alias Nous.DecisionModel.{Backend, Defang, Question, Result}
@@ -191,7 +195,13 @@ defmodule Nous.DecisionModel do
     questions = Question.normalize!(questions)
     state = Defang.defang_term(state)
 
-    metadata = %{backend: backend, model: dm.model, question_count: length(questions)}
+    metadata =
+      Nous.Telemetry.RunScope.merge(%{
+        backend: backend,
+        model: dm.model,
+        question_count: length(questions)
+      })
+
     start = System.monotonic_time()
 
     :telemetry.execute(

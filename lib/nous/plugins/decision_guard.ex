@@ -138,13 +138,22 @@ defmodule Nous.Plugins.DecisionGuard do
 
     * `[:nous, :decision_guard, :verdict]` — every classified check.
       * Measurements: `%{duration: native_time, chunk_count: integer}`
-      * Metadata: `%{surface, verdict, result, probabilities, canary_failed, error}`,
-        with `verdict` one of `:allow`, `:escalate`, `:deny` and `result` one of
-        `:allow`, `:deny`, `:modify` (after escalation).
+      * Metadata: `%{surface, agent_name, tool_call_id, verdict, result,
+        probabilities, canary_failed, error}`, with `verdict` one of `:allow`,
+        `:escalate`, `:deny` and `result` one of `:allow`, `:deny`, `:modify`
+        (after escalation). `tool_call_id` is the guarded call on the
+        `:tool_call` / `:tool_result` surfaces and nil on `:user_input`.
     * `[:nous, :decision_guard, :canary_failed]` — a canary was answered
       wrongly. Measurements `%{count: integer}`, metadata `%{surface}`.
+    * `[:nous, :decision_guard, :strategy_verdict]` — one user-input
+      strategy's verdict (see `Nous.Plugins.InputGuard.Engine`).
     * `[:nous, :decision_guard, :strategy_dropped]` — a user-input strategy
       produced no verdict (see `Nous.Plugins.InputGuard.Engine`).
+
+  Every event also carries the run correlation keys (`trace_id`,
+  `agent_run_id`, `parent_agent_run_id`; see `Nous.Telemetry`). On hook
+  surfaces each check also emits `[:nous, :hook, :decision]` (hook name
+  `"decision_guard:<surface>"`); count verdicts on one of the two.
   """
 
   @behaviour Nous.Plugin
@@ -159,6 +168,7 @@ defmodule Nous.Plugins.DecisionGuard do
   alias Nous.Plugins.InputGuard.{Engine, Policy, Result}
   alias Nous.Plugins.InputGuard.Strategies
   alias Nous.Session.Log
+  alias Nous.Telemetry.RunScope
 
   @surfaces [:user_input, :tool_call, :tool_result, :model_output]
   @packs %{
@@ -373,7 +383,7 @@ defmodule Nous.Plugins.DecisionGuard do
           resolve_escalations(checks, inputs, ctx, tools, surface)
       end
 
-    Enum.zip_with(checks, outcomes, &emit_check/2)
+    Enum.zip_with(checks, outcomes, &emit_check(&1, &2, ctx.agent_name))
     ctx_and_tools
   end
 
@@ -497,8 +507,10 @@ defmodule Nous.Plugins.DecisionGuard do
     end
   end
 
-  defp emit_check(check, outcome) do
+  defp emit_check(check, outcome, agent_name) do
     emit_verdict(:user_input, check.duration, %{
+      agent_name: agent_name,
+      tool_call_id: nil,
       verdict: check.verdict,
       result: outcome,
       probabilities: Map.get(check.model_info, :probabilities, %{}),
@@ -638,6 +650,8 @@ defmodule Nous.Plugins.DecisionGuard do
     canary_telemetry(surface, report.canary_failed)
 
     emit_verdict(surface, report.duration, %{
+      agent_name: Map.get(report, :agent_name),
+      tool_call_id: Map.get(report, :tool_call_id),
       verdict: report.verdict,
       result: report.result,
       probabilities: report.probabilities,
@@ -650,17 +664,21 @@ defmodule Nous.Plugins.DecisionGuard do
   # ── telemetry ──────────────────────────────────────────────────────────────
 
   defp emit_verdict(surface, duration, report) do
+    scope = RunScope.metadata()
+
     :telemetry.execute(
       [:nous, :decision_guard, :verdict],
       %{duration: duration, chunk_count: report.chunk_count},
-      %{
+      Map.merge(scope, %{
         surface: surface,
+        agent_name: report.agent_name,
+        tool_call_id: report.tool_call_id || scope.tool_call_id,
         verdict: report.verdict,
         result: report.result,
         probabilities: report.probabilities,
         canary_failed: report.canary_failed,
         error: report.error
-      }
+      })
     )
   end
 
@@ -669,9 +687,11 @@ defmodule Nous.Plugins.DecisionGuard do
   defp canary_telemetry(surface, count) do
     Logger.warning("DecisionGuard: #{count} canary check(s) failed on #{surface}")
 
-    :telemetry.execute([:nous, :decision_guard, :canary_failed], %{count: count}, %{
-      surface: surface
-    })
+    :telemetry.execute(
+      [:nous, :decision_guard, :canary_failed],
+      %{count: count},
+      RunScope.merge(%{surface: surface})
+    )
   end
 
   # ── config ─────────────────────────────────────────────────────────────────

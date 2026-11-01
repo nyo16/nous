@@ -118,13 +118,13 @@ defmodule Nous.Fallback do
     :telemetry.execute(
       prefix ++ [:activated],
       %{system_time: System.system_time()},
-      %{
+      Nous.Telemetry.RunScope.merge(%{
         failed_provider: failed_model.provider,
         failed_model: failed_model.model,
         next_provider: next_model.provider,
         next_model: next_model.model,
         reason: reason
-      }
+      })
     )
   end
 end

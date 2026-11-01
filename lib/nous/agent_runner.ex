@@ -96,6 +96,7 @@ defmodule Nous.AgentRunner do
   alias Nous.Agent.{Behaviour, Callbacks, Context}
 
   alias Nous.AgentRunner.{
+    Instrumentation,
     IterationLoop,
     PromptAssembly,
     RequestDispatch,
@@ -152,31 +153,27 @@ defmodule Nous.AgentRunner do
   @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(%Agent{} = agent, prompt, opts \\ []) do
     agent = apply_runtime_overrides(agent, opts)
-    start_time = System.monotonic_time()
 
+    Instrumentation.scoped(agent, fn run_scope, start_time ->
+      do_run(agent, prompt, opts, run_scope, start_time)
+    end)
+  end
+
+  defp do_run(agent, prompt, opts, run_scope, start_time) do
     Logger.info(
       "Starting agent run: #{agent.name} with model #{agent.model.provider}:#{agent.model.model}"
     )
 
     Logger.debug("Agent has #{length(agent.tools)} tools available")
 
-    # Emit start event
-    :telemetry.execute(
-      [:nous, :agent, :run, :start],
-      %{system_time: System.system_time(), monotonic_time: start_time},
-      %{
-        agent_name: agent.name,
-        model_provider: agent.model.provider,
-        model_name: agent.model.model,
-        tool_count: length(agent.tools),
-        has_tools: length(agent.tools) > 0
-      }
-    )
-
     # Build context from options. A continued context starts at the primary
     # model again: the sticky fallback and the routing decision are
     # runtime-only (see IterationLoop).
-    ctx = agent |> build_context(prompt, opts) |> IterationLoop.clear_runtime_models()
+    ctx =
+      agent
+      |> build_context(prompt, opts)
+      |> IterationLoop.clear_runtime_models()
+      |> Map.put(:run, run_scope)
 
     # build_context/3 appends the prompt last, so this run starts at its event.
     boundary = run_boundary(ctx, Log.count(ctx.log) - 1)
@@ -237,31 +234,7 @@ defmodule Nous.AgentRunner do
               Requests: #{final_ctx.usage.requests}
             """)
 
-            served_model = IterationLoop.served_model(final_ctx) || agent.model
-
-            :telemetry.execute(
-              [:nous, :agent, :run, :stop],
-              %{
-                duration: duration,
-                total_tokens: final_ctx.usage.total_tokens,
-                input_tokens: final_ctx.usage.input_tokens,
-                output_tokens: final_ctx.usage.output_tokens,
-                tool_calls: final_ctx.usage.tool_calls,
-                requests: final_ctx.usage.requests,
-                iterations: final_ctx.iteration
-              },
-              %{
-                agent_name: agent.name,
-                model_provider: agent.model.provider,
-                model_name: agent.model.model,
-                # When routing or fallback moved the run off the configured
-                # model, surface BOTH so observability can split metrics by
-                # configured and active (last used) model.
-                active_model_provider: served_model.provider,
-                active_model_name: served_model.model,
-                fallback_used: IterationLoop.fallback_used?(final_ctx)
-              }
-            )
+            emit_run_stop(agent, run_scope, start_time, final_ctx)
 
             # Execute completion callback
             Callbacks.execute(final_ctx, :on_agent_complete, agent_result)
@@ -274,23 +247,24 @@ defmodule Nous.AgentRunner do
             case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
               {:ok, retry_ctx, output} ->
                 agent_result = build_result(agent, retry_ctx, output, boundary)
+                emit_run_stop(agent, run_scope, start_time, retry_ctx)
                 Callbacks.execute(retry_ctx, :on_agent_complete, agent_result)
                 {:ok, agent_result}
 
               {:error, reason} ->
-                emit_error_telemetry(agent, duration, reason)
+                emit_error_telemetry(agent, run_scope, start_time, reason)
                 Callbacks.execute(final_ctx, :on_error, reason)
                 {:error, reason}
             end
 
           {:error, reason} ->
-            emit_error_telemetry(agent, duration, reason)
+            emit_error_telemetry(agent, run_scope, start_time, reason)
             Callbacks.execute(final_ctx, :on_error, reason)
             {:error, reason}
         end
 
       {:error, error} ->
-        emit_error_telemetry(agent, duration, error)
+        emit_error_telemetry(agent, run_scope, start_time, error)
         Callbacks.execute(ctx, :on_error, error)
         {:error, error}
     end
@@ -316,8 +290,14 @@ defmodule Nous.AgentRunner do
   @spec run_with_context(Agent.t(), Context.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_with_context(%Agent{} = agent, %Context{} = ctx, opts \\ []) do
     agent = apply_runtime_overrides(agent, opts)
-    boundary = run_boundary(ctx, pending_input_position(ctx))
 
+    Instrumentation.scoped(agent, fn run_scope, start_time ->
+      do_run_with_context(agent, ctx, opts, run_scope, start_time)
+    end)
+  end
+
+  defp do_run_with_context(agent, ctx, opts, run_scope, start_time) do
+    boundary = run_boundary(ctx, pending_input_position(ctx))
     # Merge any additional options into context
     ctx =
       ctx
@@ -328,6 +308,7 @@ defmodule Nous.AgentRunner do
       |> Context.patch_dangling_tool_calls()
       |> IterationLoop.clear_runtime_models()
       |> reset_iteration()
+      |> Map.put(:run, run_scope)
 
     # Plugin init only for a context that never went through it (built by
     # hand, or restored: the marker is runtime-only); before_run every run.
@@ -352,6 +333,7 @@ defmodule Nous.AgentRunner do
                 do: build_result(agent, updated_ctx, output, boundary),
                 else: agent_result
 
+            emit_run_stop(agent, run_scope, start_time, final_ctx)
             {:ok, agent_result}
 
           {:error, %Errors.ValidationError{} = err} ->
@@ -359,17 +341,21 @@ defmodule Nous.AgentRunner do
 
             case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
               {:ok, retry_ctx, output} ->
+                emit_run_stop(agent, run_scope, start_time, retry_ctx)
                 {:ok, build_result(agent, retry_ctx, output, boundary)}
 
-              {:error, _} = err ->
+              {:error, reason} = err ->
+                emit_error_telemetry(agent, run_scope, start_time, reason)
                 err
             end
 
-          {:error, _} = err ->
+          {:error, reason} = err ->
+            emit_error_telemetry(agent, run_scope, start_time, reason)
             err
         end
 
-      {:error, _} = err ->
+      {:error, reason} = err ->
+        emit_error_telemetry(agent, run_scope, start_time, reason)
         err
     end
   end
@@ -392,8 +378,22 @@ defmodule Nous.AgentRunner do
   @spec run_stream(Agent.t(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
   def run_stream(%Agent{} = agent, prompt, opts \\ []) do
     agent = apply_runtime_overrides(agent, opts)
+
+    # The stream is enumerated after this returns, possibly in another
+    # process, so the run's scope is captured into it (see
+    # Streaming.instrument_run/2) and its stop event fires on `{:complete, _}`.
+    Instrumentation.scoped(agent, fn run_scope, start_time ->
+      do_run_stream(agent, prompt, opts, %{
+        agent: agent,
+        run_scope: run_scope,
+        start_time: start_time
+      })
+    end)
+  end
+
+  defp do_run_stream(agent, prompt, opts, run_info) do
     # Build context
-    ctx = build_context(agent, prompt, opts)
+    ctx = agent |> build_context(prompt, opts) |> Map.put(:run, run_info.run_scope)
 
     # Get behaviour
     behaviour = Behaviour.get_module(agent)
@@ -413,7 +413,7 @@ defmodule Nous.AgentRunner do
     ctx = PromptAssembly.apply_plugin_system_prompts(agent, ctx)
 
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
-    all_tools = ToolExecution.visible_tools(agent, all_tools)
+    {all_tools, blocked_tool_names} = ToolExecution.visible_tools(agent, all_tools)
 
     if ctx.needs_response do
       # Build messages via behaviour (reflects any plugin context changes)
@@ -438,25 +438,44 @@ defmodule Nous.AgentRunner do
           model_settings
         end
 
+      model_span =
+        Instrumentation.model_start(%{
+          agent_name: agent.name,
+          iteration: 0,
+          model: agent.model,
+          stream: true,
+          tools: all_tools,
+          blocked_tool_names: blocked_tool_names,
+          messages: messages
+        })
+
       # Request stream from model (with fallback chain if configured)
       case RequestDispatch.stream_with_fallback(agent, messages, model_settings, all_tools) do
-        {:ok, stream} ->
+        {:ok, stream, active_model} ->
           # Wrap stream to execute callbacks, then accumulate result
           wrapped_stream =
             stream
             |> Streaming.wrap_stream_with_callbacks(ctx)
             |> Streaming.wrap_stream_with_result()
+            |> Streaming.instrument_run(
+              Map.merge(run_info, %{model_span: model_span, active_model: active_model})
+            )
 
           {:ok, wrapped_stream}
 
-        error ->
+        {:error, reason} = error ->
+          Instrumentation.model_exception(model_span, :error, reason)
+          emit_error_telemetry(agent, run_info.run_scope, run_info.start_time, reason)
           error
       end
     else
       # A plugin (e.g. InputGuard) halted the request before any LLM call.
       # Emit the guard's message as a terminal stream instead of streaming a
       # model response.
-      {:ok, blocked_stream(ctx)}
+      {:ok,
+       ctx
+       |> blocked_stream()
+       |> Streaming.instrument_run(Map.merge(run_info, %{model_span: nil, active_model: nil}))}
     end
   end
 
@@ -785,25 +804,28 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  defp emit_error_telemetry(agent, duration, error) do
-    duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+  # A run that returned `{:error, reason}`: no stack exists, so the event's
+  # stacktrace is `[]`. A run that raised gets its real one from
+  # Instrumentation.scoped/2.
+  defp emit_error_telemetry(agent, run_scope, start_time, error) do
+    Instrumentation.run_exception(agent, run_scope, start_time, :error, error, [])
+  end
 
-    Logger.error("""
-    Agent run failed: #{agent.name}
-      Duration: #{duration_ms}ms
-      Error: #{inspect(error)}
-    """)
+  defp emit_run_stop(agent, run_scope, start_time, final_ctx) do
+    # When routing or fallback moved the run off the configured model, surface
+    # BOTH so observability can split metrics by configured and active (last
+    # used) model.
+    served = %{
+      model: IterationLoop.served_model(final_ctx) || agent.model,
+      fallback_used: IterationLoop.fallback_used?(final_ctx)
+    }
 
-    :telemetry.execute(
-      [:nous, :agent, :run, :exception],
-      %{duration: duration},
-      %{
-        agent_name: agent.name,
-        model_provider: agent.model.provider,
-        kind: :error,
-        reason: error,
-        stacktrace: []
-      }
+    Instrumentation.run_stop(
+      agent,
+      run_scope,
+      start_time,
+      Instrumentation.context_measurements(final_ctx),
+      served
     )
   end
 
@@ -827,9 +849,14 @@ defmodule Nous.AgentRunner do
   end
 
   defp maybe_retry_validation(agent, behaviour, ctx, err, retries_left) do
+    error_text = OutputSchema.format_errors(err)
+
     Logger.info(
-      "Structured output validation failed, retrying (#{retries_left} retries left): #{OutputSchema.format_errors(err)}"
+      "Structured output validation failed, retrying (#{retries_left} retries left): #{error_text}"
     )
+
+    attempt = Keyword.get(agent.structured_output, :max_retries, 0) - retries_left + 1
+    Instrumentation.structured_output_retry(agent, attempt, retries_left - 1, error_text)
 
     # Find the raw response text from the last assistant message
     raw_response =
@@ -839,9 +866,6 @@ defmodule Nous.AgentRunner do
         %Message{role: :assistant} = msg -> Messages.extract_text(msg)
         _ -> nil
       end)
-
-    # Build retry message
-    error_text = OutputSchema.format_errors(err)
 
     retry_msg =
       Message.user("""

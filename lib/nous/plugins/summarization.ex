@@ -92,6 +92,8 @@ defmodule Nous.Plugins.Summarization do
       metadata `%{agent_name:, messages_before:, messages_after:, llm_called:,
       kind:, reason:, stacktrace:}`
 
+  Each also carries the run correlation keys (see `Nous.Telemetry`).
+
   ## Crash visibility
 
   `:compaction_in_progress` is set in `deps[:summarization_config]` before the
@@ -205,7 +207,7 @@ defmodule Nous.Plugins.Summarization do
     :telemetry.execute(
       [:nous, :compaction, :start],
       %{system_time: System.system_time(), monotonic_time: start_time},
-      %{agent_name: agent.name, messages_before: messages_before}
+      Nous.Telemetry.RunScope.merge(%{agent_name: agent.name, messages_before: messages_before})
     )
 
     # Pruning sits OUTSIDE the try on purpose: if it raises, that is a bug in
@@ -418,7 +420,7 @@ defmodule Nous.Plugins.Summarization do
         bytes_before: base.bytes_before,
         bytes_after: transcript_bytes(ctx.messages)
       },
-      %{
+      Nous.Telemetry.RunScope.merge(%{
         agent_name: base.agent_name,
         messages_before: base.messages_before,
         messages_after: length(ctx.messages),
@@ -427,7 +429,7 @@ defmodule Nous.Plugins.Summarization do
         provider: Map.get(outcome, :provider),
         model: Map.get(outcome, :model),
         usage: Map.get(outcome, :usage)
-      }
+      })
     )
   end
 
@@ -437,7 +439,7 @@ defmodule Nous.Plugins.Summarization do
     :telemetry.execute(
       [:nous, :compaction, :exception],
       %{duration: System.monotonic_time() - base.start_time},
-      %{
+      Nous.Telemetry.RunScope.merge(%{
         agent_name: base.agent_name,
         messages_before: base.messages_before,
         messages_after: length(ctx.messages),
@@ -447,7 +449,7 @@ defmodule Nous.Plugins.Summarization do
         kind: kind,
         reason: reason,
         stacktrace: stacktrace
-      }
+      })
     )
   end
 

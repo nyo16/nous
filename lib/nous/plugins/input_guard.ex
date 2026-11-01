@@ -94,6 +94,21 @@ defmodule Nous.Plugins.InputGuard do
   and the strictest result applies. Messages the model already answered are
   history and are not classified again.
 
+  ## Telemetry
+
+  Every event carries the run correlation keys (see `Nous.Telemetry`).
+
+    * `[:nous, :input_guard, :verdict]` — once per guarded request (all its
+      unchecked user messages), emitted by this plugin only — never through
+      the Engine's `telemetry_prefix`.
+      * Measurements: `%{duration: native_time, strategies: integer, dropped: integer}`
+      * Metadata: `%{agent_name, severity, aggregation, fail_closed: boolean,
+        action}`; `fail_closed` is true when the verdict is a fail-closed
+        result, `action` is `Nous.Plugins.InputGuard.Policy.action_for/2`.
+    * `[:nous, :input_guard, :strategy_verdict]` — one per strategy run, and
+      `[:nous, :input_guard, :strategy_dropped]` — see
+      `Nous.Plugins.InputGuard.Engine`.
+
   ## Streaming Limitation
 
   InputGuard operates via the `before_request` plugin hook, which is not invoked
@@ -108,6 +123,8 @@ defmodule Nous.Plugins.InputGuard do
 
   alias Nous.Agent.Context
   alias Nous.Plugins.InputGuard.{Engine, Policy, Result}
+  alias Nous.Plugins.InputGuard.Strategies.Pattern
+  alias Nous.Telemetry.RunScope
 
   @max_attachment_bytes 1_048_576
 
@@ -124,7 +141,7 @@ defmodule Nous.Plugins.InputGuard do
   end
 
   @impl true
-  def before_request(_agent, ctx, tools) do
+  def before_request(agent, ctx, tools) do
     config = get_config(ctx)
 
     opts = [max_decoded_bytes: Map.get(config, :max_attachment_bytes, @max_attachment_bytes)]
@@ -136,11 +153,15 @@ defmodule Nous.Plugins.InputGuard do
       inputs ->
         {_input, last} = List.last(inputs)
         ctx = Context.merge_deps(ctx, %{input_guard_last_checked: last})
+        started = System.monotonic_time()
 
-        inputs
-        |> Enum.reject(fn {input, _index} -> skip_empty?(config) and blank?(input) end)
-        |> classify_all(ctx, config)
-        |> Policy.apply(ctx, tools, config)
+        {result, dropped} =
+          inputs
+          |> Enum.reject(fn {input, _index} -> skip_empty?(config) and blank?(input) end)
+          |> classify_all(ctx, config)
+
+        emit_verdict(agent, config, result, started, dropped)
+        Policy.apply(result, ctx, tools, config)
     end
   end
 
@@ -150,28 +171,53 @@ defmodule Nous.Plugins.InputGuard do
 
   # Each message is classified on its own (a detector must not see a malicious
   # message diluted by benign ones); the strictest result applies. A :blocked
-  # verdict ends the scan: nothing can be stricter.
+  # verdict ends the scan: nothing can be stricter. Returns
+  # `{strictest, dropped_strategy_count}`.
   defp classify_all(inputs, ctx, config) do
     inputs
-    |> Enum.reduce_while(%Result{severity: :safe}, fn {input, _index}, strictest ->
-      result = classify(input, ctx, config)
+    |> Enum.reduce_while({%Result{severity: :safe}, 0}, fn {input, _index},
+                                                           {strictest, dropped} ->
+      {result, stats} = classify(input, ctx, config)
       strictest = Enum.max_by([strictest, result], &rank/1)
+      acc = {strictest, dropped + stats.dropped}
 
-      if result.severity == :blocked, do: {:halt, strictest}, else: {:cont, strictest}
+      if result.severity == :blocked, do: {:halt, acc}, else: {:cont, acc}
     end)
   end
 
   defp classify({:ok, text}, ctx, config), do: run_engine(text, ctx, config)
 
   defp classify({:error, reason, text}, ctx, config) do
-    text |> run_engine(ctx, config) |> unreadable(reason, config)
+    {result, stats} = run_engine(text, ctx, config)
+    {unreadable(result, reason, config), stats}
   end
 
   defp run_engine(text, ctx, config) do
-    Engine.run(text, ctx, config,
+    Engine.evaluate(text, ctx, config,
       telemetry_prefix: [:nous, :input_guard],
       label: @label,
       fail_closed_on: [:safe, :suspicious]
+    )
+  end
+
+  # The aggregate verdict of one guarded request. Emitted here and never
+  # through the Engine's prefix: with DecisionGuard's prefix that would be
+  # `[:nous, :decision_guard, :verdict]`, an existing event of another shape.
+  defp emit_verdict(agent, config, result, started, dropped) do
+    :telemetry.execute(
+      [:nous, :input_guard, :verdict],
+      %{
+        duration: System.monotonic_time() - started,
+        strategies: config |> Map.get(:strategies, [{Pattern, []}]) |> length(),
+        dropped: dropped
+      },
+      RunScope.merge(%{
+        agent_name: agent.name,
+        severity: result.severity,
+        aggregation: Map.get(config, :aggregation, :any),
+        fail_closed: Map.get(result.metadata || %{}, :fail_closed) == true,
+        action: Policy.action_for(result, config)
+      })
     )
   end
 

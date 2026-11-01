@@ -359,7 +359,11 @@ Every drop — regardless of `fail_closed` — emits a `Logger` warning and the
 `[:nous, :input_guard, :strategy_dropped]` telemetry event, with measurement
 `%{count: dropped}` and metadata `%{aggregation: mode, fail_closed: boolean}`.
 Attach a handler to that event before tuning anything: it tells you whether your
-detectors are actually flaky, instead of guessing.
+detectors are actually flaky, instead of guessing. Each strategy run also emits
+`[:nous, :input_guard, :strategy_verdict]` (`strategy`, `severity`, `reason`,
+`details`, `error`, with a `duration` measurement), and every guarded request
+one `[:nous, :input_guard, :verdict]` with the policy `action` taken — see
+`Nous.Plugins.InputGuard`.
 
 ### `:strategy_timeout`
 

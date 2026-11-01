@@ -46,8 +46,18 @@ defmodule Nous.AgentRunner.IterationLoop do
 
   alias Nous.{Errors, Hook, Message, Plugin, ToolCall}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
-  alias Nous.AgentRunner.{PromptAssembly, RequestDispatch, Routing, ToolExecution}
+
+  alias Nous.AgentRunner.{
+    Instrumentation,
+    PromptAssembly,
+    RequestDispatch,
+    Routing,
+    Streaming,
+    ToolExecution
+  }
+
   alias Nous.Session.{Event, Log}
+  alias Nous.Telemetry.RunScope
 
   require Logger
 
@@ -150,31 +160,32 @@ defmodule Nous.AgentRunner.IterationLoop do
     :telemetry.execute(
       [:nous, :agent, :iteration, :start],
       %{system_time: System.system_time()},
-      %{
+      RunScope.merge(%{
         agent_name: agent.name,
         iteration: ctx.iteration,
         max_iterations: ctx.max_iterations
-      }
+      })
     )
 
     result = do_iteration_body(agent, behaviour, ctx, claimed)
 
     iteration_duration = System.monotonic_time() - iteration_start
 
-    iteration_meta = %{
-      agent_name: agent.name,
-      iteration: ctx.iteration,
-      tool_calls:
-        case result do
-          {:ok, %{usage: %{tool_calls: tc}}} -> tc
-          _ -> 0
-        end,
-      needs_response:
-        case result do
-          {:ok, %{needs_response: nr}} -> nr
-          _ -> false
-        end
-    }
+    iteration_meta =
+      RunScope.merge(%{
+        agent_name: agent.name,
+        iteration: ctx.iteration,
+        tool_calls:
+          case result do
+            {:ok, %{usage: %{tool_calls: tc}}} -> tc
+            _ -> 0
+          end,
+        needs_response:
+          case result do
+            {:ok, %{needs_response: nr}} -> nr
+            _ -> false
+          end
+      })
 
     :telemetry.execute(
       [:nous, :agent, :iteration, :stop],
@@ -186,7 +197,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   end
 
   def do_iteration_body(agent, behaviour, ctx, claimed) do
-    {ctx, all_tools, pre_step_result} = prepare_tools(agent, behaviour, ctx, claimed)
+    {ctx, all_tools, blocked_tool_names, pre_step_result} =
+      prepare_tools(agent, behaviour, ctx, claimed)
 
     # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the
     # LLM call. A denial here is the `pre_step` rejection: the claimed batch
@@ -212,7 +224,14 @@ defmodule Nous.AgentRunner.IterationLoop do
         "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
       )
 
-      case dispatch(request_agent, ctx, messages, model_settings, all_tools) do
+      case instrumented_dispatch(
+             request_agent,
+             ctx,
+             messages,
+             model_settings,
+             all_tools,
+             blocked_tool_names
+           ) do
         {:ok, response, active_model} ->
           ctx = record_active_model(agent, ctx, request_agent.model, active_model)
           handle_response(agent, behaviour, ctx, response, all_tools)
@@ -232,7 +251,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   # Assemble the tool set the model will see this iteration (behaviour tools +
   # plugin tools, minus anything the permission policy blocks) and run the
   # pre_request hooks — which double as the `pre_step` interception point, since
-  # a step IS one model request. Returns `{ctx, all_tools, pre_step_verdict}`.
+  # a step IS one model request. Returns
+  # `{ctx, all_tools, blocked_tool_names, pre_step_verdict}`.
   def prepare_tools(agent, behaviour, ctx, claimed) do
     # Get tools from behaviour + plugins
     tools = behaviour.get_tools(agent)
@@ -260,7 +280,7 @@ defmodule Nous.AgentRunner.IterationLoop do
     # separately at execution time (see Nous.Permissions.enforce_approval/2).
     # Code Mode's `run_code` is injected after that filter — see
     # ToolExecution.visible_tools/2 for why it sits outside the restriction.
-    all_tools = ToolExecution.visible_tools(agent, all_tools)
+    {all_tools, blocked_tool_names} = ToolExecution.visible_tools(agent, all_tools)
 
     # Run pre_request hooks (can block the LLM call). `claimed`/`claimed_content`
     # describe the batch this step boundary just took from the inbox, which is
@@ -281,7 +301,7 @@ defmodule Nous.AgentRunner.IterationLoop do
         fn -> Hook.Decision.env(ctx, agent.name) end
       )
 
-    {ctx, all_tools, pre_step_result}
+    {ctx, all_tools, blocked_tool_names, pre_step_result}
   end
 
   # Build the messages and model settings for this iteration's model call.
@@ -355,6 +375,36 @@ defmodule Nous.AgentRunner.IterationLoop do
     {ctx, Map.get(ctx.deps, @active_model_key) || Routing.routed_model(ctx) || agent.model}
   end
 
+  # The model span around one request: `[:nous, :agent, :model, :start]`
+  # before dispatch, `:stop` with the response (or `:exception` with the error)
+  # after it, fallback chain and rate limiter included.
+  defp instrumented_dispatch(request_agent, ctx, messages, settings, all_tools, blocked) do
+    span =
+      Instrumentation.model_start(%{
+        agent_name: request_agent.name,
+        iteration: ctx.iteration,
+        model: request_agent.model,
+        stream: ctx.stream,
+        tools: all_tools,
+        blocked_tool_names: blocked,
+        messages: messages
+      })
+
+    case dispatch(request_agent, ctx, messages, settings, all_tools) do
+      {:ok, response, active_model} ->
+        {first_token_at, metadata} =
+          Map.pop(response.metadata || %{}, Streaming.first_token_key())
+
+        response = %{response | metadata: metadata}
+        Instrumentation.model_stop(span, response, active_model, first_token_at)
+        {:ok, response, active_model}
+
+      {:error, reason} = error ->
+        Instrumentation.model_exception(span, :error, reason)
+        error
+    end
+  end
+
   # Make the model request (with fallback chain if configured). `request_agent`
   # already carries the effective model (effective_model/2), so the chain starts
   # there and settings are re-converted only for models of another provider.
@@ -404,13 +454,14 @@ defmodule Nous.AgentRunner.IterationLoop do
       :telemetry.execute(
         [:nous, :agent, :fallback, :used],
         %{system_time: System.system_time()},
-        %{
+        RunScope.merge(%{
           agent_name: agent.name,
+          iteration: ctx.iteration,
           original_provider: original.provider,
           original_model: original.model,
           active_provider: active_model.provider,
           active_model: active_model.model
-        }
+        })
       )
 
       deps =

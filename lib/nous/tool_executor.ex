@@ -19,10 +19,19 @@ defmodule Nous.ToolExecutor do
   that secret in the event. This is safe for in-process handlers but **any
   subscriber that forwards these events off-box (Sentry, Honeycomb, log
   shippers) MUST scrub `:reason`/`:stacktrace` first.** The emitter intentionally
-  does not redact, to preserve debuggability for trusted handlers.
+  does not redact, to preserve debuggability for trusted handlers. The same
+  rule covers the runner's `[:nous, :agent, :tool_call, *]` events, which carry
+  the call's `arguments` and `result` (see `Nous.Telemetry`).
+
+  Inside an agent run every executor event also carries the run correlation
+  keys, including the call's `tool_call_id`. A tool with a `timeout` runs in a
+  separate process that inherits the caller's `$callers` chain and the run's
+  telemetry scope, so a nested agent run (or a process-scoped
+  `Nous.ModelDispatcher.put_dispatcher/1` stub) behaves as it would without one.
   """
 
   alias Nous.{Errors, Permissions, RunContext, Tool}
+  alias Nous.Telemetry.RunScope
   alias Nous.Tool.{ContextUpdate, Validator}
 
   require Logger
@@ -181,13 +190,13 @@ defmodule Nous.ToolExecutor do
     :telemetry.execute(
       [:nous, :tool, :execute, :start],
       %{system_time: System.system_time(), monotonic_time: start_time},
-      %{
+      RunScope.merge(%{
         tool_name: tool.name,
         tool_module: tool.module,
         attempt: attempt + 1,
         max_retries: tool.retries + 1,
         has_timeout: not is_nil(tool.timeout)
-      }
+      })
     )
 
     try do
@@ -209,11 +218,11 @@ defmodule Nous.ToolExecutor do
       :telemetry.execute(
         [:nous, :tool, :execute, :stop],
         %{duration: duration},
-        %{
+        RunScope.merge(%{
           tool_name: tool.name,
           attempt: attempt + 1,
           success: true
-        }
+        })
       )
 
       # Normalize result to handle ContextUpdate
@@ -255,14 +264,14 @@ defmodule Nous.ToolExecutor do
     :telemetry.execute(
       [:nous, :tool, :execute, :exception],
       %{duration: duration},
-      %{
+      RunScope.merge(%{
         tool_name: tool.name,
         attempt: attempt + 1,
         will_retry: attempt < tool.retries,
         kind: kind,
         reason: reason,
         stacktrace: stacktrace
-      }
+      })
     )
 
     if attempt < tool.retries do
@@ -295,10 +304,22 @@ defmodule Nous.ToolExecutor do
       caller = self()
       ref = make_ref()
 
+      # A bare spawn records no `$callers`, so copy the chain (and the run's
+      # telemetry scope) into the tool process by hand: process-scoped seams
+      # (`Nous.ModelDispatcher.put_dispatcher/1`) and a nested agent run's
+      # parent ids then resolve inside the tool exactly as they would without
+      # a timeout.
+      callers = [caller | Process.get(:"$callers", [])]
+      scope = RunScope.current()
+
       {pid, monitor_ref} =
         spawn_monitor(fn ->
+          Process.put(:"$callers", callers)
+
           try do
-            result = apply_tool_function(tool, arguments, ctx)
+            result =
+              RunScope.with_scope(scope, fn -> apply_tool_function(tool, arguments, ctx) end)
+
             send(caller, {ref, {:ok, result}})
           rescue
             e ->
@@ -345,7 +366,7 @@ defmodule Nous.ToolExecutor do
           :telemetry.execute(
             [:nous, :tool, :timeout],
             %{timeout: tool.timeout},
-            %{tool_name: tool.name}
+            RunScope.merge(%{tool_name: tool.name})
           )
 
           raise Errors.ToolTimeout.exception(
@@ -368,13 +389,13 @@ defmodule Nous.ToolExecutor do
     :telemetry.execute(
       [:nous, :tool, :execute, :exception],
       %{duration: duration},
-      %{
+      RunScope.merge(%{
         tool_name: tool.name,
         attempt: attempt + 1,
         will_retry: false,
         kind: :timeout,
         reason: :timeout
-      }
+      })
     )
 
     {:error,
@@ -393,14 +414,14 @@ defmodule Nous.ToolExecutor do
     :telemetry.execute(
       [:nous, :tool, :execute, :exception],
       %{duration: duration},
-      %{
+      RunScope.merge(%{
         tool_name: tool.name,
         attempt: attempt + 1,
         will_retry: attempt < tool.retries,
         kind: error.__struct__,
         reason: error,
         stacktrace: stacktrace
-      }
+      })
     )
 
     if attempt < tool.retries do

@@ -472,15 +472,16 @@ defmodule MyApp.Telemetry do
   end
 
   def handle_event([:nous, :agent, :run, :stop], measurements, metadata, _config) do
-    # Send metrics to monitoring system
-    :telemetry_metrics.counter([{:nous, :requests}, {:status, metadata.status}])
-    :telemetry_metrics.distribution([{:nous, :duration}], measurements.duration)
-    :telemetry_metrics.distribution([{:nous, :tokens}], metadata.tokens_used)
+    # Send metrics to monitoring system. There is no status key: a failed run
+    # emits [:nous, :agent, :run, :exception] instead of :stop.
+    MyApp.Metrics.increment("nous.runs", tags: [agent: metadata.agent_name])
+    MyApp.Metrics.histogram("nous.run.duration", measurements.duration)
+    MyApp.Metrics.histogram("nous.run.tokens", measurements.total_tokens)
   end
 
   def handle_event([:nous, :tool, :execute, :stop], measurements, metadata, _config) do
-    :telemetry_metrics.counter([{:nous, :tool_calls}, {:tool, metadata.tool_name}])
-    :telemetry_metrics.distribution([{:nous, :tool_duration}], measurements.duration)
+    MyApp.Metrics.increment("nous.tool_calls", tags: [tool: metadata.tool_name])
+    MyApp.Metrics.histogram("nous.tool.duration", measurements.duration)
   end
 end
 ```

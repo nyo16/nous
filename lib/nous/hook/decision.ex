@@ -83,9 +83,9 @@ defmodule Nous.Hook.Decision do
       a second call per chunk. Weak evidence: a correct answer never lowers
       a verdict.
     * `:on_verdict` - `(report -> any)`, called after every evaluation with
-      the `[:nous, :hook, :decision]` telemetry metadata plus its
-      measurements (`:duration`, `:chunk_count`).
-      Errors in it are logged and ignored.
+      the `[:nous, :hook, :decision]` telemetry metadata (without the run
+      correlation keys) plus its measurements (`:duration`, `:chunk_count`)
+      and the `env`'s `:agent_name`. Errors in it are logged and ignored.
 
   Escalation is resolved here, inside the hook, so a decision hook still
   returns only `:allow`, `{:deny, reason}` or `{:modify, changes}`. On
@@ -110,9 +110,13 @@ defmodule Nous.Hook.Decision do
 
     * `[:nous, :hook, :decision]`
       * Measurements: `%{duration: native_time, chunk_count: integer}`
-      * Metadata: `%{event, hook_name, verdict: :allow | :escalate | :deny,
+      * Metadata: `%{event, hook_name, tool_call_id, verdict: :allow | :escalate | :deny,
         result: :allow | :deny | :modify, probabilities: %{id => [{key, p}]},
-        backend, model, canary_failed: integer, error: term | nil}`
+        backend, model, canary_failed: integer, error: term | nil}` plus the
+        run correlation keys (`trace_id`, `agent_run_id`, `parent_agent_run_id`;
+        see `Nous.Telemetry`). `tool_call_id` is the `:pre_tool_use` /
+        `:post_tool_use` payload's `:tool_id` (nil on other events, unless
+        the hook runs inside a tool call).
   """
 
   alias Nous.Agent.Context
@@ -436,6 +440,7 @@ defmodule Nous.Hook.Decision do
     report = %{
       event: event,
       hook_name: hook.name,
+      tool_call_id: Nous.Hook.Runner.payload_tool_call_id(payload),
       verdict: verdict,
       result: result_kind(result),
       probabilities: info.probabilities,
@@ -446,8 +451,15 @@ defmodule Nous.Hook.Decision do
     }
 
     measurements = %{duration: System.monotonic_time() - start, chunk_count: info.chunk_count}
-    :telemetry.execute([:nous, :hook, :decision], measurements, report)
-    notify(d, Map.merge(report, measurements))
+    scope = Nous.Telemetry.RunScope.metadata()
+
+    report = %{report | tool_call_id: report.tool_call_id || scope.tool_call_id}
+    :telemetry.execute([:nous, :hook, :decision], measurements, Map.merge(scope, report))
+
+    notify(
+      d,
+      report |> Map.merge(measurements) |> Map.put(:agent_name, env_agent_name(env))
+    )
 
     result
   end
@@ -476,6 +488,9 @@ defmodule Nous.Hook.Decision do
   defp result_kind(_modify_or_withhold), do: :modify
 
   defp empty_info, do: %{chunk_count: 0, probabilities: %{}, canary_failed: 0, why: :band}
+
+  defp env_agent_name(%{agent_name: name}), do: name
+  defp env_agent_name(_env), do: nil
 
   @doc """
   Classifies `state` with the config's model, questions and bands, without

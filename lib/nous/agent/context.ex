@@ -115,7 +115,13 @@ defmodule Nous.Agent.Context do
           # Memoized provider tool-schema conversion (runtime-only, never
           # serialized). `{{provider, tool_name_set}, converted_schemas}` —
           # lets the loop skip re-converting a stable tool set every iteration.
-          tool_schema_cache: {{atom(), MapSet.t()}, [map()]} | nil
+          tool_schema_cache: {{atom(), MapSet.t()}, [map()]} | nil,
+
+          # The telemetry correlation scope of the run executing this context
+          # (runtime-only, never serialized): `trace_id`, `agent_run_id`,
+          # `parent_agent_run_id`, `parent_tool_call_id`, `role`, ... — see
+          # `Nous.Telemetry`. Set at the start of every run; nil before one.
+          run: map() | nil
         }
 
   defstruct messages: [],
@@ -140,7 +146,8 @@ defmodule Nous.Agent.Context do
             active_skills: [],
             plugins_initialized: false,
             stream: false,
-            tool_schema_cache: nil
+            tool_schema_cache: nil,
+            run: nil
 
   @doc """
   Create a new context with options.

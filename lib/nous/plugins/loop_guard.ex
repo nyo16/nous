@@ -48,12 +48,22 @@ defmodule Nous.Plugins.LoopGuard do
       silently depend on the plugin list.
     * An assistant message with no tool calls resets the chain: the model answered
       instead of calling, so the run of identical calls is over.
+
+  ## Telemetry
+
+    * `[:nous, :loop_guard, :advisory]` — an advisory was injected.
+      * Measurements: `%{chain_length: integer}` — consecutive identical requests.
+      * Metadata: `%{agent_name, threshold, tier, signatures}` plus the run
+        correlation keys (see `Nous.Telemetry`). `threshold` is the threshold
+        reached, `tier` its 0-based wording tier, `signatures` the repeated
+        call's tool names (lowercased, in call order; arguments are not included).
   """
 
   @behaviour Nous.Plugin
 
   alias Nous.Agent.Context
   alias Nous.Message
+  alias Nous.Telemetry.RunScope
   alias Nous.ToolCall
 
   @default_thresholds [3, 5, 8]
@@ -66,7 +76,7 @@ defmodule Nous.Plugins.LoopGuard do
   # land ahead of the very results it is reacting to and read as a comment on the
   # wrong turn.
   @impl true
-  def before_request(_agent, ctx, tools) do
+  def before_request(agent, ctx, tools) do
     config = Map.get(ctx.deps, :loop_guard_config, %{})
     thresholds = config |> Map.get(:thresholds, @default_thresholds) |> thresholds()
     excluded = config |> Map.get(:excluded_tools, []) |> excluded_names()
@@ -87,10 +97,25 @@ defmodule Nous.Plugins.LoopGuard do
       # event data and never reaches `ctx.messages`.
       message = Message.user(text, metadata: %{loop_guard: threshold})
 
+      emit_advisory(agent, chain, threshold, tier, signatures)
+
       {Context.add_message(ctx, message, source: :loop_guard), tools}
     else
       _no_advisory_due -> {ctx, tools}
     end
+  end
+
+  defp emit_advisory(agent, chain, threshold, tier, signatures) do
+    :telemetry.execute(
+      [:nous, :loop_guard, :advisory],
+      %{chain_length: chain},
+      RunScope.merge(%{
+        agent_name: agent.name,
+        threshold: threshold,
+        tier: tier,
+        signatures: Enum.map(signatures, fn {name, _args} -> name end)
+      })
+    )
   end
 
   # --- the chain -------------------------------------------------------------

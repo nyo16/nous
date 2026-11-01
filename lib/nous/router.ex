@@ -76,7 +76,7 @@ defmodule Nous.Router do
         `cause` is `:routed`, `:held` (`:escalate_only` kept its tier),
         `:default`, `:error`, or the `:cause` a router put in its meta (e.g.
         `:low_confidence`). `model_provider` / `model_name` name the model the
-        requests now go to.
+        requests now go to. Plus the run correlation keys (see `Nous.Telemetry`).
 
   ## Writing a router
 
