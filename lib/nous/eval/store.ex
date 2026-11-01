@@ -1,6 +1,6 @@
 defmodule Nous.Eval.Store do
   @moduledoc """
-  Storage behaviour for eval runs and baseline labels.
+  Storage behaviour for eval runs, baseline labels and judge calibrations.
 
   Nous ships three implementations: `Nous.Eval.Store.File` (the default; a
   directory of JSON files, no dependencies), `Nous.Eval.Store.SQLite`
@@ -34,14 +34,26 @@ defmodule Nous.Eval.Store do
   run, because a gate that silently compares against whatever ran last
   passes every regression.
 
+  ## Judge calibrations
+
+  The optional `put_calibration/3` / `get_calibration/2` keep
+  `Nous.Eval.JudgeCalibration.Result`s keyed by the judge fingerprint id
+  (`Nous.Eval.Scorers.Judge.fingerprint_id/1`), stored as
+  `Nous.Eval.Codec.encode_calibration_json/1` text. A newer result for the
+  same id replaces the older one for `get_calibration/2`. The runner looks a
+  judge's calibration up before it grades, so a judge with
+  `require_calibration:` refuses to run against a store without them.
+
   ## Identifiers
 
   Run ids and labels end up in file names and SQL parameters, so every
   backend validates them with `validate_run_id/1` and `validate_label/1`
   before touching storage. Both are lowercase so that two ids can never
-  collide on a case-insensitive file system.
+  collide on a case-insensitive file system. Calibration keys go through
+  `validate_calibration/2`.
   """
 
+  alias Nous.Eval.JudgeCalibration
   alias Nous.Eval.Run
   alias Nous.Eval.Store.{Baseline, RunSummary}
 
@@ -108,9 +120,60 @@ defmodule Nous.Eval.Store do
   @callback list_baselines(state :: term(), label :: String.t()) ::
               {:ok, [Baseline.t()]} | {:error, term()}
 
+  @doc """
+  Store `result` as the calibration of the judge with `fingerprint_id`.
+  Check the arguments with `validate_calibration/2` first. Optional.
+  """
+  @callback put_calibration(
+              state :: term(),
+              fingerprint_id :: String.t(),
+              result :: JudgeCalibration.Result.t()
+            ) :: {:ok, term()} | {:error, term()}
+
+  @doc """
+  The most recently stored calibration for `fingerprint_id`.
+  `{:error, :not_found}` when there is none; never a calibration of another
+  fingerprint. Optional.
+  """
+  @callback get_calibration(state :: term(), fingerprint_id :: String.t()) ::
+              {:ok, JudgeCalibration.Result.t()} | {:error, :not_found | term()}
+
+  @optional_callbacks put_calibration: 3, get_calibration: 2
+
   @run_id ~r/\A[a-z0-9][a-z0-9._-]{0,127}\z/
   @label ~r/\A[a-z0-9][a-z0-9._-]{0,63}\z/
+  @fingerprint_id ~r/\Asha256:[0-9a-f]{64}\z/
   @statuses [:completed, :budget_exhausted, :aborted]
+
+  @doc """
+  Checks a calibration before it is stored or looked up: `fingerprint_id`
+  must be a `"sha256:"` content hash (lowercase hex), and `result`, when
+  given, a `Nous.Eval.JudgeCalibration.Result` for that same fingerprint.
+  """
+  @spec validate_calibration(term(), JudgeCalibration.Result.t() | nil) ::
+          :ok
+          | {:error,
+             {:invalid_fingerprint_id, term()}
+             | :fingerprint_mismatch
+             | {:invalid_calibration, term()}}
+  def validate_calibration(fingerprint_id, result \\ nil) do
+    cond do
+      not (is_binary(fingerprint_id) and Regex.match?(@fingerprint_id, fingerprint_id)) ->
+        {:error, {:invalid_fingerprint_id, fingerprint_id}}
+
+      is_nil(result) ->
+        :ok
+
+      not is_struct(result, JudgeCalibration.Result) ->
+        {:error, {:invalid_calibration, result}}
+
+      result.fingerprint_id != fingerprint_id ->
+        {:error, :fingerprint_mismatch}
+
+      true ->
+        :ok
+    end
+  end
 
   @doc """
   Checks a run id: 1-128 characters of `a-z`, `0-9`, `.`, `_`, `-`, starting

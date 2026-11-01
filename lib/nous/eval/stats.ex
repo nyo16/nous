@@ -3,7 +3,8 @@ defmodule Nous.Eval.Stats do
   Statistics for evaluation runs, hand-rolled in pure Elixir (no Nx, no NIFs).
 
   This module holds descriptive statistics, standard errors, proportion
-  intervals and the pass@k / pass^k estimators. The rest lives in submodules:
+  intervals, the pass@k / pass^k estimators and inter-rater agreement
+  (Cohen's κ, unweighted and weighted). The rest lives in submodules:
 
     * `Nous.Eval.Stats.Hypothesis` - exact McNemar (+ mid-P), Fisher exact,
       Tango's paired score test and interval, the paired non-inferiority
@@ -507,6 +508,130 @@ defmodule Nous.Eval.Stats do
       true -> :ok
     end
   end
+
+  # ── Inter-rater agreement ───────────────────────────────────────────────
+
+  @doc """
+  Cohen's κ for two raters labelling the same items (e.g. a human and an LLM
+  judge). `pairs` is a list of `{label_a, label_b}`, one per item; labels are
+  any terms.
+
+  `κ = 1 − Σ w·O / Σ w·E`, where `O` is the observed confusion matrix, `E` the
+  matrix expected by chance from the two raters' label frequencies, and `w`
+  the disagreement weight of each cell. Matches scikit-learn's
+  `cohen_kappa_score`.
+
+  ## Options
+
+    * `:labels` - the label set, in order (default: every label seen,
+      sorted). A pair with a label outside it is `{:error, :invalid_values}`.
+      For weighted κ the position in this list is the label's rank
+    * `:weights` - `nil` (default, unweighted: every disagreement weighs 1),
+      `:linear` (`|i − j|`) or `:quadratic` (`(i − j)²`). Weighted κ needs
+      an explicit `:labels` order (`{:error, {:invalid_option, :labels}}`
+      otherwise); see `weighted_kappa/3`
+
+  Returns `{:ok, nil}` when κ is undefined: the chance disagreement `Σ w·E`
+  is zero, as when both raters give every item the same single label
+  (scikit-learn returns NaN). `{:error, :empty}` for no pairs,
+  `{:error, :invalid_values}` for an element that is not a 2-tuple.
+
+  ## Examples
+
+      iex> {:ok, k} = Nous.Eval.Stats.cohen_kappa([{"pass", "pass"}, {"pass", "fail"}, {"fail", "fail"}, {"fail", "fail"}])
+      iex> Float.round(k, 4)
+      0.5
+  """
+  @spec cohen_kappa([{term(), term()}], keyword()) ::
+          {:ok, float() | nil}
+          | {:error, :empty | :invalid_values | {:invalid_option, :labels | :weights}}
+  def cohen_kappa(pairs, opts \\ [])
+
+  def cohen_kappa([], _opts), do: {:error, :empty}
+
+  def cohen_kappa(pairs, opts) when is_list(pairs) and is_list(opts) do
+    with :ok <- check_pairs(pairs),
+         {:ok, weights} <- kappa_weights(Keyword.get(opts, :weights)),
+         {:ok, labels} <- kappa_labels(pairs, Keyword.get(opts, :labels), weights),
+         {:ok, counts} <- kappa_counts(pairs, labels) do
+      {:ok, kappa(counts, length(labels), length(pairs), weights)}
+    end
+  end
+
+  def cohen_kappa(_pairs, _opts), do: {:error, :invalid_values}
+
+  @doc """
+  Weighted Cohen's κ for ordinal labels (e.g. a 1–5 Likert scale), with the
+  labels' order given by `labels`. `:weights` is `:quadratic` (default) or
+  `:linear`. Same results and errors as `cohen_kappa/2`.
+
+  ## Examples
+
+      iex> {:ok, k} = Nous.Eval.Stats.weighted_kappa([{1, 1}, {2, 3}, {3, 3}, {4, 5}, {5, 5}], [1, 2, 3, 4, 5])
+      iex> Float.round(k, 4)
+      0.9091
+  """
+  @spec weighted_kappa([{term(), term()}], [term()], keyword()) ::
+          {:ok, float() | nil}
+          | {:error, :empty | :invalid_values | {:invalid_option, :labels | :weights}}
+  def weighted_kappa(pairs, labels, opts \\ []) when is_list(opts) do
+    weights = Keyword.get(opts, :weights, :quadratic)
+
+    if weights in [:linear, :quadratic],
+      do: cohen_kappa(pairs, labels: labels, weights: weights),
+      else: {:error, {:invalid_option, :weights}}
+  end
+
+  defp check_pairs(pairs) do
+    if Enum.all?(pairs, &match?({_, _}, &1)), do: :ok, else: {:error, :invalid_values}
+  end
+
+  defp kappa_weights(weights) when weights in [nil, :linear, :quadratic], do: {:ok, weights}
+  defp kappa_weights(_weights), do: {:error, {:invalid_option, :weights}}
+
+  defp kappa_labels(pairs, nil, nil) do
+    {:ok, pairs |> Enum.flat_map(fn {a, b} -> [a, b] end) |> Enum.uniq() |> Enum.sort()}
+  end
+
+  defp kappa_labels(_pairs, [_ | _] = labels, _weights) do
+    if length(Enum.uniq(labels)) == length(labels),
+      do: {:ok, labels},
+      else: {:error, {:invalid_option, :labels}}
+  end
+
+  defp kappa_labels(_pairs, _labels, _weights), do: {:error, {:invalid_option, :labels}}
+
+  # Confusion counts keyed by `{row, column}` label index.
+  defp kappa_counts(pairs, labels) do
+    index = labels |> Enum.with_index() |> Map.new()
+
+    Enum.reduce_while(pairs, {:ok, %{}}, fn {a, b}, {:ok, counts} ->
+      case {Map.fetch(index, a), Map.fetch(index, b)} do
+        {{:ok, i}, {:ok, j}} -> {:cont, {:ok, Map.update(counts, {i, j}, 1, &(&1 + 1))}}
+        _ -> {:halt, {:error, :invalid_values}}
+      end
+    end)
+  end
+
+  defp kappa(counts, k, n, weights) do
+    rows = Enum.reduce(counts, %{}, fn {{i, _j}, c}, acc -> Map.update(acc, i, c, &(&1 + c)) end)
+    cols = Enum.reduce(counts, %{}, fn {{_i, j}, c}, acc -> Map.update(acc, j, c, &(&1 + c)) end)
+
+    observed =
+      Enum.reduce(counts, 0.0, fn {{i, j}, c}, acc -> acc + c * weight(i, j, weights) end)
+
+    expected =
+      for i <- 0..(k - 1)//1, j <- 0..(k - 1)//1, reduce: 0.0 do
+        acc -> acc + Map.get(rows, i, 0) * Map.get(cols, j, 0) / n * weight(i, j, weights)
+      end
+
+    if expected == 0.0, do: nil, else: 1.0 - observed / expected
+  end
+
+  defp weight(i, i, _weights), do: 0
+  defp weight(_i, _j, nil), do: 1
+  defp weight(i, j, :linear), do: abs(i - j)
+  defp weight(i, j, :quadratic), do: (i - j) * (i - j)
 
   # ── Shared helpers ──────────────────────────────────────────────────────
 

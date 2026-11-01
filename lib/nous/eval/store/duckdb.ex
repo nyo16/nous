@@ -8,8 +8,10 @@ if Code.ensure_loaded?(Duckdbex) do
     Same layout as `Nous.Eval.Store.SQLite`: runs are rows of
     `nous_eval_runs` holding the `Nous.Eval.Codec` JSON text of the run
     (`payload`) and of its summary (`summary`), baselines are rows of
-    `nous_eval_baselines`, only ever inserted. The payload is plain JSON
-    text, so DuckDB's `json_extract` can query stored runs directly.
+    `nous_eval_baselines`, only ever inserted, and judge calibrations rows of
+    `nous_eval_calibrations` (latest row per fingerprint id wins). The
+    payload is plain JSON text, so DuckDB's `json_extract` can query stored
+    runs directly.
 
     ## Options
 
@@ -41,6 +43,14 @@ if Code.ensure_loaded?(Duckdbex) do
         label VARCHAR NOT NULL,
         run_id VARCHAR NOT NULL,
         set_at VARCHAR NOT NULL
+      )
+      """,
+      "CREATE SEQUENCE IF NOT EXISTS nous_eval_calibrations_seq",
+      """
+      CREATE TABLE IF NOT EXISTS nous_eval_calibrations (
+        seq BIGINT PRIMARY KEY DEFAULT nextval('nous_eval_calibrations_seq'),
+        fingerprint_id VARCHAR NOT NULL,
+        payload VARCHAR NOT NULL
       )
       """
     ]
@@ -164,6 +174,39 @@ if Code.ensure_loaded?(Duckdbex) do
       with :ok <- Store.validate_label(label), do: baselines(conn, label, "")
     end
 
+    @impl true
+    def put_calibration(%{conn: conn} = state, fingerprint_id, result) do
+      with :ok <- Store.validate_calibration(fingerprint_id, result),
+           {:ok, payload} <- Codec.encode_calibration_json(result),
+           {:ok, _} <-
+             query(
+               conn,
+               "INSERT INTO nous_eval_calibrations (fingerprint_id, payload) VALUES ($1, $2)",
+               [fingerprint_id, payload]
+             ) do
+        {:ok, state}
+      end
+    end
+
+    @impl true
+    def get_calibration(%{conn: conn}, fingerprint_id) do
+      with :ok <- Store.validate_calibration(fingerprint_id),
+           {:ok, rows} <-
+             query(
+               conn,
+               """
+               SELECT payload FROM nous_eval_calibrations
+               WHERE fingerprint_id = $1 ORDER BY seq DESC LIMIT 1
+               """,
+               [fingerprint_id]
+             ) do
+        case rows do
+          [[payload]] -> Codec.decode_calibration_json(payload)
+          [] -> {:error, :not_found}
+        end
+      end
+    end
+
     # -- helpers -------------------------------------------------------------
 
     defp create_schema(conn) do
@@ -282,7 +325,9 @@ else
                list_runs: 2,
                put_baseline: 3,
                get_baseline: 2,
-               list_baselines: 2}
+               list_baselines: 2,
+               put_calibration: 3,
+               get_calibration: 2}
 
     @error {:error,
             "Duckdbex is not available. Add {:duckdbex, \"~> 0.7\"} to your dependencies."}
@@ -307,5 +352,11 @@ else
 
     @impl true
     def list_baselines(_state, _label), do: @error
+
+    @impl true
+    def put_calibration(_state, _fingerprint_id, _result), do: @error
+
+    @impl true
+    def get_calibration(_state, _fingerprint_id), do: @error
   end
 end
