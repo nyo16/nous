@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Locked `llama_cpp_ex` 0.8.63 → 0.8.65**, which fixes the macOS / Metal
+  abort at VM halt while a model is still referenced
+  (nyo16/llama_cpp_ex#116, noted under 0.19.0). The `~> 0.8.63` requirement
+  already allows it, so apps pick up the fix with
+  `mix deps.update llama_cpp_ex`.
+
 ## [0.19.2] - 2026-10-31
 
 ### Fixed
