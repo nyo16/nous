@@ -33,8 +33,8 @@ defmodule Mix.Tasks.Nous.Eval.Judge.Calibrate do
       `expected` (default `input,output`)
     * `--seed N` - the judge's seed
     * `--concurrency N` - judge calls in flight (default 4)
-    * `--store SPEC` - `file:DIR` (default `file:priv/eval`), `sqlite:PATH`
-      or `duckdb:PATH`
+    * `--store SPEC` - `file:DIR` (default `file:.nous/eval`, the store the
+      other `mix nous.eval*` tasks use), `sqlite:PATH` or `duckdb:PATH`
     * `--format FORMAT` - `console` (default) or `json` (the stored record)
 
   Exits with status 2 on an operational error (bad arguments, unreadable
@@ -66,7 +66,7 @@ defmodule Mix.Tasks.Nous.Eval.Judge.Calibrate do
 
   @formats %{"console" => :console, "json" => :json}
 
-  @default_store "file:priv/eval"
+  @default_store "file:.nous/eval"
 
   @impl Mix.Task
   def run(argv) do
