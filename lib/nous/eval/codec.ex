@@ -112,7 +112,9 @@ defmodule Nous.Eval.Codec do
     approval result_modified retries_left errors strategies dropped action
     chain_length threshold signatures id name media_type content_parts
     ok error pass fail skip label
-    completed budget_exhausted aborted killed
+    completed budget_exhausted aborted killed incomplete
+    limits spent exhausted max_tokens max_cost max_samples tokens cost samples
+    unpriced_requests unknown_price rescored_from abort_reason
     executed invalid_arguments collapsed hook_denied hook_stage_failed
     approval_rejected not_found timeout crashed
     not_required approved edited rejected
