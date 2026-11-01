@@ -1,0 +1,5 @@
+{"input":"Hi!","tags":["smoke"],"id":"greet-1","schema":"nous.case/1"}
+
+{"scorers":["fixture_contains",{"weight":2.0,"required":false,"values":["refund issued"],"scorer":"fixture_contains"}],"threshold":0.5,"tags":["refund","smoke"],"expected":{"args":{"reason":"damaged","order_id":42},"tool":"refund_order"},"input":"Refund order 42","id":"refund-1"}
+{"group":"refund-paraphrase","input":"Please refund order 43","id":"refund-2b"}
+{"metadata":{"ticket":991,"source":"support-ticket"},"split":"test","group":"refund-paraphrase","input":[{"content":"You are terse.","role":"system"},{"role":"user","content":"Refund order 43"}],"id":"refund-2"}
