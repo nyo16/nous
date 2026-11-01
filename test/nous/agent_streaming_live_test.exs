@@ -1,15 +1,14 @@
-defmodule Nous.Eval.Agents.StreamingTest do
+defmodule Nous.AgentStreamingLiveTest do
   @moduledoc """
   Tests for streaming functionality.
 
-  Run with: mix test test/eval/agents/streaming_test.exs --include llm
-  OpenRouter: OPENROUTER_API_KEY=... mix test test/eval/agents/streaming_test.exs --include llm --include openrouter
+  Run with: mix test test/nous/agent_streaming_live_test.exs --include llm
+  OpenRouter: OPENROUTER_API_KEY=... mix test test/nous/agent_streaming_live_test.exs --include llm --include openrouter
   """
 
   use ExUnit.Case, async: false
 
   @moduletag :llm
-  @moduletag :eval
   @moduletag :streaming
   @moduletag timeout: 120_000
 

@@ -1,8 +1,8 @@
-defmodule Nous.Eval.Agents.StructuredOutputTest do
+defmodule Nous.AgentStructuredOutputLiveTest do
   @moduledoc """
   LLM integration tests for structured output.
 
-  Run with: mix test test/eval/agents/structured_output_test.exs --include llm
+  Run with: mix test test/nous/agent_structured_output_live_test.exs --include llm
 
   Requires a running LLM (LM Studio by default, or set TEST_MODEL).
   """

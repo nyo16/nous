@@ -1,14 +1,13 @@
-defmodule Nous.Eval.Agents.ContextTest do
+defmodule Nous.AgentContextLiveTest do
   @moduledoc """
   Tests for context and conversation functionality.
 
-  Run with: mix test test/eval/agents/context_test.exs --include llm
+  Run with: mix test test/nous/agent_context_live_test.exs --include llm
   """
 
   use ExUnit.Case, async: false
 
   @moduletag :llm
-  @moduletag :eval
   @moduletag :context
   @moduletag timeout: 180_000
 

@@ -1,14 +1,13 @@
-defmodule Nous.Eval.Agents.ErrorHandlingTest do
+defmodule Nous.AgentErrorHandlingLiveTest do
   @moduledoc """
   Tests for error handling functionality.
 
-  Run with: mix test test/eval/agents/error_handling_test.exs --include llm
+  Run with: mix test test/nous/agent_error_handling_live_test.exs --include llm
   """
 
   use ExUnit.Case, async: false
 
   @moduletag :llm
-  @moduletag :eval
   @moduletag :errors
   @moduletag timeout: 120_000
 

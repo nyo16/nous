@@ -1,14 +1,13 @@
-defmodule Nous.Eval.Agents.ReActAgentTest do
+defmodule Nous.AgentReActLiveTest do
   @moduledoc """
   Tests for ReAct (Reasoning and Acting) agent functionality.
 
-  Run with: mix test test/eval/agents/react_agent_test.exs --include llm
+  Run with: mix test test/nous/agent_react_agent_live_test.exs --include llm
   """
 
   use ExUnit.Case, async: false
 
   @moduletag :llm
-  @moduletag :eval
   @moduletag :react
   # 10 minutes, and the reason changed while measuring it, so it is worth recording
   # which reason is the current one.
