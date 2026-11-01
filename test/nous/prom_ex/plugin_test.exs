@@ -35,6 +35,28 @@ if Code.ensure_loaded?(PromEx) do
       end
     end
 
+    test "tool calls are counted by tool and outcome, never by a correlation id" do
+      [_agent, _model, tool] = Plugin.event_metrics([])
+
+      counter = Enum.find(tool.metrics, &(&1.event_name == [:nous, :agent, :tool_call, :stop]))
+      assert counter.name == [:nous, :tool, :call, :total]
+      assert counter.tags == [:tool_name, :outcome]
+
+      metadata = %{
+        tool_name: "search",
+        outcome: :timeout,
+        tool_call_id: "call_1",
+        trace_id: String.duplicate("a", 32),
+        agent_run_id: String.duplicate("b", 16)
+      }
+
+      assert counter.tag_values.(metadata) == %{tool_name: "search", outcome: "timeout"}
+
+      for group <- Plugin.event_metrics([]), metric <- group.metrics do
+        assert Enum.all?(metric.tags, &(&1 not in [:trace_id, :agent_run_id, :tool_call_id]))
+      end
+    end
+
     test "duration histograms take their buckets from the configured unit" do
       [agent_ms | _] = Plugin.event_metrics(duration_unit: :millisecond)
       [agent_s | _] = Plugin.event_metrics(duration_unit: :second)

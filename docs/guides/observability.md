@@ -15,6 +15,7 @@ metrics through the bundled `Nous.PromEx.Plugin`.
 - **Need to wire into your own metrics?** → [Custom Handlers](#custom-handlers)
 - **Exporting to Prometheus/Grafana?** → [Prometheus via PromEx](#prometheus-via-promex)
 - **What events fire and when?** → [Event Catalog](#event-catalog)
+- **Tying events to one run, request or sub-agent?** → [Correlation ids](#correlation-ids)
 
 ## Default Handler
 
@@ -42,32 +43,123 @@ Detach it when you're done — for example in tests:
 Nous.Telemetry.detach_default_handler()
 ```
 
-> The default handler attaches the **core** events only. Fallback, hook, skill,
-> and workflow events have their own handlers or are meant for custom
-> instrumentation — attach to them explicitly (see below).
+> The default handler attaches the **core** events only. The model and
+> tool-call spans, fallback, guard, hook, skill, compaction and workflow
+> events have their own handlers or are meant for custom instrumentation —
+> attach to them explicitly (see below).
+
+## Correlation ids
+
+Every Nous event carries four correlation keys in its metadata. They are
+**always present** — `nil` outside an agent run — so a handler can pattern
+match on them uniformly:
+
+| Key | Value | Meaning |
+|-----|-------|---------|
+| `trace_id` | 32 lowercase hex chars | One trace: a root agent run and every run nested in it (a `Nous.Plugins.SubAgent` delegation, an agent a tool starts) |
+| `agent_run_id` | 16 lowercase hex chars | One agent run. Minted by every entry point (`Nous.run/3`, `run_with_context/3`, `run_stream/3`, each `Nous.AgentServer` turn); concurrent runs never share one |
+| `parent_agent_run_id` | 16 hex chars or `nil` | The run this one is nested in; `nil` for a root run |
+| `tool_call_id` | provider tool-call id or `nil` | The tool call being executed: set on `[:nous, :agent, :tool_call, ...]`, on hook events about a tool call, and on everything a tool body emits |
+
+`[:nous, :agent, :run, :start]` also carries `parent_tool_call_id` (the tool
+call that started a nested run), `role` (`:agent` for your runs), `profile_id`
+(reserved, `nil`) and, for sub-agent runs, `sub_agent_template` and
+`sub_agent_index`. With `agent_run_id` / `parent_agent_run_id` /
+`parent_tool_call_id` a flat stream of events rebuilds into the run tree:
+which tool call of which run spawned which sub-agent.
+
+The ids follow the work into the processes Nous starts — parallel tool calls,
+timed tool bodies, hook and guard tasks, sub-agents, AgentServer turn tasks,
+and a `run_stream/3` stream enumerated in another process. A `Task` you start
+inside a tool inherits them through `$callers`; a bare `spawn/1` or a
+GenServer does not.
+
+> **Content keys.** `messages`, `response` (model span), `arguments`, `result`
+> (tool-call span), guard `details`/`reason`, `errors`, and every raw
+> `reason`/`stacktrace`/`error` carry user and model data. They are safe for
+> in-process handlers, but **a handler that forwards events off-box (Sentry,
+> Honeycomb, log shippers) MUST scrub those keys first.** Nous does not
+> redact, to keep failures debuggable for trusted handlers. The ids
+> themselves are random and carry no data — but do not use them as metric
+> tags (unbounded cardinality).
+
+### Request-id correlation recipe
+
+`:telemetry` handlers run in the process that emits the event, and
+`Nous.run/3` called from a Phoenix request runs in the request process. So a
+handler on the root run's start can read the request's `Logger` metadata and
+record which trace belongs to which request — no Nous option needed:
+
+```elixir
+defmodule MyApp.NousRequestCorrelation do
+  def attach do
+    :telemetry.attach(
+      "nous-request-correlation",
+      [:nous, :agent, :run, :start],
+      &__MODULE__.handle/4,
+      nil
+    )
+  end
+
+  # A root run (no parent) started from a request process.
+  def handle(_event, _measurements, %{parent_agent_run_id: nil, trace_id: trace_id}, _config) do
+    case Logger.metadata()[:request_id] do
+      nil -> :ok
+      request_id -> MyApp.TraceIndex.put(trace_id, request_id)
+    end
+  end
+
+  def handle(_event, _measurements, _metadata, _config), do: :ok
+end
+```
+
+Every later event of that run and its sub-agents carries the same `trace_id`.
+This works where the run executes in the request process; it does not for an
+`Nous.AgentServer` turn or a `run_stream/3` stream consumed elsewhere, since
+`Logger` metadata is per process.
 
 ## Event Catalog
 
 All durations are emitted in `:native` time units. Convert with
 `System.convert_time_unit(duration, :native, :millisecond)`. The canonical
 source of truth is the moduledoc of `Nous.Telemetry` (and
-`Nous.Workflow.Telemetry` for workflow payloads).
+`Nous.Workflow.Telemetry` for workflow payloads). Every event also carries
+the [correlation keys](#correlation-ids); the tables list the rest.
 
 ### Agent Events
 
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
-| `[:nous, :agent, :run, :start]` | `system_time`, `monotonic_time` | `agent_name`, `model_provider`, `model_name`, `tool_count`, `has_tools` |
-| `[:nous, :agent, :run, :stop]` | `duration`, `total_tokens`, `input_tokens`, `output_tokens`, `tool_calls`, `requests`, `iterations` | `agent_name`, `model_provider`, `model_name` |
-| `[:nous, :agent, :run, :exception]` | `duration` | `agent_name`, `model_provider`, `kind`, `reason`, `stacktrace` |
+| `[:nous, :agent, :run, :start]` | `system_time`, `monotonic_time` | `agent_name`, `model_provider`, `model_name`, `tool_count`, `has_tools`, `parent_tool_call_id`, `role`, `profile_id`, `sub_agent_template`, `sub_agent_index` |
+| `[:nous, :agent, :run, :stop]` | `duration`, `total_tokens`, `input_tokens`, `output_tokens`, `tool_calls`, `requests`, `iterations` | `agent_name`, `model_provider`, `model_name` (configured), `active_model_provider`, `active_model_name` (last used), `fallback_used` |
+| `[:nous, :agent, :run, :exception]` | `duration` | `agent_name`, `model_provider`, `model_name`, `kind`, `reason`, `stacktrace` (real when the run raised, `[]` when it returned `{:error, _}`) |
 | `[:nous, :agent, :iteration, :start]` | `system_time` | `agent_name`, `iteration`, `max_iterations` |
 | `[:nous, :agent, :iteration, :stop]` | `duration` | `agent_name`, `iteration`, `tool_calls`, `needs_response` |
+| `[:nous, :agent, :model, :start]` | `system_time`, `monotonic_time` | `agent_name`, `iteration`, `model_provider`, `model_name` (requested), `stream`, `tool_names` (offered), `blocked_tool_names` (removed by the permission policy), `messages` |
+| `[:nous, :agent, :model, :stop]` | `duration`, `input_tokens`, `output_tokens`, `total_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `tool_calls`; `time_to_first_token` (streamed requests) | `agent_name`, `iteration`, `model_provider`, `model_name`, `active_model_provider`, `active_model_name`, `fallback_used`, `finish_reason`, `requested_tool_calls` (`[%{tool_call_id, tool_name}]`), `response` |
+| `[:nous, :agent, :model, :exception]` | `duration` | `agent_name`, `iteration`, `model_provider`, `model_name`, `kind`, `reason` |
+| `[:nous, :agent, :tool_call, :start]` | `system_time`, `monotonic_time` | `agent_name`, `tool_call_id`, `tool_name`, `arguments`, `iteration` |
+| `[:nous, :agent, :tool_call, :stop]` | `duration` | `agent_name`, `tool_call_id`, `tool_name`, `outcome`, `approval`, `result`, `result_modified`, `error`; post-edit `arguments` when `approval: :edited` |
+| `[:nous, :agent, :structured_output, :retry]` | `retries_left` | `agent_name`, `attempt`, `errors` |
+
+Run events fire from all three runner entry points. `run_stream/3`'s `:stop`
+fires when the stream yields `{:complete, _}`; a consumer that stops early
+leaves a start without a stop. `:stop` also fires after a successful
+structured-output retry.
+
+The tool-call span covers one requested call from before its hooks to its
+final result message. `outcome` is one of `:executed`, `:invalid_arguments`,
+`:collapsed` (Code Mode), `:hook_denied`, `:hook_stage_failed`,
+`:approval_rejected`, `:not_found`, `:timeout`, `:crashed`; `approval` one of
+`:not_required`, `:approved`, `:edited`, `:rejected`. A tool that returns
+`{:error, _}` is `:executed` with the term in `error`; one that raises is
+`:crashed`.
 
 ### Provider Events
 
-These live under the `[:nous, :provider, ...]` namespace (there is **no**
-`[:nous, :model, ...]` event namespace — the PromEx metric *names* use `model`,
-but the underlying events are always `provider`).
+These live under the `[:nous, :provider, ...]` namespace and carry no run
+context beyond the correlation keys; the runner-level view of a model call is
+the `[:nous, :agent, :model, ...]` span above.
 
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
@@ -84,6 +176,9 @@ but the underlying events are always `provider`).
 | `[:nous, :provider, :stream, :exception]` | `duration` | `provider`, `model_name`, `kind`, `reason` |
 
 ### Tool Events
+
+Executor-level, one per attempt; inside a run they carry the call's
+`tool_call_id`.
 
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
@@ -106,8 +201,8 @@ Use these to alert on provider degradation. See the
 
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
-| `[:nous, :agent, :fallback, :used]` | `system_time` | `agent_name`, `original_provider`, `original_model` (the routed model when a router chose one), `active_provider`, `active_model` |
-| `[:nous, :fallback, :activated]` | call-site dependent | active model + activation reason |
+| `[:nous, :agent, :fallback, :used]` | `system_time` | `agent_name`, `iteration`, `original_provider`, `original_model` (the routed model when a router chose one), `active_provider`, `active_model` |
+| `[:nous, :fallback, :activated]` | `system_time` | `failed_provider`, `failed_model`, `next_provider`, `next_model`, `reason` |
 
 ### Router Events
 
@@ -120,21 +215,50 @@ One event per `Nous.Router` consultation; see the
 
 ### Hook & Skill Events
 
+`tool_call_id` on hook events is the `:pre_tool_use` / `:post_tool_use`
+payload's `:tool_id`.
+
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
-| `[:nous, :hook, :execute, :start]` | `system_time` | `event`, `hook_name`, `hook_type` |
-| `[:nous, :hook, :execute, :stop]` | `duration` | `event`, `hook_name`, `hook_type`, `result?` |
-| `[:nous, :hook, :denied]` | — | `event`, `hook_name`, `hook_type`, `reason?` |
-| `[:nous, :hook, :failed_closed]` | `system_time` | `event`, `hook_name`, `hook_type`, `reason` |
-| `[:nous, :hook, :decision]` | `duration`, `chunk_count` | `event`, `hook_name`, `verdict`, `result`, `probabilities`, `backend`, `model`, `canary_failed`, `error` |
-| `[:nous, :decision_guard, :verdict]` | `duration`, `chunk_count` | `surface`, `verdict`, `result`, `probabilities`, `canary_failed`, `error` |
+| `[:nous, :hook, :execute, :start]` | `system_time` | `event`, `hook_name`, `hook_type`, `tool_call_id` |
+| `[:nous, :hook, :execute, :stop]` | `duration` | `event`, `hook_name`, `hook_type`, `tool_call_id`, `result?` |
+| `[:nous, :hook, :denied]` | — | `event`, `hook_name`, `hook_type`, `tool_call_id`, `reason?` |
+| `[:nous, :hook, :failed_closed]` | `system_time` | `event`, `hook_name`, `hook_type`, `tool_call_id`, `reason` |
+| `[:nous, :hook, :decision]` | `duration`, `chunk_count` | `event`, `hook_name`, `tool_call_id`, `verdict`, `result`, `probabilities`, `backend`, `model`, `canary_failed`, `error` |
+| `[:nous, :skill, :activate]` | — | `skill_name`, `group`, `activation_type` |
+| `[:nous, :skill, :deactivate]` | — | `skill_name`, `group` |
+
+### Guard Events
+
+| Event | Measurement | Metadata |
+|-------|-------------|----------|
+| `[:nous, :decision_guard, :verdict]` | `duration`, `chunk_count` | `surface`, `agent_name`, `tool_call_id`, `verdict`, `result`, `probabilities`, `canary_failed`, `error` |
 | `[:nous, :decision_guard, :canary_failed]` | `count` | `surface` |
-| `[:nous, :skill, :activate]` | — | `skill_name`, `agent_name` |
-| `[:nous, :skill, :deactivate]` | — | `skill_name`, `agent_name` |
+| `[:nous, :input_guard, :verdict]` | `duration`, `strategies`, `dropped` | `agent_name`, `severity`, `aggregation`, `fail_closed` (the verdict is a fail-closed result), `action` (`:block`, `:warn`, `:log`, `:callback`, `:custom`, `:none`) |
+| `[:nous, :input_guard, :strategy_verdict]`, `[:nous, :decision_guard, :strategy_verdict]` | `duration` | `strategy`, `severity`, `reason`, `details`, `error` |
+| `[:nous, :input_guard, :strategy_dropped]`, `[:nous, :decision_guard, :strategy_dropped]` | `count` | `aggregation`, `fail_closed` (the configured flag) |
+| `[:nous, :loop_guard, :advisory]` | `chain_length` | `agent_name`, `threshold`, `tier`, `signatures` (tool names) |
+
+On DecisionGuard hook surfaces each check emits both
+`[:nous, :decision_guard, :verdict]` and a `[:nous, :hook, :decision]` with
+hook name `"decision_guard:<surface>"`; count verdicts on one of the two.
+
+### Compaction, Decision Model & Session Events
+
+| Event | Measurement | Metadata |
+|-------|-------------|----------|
+| `[:nous, :compaction, :start]` | `system_time`, `monotonic_time` | `agent_name`, `messages_before` |
+| `[:nous, :compaction, :stop]` | `duration`, `bytes_before`, `bytes_after` | `agent_name`, `messages_before`, `messages_after`, `llm_called`, `summarized`, `provider`, `model`, `usage` |
+| `[:nous, :compaction, :exception]` | `duration` | `agent_name`, `messages_before`, `messages_after`, `llm_called`, `kind`, `reason`, `stacktrace` |
+| `[:nous, :decision_model, :decide, :start]` | `system_time`, `monotonic_time` | `backend`, `model`, `question_count` |
+| `[:nous, :decision_model, :decide, :stop]` | `duration`, `input_tokens` | `backend`, `model`, `question_count` |
+| `[:nous, :decision_model, :decide, :exception]` | `duration` | `backend`, `model`, `question_count`, `kind`, `reason`, `stacktrace?` |
+| `[:nous, :session, :invariant, :violation]` | `count` | violation details (`kind`, …), `agent_name`, `mode` |
 
 ### Workflow Events
 
-Full payloads are documented in `Nous.Workflow.Telemetry`.
+Full payloads are documented in `Nous.Workflow.Telemetry`. The correlation
+keys identify the enclosing agent run (if any), never the workflow execution.
 
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
@@ -149,9 +273,7 @@ Full payloads are documented in `Nous.Workflow.Telemetry`.
 
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
-| `[:nous, :rate_limiter, :unavailable]` | `count` | rate-limiter context |
-| `[:nous, :input_guard, :strategy_dropped]` | `count` | input-guard strategy context |
-| `[:nous, :decision_guard, :strategy_dropped]` | `count` | `aggregation`, `fail_closed` (DecisionGuard user-input strategies) |
+| `[:nous, :rate_limiter, :unavailable]` | `count` | `agent_name` (renamed from `agent` in 0.20.0) |
 
 > **Research observability:** the research pipeline (`Nous.Research`) does not
 > emit its own telemetry namespace. Because it runs ordinary agents internally,
@@ -226,6 +348,9 @@ counters. Those live on the `%Nous.Usage{}` struct itself (since 0.16.2):
 
 Both default to `0`, and `Nous.Usage.add/2` sums them like every other
 counter, so aggregating usage across runs keeps cache accounting intact.
+Per model request, `[:nous, :agent, :model, :stop]` carries both counters as
+measurements under the same names, so a telemetry handler can price each
+request without the run result.
 
 Two provider-shaped caveats decide the arithmetic:
 
@@ -408,12 +533,18 @@ The plugin builds three `PromEx.MetricTypes.Event` groups:
   duration).
 - `:nous_tool_event_metrics` — from `[:nous, :tool, :execute, :stop]` and
   `[:nous, :tool, :execute, :exception]`: execution duration, attempt count, and
-  an exceptions counter. Tagged by `tool_name`, `success`/`will_retry`.
+  an exceptions counter, tagged by `tool_name`, `success`/`will_retry`; plus
+  `nous_tool_call_total` from `[:nous, :agent, :tool_call, :stop]`, tagged by
+  `tool_name` and `outcome`.
 
 > **Naming caveat:** the metric *group* and metric *names* use the word `model`
 > (e.g. `nous_model_request_duration`), but they are driven by the
-> `[:nous, :provider, ...]` **events**. The two are intentionally different — do
-> not try to attach to `[:nous, :model, ...]`; no such event exists.
+> `[:nous, :provider, ...]` **events**, not the runner-level
+> `[:nous, :agent, :model, ...]` span. There is no `[:nous, :model, ...]` event.
+
+The plugin deliberately tags no correlation id (`trace_id`, `agent_run_id`,
+`tool_call_id`): each is unique per run or call, and as a Prometheus label it
+would create one time series per run.
 
 Once exposed via PromEx's `/metrics` endpoint, scrape it with Prometheus and
 build Grafana dashboards over agent latency, token spend, and tool failure

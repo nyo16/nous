@@ -23,6 +23,7 @@ defmodule Nous.AgentRunner.RequestDispatch do
   alias Nous.{Errors, Fallback, ModelDispatcher, Tool}
   alias Nous.AgentRunner.{PromptAssembly, Streaming}
   alias Nous.Session.Invariant
+  alias Nous.Telemetry.RunScope
 
   require Logger
 
@@ -53,13 +54,22 @@ defmodule Nous.AgentRunner.RequestDispatch do
 
   # Stream with fallback chain support.
   # Only retries stream initialization, not mid-stream failures.
+  # Returns {:ok, stream, active_model} or {:error, reason}.
   def stream_with_fallback(agent, messages, model_settings, tools) do
     model_chain = Fallback.build_model_chain(agent.model, agent.fallback)
 
     Fallback.with_fallback(model_chain, fn model ->
       settings = rebuild_settings_for_model(model, model_settings, tools, agent)
-      get_dispatcher().request_stream(model, messages, settings)
+
+      case get_dispatcher().request_stream(model, messages, settings) do
+        {:ok, stream} -> {:ok, {stream, model}}
+        {:error, _} = err -> err
+      end
     end)
+    |> case do
+      {:ok, {stream, active_model}} -> {:ok, stream, active_model}
+      {:error, _} = err -> err
+    end
   end
 
   # Streaming counterpart to request_with_fallback/5. Initializes the stream
@@ -146,9 +156,11 @@ defmodule Nous.AgentRunner.RequestDispatch do
           "RateLimiter unavailable for agent #{inspect(agent.name)}; failing open (request not rate-limited)"
         )
 
-        :telemetry.execute([:nous, :rate_limiter, :unavailable], %{count: 1}, %{
-          agent: agent.name
-        })
+        :telemetry.execute(
+          [:nous, :rate_limiter, :unavailable],
+          %{count: 1},
+          RunScope.merge(%{agent_name: agent.name})
+        )
 
         request_fun.()
 

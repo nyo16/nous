@@ -39,6 +39,36 @@ defmodule Nous.Plugins.InputGuard.Policy do
   @default_policy %{suspicious: :warn, blocked: :block, dropped: :block}
 
   @doc """
+  The action `apply/4` takes for `result` under `config`'s policy:
+  `:block`, `:warn`, `:log`, `:callback`, `:custom` (a `fun/2` action) or
+  `:none` (a `:safe` result, a severity the policy has no action for, or an
+  unknown action, which `apply/4` ignores).
+
+  This is the `action` reported on `[:nous, :input_guard, :verdict]`.
+
+  ## Examples
+
+      iex> alias Nous.Plugins.InputGuard.{Policy, Result}
+      iex> Policy.action_for(%Result{severity: :suspicious}, %{})
+      :warn
+      iex> Policy.action_for(%Result{severity: :safe}, %{})
+      :none
+      iex> Policy.action_for(%Result{severity: :suspicious, metadata: %{fail_closed: true}}, %{})
+      :block
+
+  """
+  @spec action_for(Result.t(), map()) :: :block | :warn | :log | :callback | :custom | :none
+  def action_for(%Result{severity: :safe}, _config), do: :none
+
+  def action_for(%Result{} = result, config) do
+    case action(Map.get(config, :policy, @default_policy), result) do
+      known when known in [:block, :warn, :log, :callback] -> known
+      fun when is_function(fun, 2) -> :custom
+      _none_or_unknown -> :none
+    end
+  end
+
+  @doc """
   Apply the configured policy action for the given result.
 
   Returns the (possibly modified) context and tools tuple.

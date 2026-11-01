@@ -154,7 +154,7 @@ defmodule Nous.Agent.Callbacks do
     :telemetry.execute(
       [:nous, :callback, :execute],
       %{duration: System.monotonic_time() - start_time},
-      %{callback_type: event, agent_name: ctx.agent_name}
+      Nous.Telemetry.RunScope.merge(%{callback_type: event, agent_name: ctx.agent_name})
     )
 
     :ok

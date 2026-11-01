@@ -7,11 +7,17 @@ defmodule Nous.AgentRunner.ToolInvocation do
   # outside the executor (an outer timeout, a task exit). Internal to the
   # runner.
   #
-  # Every function here returns `{Message.t(), context_update}`: the message
-  # the model sees and whatever the tool asked to change, untouched, for the
-  # post stage that holds a `%Nous.Agent.Context{}` to apply.
+  # Every function here returns `{Message.t(), context_update, execution}`:
+  # the message the model sees, whatever the tool asked to change (untouched,
+  # for the post stage that holds a `%Nous.Agent.Context{}` to apply), and
+  # `%{outcome:, error:}` for the tool-call span's stop event. `outcome` is
+  # `:executed` when the tool ran to a return (`error` holds a returned
+  # `{:error, term}`'s term), `:crashed` when it raised, threw or exited,
+  # `:timeout`, `:invalid_arguments` (schema validation refused the
+  # arguments) or `:not_found`.
 
   alias Nous.{Errors, Message, Spill, ToolCall, ToolExecutor}
+  alias Nous.Telemetry.RunScope
   alias Nous.Tool.ContextUpdate
 
   require Logger
@@ -25,7 +31,8 @@ defmodule Nous.AgentRunner.ToolInvocation do
   # and their output is a summary across many files, not one file to re-read.
   @never_spill_tools ~w(file_read)
 
-  @type outcome :: {Message.t(), ContextUpdate.t() | map()}
+  @type execution :: %{outcome: atom(), error: term()}
+  @type outcome :: {Message.t(), ContextUpdate.t() | map(), execution()}
 
   @doc false
   @spec invoke([Nous.Tool.t()], map(), Nous.RunContext.t(), Nous.Agent.t()) :: outcome()
@@ -35,18 +42,22 @@ defmodule Nous.AgentRunner.ToolInvocation do
     call_arguments = ToolCall.field(call, :arguments)
     cleaned_name = ToolCall.clean_name(call_name)
 
-    {result, context_updates} =
-      case Enum.find(tools, fn t -> t.name == cleaned_name end) do
-        nil -> not_found(tools, call_name, cleaned_name)
-        tool -> execute(tool, call_arguments, run_ctx, cleaned_name)
-      end
+    # Everything the tool does — including a nested agent run it starts —
+    # happens under this call's id, so it can be linked back to the call.
+    RunScope.merge_scope(%{tool_call_id: call_id}, fn ->
+      {result, context_updates, execution} =
+        case Enum.find(tools, fn t -> t.name == cleaned_name end) do
+          nil -> not_found(tools, call_name, cleaned_name)
+          tool -> execute(tool, call_arguments, run_ctx, cleaned_name)
+        end
 
-    # Spill before the result becomes message content: this is the single point
-    # where a completed tool result turns into a message, so the sequential and
-    # the parallel path are both covered by one call.
-    result = maybe_spill_result(result, cleaned_name, run_ctx, agent)
+      # Spill before the result becomes message content: this is the single
+      # point where a completed tool result turns into a message, so the
+      # sequential and the parallel path are both covered by one call.
+      result = maybe_spill_result(result, cleaned_name, run_ctx, agent)
 
-    {Message.tool(call_id, result, name: cleaned_name), context_updates}
+      {Message.tool(call_id, result, name: cleaned_name), context_updates, execution}
+    end)
   end
 
   defp execute(tool, arguments, run_ctx, cleaned_name) do
@@ -62,19 +73,42 @@ defmodule Nous.AgentRunner.ToolInvocation do
             "#{length(ContextUpdate.operations(update))} context operation(s)"
         )
 
-        {result, update}
+        {result, update, executed()}
 
       {:ok, result} ->
         Logger.debug("Tool '#{cleaned_name}' executed successfully")
-        split_legacy_update(result, cleaned_name)
+        {result, updates} = split_legacy_update(result, cleaned_name)
+        {result, updates, executed()}
 
       {:error, error} ->
         # Preserve structured error information for better debugging and handling
         error_details = Errors.ToolError.format_for_model(error, cleaned_name)
         Logger.error("Tool '#{cleaned_name}' execution failed: #{error_details.summary}")
-        {error_details.response, %{}}
+        {error_details.response, %{}, %{outcome: failure_outcome(error), error: error}}
     end
   end
+
+  defp executed, do: %{outcome: :executed, error: nil}
+
+  # How a `{:error, _}` from `Nous.ToolExecutor` came about. The executor wraps
+  # a raise/throw/exit (after retries) in a `ToolError` whose `original_error`
+  # is the exception or `{kind, reason}`, and a schema refusal in one whose
+  # `original_error` is the validator's tagged tuple; an error the tool itself
+  # returned comes back unwrapped.
+  defp failure_outcome(%Errors.ToolTimeout{}), do: :timeout
+
+  defp failure_outcome(%Errors.ToolError{original_error: {tag, _}})
+       when tag in [:missing_required, :type_mismatch],
+       do: :invalid_arguments
+
+  defp failure_outcome(%Errors.ToolError{original_error: {kind, _}})
+       when kind in [:throw, :exit, :error],
+       do: :crashed
+
+  defp failure_outcome(%Errors.ToolError{original_error: original}) when is_exception(original),
+    do: :crashed
+
+  defp failure_outcome(_returned_by_the_tool), do: :executed
 
   # The legacy `__update_context__` pattern: a map result may carry its context
   # updates inline. They are stripped before the result reaches the model.
@@ -102,7 +136,7 @@ defmodule Nous.AgentRunner.ToolInvocation do
       Available tools: #{available_tools}
     """)
 
-    {"Tool not found: #{call_name}", %{}}
+    {"Tool not found: #{call_name}", %{}, %{outcome: :not_found, error: nil}}
   end
 
   # Hand an oversized text result to the spill store and keep a preview plus a
@@ -162,7 +196,7 @@ defmodule Nous.AgentRunner.ToolInvocation do
         name: cleaned_name
       )
 
-    {result_msg, %{}}
+    {result_msg, %{}, %{outcome: :timeout, error: :timeout}}
   end
 
   # A task killed/crashed outside ToolExecutor's own error handling (which
@@ -183,7 +217,7 @@ defmodule Nous.AgentRunner.ToolInvocation do
         name: cleaned_name
       )
 
-    {result_msg, %{}}
+    {result_msg, %{}, %{outcome: :crashed, error: reason}}
   end
 
   # The provider marshalling tagged a call whose arguments JSON failed to

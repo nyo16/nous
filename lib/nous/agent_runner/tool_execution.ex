@@ -9,8 +9,9 @@ defmodule Nous.AgentRunner.ToolExecution do
 
   alias Nous.{CodeMode, Message, Messages, OutputSchema, Permissions, Tool, ToolCall}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
-  alias Nous.AgentRunner.ToolInvocation
+  alias Nous.AgentRunner.{Instrumentation, ToolInvocation}
   alias Nous.Hook
+  alias Nous.Telemetry.RunScope
   alias Nous.Tool.ContextUpdate
 
   require Logger
@@ -99,29 +100,64 @@ defmodule Nous.AgentRunner.ToolExecution do
 
     {results, ctx} =
       Enum.reduce(real_calls, {[], ctx}, fn call, {results, acc_ctx} ->
+        span = start_span(call, agent, acc_ctx)
+
         {result_msg, acc_ctx} =
           case pre_stage_decision(call, tools, code_mode, agent, acc_ctx) do
-            {:done, result_msg} ->
+            {:done, result_msg, info} ->
+              stop_short_circuit(span, result_msg, info)
               {result_msg, acc_ctx}
 
-            {:execute, call} ->
-              {result_msg, context_updates} = ToolInvocation.invoke(tools, call, run_ctx, agent)
-
-              record_tool_result(
-                call,
-                result_msg,
-                context_updates,
-                tools,
-                behaviour,
-                agent,
-                acc_ctx
-              )
+            {:execute, call, approval} ->
+              executed = ToolInvocation.invoke(tools, call, run_ctx, agent)
+              finish_executed(span, call, approval, executed, tools, behaviour, agent, acc_ctx)
           end
 
         {[result_msg | results], acc_ctx}
       end)
 
     {Enum.reverse(results), ctx}
+  end
+
+  # The tool-call span (`[:nous, :agent, :tool_call, :start | :stop]`) opens
+  # before the pre-stage and closes once the call's result message is final:
+  # at a short-circuit, or after the post stage of an executed call. The
+  # iteration is the model request that asked for the call; handle_response
+  # has already counted that request by the time tools run.
+  defp start_span(call, agent, ctx) do
+    Instrumentation.tool_call_start(call, agent.name, max(ctx.iteration - 1, 0))
+  end
+
+  defp stop_short_circuit(span, result_msg, info) do
+    Instrumentation.tool_call_stop(span, Map.put(info, :result, result_msg.content))
+  end
+
+  # A short-circuit's stop info. `approval` is `:not_required` for a call that
+  # never reached the approval gate.
+  defp short_circuit(outcome, error \\ nil) do
+    approval = if outcome == :approval_rejected, do: :rejected, else: :not_required
+    %{outcome: outcome, approval: approval, error: error}
+  end
+
+  # The post stage of an executed call, then the span's stop: `result` is the
+  # post-hook content the model sees, `result_modified` whether a
+  # post_tool_use hook rewrote it.
+  defp finish_executed(span, call, approval, executed, tools, behaviour, agent, acc_ctx) do
+    {raw_msg, context_updates, %{outcome: outcome, error: error}} = executed
+
+    {result_msg, acc_ctx} =
+      record_tool_result(call, raw_msg, context_updates, tools, behaviour, agent, acc_ctx)
+
+    Instrumentation.tool_call_stop(span, %{
+      outcome: outcome,
+      approval: approval,
+      result: result_msg.content,
+      result_modified: result_msg.content != raw_msg.content,
+      error: error,
+      arguments: ToolCall.field(call, :arguments)
+    })
+
+    {result_msg, acc_ctx}
   end
 
   # Parallel tool-call execution (agent.parallel_tool_calls). Four stages keep
@@ -148,6 +184,7 @@ defmodule Nous.AgentRunner.ToolExecution do
   # hooks see the pre-turn ctx rather than earlier calls' post-stage effects.
   def run_tool_calls_parallel(real_calls, tools, run_ctx, behaviour, agent, ctx) do
     code_mode = CodeMode.resolve(agent)
+    spans = Enum.map(real_calls, &start_span(&1, agent, ctx))
 
     decisions =
       real_calls
@@ -155,10 +192,10 @@ defmodule Nous.AgentRunner.ToolExecution do
       |> run_hook_stage_concurrently(tools, agent, ctx)
       |> Enum.map(fn
         {:approve, call} -> approval_decision(call, tools, agent, ctx)
-        {:done, _} = done -> done
+        {:done, _, _} = done -> done
       end)
 
-    approved = for {:execute, call} <- decisions, do: call
+    approved = for {:execute, call, _approval} <- decisions, do: call
 
     call_timeout = batch_call_timeout(approved, tools)
 
@@ -167,13 +204,16 @@ defmodule Nous.AgentRunner.ToolExecution do
     # to any future change in how the approved list is built. Provider tool_call
     # ids are unique within one response (they must be, to match tool results),
     # so a map keeps every result.
+    #
+    # The run's telemetry scope is bound into the task body explicitly, so
+    # events in the tool skip the `$callers` walk.
     executed_by_id =
       Nous.TaskSupervisor
       |> Task.Supervisor.async_stream_nolink(
         approved,
-        fn call ->
+        RunScope.bind(fn call ->
           {ToolCall.field(call, :id), ToolInvocation.invoke(tools, call, run_ctx, agent)}
-        end,
+        end),
         timeout: call_timeout,
         # Kill a task that blows the ceiling instead of blocking on it, so the
         # rest of the batch still drains.
@@ -183,8 +223,8 @@ defmodule Nous.AgentRunner.ToolExecution do
         zip_input_on_exit: true
       )
       |> Map.new(fn
-        {:ok, {call_id, {result_msg, context_updates}}} ->
-          {call_id, {result_msg, context_updates}}
+        {:ok, {call_id, executed}} ->
+          {call_id, executed}
 
         {:exit, {call, :timeout}} ->
           {ToolCall.field(call, :id), ToolInvocation.timed_out(call, call_timeout)}
@@ -194,23 +234,18 @@ defmodule Nous.AgentRunner.ToolExecution do
       end)
 
     {results, ctx} =
-      Enum.reduce(decisions, {[], ctx}, fn
-        {:done, result_msg}, {results, acc_ctx} ->
+      decisions
+      |> Enum.zip(spans)
+      |> Enum.reduce({[], ctx}, fn
+        {{:done, result_msg, info}, span}, {results, acc_ctx} ->
+          stop_short_circuit(span, result_msg, info)
           {[result_msg | results], acc_ctx}
 
-        {:execute, call}, {results, acc_ctx} ->
-          {result_msg, context_updates} = Map.fetch!(executed_by_id, ToolCall.field(call, :id))
+        {{:execute, call, approval}, span}, {results, acc_ctx} ->
+          executed = Map.fetch!(executed_by_id, ToolCall.field(call, :id))
 
           {result_msg, acc_ctx} =
-            record_tool_result(
-              call,
-              result_msg,
-              context_updates,
-              tools,
-              behaviour,
-              agent,
-              acc_ctx
-            )
+            finish_executed(span, call, approval, executed, tools, behaviour, agent, acc_ctx)
 
           {[result_msg | results], acc_ctx}
       end)
@@ -250,12 +285,13 @@ defmodule Nous.AgentRunner.ToolExecution do
   end
 
   # Pre-execution stage for one call in sequential mode: screen_call/3, the
-  # pre_tool_use hooks, then approval. Returns {:done, result_msg} for a
-  # short-circuit (invalid args, collapse, hook denial, approval rejection) or
-  # {:execute, call} with the final — possibly hook- or approval-edited —
-  # arguments. `ctx` is the context whose hook registry and approval handler
-  # the call is judged against: the accumulating one in sequential mode, the
-  # pre-turn snapshot in parallel mode.
+  # pre_tool_use hooks, then approval. Returns {:done, result_msg, info} for a
+  # short-circuit (invalid args, collapse, hook denial, approval rejection;
+  # `info` is the tool-call span's stop outcome) or {:execute, call, approval}
+  # with the final — possibly hook- or approval-edited — arguments. `ctx` is
+  # the context whose hook registry and approval handler the call is judged
+  # against: the accumulating one in sequential mode, the pre-turn snapshot in
+  # parallel mode.
   def pre_stage_decision(call, tools, code_mode, agent, ctx) do
     with {:hooks, call} <- screen_call(call, code_mode, ctx),
          {:approve, call} <-
@@ -283,10 +319,11 @@ defmodule Nous.AgentRunner.ToolExecution do
 
     cond do
       is_binary(invalid_args) ->
-        {:done, ToolInvocation.invalid_arguments(call_id, cleaned_name, invalid_args)}
+        {:done, ToolInvocation.invalid_arguments(call_id, cleaned_name, invalid_args),
+         short_circuit(:invalid_arguments)}
 
       CodeMode.collapsed?(code_mode, cleaned_name, call) ->
-        {:done, code_mode_denial(call_id, cleaned_name)}
+        {:done, code_mode_denial(call_id, cleaned_name), short_circuit(:collapsed)}
 
       true ->
         {:hooks, call}
@@ -311,13 +348,16 @@ defmodule Nous.AgentRunner.ToolExecution do
     case Hook.Runner.run(registry, :pre_tool_use, hook_payload, hook_env) do
       :deny ->
         Logger.info("Tool '#{cleaned_name}' denied by hook")
-        {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name)}
+
+        {:done, Message.tool(call_id, "Tool call was denied by hook.", name: cleaned_name),
+         short_circuit(:hook_denied)}
 
       {:deny, reason} ->
         Logger.info("Tool '#{cleaned_name}' denied by hook: #{reason}")
 
         {:done,
-         Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name)}
+         Message.tool(call_id, "Tool call was denied by hook: #{reason}", name: cleaned_name),
+         short_circuit(:hook_denied)}
 
       {:modify, %{arguments: new_args}} ->
         # The approval gate runs on the modified call exactly as on an
@@ -369,7 +409,7 @@ defmodule Nous.AgentRunner.ToolExecution do
         )
         |> Enum.zip_with(pending, fn
           {:ok, staged}, _call -> staged
-          {:exit, reason}, call -> {:done, hook_stage_failed(call, reason)}
+          {:exit, reason}, call -> {:done, hook_stage_failed(call, reason), hook_failed(reason)}
         end)
 
       {decisions, []} =
@@ -418,6 +458,8 @@ defmodule Nous.AgentRunner.ToolExecution do
       name: cleaned_name
     )
   end
+
+  defp hook_failed(reason), do: short_circuit(:hook_stage_failed, reason)
 
   # Runs `fun` on every item in its own task (`Nous.Hook.Runner.async_task/1`:
   # it dies with this process, so a cancelled run leaves no stage running) and
@@ -535,14 +577,18 @@ defmodule Nous.AgentRunner.ToolExecution do
         Logger.info("Tool '#{cleaned_name}' rejected by approval handler")
 
         {:done,
-         Message.tool(call_id, "Tool call was rejected by approval handler.", name: cleaned_name)}
+         Message.tool(call_id, "Tool call was rejected by approval handler.", name: cleaned_name),
+         short_circuit(:approval_rejected)}
 
       {:edit, new_args} ->
         Logger.debug("Tool '#{cleaned_name}' arguments edited by approval handler")
-        {:execute, ToolCall.put_field(call, :arguments, new_args)}
+        {:execute, ToolCall.put_field(call, :arguments, new_args), :edited}
 
       :approve ->
-        {:execute, call}
+        approval =
+          if match?(%Tool{requires_approval: true}, tool), do: :approved, else: :not_required
+
+        {:execute, call, approval}
     end
   end
 
@@ -658,10 +704,21 @@ defmodule Nous.AgentRunner.ToolExecution do
   # plugins), so a guard can inspect the program text before it runs, and every
   # tool the program itself calls is filtered by the same policy through
   # `Nous.CodeMode.bindings/4`.
+  #
+  # Returns `{visible_tools, blocked_tool_names}`; the blocked names go on the
+  # model span (`[:nous, :agent, :model, :start]`), since a blocked tool
+  # otherwise leaves no trace at all.
   def visible_tools(agent, tools) do
-    granted = Permissions.filter_tools(agent.permissions, tools)
+    {granted, blocked} =
+      case agent.permissions do
+        nil -> {tools, []}
+        policy -> Permissions.partition_tools(policy, tools)
+      end
 
-    CodeMode.visible_tools(CodeMode.resolve(agent), tools, granted, policy: agent.permissions)
+    visible =
+      CodeMode.visible_tools(CodeMode.resolve(agent), tools, granted, policy: agent.permissions)
+
+    {visible, Enum.map(blocked, & &1.name)}
   end
 
   # The policy filter itself lives in Nous.Permissions (nil-tolerant); what

@@ -253,8 +253,9 @@ defmodule Nous.Session.Invariant do
   @doc """
   The telemetry event a violation emits: `#{inspect(@violation_event)}`.
 
-  Measurements are `%{count: 1}`; metadata is `t:details/0` plus `:agent_name`
-  and `:mode`.
+  Measurements are `%{count: 1}`; metadata is `t:details/0` plus `:agent_name`,
+  `:mode` and the run correlation keys (see `Nous.Telemetry`; a details key
+  such as `:tool_call_id` wins over the correlation key of the same name).
   """
   @spec violation_event() :: [atom()]
   def violation_event, do: @violation_event
@@ -397,7 +398,7 @@ defmodule Nous.Session.Invariant do
     :telemetry.execute(
       @violation_event,
       %{count: 1},
-      Map.merge(details, %{agent_name: ctx.agent_name, mode: mode})
+      Nous.Telemetry.RunScope.merge(Map.merge(details, %{agent_name: ctx.agent_name, mode: mode}))
     )
 
     case mode do

@@ -115,7 +115,11 @@ if Code.ensure_loaded?(LlamaCppEx) do
       :telemetry.execute(
         [:nous, :provider, :request, :start],
         %{system_time: System.system_time(), monotonic_time: start_time},
-        %{provider: :llamacpp, model_name: model.model, message_count: length(messages)}
+        Nous.Telemetry.RunScope.merge(%{
+          provider: :llamacpp,
+          model_name: model.model,
+          message_count: length(messages)
+        })
       )
 
       provider_messages =
@@ -160,18 +164,23 @@ if Code.ensure_loaded?(LlamaCppEx) do
               output_tokens: Map.get(usage, :output_tokens) || 0,
               total_tokens: Map.get(usage, :total_tokens) || 0
             },
-            %{
+            Nous.Telemetry.RunScope.merge(%{
               provider: :llamacpp,
               model_name: model.model,
               has_tool_calls: length(parsed_response.tool_calls) > 0
-            }
+            })
           )
 
         {:error, error} ->
           :telemetry.execute(
             [:nous, :provider, :request, :exception],
             %{duration: duration},
-            %{provider: :llamacpp, model_name: model.model, kind: :error, reason: error}
+            Nous.Telemetry.RunScope.merge(%{
+              provider: :llamacpp,
+              model_name: model.model,
+              kind: :error,
+              reason: error
+            })
           )
       end
 
@@ -197,7 +206,11 @@ if Code.ensure_loaded?(LlamaCppEx) do
       :telemetry.execute(
         [:nous, :provider, :stream, :start],
         %{system_time: System.system_time(), monotonic_time: start_time},
-        %{provider: :llamacpp, model_name: model.model, message_count: length(messages)}
+        Nous.Telemetry.RunScope.merge(%{
+          provider: :llamacpp,
+          model_name: model.model,
+          message_count: length(messages)
+        })
       )
 
       provider_messages =
@@ -216,7 +229,7 @@ if Code.ensure_loaded?(LlamaCppEx) do
       :telemetry.execute(
         [:nous, :provider, :stream, :connected],
         %{duration: duration},
-        %{provider: :llamacpp, model_name: model.model}
+        Nous.Telemetry.RunScope.merge(%{provider: :llamacpp, model_name: model.model})
       )
 
       normalizer = model.stream_normalizer || default_stream_normalizer()

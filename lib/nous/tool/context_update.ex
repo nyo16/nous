@@ -204,7 +204,7 @@ defmodule Nous.Tool.ContextUpdate do
     :telemetry.execute(
       [:nous, :context, :update],
       %{keys_updated: length(keys)},
-      %{agent_name: ctx.agent_name, keys: keys}
+      Nous.Telemetry.RunScope.merge(%{agent_name: ctx.agent_name, keys: keys})
     )
 
     Enum.reduce(log_events(update), ctx, fn {type, data}, ctx ->

@@ -240,11 +240,11 @@ defmodule Nous.Provider do
         :telemetry.execute(
           [:nous, :provider, :request, :start],
           %{system_time: System.system_time(), monotonic_time: start_time},
-          %{
+          Nous.Telemetry.RunScope.merge(%{
             provider: @provider_id,
             model_name: model.model,
             message_count: length(messages)
-          }
+          })
         )
 
         # Build request params and options
@@ -292,23 +292,23 @@ defmodule Nous.Provider do
                 output_tokens: Map.get(usage, :output_tokens) || 0,
                 total_tokens: Map.get(usage, :total_tokens) || 0
               },
-              %{
+              Nous.Telemetry.RunScope.merge(%{
                 provider: @provider_id,
                 model_name: model.model,
                 has_tool_calls: length(parsed_response.tool_calls) > 0
-              }
+              })
             )
 
           {:error, error} ->
             :telemetry.execute(
               [:nous, :provider, :request, :exception],
               %{duration: duration},
-              %{
+              Nous.Telemetry.RunScope.merge(%{
                 provider: @provider_id,
                 model_name: model.model,
                 kind: :error,
                 reason: error
-              }
+              })
             )
         end
 
@@ -326,11 +326,11 @@ defmodule Nous.Provider do
         :telemetry.execute(
           [:nous, :provider, :stream, :start],
           %{system_time: System.system_time(), monotonic_time: start_time},
-          %{
+          Nous.Telemetry.RunScope.merge(%{
             provider: @provider_id,
             model_name: model.model,
             message_count: length(messages)
-          }
+          })
         )
 
         # Build request params and options
@@ -345,10 +345,10 @@ defmodule Nous.Provider do
             :telemetry.execute(
               [:nous, :provider, :stream, :connected],
               %{duration: duration},
-              %{
+              Nous.Telemetry.RunScope.merge(%{
                 provider: @provider_id,
                 model_name: model.model
-              }
+              })
             )
 
             # Transform stream using normalizer
@@ -362,12 +362,12 @@ defmodule Nous.Provider do
             :telemetry.execute(
               [:nous, :provider, :stream, :exception],
               %{duration: duration},
-              %{
+              Nous.Telemetry.RunScope.merge(%{
                 provider: @provider_id,
                 model_name: model.model,
                 kind: :error,
                 reason: error
-              }
+              })
             )
 
             wrapped_error =

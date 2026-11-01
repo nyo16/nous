@@ -658,8 +658,11 @@ def monitored_tool(ctx, args) do
   start_time = System.monotonic_time(:millisecond)
   tool_name = "my_important_tool"
 
-  # Emit telemetry event for monitoring
-  :telemetry.execute([:nous, :tool, :start], %{}, %{
+  # Emit telemetry under your app's namespace. `[:nous, ...]` names belong to
+  # the library (Nous already emits [:nous, :tool, :execute, ...] and
+  # [:nous, :agent, :tool_call, ...] for every tool call); an app event there
+  # could collide with a future Nous event.
+  :telemetry.execute([:my_app, :tool, :start], %{}, %{
     tool: tool_name,
     user_id: ctx.deps[:user_id],
     args: sanitize_args_for_logging(args)
@@ -675,7 +678,7 @@ def monitored_tool(ctx, args) do
 
   duration = System.monotonic_time(:millisecond) - start_time
 
-  :telemetry.execute([:nous, :tool, :complete], %{duration: duration}, %{
+  :telemetry.execute([:my_app, :tool, :complete], %{duration: duration}, %{
     tool: tool_name,
     status: elem(result, 0),
     user_id: ctx.deps[:user_id]

@@ -182,7 +182,7 @@ defmodule Nous.AgentRunner.Routing do
     :telemetry.execute(
       [:nous, :router, :route],
       %{duration: duration},
-      %{
+      Nous.Telemetry.RunScope.merge(%{
         agent_name: agent.name,
         router: module,
         granularity: granularity,
@@ -195,7 +195,7 @@ defmodule Nous.AgentRunner.Routing do
         reason: reason,
         model_provider: model.provider,
         model_name: model.model
-      }
+      })
     )
 
     label = "#{model.provider}:#{model.model}"

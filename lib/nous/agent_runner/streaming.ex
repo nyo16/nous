@@ -6,8 +6,12 @@ defmodule Nous.AgentRunner.Streaming do
 
   alias Nous.{Errors, Message}
   alias Nous.Agent.Callbacks
+  alias Nous.AgentRunner.Instrumentation
+  alias Nous.Telemetry.RunScope
 
   require Logger
+
+  @first_token_key :__nous_first_token_at__
 
   def wrap_stream_with_callbacks(stream, ctx) do
     Stream.map(stream, fn event ->
@@ -105,6 +109,132 @@ defmodule Nous.AgentRunner.Streaming do
     )
   end
 
+  # The telemetry of a `Nous.AgentRunner.run_stream/3` run, which outlives the
+  # call that started it: the stream is enumerated later, by whoever holds it,
+  # possibly in another process. So the run's scope is reinstalled around
+  # every pull from the stream (and every suspended continuation), the model
+  # and run `:stop` events fire when `{:complete, _}` passes through, and a
+  # raise during enumeration emits the `:exception` events (unless the run
+  # already stopped) before it propagates.
+  #
+  # `info`: `agent`, `run_scope`, `start_time`, `model_span` (nil when no
+  # model was called, e.g. a guard blocked the request) and `active_model`.
+  def instrument_run(stream, info) do
+    stream
+    |> Stream.transform(%{first_token_at: nil, usage: nil}, fn
+      {:complete, result} = event, acc ->
+        complete_run(info, acc, result)
+        {[event], acc}
+
+      {:usage, usage} = event, acc ->
+        {[event], %{acc | usage: usage}}
+
+      {kind, _} = event, %{first_token_at: nil} = acc
+      when kind in [:text_delta, :thinking_delta, :tool_call_delta] ->
+        {[event], %{acc | first_token_at: System.monotonic_time()}}
+
+      event, acc ->
+        {[event], acc}
+    end)
+    |> scoped(info)
+  end
+
+  defp complete_run(info, acc, result) do
+    usage = acc.usage || %Nous.Usage{}
+    called_model? = info.model_span != nil
+
+    if called_model? do
+      response =
+        Message.new!(
+          %{
+            role: :assistant,
+            metadata: %{usage: usage, finish_reason: Map.get(result, :finish_reason)}
+          }
+          |> put_content(Map.get(result, :output, ""))
+        )
+
+      Instrumentation.model_stop(info.model_span, response, info.active_model, acc.first_token_at)
+    end
+
+    count = if called_model?, do: 1, else: 0
+
+    measurements = %{
+      total_tokens: usage_value(usage, :total_tokens),
+      input_tokens: usage_value(usage, :input_tokens),
+      output_tokens: usage_value(usage, :output_tokens),
+      tool_calls: 0,
+      requests: count,
+      iterations: count
+    }
+
+    active = info.active_model || info.agent.model
+
+    Instrumentation.run_stop(info.agent, info.run_scope, info.start_time, measurements, %{
+      model: active,
+      fallback_used: active != info.agent.model
+    })
+  end
+
+  defp put_content(attrs, ""), do: attrs
+  defp put_content(attrs, text) when is_binary(text), do: Map.put(attrs, :content, text)
+  defp put_content(attrs, _other), do: attrs
+
+  defp usage_value(usage, key) do
+    case Map.get(usage, key) do
+      n when is_integer(n) -> n
+      _ -> 0
+    end
+  end
+
+  # An enumerable (a 2-arity reducer function) that runs every step of
+  # `stream` under the run's scope.
+  defp scoped(stream, info) do
+    scope = RunScope.install_scope(info.run_scope)
+
+    fn acc, fun ->
+      scoped_step(fn acc -> Enumerable.reduce(stream, acc, fun) end, acc, scope, info)
+    end
+  end
+
+  defp scoped_step(step, acc, scope, info) do
+    result =
+      RunScope.with_scope(scope, fn ->
+        try do
+          step.(acc)
+        catch
+          kind, reason ->
+            stream_failed(info, kind, reason, __STACKTRACE__)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
+      end)
+
+    case result do
+      {:suspended, acc, continuation} ->
+        {:suspended, acc, &scoped_step(continuation, &1, scope, info)}
+
+      finished ->
+        Instrumentation.clear_terminal(info.run_scope)
+        finished
+    end
+  end
+
+  defp stream_failed(info, kind, reason, stacktrace) do
+    unless Instrumentation.terminal?(info.run_scope) do
+      if info.model_span, do: Instrumentation.model_exception(info.model_span, kind, reason)
+
+      Instrumentation.run_exception(
+        info.agent,
+        info.run_scope,
+        info.start_time,
+        kind,
+        reason,
+        stacktrace
+      )
+    end
+
+    Instrumentation.clear_terminal(info.run_scope)
+  end
+
   def build_stream_result(acc, reason) do
     # acc.text/acc.thinking are chunks in reverse arrival order (prepended);
     # reverse to restore order before flattening to a binary.
@@ -132,7 +262,8 @@ defmodule Nous.AgentRunner.Streaming do
       usage: nil,
       finish_reason: "stop",
       error: nil,
-      cancelled: nil
+      cancelled: nil,
+      first_token_at: nil
     }
 
     final =
@@ -142,7 +273,7 @@ defmodule Nous.AgentRunner.Streaming do
             {:halt, %{acc | cancelled: reason}}
 
           :ok ->
-            {:cont, handle_stream_event(event, acc, ctx)}
+            {:cont, event |> handle_stream_event(acc, ctx) |> note_first_token(event)}
         end
       end)
 
@@ -186,19 +317,38 @@ defmodule Nous.AgentRunner.Streaming do
 
   def handle_stream_event(_other, acc, _ctx), do: acc
 
+  # The monotonic time of the first chunk that carries model output, for the
+  # model span's `time_to_first_token`.
+  defp note_first_token(%{first_token_at: nil} = acc, {kind, _})
+       when kind in [:text_delta, :thinking_delta, :tool_call_delta],
+       do: %{acc | first_token_at: System.monotonic_time()}
+
+  defp note_first_token(acc, _event), do: acc
+
+  @doc false
+  # The metadata key the first-chunk time travels under from
+  # build_streamed_message/2 to the model span, which pops it before the
+  # message goes anywhere else (`Nous.AgentRunner.IterationLoop`).
+  def first_token_key, do: @first_token_key
+
   def build_streamed_message(acc, _provider) do
     text = IO.iodata_to_binary(acc.text)
     reasoning = IO.iodata_to_binary(acc.reasoning)
     tool_calls = Nous.StreamNormalizer.ToolCallAccumulator.finalize(acc.tool_acc)
 
-    attrs = %{
-      role: :assistant,
-      metadata: %{
-        usage: acc.usage || %Nous.Usage{},
-        finish_reason: acc.finish_reason,
-        timestamp: DateTime.utc_now()
-      }
+    metadata = %{
+      usage: acc.usage || %Nous.Usage{},
+      finish_reason: acc.finish_reason,
+      timestamp: DateTime.utc_now()
     }
+
+    metadata =
+      case Map.get(acc, :first_token_at) do
+        nil -> metadata
+        at -> Map.put(metadata, @first_token_key, at)
+      end
+
+    attrs = %{role: :assistant, metadata: metadata}
 
     attrs = if text != "", do: Map.put(attrs, :content, text), else: attrs
 
