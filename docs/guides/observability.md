@@ -63,7 +63,8 @@ match on them uniformly:
 
 `[:nous, :agent, :run, :start]` also carries `parent_tool_call_id` (the tool
 call that started a nested run), `role` (`:agent` for your runs), `profile_id`
-(reserved, `nil`) and, for sub-agent runs, `sub_agent_template` and
+(the `Nous.Profile` the run's agent applies, `nil` without one; also on
+`run.stop` and `run.exception`) and, for sub-agent runs, `sub_agent_template` and
 `sub_agent_index`. With `agent_run_id` / `parent_agent_run_id` /
 `parent_tool_call_id` a flat stream of events rebuilds into the run tree:
 which tool call of which run spawned which sub-agent.
@@ -131,8 +132,8 @@ the [correlation keys](#correlation-ids); the tables list the rest.
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
 | `[:nous, :agent, :run, :start]` | `system_time`, `monotonic_time` | `agent_name`, `model_provider`, `model_name`, `tool_count`, `has_tools`, `parent_tool_call_id`, `role`, `profile_id`, `sub_agent_template`, `sub_agent_index` |
-| `[:nous, :agent, :run, :stop]` | `duration`, `total_tokens`, `input_tokens`, `output_tokens`, `tool_calls`, `requests`, `iterations` | `agent_name`, `model_provider`, `model_name` (configured), `active_model_provider`, `active_model_name` (last used), `fallback_used` |
-| `[:nous, :agent, :run, :exception]` | `duration` | `agent_name`, `model_provider`, `model_name`, `kind`, `reason`, `stacktrace` (real when the run raised, `[]` when it returned `{:error, _}`) |
+| `[:nous, :agent, :run, :stop]` | `duration`, `total_tokens`, `input_tokens`, `output_tokens`, `tool_calls`, `requests`, `iterations` | `agent_name`, `model_provider`, `model_name` (configured), `active_model_provider`, `active_model_name` (last used), `fallback_used`, `profile_id` |
+| `[:nous, :agent, :run, :exception]` | `duration` | `agent_name`, `model_provider`, `model_name`, `kind`, `reason`, `stacktrace` (real when the run raised, `[]` when it returned `{:error, _}`), `profile_id` |
 | `[:nous, :agent, :iteration, :start]` | `system_time` | `agent_name`, `iteration`, `max_iterations` |
 | `[:nous, :agent, :iteration, :stop]` | `duration` | `agent_name`, `iteration`, `tool_calls`, `needs_response` |
 | `[:nous, :agent, :model, :start]` | `system_time`, `monotonic_time` | `agent_name`, `iteration`, `model_provider`, `model_name` (requested), `stream`, `tool_names` (offered), `blocked_tool_names` (removed by the permission policy), `messages` |
@@ -243,7 +244,7 @@ On DecisionGuard hook surfaces each check emits both
 `[:nous, :decision_guard, :verdict]` and a `[:nous, :hook, :decision]` with
 hook name `"decision_guard:<surface>"`; count verdicts on one of the two.
 
-### Compaction, Decision Model & Session Events
+### Compaction, Decision Model, Profile & Session Events
 
 | Event | Measurement | Metadata |
 |-------|-------------|----------|
@@ -253,6 +254,7 @@ hook name `"decision_guard:<surface>"`; count verdicts on one of the two.
 | `[:nous, :decision_model, :decide, :start]` | `system_time`, `monotonic_time` | `backend`, `model`, `question_count` |
 | `[:nous, :decision_model, :decide, :stop]` | `duration`, `input_tokens` | `backend`, `model`, `question_count` |
 | `[:nous, :decision_model, :decide, :exception]` | `duration` | `backend`, `model`, `question_count`, `kind`, `reason`, `stacktrace?` |
+| `[:nous, :profile, :switched]` | `system_time` | `agent_name`, `profile_id`, `previous_profile_id`, `action` (`:replaced` — the continued conversation's leading system message was replaced by a logged event; `:updated` — no system message in the transcript, only `ctx.system_prompt` changed) |
 | `[:nous, :session, :invariant, :violation]` | `count` | violation details (`kind`, …), `agent_name`, `mode` |
 
 ### Workflow Events

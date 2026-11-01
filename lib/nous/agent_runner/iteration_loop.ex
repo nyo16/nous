@@ -317,7 +317,7 @@ defmodule Nous.AgentRunner.IterationLoop do
     messages = behaviour.build_messages(agent, ctx)
 
     # Add tools to model settings if any. Tool-schema conversion is memoized
-    # per run on the (provider, tool-name set) — the set is stable across
+    # per run on the (provider, tool-name set, profile) — stable across
     # iterations in the common case, so this skips re-converting every loop
     # (Anthropic conversion alone is ~12µs + ~90KB per iteration).
     {model_settings, ctx} =
@@ -325,7 +325,12 @@ defmodule Nous.AgentRunner.IterationLoop do
         {agent.model_settings, ctx}
       else
         {tool_schemas, ctx} =
-          converted_tool_schemas(ctx, request_agent.model.provider, all_tools)
+          converted_tool_schemas(
+            ctx,
+            request_agent.model.provider,
+            Nous.Profile.applied_id(request_agent),
+            all_tools
+          )
 
         {Map.put(agent.model_settings, :tools, tool_schemas), ctx}
       end
@@ -487,13 +492,14 @@ defmodule Nous.AgentRunner.IterationLoop do
   def fallback_used?(%Context{deps: deps}), do: Map.get(deps, @fallback_used_key, false)
 
   @doc false
-  # The sticky fallback, the fallback flag and the routing decision are
-  # runtime-only, like the turn exit reason: dropped at run start (a new run
-  # or AgentServer turn starts at the primary again and routes afresh) and
-  # from the result's deps/context so they are never persisted.
+  # The sticky fallback, the fallback flag, the routing decision and the
+  # tool-schema memo are runtime-only, like the turn exit reason: dropped at
+  # run start (a new run or AgentServer turn starts at the primary again,
+  # routes afresh and converts the tools it has now) and from the result's
+  # deps/context so they are never persisted.
   def clear_runtime_models(%Context{} = ctx) do
     deps = Map.drop(ctx.deps, [@active_model_key, @fallback_used_key])
-    Routing.clear(%{ctx | deps: deps})
+    Routing.clear(%{ctx | deps: deps, tool_schema_cache: nil})
   end
 
   # Fold a successful model response into the context (usage, the blocking
@@ -612,20 +618,24 @@ defmodule Nous.AgentRunner.IterationLoop do
 
   # Convert tools to provider schemas, memoized per run in a runtime-only ctx
   # field. The tool set (and its provider) is stable across loop iterations in
-  # the common case, so we re-convert ONLY when the (provider, tool-name set)
-  # changes — e.g. a plugin's before_request adds/removes a tool. Returns
-  # `{schemas, ctx}` so the caller threads the updated cache forward.
+  # the common case, so we re-convert ONLY when the (provider, tool-name set,
+  # profile id) changes — e.g. a plugin's before_request adds/removes a tool.
+  # Returns `{schemas, ctx}` so the caller threads the updated cache forward.
   #
-  # The name-set is the staleness guard the design accepts: a plugin swapping a
-  # tool for one with the SAME name but a different schema mid-run would not be
-  # detected (pathological; tools are otherwise stable structs).
+  # The memo is cleared at every run start (clear_runtime_models/1), so a
+  # continued context or AgentServer turn converts the tools it runs with now
+  # (a run-level profile, a tool edited between turns); within a run the
+  # profile is constant, so its id in the key costs no hashing. A plugin
+  # swapping a tool for one with the SAME name but a different schema mid-run
+  # is the one change the key does not see (pathological; tools are otherwise
+  # stable structs).
   #
   # NOT applied to: run_stream/3 (single-shot — converts once per call, never
   # reused) or rebuild_settings_for_model/4 (rare fallback path, different
   # provider, no ctx in scope). Both intentionally re-convert.
-  def converted_tool_schemas(ctx, provider, all_tools) do
+  def converted_tool_schemas(ctx, provider, profile_id, all_tools) do
     names = all_tools |> Enum.map(& &1.name) |> MapSet.new()
-    key = {provider, names}
+    key = {provider, names, profile_id}
 
     case ctx.tool_schema_cache do
       {^key, schemas} ->

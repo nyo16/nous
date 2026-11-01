@@ -214,7 +214,7 @@ defmodule Nous.Telemetry.AgentEventsTest do
   test "run_with_context/3 emits the run span too" do
     script(fn _ -> text("again") end)
     agent = agent()
-    ctx = AgentRunner.messages_context(agent, [Message.user("hi")], [])
+    {:ok, ctx} = AgentRunner.messages_context(agent, [Message.user("hi")], [])
 
     {{:ok, result}, events} = traced(fn -> AgentRunner.run_with_context(agent, ctx) end)
 

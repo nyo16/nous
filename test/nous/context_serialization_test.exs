@@ -9,7 +9,7 @@ defmodule Nous.Agent.ContextSerializationTest do
       ctx = Context.new()
       data = Context.serialize(ctx)
 
-      assert data.version == 3
+      assert data.version == 4
     end
 
     test "persists the event log and nothing derived from it" do
@@ -53,6 +53,38 @@ defmodule Nous.Agent.ContextSerializationTest do
       assert reason =~ ":events"
 
       assert {:error, _} = Context.deserialize(%{"version" => 3, "events" => "nope"})
+    end
+
+    test "v4 round-trips profile_id, through JSON too" do
+      ctx =
+        Context.new(system_prompt: "P", profile_id: "sha256:" <> String.duplicate("a", 64))
+        |> Context.add_message(Message.user("Hello"))
+
+      assert {:ok, restored} = ctx |> Context.serialize() |> Context.deserialize()
+      assert restored.profile_id == ctx.profile_id
+
+      json = ctx |> Context.serialize() |> JSON.encode!() |> JSON.decode!()
+      assert json["version"] == 4
+      assert {:ok, %Context{profile_id: id}} = Context.deserialize(json)
+      assert id == ctx.profile_id
+    end
+
+    test "a v3 blob loads with profile_id nil, whatever it carries" do
+      v3 =
+        Context.new(system_prompt: "S")
+        |> Context.add_message(Message.user("Hello"))
+        |> Context.serialize()
+        |> Map.put(:version, 3)
+        |> Map.delete(:profile_id)
+
+      assert {:ok, restored} = Context.deserialize(v3)
+      assert restored.profile_id == nil
+      assert restored.system_prompt == "S"
+      assert Enum.map(restored.messages, & &1.content) == ["Hello"]
+
+      # profile_id is a v4 field: a v3 blob cannot smuggle one in.
+      assert {:ok, %Context{profile_id: nil}} =
+               Context.deserialize(Map.put(v3, :profile_id, "sha256:forged"))
     end
 
     test "a snapshotted context serializes smaller and round-trips with its seqs" do

@@ -148,15 +148,17 @@ defmodule Nous.AgentRunner do
       message, identical in shape to the non-streaming path. Works across all
       providers (OpenAI-compatible, Anthropic, Gemini) and is compatible with
       `output_type` (the synthetic-tool path is honored under streaming).
+    * `:profile` - Run with this `Nous.Profile` (applied to the agent's base
+      text) or, for `nil`, with the base text. See `Nous.Agent.run/3`.
 
   """
   @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(%Agent{} = agent, prompt, opts \\ []) do
-    agent = apply_runtime_overrides(agent, opts)
-
-    Instrumentation.scoped(agent, fn run_scope, start_time ->
-      do_run(agent, prompt, opts, run_scope, start_time)
-    end)
+    with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
+      Instrumentation.scoped(agent, fn run_scope, start_time ->
+        do_run(agent, prompt, opts, run_scope, start_time)
+      end)
+    end
   end
 
   defp do_run(agent, prompt, opts, run_scope, start_time) do
@@ -166,12 +168,21 @@ defmodule Nous.AgentRunner do
 
     Logger.debug("Agent has #{length(agent.tools)} tools available")
 
-    # Build context from options. A continued context starts at the primary
-    # model again: the sticky fallback and the routing decision are
-    # runtime-only (see IterationLoop).
+    case build_context(agent, prompt, opts) do
+      {:ok, ctx} ->
+        run_context(agent, ctx, run_scope, start_time)
+
+      {:error, reason} = error ->
+        emit_error_telemetry(agent, run_scope, start_time, reason)
+        error
+    end
+  end
+
+  defp run_context(agent, ctx, run_scope, start_time) do
+    # A continued context starts at the primary model again: the sticky
+    # fallback and the routing decision are runtime-only (see IterationLoop).
     ctx =
-      agent
-      |> build_context(prompt, opts)
+      ctx
       |> IterationLoop.clear_runtime_models()
       |> Map.put(:run, run_scope)
 
@@ -289,15 +300,27 @@ defmodule Nous.AgentRunner do
   """
   @spec run_with_context(Agent.t(), Context.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_with_context(%Agent{} = agent, %Context{} = ctx, opts \\ []) do
-    agent = apply_runtime_overrides(agent, opts)
-
-    Instrumentation.scoped(agent, fn run_scope, start_time ->
-      do_run_with_context(agent, ctx, opts, run_scope, start_time)
-    end)
+    with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
+      Instrumentation.scoped(agent, fn run_scope, start_time ->
+        do_run_with_context(agent, ctx, opts, run_scope, start_time)
+      end)
+    end
   end
 
   defp do_run_with_context(agent, ctx, opts, run_scope, start_time) do
     boundary = run_boundary(ctx, pending_input_position(ctx))
+
+    case switch_profile(agent, ctx, opts) do
+      {:ok, ctx} ->
+        continue_context(agent, ctx, opts, boundary, run_scope, start_time)
+
+      {:error, reason} = error ->
+        emit_error_telemetry(agent, run_scope, start_time, reason)
+        error
+    end
+  end
+
+  defp continue_context(agent, ctx, opts, boundary, run_scope, start_time) do
     # Merge any additional options into context
     ctx =
       ctx
@@ -377,24 +400,26 @@ defmodule Nous.AgentRunner do
   """
   @spec run_stream(Agent.t(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
   def run_stream(%Agent{} = agent, prompt, opts \\ []) do
-    agent = apply_runtime_overrides(agent, opts)
+    with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
+      # The stream is enumerated after this returns, possibly in another
+      # process, so the run's scope is captured into it (see
+      # Streaming.instrument_run/2) and its stop event fires on `{:complete, _}`.
+      Instrumentation.scoped(agent, fn run_scope, start_time ->
+        run_info = %{agent: agent, run_scope: run_scope, start_time: start_time}
 
-    # The stream is enumerated after this returns, possibly in another
-    # process, so the run's scope is captured into it (see
-    # Streaming.instrument_run/2) and its stop event fires on `{:complete, _}`.
-    Instrumentation.scoped(agent, fn run_scope, start_time ->
-      do_run_stream(agent, prompt, opts, %{
-        agent: agent,
-        run_scope: run_scope,
-        start_time: start_time
-      })
-    end)
+        case build_context(agent, prompt, opts) do
+          {:ok, ctx} ->
+            do_run_stream(agent, %{ctx | run: run_scope}, run_info)
+
+          {:error, reason} = error ->
+            emit_error_telemetry(agent, run_scope, start_time, reason)
+            error
+        end
+      end)
+    end
   end
 
-  defp do_run_stream(agent, prompt, opts, run_info) do
-    # Build context
-    ctx = agent |> build_context(prompt, opts) |> Map.put(:run, run_info.run_scope)
-
+  defp do_run_stream(agent, ctx, run_info) do
     # Get behaviour
     behaviour = Behaviour.get_module(agent)
 
@@ -502,7 +527,8 @@ defmodule Nous.AgentRunner do
   # Private functions
 
   # Apply per-run overrides for output_type, structured_output, model_settings,
-  # the sandbox policy and the router
+  # the sandbox policy, the router and the profile. Only the profile can fail,
+  # and it fails here, before the run starts and before any model call.
   defp apply_runtime_overrides(agent, opts) do
     agent
     |> then(fn a ->
@@ -539,6 +565,14 @@ defmodule Nous.AgentRunner do
         :error -> a
       end
     end)
+    |> apply_profile_override(opts)
+  end
+
+  defp apply_profile_override(agent, opts) do
+    case Keyword.fetch(opts, :profile) do
+      {:ok, profile} -> Nous.Profile.apply(profile, agent)
+      :error -> {:ok, agent}
+    end
   end
 
   # The one place plugins are set up for a run, on every entry point. `init/2`
@@ -560,22 +594,57 @@ defmodule Nous.AgentRunner do
     case Keyword.get(opts, :context) do
       %Context{} = existing_ctx ->
         # Continue from existing context, add new user message
-        existing_ctx
-        |> Context.add_message(Message.user(prompt))
-        |> Context.set_needs_response(true)
-        |> maybe_update_callbacks(opts)
-        |> maybe_update_notify_pid(opts)
-        |> maybe_update_stream(opts)
-        |> maybe_update_cancellation_check(opts)
-        |> maybe_update_approval_handler(opts)
-        |> maybe_update_max_iterations(opts)
-        |> reset_iteration()
+        with {:ok, ctx} <- switch_profile(agent, existing_ctx, opts) do
+          {:ok,
+           ctx
+           |> Context.add_message(Message.user(prompt))
+           |> Context.set_needs_response(true)
+           |> maybe_update_callbacks(opts)
+           |> maybe_update_notify_pid(opts)
+           |> maybe_update_stream(opts)
+           |> maybe_update_cancellation_check(opts)
+           |> maybe_update_approval_handler(opts)
+           |> maybe_update_max_iterations(opts)
+           |> reset_iteration()}
+        end
 
       nil ->
         system_prompt = base_system_prompt(agent, opts)
         message_history = Keyword.get(opts, :message_history, [])
         messages = build_initial_messages(message_history, prompt, system_prompt)
-        fresh_context(agent, messages, system_prompt, opts)
+        {:ok, fresh_context(agent, messages, system_prompt, opts)}
+    end
+  end
+
+  # A continued context remembers the profile its system prompt was written
+  # under. When this run's agent has another one (a run-level `:profile`, a
+  # rollback, an AgentServer restored under a new release), its system prompt
+  # is rebuilt with the fresh-context pipeline and replaces the old one:
+  # instructions are otherwise never re-resolved for a continued context, so
+  # the conversation would keep running on the old profile's text while its
+  # tool descriptions already switched. The replacement is a logged message
+  # event, so the transcript stays an honest record of what the model saw.
+  defp switch_profile(agent, %Context{} = ctx, opts) do
+    profile_id = Nous.Profile.applied_id(agent)
+
+    if ctx.profile_id == profile_id do
+      {:ok, ctx}
+    else
+      prompt = base_system_prompt(agent, Keyword.put_new(opts, :deps, ctx.deps))
+
+      case Context.replace_system_prompt(ctx, prompt) do
+        {:ok, switched, action} ->
+          Instrumentation.profile_switched(agent, ctx.profile_id, action)
+          {:ok, %{switched | profile_id: profile_id}}
+
+        {:error, detail} ->
+          {:error,
+           Errors.ProfileError.exception(
+             reason: :system_message_diverged,
+             key: "instructions",
+             detail: detail
+           )}
+      end
     end
   end
 
@@ -586,17 +655,22 @@ defmodule Nous.AgentRunner do
   # on this entry point too. A caller whose list already starts with a
   # `:system` message keeps it and gets no second system prompt;
   # `ctx.system_prompt` is then nil, because the agent's prompt is not in use.
-  @spec messages_context(Agent.t(), [Message.t()], keyword()) :: Context.t()
+  @spec messages_context(Agent.t(), [Message.t()], keyword()) ::
+          {:ok, Context.t()} | {:error, Errors.ProfileError.t()}
   def messages_context(%Agent{} = agent, messages, opts) when is_list(messages) do
-    case messages do
-      [%Message{role: :system} | _] ->
-        fresh_context(agent, messages, nil, opts)
+    # The run-level overrides (:output_type and :structured_output decide the
+    # suffix, :profile the instructions) apply exactly as on the prompt path.
+    with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
+      case messages do
+        [%Message{role: :system} | _] ->
+          {:ok, fresh_context(agent, messages, nil, opts)}
 
-      _ ->
-        # The run-level :output_type / :structured_output overrides decide the
-        # suffix, exactly as on the prompt path.
-        system_prompt = base_system_prompt(apply_runtime_overrides(agent, opts), opts)
-        fresh_context(agent, system_message(system_prompt) ++ messages, system_prompt, opts)
+        _ ->
+          system_prompt = base_system_prompt(agent, opts)
+
+          {:ok,
+           fresh_context(agent, system_message(system_prompt) ++ messages, system_prompt, opts)}
+      end
     end
   end
 
@@ -647,7 +721,8 @@ defmodule Nous.AgentRunner do
       approval_handler: Keyword.get(opts, :approval_handler),
       pubsub: Keyword.get(opts, :pubsub),
       pubsub_topic: Keyword.get(opts, :pubsub_topic),
-      stream: Keyword.get(opts, :stream, false)
+      stream: Keyword.get(opts, :stream, false),
+      profile_id: Nous.Profile.applied_id(agent)
     )
   end
 

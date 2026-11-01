@@ -53,7 +53,8 @@ defmodule Nous.Agent do
           sandbox: Nous.Sandbox.Policy.t() | nil,
           code_mode: Nous.CodeMode.mode() | nil,
           parallel_tool_calls: boolean(),
-          max_iterations: pos_integer() | nil
+          max_iterations: pos_integer() | nil,
+          profile: Nous.Profile.Applied.t() | nil
         }
 
   @enforce_keys [:model]
@@ -87,7 +88,10 @@ defmodule Nous.Agent do
     code_mode: nil,
     parallel_tool_calls: false,
     # nil: the runner's default (10). A run's `:max_iterations` option wins.
-    max_iterations: nil
+    max_iterations: nil,
+    # The applied `Nous.Profile` and the base text it replaced; set by
+    # new/2's `:profile` (see Nous.Profile.apply/2).
+    profile: nil
   ]
 
   @doc """
@@ -103,7 +107,9 @@ defmodule Nous.Agent do
     * `:output_type` - Expected output type (`:string`, Ecto schema, schemaless map, JSON schema, or guided mode tuple)
     * `:structured_output` - Structured output options (`mode:`, `max_retries:`)
     * `:instructions` - Static instructions or function returning instructions
-    * `:system_prompt` - Static system prompt or function
+    * `:system_prompt` - Static system prompt or function. Pass `:instructions`
+      or `:system_prompt`, not both: `new/2` raises `ArgumentError` when both
+      are set (the runner would use only `:instructions`)
     * `:deps_type` - Module defining dependency structure
     * `:name` - Agent name for logging
     * `:model_settings` - Model settings (temperature, max_tokens, etc.)
@@ -169,6 +175,12 @@ defmodule Nous.Agent do
       many model requests one `run/3` may make before it fails with
       `Nous.Errors.MaxIterationsExceeded` (default: 10). A run's own
       `:max_iterations` option overrides it. Must be a positive integer.
+    * `:profile` - A `Nous.Profile` replacing the agent's instructions and
+      tool descriptions with its text (see `Nous.Profile`). It is validated
+      against the options above and applied here; an invalid or stale profile
+      raises `Nous.Errors.ProfileError`. Load one with `Nous.Profile.load!/1`.
+      The agent keeps its base text, so a run's `:profile` option can switch
+      to another profile or back to none.
 
   ## Examples
 
@@ -194,9 +206,10 @@ defmodule Nous.Agent do
   """
   @spec new(String.t(), keyword()) :: t()
   def new(model_string, opts \\ []) do
+    check_prompt_slots!(opts)
     model = Model.parse(model_string, opts)
 
-    %Agent{
+    agent = %Agent{
       model: model,
       fallback: Fallback.parse_fallback_models(Keyword.get(opts, :fallback, [])),
       router: Nous.Router.new(Keyword.get(opts, :router)),
@@ -225,6 +238,8 @@ defmodule Nous.Agent do
       parallel_tool_calls: Keyword.get(opts, :parallel_tool_calls, false),
       max_iterations: validate_max_iterations(Keyword.get(opts, :max_iterations))
     }
+
+    apply_profile!(agent, Keyword.get(opts, :profile))
   end
 
   @doc """
@@ -251,6 +266,15 @@ defmodule Nous.Agent do
       shapes as the `:sandbox` option to `new/2`)
     * `:router` - Override the agent's `router` for this run (same shapes as
       the `:router` option to `new/2`; `nil` disables routing)
+    * `:profile` - Run with this `Nous.Profile` instead of the agent's (it is
+      applied to the agent's base text), or with the base text for `nil`. An
+      invalid profile returns `{:error, %Nous.Errors.ProfileError{}}` before
+      any model call. When it differs from the profile a continued
+      `:context` was started with, the conversation's leading system message
+      is replaced (a logged message event) and
+      `[:nous, :profile, :switched]` is emitted; a system message the runner
+      did not write returns `{:error, %ProfileError{reason:
+      :system_message_diverged}}` instead
 
   ## Examples
 
@@ -353,8 +377,9 @@ defmodule Nous.Agent do
   end
 
   defp run_with_messages(agent, messages, opts) do
-    ctx = Nous.AgentRunner.messages_context(agent, messages, opts)
-    Nous.AgentRunner.run_with_context(agent, ctx, opts)
+    with {:ok, ctx} <- Nous.AgentRunner.messages_context(agent, messages, opts) do
+      Nous.AgentRunner.run_with_context(agent, ctx, opts)
+    end
   end
 
   @doc """
@@ -450,6 +475,19 @@ defmodule Nous.Agent do
   @spec normalize_code_mode(term()) :: Nous.CodeMode.mode() | nil
   defp normalize_code_mode(nil), do: nil
   defp normalize_code_mode(mode), do: Nous.CodeMode.new(mode)
+
+  # Both slots set means one is silently ignored (the runner reads
+  # `:instructions` first), and a profile could not say which one it replaces.
+  defp check_prompt_slots!(opts) do
+    if Keyword.get(opts, :instructions) != nil and Keyword.get(opts, :system_prompt) != nil do
+      raise ArgumentError,
+            "pass :instructions or :system_prompt, not both (:instructions would shadow " <>
+              ":system_prompt)"
+    end
+  end
+
+  defp apply_profile!(agent, nil), do: agent
+  defp apply_profile!(agent, profile), do: Nous.Profile.apply!(profile, agent)
 
   # Fail loudly: a nil/zero/non-integer ceiling would otherwise either be
   # ignored or reach the iteration loop as "no cap".

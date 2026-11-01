@@ -37,6 +37,12 @@ defmodule Nous.Plugins.SubAgent do
   Both `delegate_task` and `spawn_agents` can reference templates by name or
   provide inline model/instructions for ad-hoc sub-agents.
 
+  A sub-agent runs with its template's `Nous.Profile` only: an `%Agent{}`
+  template built with `profile:` keeps it, and a config map accepts
+  `:profile` (a `%Nous.Profile{}`; one that does not apply to the template
+  fails the delegation with an error result). The parent's profile is never
+  inherited: its components name the parent's instructions and tools.
+
   ## Parallel Configuration
 
   Configure concurrency and timeout for `spawn_agents` via `deps`:
@@ -504,7 +510,7 @@ defmodule Nous.Plugins.SubAgent do
         {:ok, agent}
 
       %{} = config ->
-        {:ok, agent_from_config(config)}
+        agent_from_config(config)
     end
   end
 
@@ -523,17 +529,27 @@ defmodule Nous.Plugins.SubAgent do
     end
   end
 
+  # A config-map template. `:profile` (a `%Nous.Profile{}`) is the template's
+  # own: a parent's profile is never handed to a child, because its
+  # components address the parent's instructions and tools, not these.
   defp agent_from_config(config) do
     model = Map.get(config, :model) || Map.get(config, "model")
     instructions = Map.get(config, :instructions) || Map.get(config, "instructions", "")
     tools = Map.get(config, :tools) || Map.get(config, "tools", [])
     model_settings = Map.get(config, :model_settings) || Map.get(config, "model_settings", %{})
+    profile = Map.get(config, :profile) || Map.get(config, "profile")
 
-    Agent.new(model,
-      instructions: instructions,
-      tools: tools,
-      model_settings: model_settings
-    )
+    agent =
+      Agent.new(model,
+        instructions: instructions,
+        tools: tools,
+        model_settings: model_settings
+      )
+
+    case Nous.Profile.apply(profile, agent) do
+      {:ok, agent} -> {:ok, agent}
+      {:error, error} -> {:error, "Template profile rejected: " <> Exception.message(error)}
+    end
   end
 
   defp run_sub_agent(agent, task, parent_ctx, index, template_name) do
