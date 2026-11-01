@@ -297,4 +297,41 @@ defmodule Nous.Plugins.SkillsAllowedToolsTest do
       refute again =~ "model_override"
     end
   end
+
+  # #109: plugin system prompts were built on iteration 0 BEFORE before_request,
+  # which is where an {:on_match, _} skill activates, and never rebuilt, so a
+  # matched skill's instructions never reached the model (its allowed_tools
+  # did apply).
+  describe "an {:on_match, _} skill's instructions" do
+    defp reviewer do
+      skill("reviewer", nil, {:on_match, &String.contains?(&1, "review")})
+    end
+
+    test "reach the system prompt of the request its matching message is in" do
+      assert {:ok, _} = run([reviewer()], "please review this")
+
+      assert_receive {:request_system, system}
+      assert system =~ "## Skill: reviewer\n\nreviewer instructions"
+    end
+
+    test "reach the next request when a message steered in mid-run matches" do
+      # The step boundary after the tool round claims a steered message, the
+      # way Nous.AgentServer delivers one; it is the only new input mid-run.
+      claims = :counters.new(1, [])
+
+      claim_inbox = fn :next_step ->
+        :counters.add(claims, 1, 1)
+        if :counters.get(claims, 1) == 2, do: [Message.user("please review it too")], else: []
+      end
+
+      agent = Agent.new("openai:test-model", tools: agent_tools(), skills: [reviewer()])
+      assert {:ok, _} = AgentRunner.run(agent, "CALL now", deps: %{claim_inbox: claim_inbox})
+
+      assert_receive {:request_system, first}
+      refute first =~ "reviewer instructions"
+
+      assert_receive {:request_system, second}
+      assert second =~ "## Skill: reviewer\n\nreviewer instructions"
+    end
+  end
 end

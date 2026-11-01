@@ -30,8 +30,9 @@ defmodule Nous.AgentRunner.PromptAssembly do
 
   require Logger
 
-  # Apply plugin system prompt fragments to context
-  # Only applied once per iteration (on first iteration, or when system prompt needs updating)
+  # Apply plugin system prompt fragments to context. Called by
+  # IterationLoop.prepare_tools/4 after the plugins' before_request, on the
+  # first iteration and on any step that claimed new user input.
   def apply_plugin_system_prompts(agent, ctx) do
     case Plugin.collect_system_prompts(agent.plugins, agent, ctx) do
       nil -> ctx
