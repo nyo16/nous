@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A skill with `activation: {:on_match, _}` now gets its instructions
+  into the system prompt** (#109). Plugin system prompts were built on the
+  first iteration *before* the plugins' `before_request/3`, which is where
+  such a skill activates, and never rebuilt, so its instructions never
+  reached the model (its `allowed_tools` did apply). They are now built after
+  `before_request/3`: on the first iteration, and again on any step that
+  claimed new user input (a message steered in mid-run), so a skill matched
+  by that message contributes to the very request it is in. Ordinary
+  tool-loop iterations still keep the system prompt unchanged.
+
 ## [0.19.1] - 2026-10-31
 
 The remaining fixes from the 0.18.2 security review. Plugins now run on

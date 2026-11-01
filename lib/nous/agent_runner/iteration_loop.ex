@@ -239,14 +239,21 @@ defmodule Nous.AgentRunner.IterationLoop do
     plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
     all_tools = tools ++ plugin_tools
 
-    # Apply plugin system prompt fragments only on first iteration
-    ctx =
-      if ctx.iteration == 0,
-        do: PromptAssembly.apply_plugin_system_prompts(agent, ctx),
-        else: ctx
-
     # Run plugin before_request hooks
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
+
+    # Plugin system prompt fragments are built AFTER before_request, because
+    # that is where plugins react to the input in front of them (a skill with
+    # `{:on_match, _}` activates there); built before it, a matched skill's
+    # instructions never reached the model (#109). They are built on the first
+    # iteration and again only when this step claimed new user input — the
+    # only way input changes mid-run — so ordinary tool-loop iterations keep a
+    # stable system prompt (provider prompt caches) and don't re-run plugins
+    # whose prompt queries a store (Nous.Plugins.Decisions).
+    ctx =
+      if ctx.iteration == 0 or claimed != [],
+        do: PromptAssembly.apply_plugin_system_prompts(agent, ctx),
+        else: ctx
 
     # Enforce the permission policy: blocked tools are removed from the set the
     # model ever sees (and therefore can't be called). Approval is enforced
