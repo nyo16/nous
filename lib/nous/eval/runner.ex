@@ -32,6 +32,9 @@ defmodule Nous.Eval.Runner do
     Trace
   }
 
+  alias Nous.Eval.Scorer.Spec
+  alias Nous.Eval.Scorers.Judge
+
   alias Nous.Eval.Task, as: EvalTask
   alias Nous.Eval.Trace.{Collector, Event}
   alias Nous.Telemetry.RunScope
@@ -69,7 +72,7 @@ defmodule Nous.Eval.Runner do
       started_at = DateTime.utc_now()
 
       with_setup(task, opts, fn state ->
-        with {:ok, run} <- execute(task, dataset, state, config, started_at) do
+        with {:ok, run} <- execute(task, dataset, state, config, started_at, store) do
           persist(store, run)
         end
       end)
@@ -104,9 +107,9 @@ defmodule Nous.Eval.Runner do
     end
   end
 
-  defp execute(task, dataset, state, config, started_at) do
+  defp execute(task, dataset, state, config, started_at, store) do
     with {:ok, deps} <- EvalTask.deps(task, state),
-         {:ok, scorers} <- init_scorers(task, dataset),
+         {:ok, scorers} <- init_scorers(task, dataset, store),
          {:ok, agent} <- fingerprint_agent(task, dataset, deps, state, config),
          {:ok, fingerprint} <-
            Fingerprint.build(task.module, agent, dataset, task.scorers,
@@ -155,13 +158,13 @@ defmodule Nous.Eval.Runner do
 
   # Every distinct case-scorer list is initialized once, after the task's
   # scorers, so a bad option anywhere fails the run before any model call.
-  defp init_scorers(task, dataset) do
-    with {:ok, base} <- scoring_init(task.scorers) do
+  defp init_scorers(task, dataset, store) do
+    with {:ok, base} <- scoring_init(task.scorers, store) do
       dataset.cases
       |> Enum.map(& &1.scorers)
       |> Enum.uniq()
       |> Enum.reduce_while({:ok, %{}}, fn specs, {:ok, acc} ->
-        case scoring_init(specs) do
+        case scoring_init(specs, store) do
           {:ok, prepared} -> {:cont, {:ok, Map.put(acc, specs, base ++ prepared)}}
           error -> {:halt, error}
         end
@@ -169,12 +172,70 @@ defmodule Nous.Eval.Runner do
     end
   end
 
-  defp scoring_init(specs) do
-    case Scoring.init(specs) do
-      {:ok, prepared} -> {:ok, prepared}
-      {:error, {module, reason}} -> {:error, {:scorer_init_failed, module, reason}}
+  defp scoring_init(specs, store) do
+    with {:ok, specs} <- with_calibrations(specs, store) do
+      case Scoring.init(specs) do
+        {:ok, prepared} -> {:ok, prepared}
+        {:error, {module, reason}} -> {:error, {:scorer_init_failed, module, reason}}
+      end
     end
   end
+
+  # A judge learns two things only the runner knows: whether it is a gate
+  # (its declaration's `required`) and the calibration stored for its exact
+  # configuration. The calibration is looked up by the judge's own
+  # fingerprint id, so `init/1` runs once to compute it. With no store, or a
+  # store without calibrations, the judge is told nothing was looked up and
+  # `require_calibration` refuses at scoring time. These options are added
+  # here and never to the specs the run fingerprint is built from.
+  defp with_calibrations(specs, store) do
+    specs
+    |> Enum.reduce_while({:ok, []}, fn spec, {:ok, acc} ->
+      case calibrated_spec(spec, store) do
+        {:ok, spec} -> {:cont, {:ok, [spec | acc]}}
+        error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, specs} -> {:ok, Enum.reverse(specs)}
+      error -> error
+    end
+  end
+
+  defp calibrated_spec(%Spec{module: Judge} = spec, store) do
+    gated = %{spec | opts: Keyword.put(spec.opts, :gate, spec.required)}
+
+    with {:ok, config} <- judge_config(spec),
+         {:ok, found} <- stored_calibration(store, Judge.fingerprint_id(config)) do
+      case found do
+        :not_looked_up -> {:ok, gated}
+        calibration -> {:ok, %{gated | opts: Keyword.put(gated.opts, :calibration, calibration)}}
+      end
+    end
+  end
+
+  defp calibrated_spec(spec, _store), do: {:ok, spec}
+
+  defp judge_config(spec) do
+    case Judge.init(spec.opts) do
+      {:ok, config} -> {:ok, config}
+      {:error, reason} -> {:error, {:scorer_init_failed, Judge, reason}}
+    end
+  end
+
+  defp stored_calibration({module, state}, fingerprint_id) do
+    if function_exported?(module, :get_calibration, 2) do
+      case module.get_calibration(state, fingerprint_id) do
+        {:ok, calibration} -> {:ok, calibration}
+        {:error, :not_found} -> {:ok, nil}
+        {:error, reason} -> {:error, {:store, reason}}
+      end
+    else
+      {:ok, :not_looked_up}
+    end
+  end
+
+  defp stored_calibration(nil, _fingerprint_id), do: {:ok, :not_looked_up}
 
   # The agent the fingerprint describes: the first case's first sample. A
   # seed the task copied from the context into `model_settings` is the
@@ -547,10 +608,10 @@ defmodule Nous.Eval.Runner do
          :ok <- no_sample_limit(config.budget),
          {:ok, task} <- EvalTask.load(module),
          {:ok, dataset} <- rescore_dataset(task.dataset, source),
-         {:ok, scorers} <- init_scorers(task, dataset),
+         {:ok, store} <- open_store(config.store),
+         {:ok, scorers} <- init_scorers(task, dataset, store),
          {:ok, fingerprint} <- rescore_fingerprint(source, task, dataset),
-         :ok <- Budget.preflight(config.budget, judge_models(scorers)),
-         {:ok, store} <- open_store(config.store) do
+         :ok <- Budget.preflight(config.budget, judge_models(scorers)) do
       started_at = DateTime.utc_now()
       budget = Budget.start(config.budget)
 
