@@ -9,12 +9,12 @@ to change something.
 
 | | |
 |---|---|
-| Current version | `0.19.1` |
+| Current version | `0.19.2` |
 | Elixir | `~> 1.18` |
 
 ```elixir
 defp deps do
-  [{:nous, "~> 0.19.1"}]
+  [{:nous, "~> 0.19.2"}]
 end
 ```
 
