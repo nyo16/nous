@@ -32,7 +32,9 @@ defmodule Nous.AgentRunner.Instrumentation do
   # run already emitted its terminal event) and is re-raised unchanged.
   @spec scoped(Nous.Agent.t(), (map(), integer() -> result)) :: result when result: var
   def scoped(agent, fun) when is_function(fun, 2) do
-    run_scope = RunScope.start_run()
+    # The run's own profile, never the parent's: a sub-agent's profile is
+    # its template's (profiles are not inherited).
+    run_scope = Map.put(RunScope.start_run(), :profile_id, Nous.Profile.applied_id(agent))
 
     RunScope.with_scope(RunScope.install_scope(run_scope), fn ->
       start_time = run_start(agent, run_scope)
@@ -86,7 +88,8 @@ defmodule Nous.AgentRunner.Instrumentation do
           model_name: agent.model.model,
           active_model_provider: served.model.provider,
           active_model_name: served.model.model,
-          fallback_used: served.fallback_used
+          fallback_used: served.fallback_used,
+          profile_id: Nous.Profile.applied_id(agent)
         })
       )
     end)
@@ -130,10 +133,31 @@ defmodule Nous.AgentRunner.Instrumentation do
           model_name: agent.model.model,
           kind: kind,
           reason: reason,
-          stacktrace: stacktrace
+          stacktrace: stacktrace,
+          profile_id: Nous.Profile.applied_id(agent)
         })
       )
     end)
+  end
+
+  @doc false
+  # `[:nous, :profile, :switched]`: a continued context's system prompt was
+  # rebuilt because this run's agent has another profile than the one the
+  # context was started with. `action` is `:replaced` (the leading system
+  # message was replaced by a logged event) or `:updated` (no system message
+  # in the transcript; only `ctx.system_prompt` changed).
+  @spec profile_switched(Nous.Agent.t(), String.t() | nil, :replaced | :updated) :: :ok
+  def profile_switched(agent, previous_profile_id, action) do
+    :telemetry.execute(
+      [:nous, :profile, :switched],
+      %{system_time: System.system_time()},
+      RunScope.merge(%{
+        agent_name: agent.name,
+        profile_id: Nous.Profile.applied_id(agent),
+        previous_profile_id: previous_profile_id,
+        action: action
+      })
+    )
   end
 
   defp terminal_once(%{agent_run_id: run_id}, fun) do

@@ -252,9 +252,9 @@ defmodule Nous.Session.D2MessageContractTest do
 
       serialized = Context.serialize(result.context)
 
-      # v3: no second copy of the transcript in the blob (audit P-M10) — the
+      # v3+: no second copy of the transcript in the blob (audit P-M10) — the
       # events ARE the transcript, and the loader folds them back.
-      assert serialized.version == 3
+      assert serialized.version == 4
       refute Map.has_key?(serialized, :messages)
 
       {:ok, restored} = Context.deserialize(serialized)

@@ -335,8 +335,10 @@ defmodule Nous.Hook.Decision do
     end
   end
 
-  defp tool_info(%Tool{name: name, description: description, category: category}),
-    do: %{name: name, description: description, category: category}
+  # The developer's description, not one a `Nous.Profile` swapped in: the
+  # guard's trusted framing must not move with optimized prompt text.
+  defp tool_info(%Tool{name: name, category: category} = tool),
+    do: %{name: name, description: tool.base_description || tool.description, category: category}
 
   defp tool_info(_), do: nil
 

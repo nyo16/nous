@@ -29,7 +29,8 @@ defmodule Nous.Telemetry do
   `[:nous, :agent, :run, :start]` additionally carries `parent_tool_call_id`
   (the tool call that started this run, e.g. a `Nous.Plugins.SubAgent`
   delegation), `role` (`:agent`, or `:judge | :simulator | :reflector` for
-  runs Nous starts on its own behalf), `profile_id` (reserved; `nil`) and, for
+  runs Nous starts on its own behalf), `profile_id` (the id of the
+  `Nous.Profile` the run's agent applies, `nil` without one) and, for
   sub-agent runs, `sub_agent_template` (the template name, `nil` for an
   inline model) and `sub_agent_index` (the task's position in a
   `spawn_agents` call, else `nil`).
@@ -67,7 +68,8 @@ defmodule Nous.Telemetry do
       * Measurement: `%{duration: native_time, total_tokens: integer, input_tokens: integer,
         output_tokens: integer, tool_calls: integer, requests: integer, iterations: integer}`
       * Metadata: `%{agent_name: string, model_provider: atom, model_name: string,
-        active_model_provider: atom, active_model_name: string, fallback_used: boolean}`.
+        active_model_provider: atom, active_model_name: string, fallback_used: boolean,
+        profile_id: string | nil}`.
         `model_*` is the configured model, `active_model_*` the one the run's
         last request went to (routing or a fallback may differ).
 
@@ -77,7 +79,7 @@ defmodule Nous.Telemetry do
       process killed mid-run emits nothing.
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{agent_name: string, model_provider: atom, model_name: string,
-        kind: atom, reason: term, stacktrace: list}`
+        kind: atom, reason: term, stacktrace: list, profile_id: string | nil}`
 
     * `[:nous, :agent, :iteration, :start]` - before each agent iteration
       * Measurement: `%{system_time: native_time}`
@@ -334,6 +336,18 @@ defmodule Nous.Telemetry do
       * Measurement: `%{duration}`
       * Metadata: `%{backend, model, question_count, kind, reason, stacktrace?}`
 
+  ## Profile Events
+
+    * `[:nous, :profile, :switched]` - a run continued a context started
+      under another `Nous.Profile` (or none), so the conversation's system
+      prompt was rebuilt from this run's profile before the first request.
+      * Measurement: `%{system_time: native_time}`
+      * Metadata: `%{agent_name: string, profile_id: string | nil,
+        previous_profile_id: string | nil, action: :replaced | :updated}`.
+        `:replaced` - the leading system message was replaced (a logged
+        message event); `:updated` - the transcript has no system message
+        (the AgentServer shape), so only `ctx.system_prompt` changed.
+
   ## Session Events
 
     * `[:nous, :session, :invariant, :violation]` - a request's message list
@@ -498,6 +512,7 @@ defmodule Nous.Telemetry do
     [:nous, :decision_model, :decide, :start],
     [:nous, :decision_model, :decide, :stop],
     [:nous, :decision_model, :decide, :exception],
+    [:nous, :profile, :switched],
     [:nous, :session, :invariant, :violation],
     [:nous, :workflow, :run, :start],
     [:nous, :workflow, :run, :stop],

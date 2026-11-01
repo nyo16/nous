@@ -65,6 +65,11 @@ defmodule Nous.Agent.Context do
           tool_calls: [map()],
           system_prompt: String.t() | nil,
 
+          # Id of the `Nous.Profile` `system_prompt` was written under (nil
+          # without one); serialized. A run whose agent has another profile
+          # replaces the system prompt (see `replace_system_prompt/2`).
+          profile_id: String.t() | nil,
+
           # Assembly-time system-prompt fragment (runtime-only, never
           # serialized, never logged) — see put_system_prompt_overlay/2
           system_prompt_overlay: String.t() | nil,
@@ -113,9 +118,10 @@ defmodule Nous.Agent.Context do
           stream: boolean(),
 
           # Memoized provider tool-schema conversion (runtime-only, never
-          # serialized). `{{provider, tool_name_set}, converted_schemas}` —
+          # serialized, cleared at every run start).
+          # `{{provider, tool_name_set, profile_id}, converted_schemas}` —
           # lets the loop skip re-converting a stable tool set every iteration.
-          tool_schema_cache: {{atom(), MapSet.t()}, [map()]} | nil,
+          tool_schema_cache: {{atom(), MapSet.t(), String.t() | nil}, [map()]} | nil,
 
           # The telemetry correlation scope of the run executing this context
           # (runtime-only, never serialized): `trace_id`, `agent_run_id`,
@@ -128,6 +134,7 @@ defmodule Nous.Agent.Context do
             log: %Log{},
             tool_calls: [],
             system_prompt: nil,
+            profile_id: nil,
             system_prompt_overlay: nil,
             deps: %{},
             usage: %Usage{},
@@ -156,6 +163,7 @@ defmodule Nous.Agent.Context do
 
     * `:messages` - Initial message list (default: [])
     * `:system_prompt` - System prompt string
+    * `:profile_id` - Id of the `Nous.Profile` the system prompt comes from
     * `:deps` - User dependencies map (default: %{})
     * `:max_iterations` - Maximum loop iterations (default: 10)
     * `:callbacks` - Map of callback functions
@@ -180,6 +188,7 @@ defmodule Nous.Agent.Context do
   def new(opts \\ []) do
     ctx = %Context{
       system_prompt: Keyword.get(opts, :system_prompt),
+      profile_id: Keyword.get(opts, :profile_id),
       deps: Keyword.get(opts, :deps, %{}),
       usage: Keyword.get(opts, :usage, Usage.new()),
       needs_response: Keyword.get(opts, :needs_response, true),
@@ -334,6 +343,36 @@ defmodule Nous.Agent.Context do
       when is_binary(overlay) or is_nil(overlay) do
     ctx = sync(ctx)
     put_log(%{ctx | system_prompt_overlay: overlay}, ctx.log)
+  end
+
+  @doc false
+  # The runner's profile switch for a continued context (see
+  # `Nous.AgentRunner`): `prompt` becomes `system_prompt`, and the
+  # transcript's leading system message is replaced with it when that message
+  # is the one the runner wrote (it equals the current `system_prompt`).
+  # The replacement is a logged `{:replace, ...}` event. With no leading
+  # system message (the AgentServer shape, where the behaviour prepends
+  # `system_prompt` at build time) only the field changes. A leading system
+  # message the runner did not write is the caller's and is never touched.
+  @spec replace_system_prompt(t(), String.t() | nil) ::
+          {:ok, t(), :replaced | :updated} | {:error, String.t()}
+  def replace_system_prompt(%Context{} = ctx, prompt) when is_binary(prompt) or is_nil(prompt) do
+    ctx = sync(ctx)
+
+    case Log.derive_messages(ctx.log) do
+      [%Message{role: :system, content: content} | _] when content != ctx.system_prompt ->
+        {:error, "the conversation's leading system message is not the agent's system prompt"}
+
+      [%Message{role: :system} | _] when prompt in [nil, ""] ->
+        {:error, "the new system prompt is empty, and a logged system message cannot be removed"}
+
+      [%Message{role: :system} | _] ->
+        replaced = replace_message_range(ctx, 0, 0, Message.system(prompt))
+        {:ok, %{replaced | system_prompt: prompt}, :replaced}
+
+      _no_system_message ->
+        {:ok, %{ctx | system_prompt: prompt}, :updated}
+    end
   end
 
   @doc """
@@ -687,10 +726,12 @@ defmodule Nous.Agent.Context do
   @doc """
   Serialize context to a JSON-encodable map.
 
-  Version 3 persists the **event log** only. `messages` is a projection of the
-  events — `deserialize/1` re-derives it — so writing it too doubled the size
-  of every blob for nothing a v3 reader uses. Version 2 blobs (events plus a
-  `messages` copy) and version 1 blobs (messages only) still load.
+  Version 4 persists the **event log** only, plus `profile_id` (the
+  `Nous.Profile` the system prompt was written under). `messages` is a
+  projection of the events — `deserialize/1` re-derives it — so writing it
+  too doubled the size of every blob for nothing a reader uses. Version 3
+  blobs (events, no `profile_id`), version 2 blobs (events plus a `messages`
+  copy) and version 1 blobs (messages only) still load.
 
   Persists events, usage, metadata. Never persists functions, PIDs, or
   modules. The assembled system-prompt overlay is runtime state and is not
@@ -704,7 +745,7 @@ defmodule Nous.Agent.Context do
       iex> ctx = Context.new(system_prompt: "Be helpful", max_iterations: 5)
       iex> data = Context.serialize(ctx)
       iex> data.version
-      3
+      4
       iex> data.system_prompt
       "Be helpful"
 
@@ -712,10 +753,11 @@ defmodule Nous.Agent.Context do
   @spec serialize(t()) :: map()
   def serialize(%Context{} = ctx) do
     %{
-      version: 3,
+      version: 4,
       events: Enum.map(Log.events(ctx.log), &serialize_event/1),
       tool_calls: ctx.tool_calls,
       system_prompt: ctx.system_prompt,
+      profile_id: ctx.profile_id,
       deps: serialize_deps(ctx.deps),
       usage: serialize_usage(ctx.usage),
       needs_response: ctx.needs_response,
@@ -742,8 +784,9 @@ defmodule Nous.Agent.Context do
   Deserialize a map back into a Context struct.
 
   Reads every version, which is what makes each bump a migration rather than a
-  break: a v3 or v2 blob rebuilds the log from its events, and a v1 blob seeds
-  one from its flat message list. Functions, PIDs, and callbacks are not
+  break: a v4, v3 or v2 blob rebuilds the log from its events, and a v1 blob
+  seeds one from its flat message list. Only v4 carries `profile_id`; older
+  blobs restore with `profile_id: nil`. Functions, PIDs, and callbacks are not
   restored and will use defaults.
 
   A v1 blob folds back to its original messages, but every message is stamped
@@ -762,6 +805,16 @@ defmodule Nous.Agent.Context do
 
   """
   @spec deserialize(map()) :: {:ok, t()} | {:error, term()}
+  def deserialize(%{version: 4} = data) do
+    do_deserialize(data, :v4)
+  end
+
+  def deserialize(%{"version" => 4} = data) do
+    data
+    |> atomize_keys()
+    |> do_deserialize(:v4)
+  end
+
   def deserialize(%{version: 3} = data) do
     do_deserialize(data, :v3)
   end
@@ -824,6 +877,7 @@ defmodule Nous.Agent.Context do
     ctx = %Context{
       tool_calls: data[:tool_calls] || [],
       system_prompt: data[:system_prompt],
+      profile_id: restored_profile_id(version, data[:profile_id]),
       deps: data[:deps] || %{},
       usage: usage,
       needs_response: data[:needs_response] || false,
@@ -847,15 +901,18 @@ defmodule Nous.Agent.Context do
     e -> {:error, Exception.message(e)}
   end
 
+  defp restored_profile_id(:v4, id) when is_binary(id), do: id
+  defp restored_profile_id(_version, _id), do: nil
+
   # v1 has no events: seed the log from the flat message list, exactly as
   # `Nous.run(agent, messages: [...])` does.
   defp restore_log(:v1, data), do: data |> persisted_messages() |> Log.seed()
 
-  # v3 has only events: a blob without them is broken, not old.
-  defp restore_log(:v3, data) do
+  # v3 and v4 have only events: a blob without them is broken, not old.
+  defp restore_log(version, data) when version in [:v3, :v4] do
     case data[:events] do
       events when is_list(events) -> rebuild_log(events)
-      other -> raise ArgumentError, "v3 blob carries #{inspect(other)} for :events"
+      other -> raise ArgumentError, "#{version} blob carries #{inspect(other)} for :events"
     end
   end
 

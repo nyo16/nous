@@ -20,7 +20,9 @@ defmodule Nous.Eval.Fingerprint do
     * `"guards"` - the plugin list and the guard configurations found in
       deps (`:input_guard_config`, `:decision_guard_config`,
       `:loop_guard_config`)
-    * `"profile_id"` - the profile applied to the agent (`nil` without one)
+    * `"profile_id"` - the `Nous.Profile` the agent applies
+      (`Nous.Profile.applied_id/1`; `nil` without one). The instruction and
+      tool hashes above are of the applied text
     * `"dataset"` - the dataset content hash (`Nous.Eval.Dataset`)
     * `"scorers"` - each task scorer's module, options, composition and its
       `c:Nous.Eval.Scorer.describe/1` output; `"prompt_hash"` lifts a judge's
@@ -52,7 +54,6 @@ defmodule Nous.Eval.Fingerprint do
     * `:seed` - the run's base seed (default `nil`)
     * `:deps` - the deps the agent runs with; guard configurations are read
       from them (default `%{}`)
-    * `:profile_id` - the applied profile's id (default `nil`)
 
   Scorers that export `describe/1` are initialized with their options to
   describe them; an `init/1` error is returned as `{:error, _}`.
@@ -70,7 +71,7 @@ defmodule Nous.Eval.Fingerprint do
         |> Map.merge(%{
           "task" => Atom.to_string(task),
           "guards" => guard_terms(agent, deps),
-          "profile_id" => Keyword.get(opts, :profile_id),
+          "profile_id" => Nous.Profile.applied_id(agent),
           "dataset" => dataset.hash,
           "scorers" => scorer_terms,
           "k" => Keyword.get(opts, :k, 1),

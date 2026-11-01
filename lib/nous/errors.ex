@@ -248,6 +248,103 @@ defmodule Nous.Errors do
     end
   end
 
+  defmodule ProfileError do
+    @moduledoc """
+    Error loading, validating or applying a `Nous.Profile`.
+
+    `Nous.new/2` raises it for an invalid `:profile`; `Nous.Profile.load/1`,
+    `Nous.Profile.apply/2` and a run's `:profile` option return it as
+    `{:error, %ProfileError{}}` before any model call.
+
+    ## Fields
+
+      * `:reason` - one of `reasons/0`:
+        * `:not_a_profile` - the data has no `nous_profile` marker, or a
+          `:profile` option is not a `%Nous.Profile{}`
+        * `:unsupported_schema` - a schema version this release cannot read
+        * `:id_mismatch` - the declared `id` is not the content hash
+        * `:unknown_field` - a top-level field outside the profile format
+        * `:unknown_key` / `:reserved_key` - a component or manifest key
+          outside the grammar, or in a namespace reserved for later
+          (`skill:`, `guard:`, `router:`, `output:`, `agent:`)
+        * `:invalid_value` - a blank, oversized, non-UTF-8 or mistyped value
+        * `:dynamic_instructions` - the agent's instructions are a function,
+          which static profile text cannot replace
+        * `:unknown_tool` / `:ambiguous_tool` - no tool, or several, with
+          the component's name in the agent's `tools`
+        * `:builtin_tool` - the tool is defined by Nous itself
+        * `:unknown_param` - the JSON pointer does not reach a schema node
+        * `:missing_manifest` - a component has no manifest hash of its base
+        * `:stale` - the agent's base text changed since the profile was made
+        * `:system_message_diverged` - a continued conversation's leading
+          system message is not the one the runner wrote, so a profile switch
+          cannot replace it
+        * `:file_error` / `:decode_error` - `Nous.Profile.load/1` could not
+          read or parse the file
+      * `:key` - the component or field the error is about, when there is one
+      * `:detail` - a human-readable explanation
+    """
+
+    use Nous.Errors.Base, fields: [:reason, :key, :detail]
+
+    @reasons [
+      :not_a_profile,
+      :unsupported_schema,
+      :id_mismatch,
+      :unknown_field,
+      :unknown_key,
+      :reserved_key,
+      :invalid_value,
+      :dynamic_instructions,
+      :unknown_tool,
+      :ambiguous_tool,
+      :builtin_tool,
+      :unknown_param,
+      :missing_manifest,
+      :stale,
+      :system_message_diverged,
+      :file_error,
+      :decode_error
+    ]
+
+    @type reason ::
+            :not_a_profile
+            | :unsupported_schema
+            | :id_mismatch
+            | :unknown_field
+            | :unknown_key
+            | :reserved_key
+            | :invalid_value
+            | :dynamic_instructions
+            | :unknown_tool
+            | :ambiguous_tool
+            | :builtin_tool
+            | :unknown_param
+            | :missing_manifest
+            | :stale
+            | :system_message_diverged
+            | :file_error
+            | :decode_error
+
+    @type t :: %__MODULE__{
+            message: String.t(),
+            reason: reason() | nil,
+            key: String.t() | nil,
+            detail: String.t() | nil
+          }
+
+    @doc "Every `:reason` a `ProfileError` carries."
+    @spec reasons() :: [reason()]
+    def reasons, do: @reasons
+
+    defp default_message(%{reason: reason, key: key, detail: detail}) do
+      "Profile error" <>
+        if(reason, do: " (#{reason})", else: "") <>
+        if(key, do: " at #{inspect(key)}", else: "") <>
+        if(detail, do: ": #{detail}", else: "")
+    end
+  end
+
   defmodule UsageLimitExceeded do
     @moduledoc """
     Error when usage limits are exceeded.

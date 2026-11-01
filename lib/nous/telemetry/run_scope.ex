@@ -17,7 +17,9 @@ defmodule Nous.Telemetry.RunScope do
   #   * `:tool_call_id` — the provider tool-call id being executed, or nil.
   #   * `:parent_tool_call_id` — the tool call that started this run, or nil.
   #   * `:role` — `:agent | :judge | :simulator | :reflector` (default `:agent`).
-  #   * `:profile_id` — reserved for profiles; nil.
+  #   * `:profile_id` — the id of the `Nous.Profile` the run's agent applies,
+  #     or nil; `Nous.AgentRunner.Instrumentation.scoped/2` sets it from the
+  #     agent, so it is never inherited from the parent run.
   #   * `:sub_agent_template` / `:sub_agent_index` — labels a SubAgent puts on
   #     the scope it starts a child run under. They describe that one child
   #     run: `start_run/1` reads them off the parent and does not hand them on.
