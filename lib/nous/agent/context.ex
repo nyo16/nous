@@ -934,25 +934,13 @@ defmodule Nous.Agent.Context do
     data = atomize_keys(data)
 
     role =
-      case data[:role] do
-        r when r in [:system, :user, :assistant, :tool] ->
-          r
+      case Nous.Message.Codec.decode_role(data[:role]) do
+        {:ok, role} ->
+          role
 
-        "system" ->
-          :system
-
-        "user" ->
-          :user
-
-        "assistant" ->
-          :assistant
-
-        "tool" ->
-          :tool
-
-        other ->
+        :error ->
           Logger.warning(
-            "Unknown message role during deserialization: #{inspect(other)}, defaulting to :user"
+            "Unknown message role during deserialization: #{inspect(data[:role])}, defaulting to :user"
           )
 
           :user

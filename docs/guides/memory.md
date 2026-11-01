@@ -89,7 +89,7 @@ Best for: single-node persistence, production with moderate data, BM25 text sear
 Add to `mix.exs`:
 
 ```elixir
-{:exqlite, "~> 0.27"}
+{:exqlite, "~> 0.43"}
 ```
 
 Initialize with a file path:
@@ -112,7 +112,7 @@ Best for: analytics workloads, large-scale data, native array embeddings.
 Add to `mix.exs`:
 
 ```elixir
-{:duckdbex, "~> 0.5"}
+{:duckdbex, "~> 0.7"}
 ```
 
 Initialize:
