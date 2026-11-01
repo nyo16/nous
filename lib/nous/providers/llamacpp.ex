@@ -82,7 +82,9 @@ if Code.ensure_loaded?(LlamaCppEx) do
     use Nous.Provider,
       id: :llamacpp,
       default_base_url: "local",
-      default_env_key: "LLAMACPP_MODEL_PATH"
+      default_env_key: "LLAMACPP_MODEL_PATH",
+      # The NIF options built in `build_llamacpp_opts/1` carry no seed.
+      seed_param: nil
 
     require Logger
 

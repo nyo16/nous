@@ -42,7 +42,9 @@ defmodule Nous.Provider do
   - `:seed_param` - the request-body key the default request builder writes
     `model_settings[:seed]` to (default `"seed"`). `nil` means the API has no
     seed: the setting is dropped with a one-time `Logger.warning` per provider.
-    Providers that override `build_request_params/3` map the seed themselves.
+    Providers that override `build_request_params/3` map the seed themselves
+    and keep the option truthful: a provider that never sends a seed (e.g.
+    one with its own `request/3`) declares `seed_param: nil`.
 
   ## Injected Functions
 
@@ -50,6 +52,7 @@ defmodule Nous.Provider do
   - `provider_id/0` - Returns the provider atom ID
   - `default_base_url/0` - Returns the default API base URL
   - `default_env_key/0` - Returns the environment variable name for API key
+  - `seed_param/0` - Returns the `:seed_param` option (`nil`: no seed is sent)
   - `api_key/1` - Returns the API key from opts, env, or config
   - `base_url/1` - Returns base URL from opts, config, or default
   - `request/3` - High-level request (can be overridden)
@@ -131,13 +134,24 @@ defmodule Nous.Provider do
   """
   @callback count_tokens(messages :: list()) :: integer()
 
-  @optional_callbacks [count_tokens: 1, request: 3, request_stream: 3]
+  @doc """
+  The request-body key the provider writes `model_settings[:seed]` to, or
+  `nil` when the provider never sends a seed.
+
+  Injected by `use Nous.Provider` from its `:seed_param` option. Eval run
+  fingerprints read it to record whether a seeded run was reproducible by
+  seed (`Nous.Eval.Fingerprint.seed_forwarded?/1`).
+  """
+  @callback seed_param() :: String.t() | nil
+
+  @optional_callbacks [count_tokens: 1, request: 3, request_stream: 3, seed_param: 0]
 
   defmacro __using__(opts) do
     id = Keyword.fetch!(opts, :id)
     default_base_url = Keyword.fetch!(opts, :default_base_url)
     default_env_key = Keyword.fetch!(opts, :default_env_key)
-    seed_ast = seed_ast(Keyword.get(opts, :seed_param, "seed"))
+    seed_param = Keyword.get(opts, :seed_param, "seed")
+    seed_ast = seed_ast(seed_param)
 
     # Optionally inject the shared OpenAI-compatible `chat/2` + `chat_stream/2`
     # implementations (plus base-URL resolution and header helpers). Providers
@@ -158,6 +172,7 @@ defmodule Nous.Provider do
       @provider_id unquote(id)
       @default_base_url unquote(default_base_url)
       @default_env_key unquote(default_env_key)
+      @seed_param unquote(seed_param)
 
       @impl Nous.Provider
       def provider_id, do: @provider_id
@@ -167,6 +182,9 @@ defmodule Nous.Provider do
 
       @impl Nous.Provider
       def default_env_key, do: @default_env_key
+
+      @impl Nous.Provider
+      def seed_param, do: @seed_param
 
       @doc """
       Get the API key from options, environment, or application config.

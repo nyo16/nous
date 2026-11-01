@@ -1,0 +1,7 @@
+schema: nous.case/1
+cases:
+  - id: a
+    input: hello
+  - id: b
+    input: hello
+    expect: {typo: true}

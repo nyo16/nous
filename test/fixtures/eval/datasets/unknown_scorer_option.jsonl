@@ -1,0 +1,1 @@
+{"id":"a","input":"one","scorers":[{"scorer":"fixture_contains","values":["x"],"ignore_case":true}]}
