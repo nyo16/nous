@@ -565,9 +565,9 @@ end)
 
 IO.puts("\n=== Part 6: Generate (needs a provider) ===\n")
 
-# THE key detail. Nous.Plugins.KnowledgeBase reads deps[:kb_config], and
-# Plugin.init/2 runs on *every* agent run. Without :store_state the plugin
-# calls ETS.init/1 each time, handing the agent a brand-new empty store — its
+# THE key detail. Nous.Plugins.KnowledgeBase reads deps[:kb_config] when its
+# Plugin.init/2 runs, once for each new context. Without :store_state the
+# plugin calls ETS.init/1, handing the agent a brand-new empty store — its
 # kb_search tool would find nothing and the retrieval above would be wasted.
 # Passing :store_state makes the plugin reuse this populated store verbatim.
 kb_config = %{

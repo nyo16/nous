@@ -257,13 +257,80 @@ defmodule Nous.Session.Log do
     |> Enum.sort_by(&position/1)
   end
 
-  # `Enum.sort_by/2` is stable, so events sharing a position (a replace and a
-  # later plain append that happens to start there) keep their append order.
-  defp position(%Event{seq: seq} = event) do
+  @doc """
+  Where `event` sits in the surface order: its own seq for an appended event,
+  the start of the range it replaces for a replacing one.
+
+  A boundary expressed as a position splits the surface into what came before
+  it and what came after, even when a later replace re-used an earlier slot.
+  """
+  @spec position(Event.t()) :: non_neg_integer()
+  def position(%Event{seq: seq} = event) do
+    # `Enum.sort_by/2` in `surface/1` is stable, so events sharing a position
+    # (a replace and a later plain append that happens to start there) keep
+    # their append order.
     case Event.surface_op(event) do
       {:replace, start, _stop} -> start
       :append -> seq
     end
+  end
+
+  @doc """
+  The surface messages at or after `position`, and whether a replace appended
+  since then swallowed part of them.
+
+  A run that records `count/1` (or the seq of its first event) when it starts
+  can ask for "the messages this run appended" afterwards, even if compaction
+  rewrote the transcript in the meantime:
+
+    * a replace appended since `position` that stands in for earlier history
+      (its range starts before `position`) is not part of the answer — it is a
+      summary of messages that came before;
+    * if such a replace's range also reaches `position` or past it, part of
+      what came after was folded into that summary. The surviving messages are
+      returned and the second element is `true`.
+
+  Pruning inside the range (a replace whose range starts at or after
+  `position`) is part of the answer like any other message.
+
+  ## Examples
+
+      iex> log = Nous.Session.Log.new()
+      iex> {:ok, log} = Nous.Session.Log.append(log, :user_message, %{content: "old"})
+      iex> {:ok, log} = Nous.Session.Log.append(log, :assistant_message, %{content: "old answer"})
+      iex> start = Nous.Session.Log.count(log)
+      iex> {:ok, log} = Nous.Session.Log.append(log, :user_message, %{content: "new"})
+      iex> {:ok, log} = Nous.Session.Log.append(log, :assistant_message, %{content: "new answer"})
+      iex> {messages, false} = Nous.Session.Log.messages_since(log, start)
+      iex> Enum.map(messages, & &1.content)
+      ["new", "new answer"]
+      iex> {:ok, log} = Nous.Session.Log.append(log, :system_message, %{content: "[summary]", surface_op: {:replace, 0, 2}})
+      iex> {messages, true} = Nous.Session.Log.messages_since(log, start)
+      iex> Enum.map(messages, & &1.content)
+      ["new answer"]
+
+  """
+  @spec messages_since(t(), non_neg_integer()) :: {[Message.t()], boolean()}
+  def messages_since(%__MODULE__{} = log, position) when is_integer(position) and position >= 0 do
+    # Every replace appended since `position` has a seq at or past it; one
+    # whose range starts before it speaks for earlier history.
+    earlier =
+      for event <- since(log, position),
+          {:replace, start, stop} <- [Event.surface_op(event)],
+          start < position,
+          into: %{},
+          do: {event.seq, stop}
+
+    # A visible event with a seq at or past `position` is either appended
+    # since then (its position is its seq) or a replace; the replaces that
+    # stand in for earlier history are dropped here.
+    messages =
+      for {seq, message} <- derive_indexed(log),
+          seq >= position,
+          not Map.has_key?(earlier, seq),
+          do: message
+
+    {messages, Enum.any?(earlier, fn {_seq, stop} -> stop >= position end)}
   end
 
   @doc """

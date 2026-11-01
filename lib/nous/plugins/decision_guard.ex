@@ -190,8 +190,10 @@ defmodule Nous.Plugins.DecisionGuard do
 
   # ── Plugin callbacks ───────────────────────────────────────────────────────
 
+  # Checked on every run, not once per context: a continued context can be run
+  # by a different agent, and the ordering is a property of that agent.
   @impl true
-  def init(agent, ctx) do
+  def before_run(agent, ctx) do
     if Map.has_key?(ctx.deps, :decision_guard_config), do: check_plugin_order!(agent.plugins)
     ctx
   end

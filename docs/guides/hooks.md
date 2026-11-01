@@ -374,8 +374,8 @@ For blocking events, execution short-circuits on the first `:deny`.
 ## Plugin-Contributed Hooks
 
 A plugin contributes hooks through the optional `c:Nous.Plugin.hooks/2` callback. It runs
-once per run, after every plugin's `init/2`, so the `ctx` it sees already holds the final
-approval handler and deps:
+once per run, after every plugin's `init/2` and `before_run/2`, so the `ctx` it sees already
+holds the final approval handler and deps:
 
 ```elixir
 defmodule MyApp.Plugins.OutputGuard do

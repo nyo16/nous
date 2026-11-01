@@ -41,18 +41,25 @@ defmodule Nous.AgentRunner do
       result.output          #=> "It's Tuesday, 12 August 2026 in Athens."
       result.iterations      #=> 2
       result.usage.total_tokens
-      result.new_messages    #=> the assistant/tool messages this run appended
+      result.new_messages    #=> the messages this run appended: its user prompt,
+                             #   then the assistant and tool messages
 
-  To continue a conversation, hand the previous run's messages back in — or
-  reuse `result.context` directly with `run_with_context/3`, which also
-  preserves any `deps` a tool mutated:
+  To continue a conversation, hand the previous run's context back in
+  (`:context`, or `run_with_context/3`) — the conversation, any `deps` a tool
+  mutated and plugin state carry over — or keep the history yourself:
+  `new_messages` is exactly what each run appended, so the running history is
+  the concatenation of every run's `new_messages`:
 
       {:ok, first} = Nous.AgentRunner.run(agent, "My name is Ada.")
-      {:ok, second} = Nous.AgentRunner.run(agent, "What is my name?",
-        message_history: first.all_messages
+      {:ok, second} = Nous.AgentRunner.run(agent, "What is my name?", context: first.context)
+
+      {:ok, again} = Nous.AgentRunner.run(agent, "What is my name?",
+        message_history: first.new_messages
       )
 
-      {:ok, third} = Nous.AgentRunner.run_with_context(agent, second.context)
+  `new_messages_truncated?` is `true` when compaction (for example
+  `Nous.Plugins.Summarization`) folded part of this run into a summary of
+  earlier history; `new_messages` then holds only what survived.
 
   Streaming is a flag on the same loop, not a separate code path. With
   `stream: true` the tool loop still runs; deltas arrive through callbacks:
@@ -96,6 +103,8 @@ defmodule Nous.AgentRunner do
     ToolExecution
   }
 
+  alias Nous.Session.Log
+
   require Logger
 
   @max_iterations 10
@@ -129,7 +138,8 @@ defmodule Nous.AgentRunner do
       `requires_approval: true` runs (see `Nous.RunContext`). Without one such
       tools are rejected. `Nous.Plugins.HumanInTheLoop` can also install a
       handler via `deps[:hitl_config]`; when both are present the plugin's
-      wrapped handler wins (it is applied at plugin init, after context build).
+      wrapped handler wins, on every run including a continued `:context`
+      (the plugin installs it in `before_run/2`, after context build).
     * `:stream` - When `true`, the LLM call streams chunks while still running
       the tool-call loop (default: `false`). Fires `:on_llm_new_delta` per
       text chunk and `:on_llm_new_thinking_delta` per reasoning chunk.
@@ -168,6 +178,9 @@ defmodule Nous.AgentRunner do
     # runtime-only (see IterationLoop).
     ctx = agent |> build_context(prompt, opts) |> IterationLoop.clear_runtime_models()
 
+    # build_context/3 appends the prompt last, so this run starts at its event.
+    boundary = run_boundary(ctx, Log.count(ctx.log) - 1)
+
     # Execute callbacks
     Callbacks.execute(ctx, :on_agent_start, %{agent: agent})
 
@@ -177,8 +190,8 @@ defmodule Nous.AgentRunner do
     # Initialize context via behaviour (optional callback)
     ctx = Behaviour.call(behaviour, :init_context, [agent, ctx], ctx)
 
-    # Initialize context via plugins
-    ctx = init_plugins(agent, ctx)
+    # Plugin init (once per context) and before_run (every run)
+    ctx = prepare_plugins(agent, ctx)
 
     ctx = build_hook_registry(agent, ctx)
 
@@ -197,7 +210,7 @@ defmodule Nous.AgentRunner do
         # Extract output via behaviour
         case behaviour.extract_output(agent, final_ctx) do
           {:ok, output} ->
-            agent_result = build_result(agent, final_ctx, output)
+            agent_result = build_result(agent, final_ctx, output, boundary)
 
             # Run after_run plugin hooks
             updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
@@ -210,7 +223,7 @@ defmodule Nous.AgentRunner do
 
             agent_result =
               if updated_ctx != final_ctx,
-                do: build_result(agent, updated_ctx, output),
+                do: build_result(agent, updated_ctx, output, boundary),
                 else: agent_result
 
             duration_ms = System.convert_time_unit(duration, :native, :millisecond)
@@ -260,7 +273,7 @@ defmodule Nous.AgentRunner do
 
             case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
               {:ok, retry_ctx, output} ->
-                agent_result = build_result(agent, retry_ctx, output)
+                agent_result = build_result(agent, retry_ctx, output, boundary)
                 Callbacks.execute(retry_ctx, :on_agent_complete, agent_result)
                 {:ok, agent_result}
 
@@ -292,11 +305,19 @@ defmodule Nous.AgentRunner do
   context built by hand (as `Nous.run(agent, messages: [...])` does) or
   restored from a serialized session is initialised once here, while a
   `result.context` from an earlier run is continued as it is, so plugin state
-  such as an activated skill or InputGuard's checked-message index carries over.
+  such as an activated skill carries over. Plugin `before_run/2` runs on every
+  call.
+
+  There is no prompt to append, so the run's input is the user messages the
+  context ends with (the ones a caller added with `Context.add_message/2`, or
+  the trailing user messages of `Nous.run(agent, messages: [...])`):
+  `result.new_messages` starts with them.
   """
   @spec run_with_context(Agent.t(), Context.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_with_context(%Agent{} = agent, %Context{} = ctx, opts \\ []) do
     agent = apply_runtime_overrides(agent, opts)
+    boundary = run_boundary(ctx, pending_input_position(ctx))
+
     # Merge any additional options into context
     ctx =
       ctx
@@ -308,10 +329,9 @@ defmodule Nous.AgentRunner do
       |> IterationLoop.clear_runtime_models()
       |> reset_iteration()
 
-    # A context that never went through plugin init (built by hand, or
-    # restored: the marker is runtime-only) gets it here, once. A continued
-    # context keeps its plugin state; re-running init would reset it.
-    ctx = if ctx.plugins_initialized, do: ctx, else: init_plugins(agent, ctx)
+    # Plugin init only for a context that never went through it (built by
+    # hand, or restored: the marker is runtime-only); before_run every run.
+    ctx = prepare_plugins(agent, ctx)
 
     # A restored context carries no registry (it is runtime-only), so rebuild
     # it here exactly as run/3 does; otherwise an inbox run fires no hooks.
@@ -324,12 +344,12 @@ defmodule Nous.AgentRunner do
       {:ok, final_ctx} ->
         case behaviour.extract_output(agent, final_ctx) do
           {:ok, output} ->
-            agent_result = build_result(agent, final_ctx, output)
+            agent_result = build_result(agent, final_ctx, output, boundary)
             updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
 
             agent_result =
               if updated_ctx != final_ctx,
-                do: build_result(agent, updated_ctx, output),
+                do: build_result(agent, updated_ctx, output, boundary),
                 else: agent_result
 
             {:ok, agent_result}
@@ -339,7 +359,7 @@ defmodule Nous.AgentRunner do
 
             case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
               {:ok, retry_ctx, output} ->
-                {:ok, build_result(agent, retry_ctx, output)}
+                {:ok, build_result(agent, retry_ctx, output, boundary)}
 
               {:error, _} = err ->
                 err
@@ -382,7 +402,7 @@ defmodule Nous.AgentRunner do
     # apply to streaming too. Previously run_stream skipped this entirely, so an
     # InputGuard configured on the agent silently provided ZERO protection for
     # streamed requests — a security control that varied by transport.
-    ctx = init_plugins(agent, ctx)
+    ctx = prepare_plugins(agent, ctx)
 
     tools = behaviour.get_tools(agent)
     plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
@@ -502,11 +522,18 @@ defmodule Nous.AgentRunner do
     end)
   end
 
-  # The one place plugin `init/2` runs for a run. Marks the context so
-  # run_with_context/3 can tell a context that was initialised (and carries
-  # plugin state) from one that never was.
-  defp init_plugins(agent, ctx) do
-    %{Plugin.run_init(agent.plugins, agent, ctx) | plugins_initialized: true}
+  # The one place plugins are set up for a run, on every entry point. `init/2`
+  # runs once per context: the marker it sets is how a continued context (a
+  # previous run's `result.context`) keeps its plugin state instead of being
+  # reset. It is runtime-only, so a restored context is initialised again.
+  # `before_run/2` runs on every run.
+  defp prepare_plugins(agent, ctx) do
+    ctx =
+      if ctx.plugins_initialized,
+        do: ctx,
+        else: %{Plugin.run_init(agent.plugins, agent, ctx) | plugins_initialized: true}
+
+    Plugin.run_before_run(agent.plugins, agent, ctx)
   end
 
   defp build_context(agent, prompt, opts) do
@@ -666,11 +693,11 @@ defmodule Nous.AgentRunner do
   end
 
   # Rebuilt from the agent's hook sources — `agent.hooks` then every plugin's
-  # `hooks/2`, after `Plugin.run_init/3` — on every run, so it is idempotent
-  # across AgentServer turns (a registry carried in `result.context` is
-  # replaced, never added to) and survives a session restore (the registry is
-  # runtime-only and not serialized). With no hooks from either source, a
-  # hand-set `ctx.hook_registry` is kept.
+  # `hooks/2`, after every plugin's `init/2` and `before_run/2` — on every run,
+  # so it is idempotent across AgentServer turns (a registry carried in
+  # `result.context` is replaced, never added to) and survives a session
+  # restore (the registry is runtime-only and not serialized). With no hooks
+  # from either source, a hand-set `ctx.hook_registry` is kept.
   defp build_hook_registry(%Agent{} = agent, ctx) do
     case agent.hooks ++ Plugin.collect_hooks(agent.plugins, agent, ctx) do
       [] -> ctx
@@ -678,7 +705,7 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  defp build_result(_agent, ctx, output) do
+  defp build_result(_agent, ctx, output, boundary) do
     ctx = IterationLoop.clear_runtime_models(ctx)
 
     # `ctx.messages` is not a list the runner appended to any more: it is the
@@ -688,25 +715,74 @@ defmodule Nous.AgentRunner do
     # it here IS reading the fold; folding `ctx.log` directly instead would drop
     # that overlay and hand back a transcript the model never saw.
     transcript = ctx.messages
+    {new_messages, truncated?} = new_messages(ctx, boundary)
 
     %{
       output: output,
       usage: ctx.usage,
       iterations: ctx.iteration,
       all_messages: transcript,
-      new_messages: get_new_messages(transcript),
+      new_messages: new_messages,
+      new_messages_truncated?: truncated?,
       deps: ctx.deps,
       # Include context for continuation
       context: ctx
     }
   end
 
-  # Messages added during this run: the transcript from its first assistant turn
-  # on. Derived from the fold rather than diffed against a remembered length,
-  # because compaction can replace a range mid-run and a remembered index would
-  # then name the wrong message.
-  defp get_new_messages(transcript) do
-    Enum.drop_while(transcript, fn msg -> msg.role != :assistant end)
+  # Where this run starts in the session log — a surface position, see
+  # `Nous.Session.Log.messages_since/2` — and the log's newest event at that
+  # moment. The log is append-only, so the position survives compaction, which
+  # a remembered list length does not. The head is kept to notice the one thing
+  # that is not an append: a `%{ctx | messages: ...}` write re-seeds the log on
+  # the next append and renumbers every seq.
+  defp run_boundary(%Context{log: log}, position) do
+    head = log |> Log.since(max(Log.count(log) - 1, 0)) |> List.first()
+    {max(position, 0), head}
+  end
+
+  # run_with_context/3 appends no prompt: its input is the user messages the
+  # transcript ends with, if any. A user message that replaced another (a
+  # guard's placeholder) sits at the original's position, not its own seq.
+  defp pending_input_position(%Context{log: log}) do
+    log
+    |> Log.surface()
+    |> Enum.reverse()
+    |> Enum.take_while(&(&1.type == :user_message))
+    |> Enum.map(&Log.position/1)
+    |> Enum.min(fn -> Log.count(log) end)
+  end
+
+  # Exactly what this run appended — its user prompt included — or, when
+  # compaction folded part of it into a summary of earlier history, what
+  # survived, flagged as truncated.
+  defp new_messages(%Context{log: log}, {position, head}) do
+    if log_intact?(log, head) do
+      Log.messages_since(log, position)
+    else
+      {last_user_turn(Log.derive_messages(log)), true}
+    end
+  end
+
+  defp log_intact?(_log, nil), do: true
+
+  defp log_intact?(log, %{seq: seq} = head) do
+    case Log.since(log, seq) do
+      [%{seq: ^seq} = event | _] -> event == head
+      # A snapshot drops shadowed events but never renumbers; a re-seeded log
+      # is numbered from zero without gaps, so it would still hold this seq.
+      [_later | _] -> true
+      [] -> false
+    end
+  end
+
+  # The log was re-seeded under the run, so its seqs say nothing about where
+  # the run began; the last user turn on is the closest honest answer.
+  defp last_user_turn(messages) do
+    case messages |> Enum.reverse() |> Enum.split_while(&(&1.role != :user)) do
+      {tail, [user | _]} -> [user | Enum.reverse(tail)]
+      {_tail, []} -> messages
+    end
   end
 
   defp emit_error_telemetry(agent, duration, error) do

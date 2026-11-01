@@ -59,10 +59,9 @@ defmodule Nous.Plugins.KnowledgeBaseTest do
       assert {:ok, fetched} = Store.ETS.fetch_entry(config[:store_state], entry.id)
       assert fetched.title == "Deploy runbook"
 
-      # Per-run defaults are still applied on the reuse path.
+      # Defaults are still applied on the reuse path.
       assert config[:auto_inject] == true
       assert config[:inject_limit] == 3
-      assert config[:_inject_done] == false
     end
 
     test "second init/2 keeps entries ingested during the first run" do

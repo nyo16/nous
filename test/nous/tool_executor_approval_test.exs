@@ -239,7 +239,10 @@ defmodule Nous.ToolExecutorApprovalTest do
           }
         )
 
-      %{handler: HumanInTheLoop.init(Nous.Agent.new("openai:test-model"), ctx).approval_handler}
+      %{
+        handler:
+          HumanInTheLoop.before_run(Nous.Agent.new("openai:test-model"), ctx).approval_handler
+      }
     end
 
     test "a tool outside :tools still reaches the handler", %{handler: handler} do

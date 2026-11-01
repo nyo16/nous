@@ -39,14 +39,25 @@ defmodule Nous.Plugin do
   Plugins are executed in list order. The context flows through each plugin
   sequentially for all hooks:
 
-  1. `init/2` — once at run start (see `c:init/2` for continued contexts)
-  2. `hooks/2` — once per run, after `init/2` (and on every
-     `Nous.AgentRunner.run_with_context/3`); merged after `agent.hooks`
-  3. `system_prompt/2` — once, fragments joined into system message
-  4. `tools/2` — once per iteration, tools collected
-  5. `before_request/3` — before each LLM call
-  6. `after_response/3` — after each LLM response
-  7. `after_run/3` — once after the entire run completes (post-loop)
+  1. `init/2` — once per context lifetime (see `c:init/2`)
+  2. `before_run/2` — at the start of every run, after `init/2`
+  3. `hooks/2` — once per run, after `before_run/2`; merged after `agent.hooks`
+  4. `system_prompt/2` — on the first request of every run, fragments joined
+     into the system message
+  5. `tools/2` — once per iteration, tools collected
+  6. `before_request/3` — before each LLM call
+  7. `after_response/3` — after each LLM response
+  8. `after_run/3` — once after the entire run completes (post-loop)
+
+  ## State across runs
+
+  A conversation is continued by handing a context back to the runner:
+  `Nous.AgentRunner.run/3` with `:context`, `Nous.AgentRunner.run_with_context/3`
+  (which `Nous.run(agent, messages: [...])` and `Nous.AgentServer` inbox runs
+  use), and every `Nous.AgentServer` turn. Whatever a plugin keeps in `ctx.deps`
+  carries over between those runs. Put one-time setup (opening a store,
+  building a registry, subscribing) in `c:init/2` and anything that must be
+  reset or refreshed for each run in `c:before_run/2`.
 
   ## Built-in Plugins
 
@@ -58,19 +69,38 @@ defmodule Nous.Plugin do
   alias Nous.Agent.Context
 
   @doc """
-  Initialize the plugin when the agent run starts.
+  Initialize the plugin for a context.
 
-  Use this to set up initial state in `ctx.deps`, register callbacks, etc.
+  Use this for one-time setup kept in `ctx.deps`: opening a store, building a
+  registry, subscribing to a topic.
 
-  Called once at the start of every `Nous.AgentRunner.run/3` and
-  `Nous.AgentRunner.run_stream/3`, including one given a previous run's
-  `:context`. `Nous.AgentRunner.run_with_context/3` (which
-  `Nous.run(agent, messages: [...])` and `Nous.AgentServer` inbox runs use)
-  calls it only for a context that has not been initialised yet: a hand-built
-  or restored context is initialised once, a previous run's `result.context`
-  is continued without re-running `init/2`.
+  Runs **once per context lifetime**, on the first run that sees the context,
+  through every entry point (`Nous.AgentRunner.run/3`,
+  `Nous.AgentRunner.run_with_context/3`, `Nous.AgentRunner.run_stream/3`). A
+  previous run's `result.context` handed back to any of them is continued
+  without re-running `init/2`, so state set here (an activated skill, a
+  store handle) survives across turns. A fresh context, a hand-built one (as
+  `Nous.run(agent, messages: [...])` makes) and one restored from
+  serialization are each initialised once: the "initialised" marker
+  (`ctx.plugins_initialized`) is runtime-only and is not serialized, so a
+  restored context must not assume its earlier setup is still live, and
+  `init/2` should reuse state already present in `ctx.deps` rather than
+  overwrite it.
+
+  Work that must happen at the start of every run belongs in `c:before_run/2`.
   """
   @callback init(agent :: Nous.Agent.t(), ctx :: Context.t()) :: Context.t()
+
+  @doc """
+  Prepare the plugin for one run.
+
+  Runs at the start of **every** run, through every entry point, after
+  `c:init/2` (when that runs) and before the run's hooks and first request.
+  Use it to reset per-run state: a "done for this run" flag, a marker that
+  only means something within a run, or anything derived from per-run options
+  that must win over what an earlier run left in the context.
+  """
+  @callback before_run(agent :: Nous.Agent.t(), ctx :: Context.t()) :: Context.t()
 
   @doc """
   Contribute additional tools for this agent run.
@@ -122,16 +152,18 @@ defmodule Nous.Plugin do
   @doc """
   Contribute `Nous.Hook`s for this agent run.
 
-  Called once per run, after every plugin's `init/2`, so `ctx` already holds
-  the final approval handler and deps. The run's hook registry is rebuilt from
-  `agent.hooks ++` the hooks of every plugin (in list order) on each run, so
-  hooks never accumulate across `Nous.AgentServer` turns. Order within a
-  priority is registration order: agent hooks first, then plugin hooks.
+  Called once per run, after every plugin's `init/2` and `before_run/2`, so
+  `ctx` already holds the final approval handler and deps. The run's hook
+  registry is rebuilt from `agent.hooks ++` the hooks of every plugin (in list
+  order) on each run, so hooks never accumulate across `Nous.AgentServer`
+  turns. Order within a priority is registration order: agent hooks first,
+  then plugin hooks.
   """
   @callback hooks(agent :: Nous.Agent.t(), ctx :: Context.t()) :: [Nous.Hook.t()]
 
   @optional_callbacks [
     init: 2,
+    before_run: 2,
     tools: 2,
     system_prompt: 2,
     hooks: 2,
@@ -150,6 +182,20 @@ defmodule Nous.Plugin do
     Enum.reduce(plugins, ctx, fn plugin, acc_ctx ->
       if exports?(plugin, :init, 2) do
         plugin.init(agent, acc_ctx)
+      else
+        acc_ctx
+      end
+    end)
+  end
+
+  @doc """
+  Run `before_run/2` across all plugins, threading context through each.
+  """
+  @spec run_before_run([module()], Nous.Agent.t(), Context.t()) :: Context.t()
+  def run_before_run(plugins, agent, ctx) do
+    Enum.reduce(plugins, ctx, fn plugin, acc_ctx ->
+      if exports?(plugin, :before_run, 2) do
+        plugin.before_run(agent, acc_ctx)
       else
         acc_ctx
       end
