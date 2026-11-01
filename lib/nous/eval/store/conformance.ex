@@ -34,13 +34,17 @@ defmodule Nous.Eval.Store.Conformance do
   stored run, `list_runs/2` ordering, filters, limit and filter validation,
   run id and label validation (path traversal included), and baselines:
   a label needs a stored run, is append-only with its history kept, and is
-  `:not_found` when never set even though runs exist.
+  `:not_found` when never set even though runs exist. For a store that
+  implements the optional calibration callbacks: the
+  `put_calibration/3` → `get_calibration/2` round trip, `:not_found`, the
+  latest result per fingerprint winning, and key validation.
 
-  `run_fixture/2` is the realistic run the suite stores; use it in your own
-  tests too.
+  `run_fixture/2` is the realistic run the suite stores, and
+  `calibration_fixture/2` the judge calibration; use them in your own tests
+  too.
   """
 
-  alias Nous.Eval.{Run, Sample, Score, ScorerError, Trace}
+  alias Nous.Eval.{JudgeCalibration, Run, Sample, Score, ScorerError, Trace}
   alias Nous.Eval.Trace.Event
   alias Nous.Message
   alias Nous.Message.ContentPart
@@ -247,6 +251,79 @@ defmodule Nous.Eval.Store.Conformance do
         end
       end
 
+      if Code.ensure_loaded?(store) and function_exported?(store, :put_calibration, 3) do
+        import Nous.Eval.Store.Conformance, only: [calibration_fixture: 1, calibration_fixture: 2]
+
+        @fingerprint_a "sha256:" <> String.duplicate("a1", 32)
+        @fingerprint_b "sha256:" <> String.duplicate("b2", 32)
+
+        test "put_calibration/3 then get_calibration/2 round-trips a judge calibration",
+             %{state: state} do
+          result = calibration_fixture(@fingerprint_a)
+          assert {:ok, state} = @store.put_calibration(state, @fingerprint_a, result)
+          assert {:ok, ^result} = @store.get_calibration(state, @fingerprint_a)
+        end
+
+        test "get_calibration/2 is :not_found for a fingerprint never calibrated",
+             %{state: state} do
+          assert {:ok, state} =
+                   @store.put_calibration(
+                     state,
+                     @fingerprint_a,
+                     calibration_fixture(@fingerprint_a)
+                   )
+
+          assert {:error, :not_found} = @store.get_calibration(state, @fingerprint_b)
+        end
+
+        test "the latest calibration of a fingerprint wins; other fingerprints are untouched",
+             %{state: state} do
+          first = calibration_fixture(@fingerprint_a, kappa: 0.41)
+          second = calibration_fixture(@fingerprint_a, kappa: 0.77)
+          other = calibration_fixture(@fingerprint_b, kappa: 0.5)
+
+          assert {:ok, state} = @store.put_calibration(state, @fingerprint_a, first)
+          assert {:ok, state} = @store.put_calibration(state, @fingerprint_b, other)
+          assert {:ok, state} = @store.put_calibration(state, @fingerprint_a, second)
+
+          assert {:ok, ^second} = @store.get_calibration(state, @fingerprint_a)
+          assert {:ok, ^other} = @store.get_calibration(state, @fingerprint_b)
+        end
+
+        test "calibration keys are validated", %{state: state} do
+          result = calibration_fixture(@fingerprint_a)
+
+          for id <- [
+                "",
+                "sha256:../../etc",
+                "sha256:" <> String.duplicate("A1", 32),
+                "md5:" <> String.duplicate("a", 32),
+                String.duplicate("a1", 32),
+                nil
+              ] do
+            assert {:error, {:invalid_fingerprint_id, ^id}} =
+                     @store.put_calibration(state, id, result)
+
+            assert {:error, {:invalid_fingerprint_id, ^id}} = @store.get_calibration(state, id)
+          end
+
+          assert {:error, :fingerprint_mismatch} =
+                   @store.put_calibration(state, @fingerprint_b, result)
+
+          assert {:error, :not_found} = @store.get_calibration(state, @fingerprint_b)
+        end
+
+        if tmp_dir do
+          test "calibrations survive re-opening the store", %{state: state, init_opts: opts} do
+            result = calibration_fixture(@fingerprint_a)
+            assert {:ok, _state} = @store.put_calibration(state, @fingerprint_a, result)
+
+            assert {:ok, reopened} = @store.init(opts)
+            assert {:ok, ^result} = @store.get_calibration(reopened, @fingerprint_a)
+          end
+        end
+      end
+
       if tmp_dir do
         test "runs and baselines survive re-opening the store", %{state: state, init_opts: opts} do
           run = run_fixture("run-durable")
@@ -269,6 +346,61 @@ defmodule Nous.Eval.Store.Conformance do
 
   def init_opts(opts, {:path, file}, dir) when is_binary(dir),
     do: Keyword.put(opts, :path, Path.join(dir, file))
+
+  @doc """
+  A `Nous.Eval.JudgeCalibration.Result` for `fingerprint_id`: a Likert
+  judge measured on 40 holdout cases with one judge error, every field set.
+
+  `overrides` replaces top-level `Nous.Eval.JudgeCalibration.Result` fields.
+  """
+  @spec calibration_fixture(String.t(), keyword()) :: JudgeCalibration.Result.t()
+  def calibration_fixture(fingerprint_id, overrides \\ []) do
+    result = %JudgeCalibration.Result{
+      fingerprint_id: fingerprint_id,
+      judge: %{
+        "model" => "openai:gpt-4o-2024-08-06",
+        "provider" => "openai",
+        "temperature" => 0,
+        "seed" => 7,
+        "prompt_hash" => "sha256:" <> String.duplicate("c3", 32),
+        "scale" => %{
+          "kind" => "likert",
+          "min" => 1,
+          "max" => 3,
+          "labels" => %{"1" => "wrong", "3" => "right"}
+        },
+        "threshold" => 0.5,
+        "include" => ["input", "output"],
+        "samples" => 1,
+        "reduce" => "majority",
+        "max_span_bytes" => 20_000,
+        "nous_version" => "0.20.0"
+      },
+      dataset_hash: "sha256:" <> String.duplicate("d4", 32),
+      labels: ["1", "2", "3"],
+      n_cases: 60,
+      n_tune: 20,
+      n_holdout: 40,
+      n_scored: 39,
+      n_errors: 1,
+      agreement: %{estimate: 0.8205128205128205, ci: {0.6726, 0.9103}, count: 32, n: 39},
+      kappa: 0.7312,
+      kappa_kind: :quadratic_weighted,
+      confusion: %{labels: ["1", "2", "3"], matrix: [[10, 2, 0], [1, 9, 2], [0, 2, 13]]},
+      false_pass: %{estimate: 0.0833, ci: {0.0149, 0.3539}, count: 1, n: 12},
+      error_rate: %{estimate: 0.025, ci: {0.0044, 0.1288}, count: 1, n: 40},
+      errors: [%{case_id: "case-17", kind: :judge_out_of_range, reason: "verdict \"6\""}],
+      usage: %Nous.Usage{
+        input_tokens: 12_000,
+        output_tokens: 900,
+        total_tokens: 12_900,
+        requests: 39
+      },
+      calibrated_at: ~U[2026-10-31 09:15:00.250000Z]
+    }
+
+    struct!(result, overrides)
+  end
 
   @doc """
   A realistic `Nous.Eval.Run` with id `id`: two samples, one passing with a

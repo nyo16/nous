@@ -9,6 +9,9 @@ defmodule Nous.Eval.Store.File do
       <root>/runs/<run id>.json   one run, as Nous.Eval.Codec.encode_run_json/1 text
       <root>/manifest.jsonl       one run summary per line, in insertion order
       <root>/baselines.jsonl      one baseline entry per line, in insertion order
+      <root>/calibrations/sha256-<hex>.json
+                                  the latest judge calibration for a fingerprint id,
+                                  as Nous.Eval.Codec.encode_calibration_json/1 text
 
   `list_runs/2` reads only the manifest, so listing never decodes a trace.
   Every file is replaced atomically (written to a temporary file in the same
@@ -138,9 +141,52 @@ defmodule Nous.Eval.Store.File do
     end
   end
 
+  @impl true
+  def put_calibration(%{root: root} = state, fingerprint_id, result) do
+    dir = Path.join(root, "calibrations")
+
+    with :ok <- Store.validate_calibration(fingerprint_id, result),
+         {:ok, payload} <- Codec.encode_calibration_json(result),
+         :ok <- mkdir(dir),
+         :ok <- atomic_write(calibration_path(root, fingerprint_id), payload) do
+      {:ok, state}
+    end
+  end
+
+  @impl true
+  def get_calibration(%{root: root}, fingerprint_id) do
+    with :ok <- Store.validate_calibration(fingerprint_id) do
+      case File.read(calibration_path(root, fingerprint_id)) do
+        {:ok, text} -> decode_calibration(text, fingerprint_id)
+        {:error, :enoent} -> {:error, :not_found}
+        {:error, reason} -> {:error, {:read_failed, reason}}
+      end
+    end
+  end
+
   # -- helpers ---------------------------------------------------------------
 
   defp run_path(root, id), do: Path.join([root, "runs", id <> ".json"])
+
+  # `fingerprint_id` was validated as "sha256:<64 hex>", so the file name is
+  # fixed-length hex and cannot escape the directory.
+  defp calibration_path(root, "sha256:" <> hex),
+    do: Path.join([root, "calibrations", "sha256-" <> hex <> ".json"])
+
+  defp decode_calibration(text, fingerprint_id) do
+    case Codec.decode_calibration_json(text) do
+      {:ok, %{fingerprint_id: ^fingerprint_id} = result} -> {:ok, result}
+      {:ok, _other} -> {:error, {:corrupt_calibration, fingerprint_id}}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp mkdir(dir) do
+    case File.mkdir_p(dir) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:mkdir_failed, dir, reason}}
+    end
+  end
 
   defp ensure_unlisted(lines, id) do
     # A cheap prefilter: only lines mentioning the id are decoded.

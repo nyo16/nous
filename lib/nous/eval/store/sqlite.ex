@@ -9,7 +9,9 @@ if Code.ensure_loaded?(Exqlite) do
     `Nous.Eval.Codec.encode_run_json/1` text in `payload`, its summary as
     `Nous.Eval.Codec.encode_summary_json/1` text in `summary`, and the
     columns `list_runs/2` filters and sorts on. Baselines are rows of
-    `nous_eval_baselines`, only ever inserted.
+    `nous_eval_baselines`, only ever inserted. Judge calibrations are rows of
+    `nous_eval_calibrations` (`Nous.Eval.Codec.encode_calibration_json/1`
+    text); the latest row for a fingerprint id wins.
 
     ## Options
 
@@ -43,7 +45,18 @@ if Code.ensure_loaded?(Exqlite) do
         set_at TEXT NOT NULL
       )
       """,
-      "CREATE INDEX IF NOT EXISTS nous_eval_baselines_label ON nous_eval_baselines(label, seq)"
+      "CREATE INDEX IF NOT EXISTS nous_eval_baselines_label ON nous_eval_baselines(label, seq)",
+      """
+      CREATE TABLE IF NOT EXISTS nous_eval_calibrations (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint_id TEXT NOT NULL,
+        payload TEXT NOT NULL
+      )
+      """,
+      """
+      CREATE INDEX IF NOT EXISTS nous_eval_calibrations_fingerprint
+        ON nous_eval_calibrations(fingerprint_id, seq)
+      """
     ]
 
     @impl true
@@ -166,6 +179,39 @@ if Code.ensure_loaded?(Exqlite) do
       with :ok <- Store.validate_label(label), do: baselines(conn, label, "")
     end
 
+    @impl true
+    def put_calibration(conn, fingerprint_id, result) do
+      with :ok <- Store.validate_calibration(fingerprint_id, result),
+           {:ok, payload} <- Codec.encode_calibration_json(result),
+           {:ok, _} <-
+             query(
+               conn,
+               "INSERT INTO nous_eval_calibrations (fingerprint_id, payload) VALUES (?1, ?2)",
+               [fingerprint_id, payload]
+             ) do
+        {:ok, conn}
+      end
+    end
+
+    @impl true
+    def get_calibration(conn, fingerprint_id) do
+      with :ok <- Store.validate_calibration(fingerprint_id),
+           {:ok, rows} <-
+             query(
+               conn,
+               """
+               SELECT payload FROM nous_eval_calibrations
+               WHERE fingerprint_id = ?1 ORDER BY seq DESC LIMIT 1
+               """,
+               [fingerprint_id]
+             ) do
+        case rows do
+          [[payload]] -> Codec.decode_calibration_json(payload)
+          [] -> {:error, :not_found}
+        end
+      end
+    end
+
     # -- helpers -------------------------------------------------------------
 
     defp create_schema(conn) do
@@ -283,7 +329,9 @@ else
                list_runs: 2,
                put_baseline: 3,
                get_baseline: 2,
-               list_baselines: 2}
+               list_baselines: 2,
+               put_calibration: 3,
+               get_calibration: 2}
 
     @error {:error, "Exqlite is not available. Add {:exqlite, \"~> 0.43\"} to your dependencies."}
 
@@ -307,5 +355,11 @@ else
 
     @impl true
     def list_baselines(_state, _label), do: @error
+
+    @impl true
+    def put_calibration(_state, _fingerprint_id, _result), do: @error
+
+    @impl true
+    def get_calibration(_state, _fingerprint_id), do: @error
   end
 end

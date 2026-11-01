@@ -33,6 +33,10 @@ defmodule Nous.Eval.Codec do
   whose name is not in the table is dropped and counted in the trace's
   `dropped`, never turned into a new atom.
 
+  Judge calibrations (`Nous.Eval.JudgeCalibration.Result`) are a separate
+  record, `encode_calibration_json/1`, marked `"schema":
+  "nous.judge_calibration/1"` and versioned by that marker.
+
   ## Open values
 
   Open fields (`fingerprint`, `budget`, `summary`, `metadata`, `output`,
@@ -70,7 +74,7 @@ defmodule Nous.Eval.Codec do
   that cannot be decoded stays a string key.
   """
 
-  alias Nous.Eval.{Run, Sample, Score, ScorerError, Trace}
+  alias Nous.Eval.{JudgeCalibration, Run, Sample, Score, ScorerError, Trace}
   alias Nous.Eval.Store.RunSummary
   alias Nous.Eval.Trace.Event
   alias Nous.Message
@@ -195,6 +199,9 @@ defmodule Nous.Eval.Codec do
   @verdicts %{"pass" => :pass, "fail" => :fail, "error" => :error}
   @scorer_error_kinds Map.new(ScorerError.kinds(), &{Atom.to_string(&1), &1})
 
+  @calibration_schema "nous.judge_calibration/1"
+  @kappa_kinds %{"cohen" => :cohen, "quadratic_weighted" => :quadratic_weighted}
+
   @usage_fields Nous.Usage.__struct__() |> Map.from_struct() |> Map.keys()
 
   @typedoc "A JSON-safe map: only string keys, strings, numbers, booleans, nil, lists, maps."
@@ -263,6 +270,42 @@ defmodule Nous.Eval.Codec do
   @spec decode_summary_json(String.t()) :: {:ok, RunSummary.t()} | {:error, term()}
   def decode_summary_json(text) when is_binary(text) do
     with {:ok, data} <- decode_json(text), do: decode_summary(data)
+  end
+
+  ## Judge calibrations
+
+  @doc """
+  Encodes a `Nous.Eval.JudgeCalibration.Result` as a JSON-safe map with
+  `"schema": "nous.judge_calibration/1"`. Intervals become `{"estimate",
+  "lower", "upper", "count", "n"}` objects; enumerated fields (`kappa_kind`,
+  error `kind`) plain strings.
+  """
+  @spec encode_calibration(JudgeCalibration.Result.t()) :: {:ok, json_map()} | {:error, term()}
+  def encode_calibration(%JudgeCalibration.Result{} = result),
+    do: catch_invalid(fn -> do_encode_calibration(result) end)
+
+  @doc "Encodes a calibration as JSON text. See `encode_calibration/1`."
+  @spec encode_calibration_json(JudgeCalibration.Result.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def encode_calibration_json(%JudgeCalibration.Result{} = result) do
+    with {:ok, map} <- encode_calibration(result), do: {:ok, JSON.encode!(map)}
+  end
+
+  @doc """
+  Decodes a map produced by `encode_calibration/1`. A record with another
+  `"schema"` is `{:error, {:unsupported_schema, schema}}`.
+  """
+  @spec decode_calibration(map()) :: {:ok, JudgeCalibration.Result.t()} | {:error, term()}
+  def decode_calibration(%{"schema" => @calibration_schema} = data),
+    do: catch_invalid(fn -> do_decode_calibration(data) end)
+
+  def decode_calibration(%{} = data), do: {:error, {:unsupported_schema, data["schema"]}}
+
+  @doc "Decodes calibration JSON text. See `decode_calibration/1`."
+  @spec decode_calibration_json(String.t()) ::
+          {:ok, JudgeCalibration.Result.t()} | {:error, term()}
+  def decode_calibration_json(text) when is_binary(text) do
+    with {:ok, data} <- decode_json(text), do: decode_calibration(data)
   end
 
   ## Open values
@@ -787,6 +830,140 @@ defmodule Nous.Eval.Codec do
       {:error, reason} -> {:error, {:invalid_json, reason}}
     end
   end
+
+  ## Calibration internals
+
+  @calibration JudgeCalibration.Result
+
+  defp do_encode_calibration(%JudgeCalibration.Result{} = r) do
+    %{
+      "schema" => @calibration_schema,
+      "fingerprint_id" => string!(r.fingerprint_id, {@calibration, :fingerprint_id}),
+      "judge" => map_out!(r.judge, {@calibration, :judge}),
+      "dataset_hash" => string!(r.dataset_hash, {@calibration, :dataset_hash}),
+      "labels" => strings!(r.labels, {@calibration, :labels}),
+      "n_cases" => int!(r.n_cases, {@calibration, :n_cases}),
+      "n_tune" => int!(r.n_tune, {@calibration, :n_tune}),
+      "n_holdout" => int!(r.n_holdout, {@calibration, :n_holdout}),
+      "n_scored" => int!(r.n_scored, {@calibration, :n_scored}),
+      "n_errors" => int!(r.n_errors, {@calibration, :n_errors}),
+      "agreement" => interval_out!(r.agreement, {@calibration, :agreement}),
+      "kappa" => opt_number!(r.kappa, {@calibration, :kappa}),
+      "kappa_kind" => enum_out!(@kappa_kinds, r.kappa_kind, {@calibration, :kappa_kind}),
+      "confusion" => confusion_out!(r.confusion),
+      "false_pass" => interval_out!(r.false_pass, {@calibration, :false_pass}),
+      "error_rate" => interval_out!(r.error_rate, {@calibration, :error_rate}),
+      "errors" => Enum.map(list!(r.errors, {@calibration, :errors}), &calibration_error_out!/1),
+      "usage" => encode_usage(r.usage),
+      "calibrated_at" => opt_dt_out!(r.calibrated_at, {@calibration, :calibrated_at})
+    }
+  end
+
+  defp do_decode_calibration(d) do
+    %JudgeCalibration.Result{
+      fingerprint_id: string!(d["fingerprint_id"], {@calibration, :fingerprint_id}),
+      judge: map_in!(d["judge"], {@calibration, :judge}),
+      dataset_hash: string!(d["dataset_hash"], {@calibration, :dataset_hash}),
+      labels: strings!(d["labels"], {@calibration, :labels}),
+      n_cases: int!(d["n_cases"], {@calibration, :n_cases}),
+      n_tune: int!(d["n_tune"], {@calibration, :n_tune}),
+      n_holdout: int!(d["n_holdout"], {@calibration, :n_holdout}),
+      n_scored: int!(d["n_scored"], {@calibration, :n_scored}),
+      n_errors: int!(d["n_errors"], {@calibration, :n_errors}),
+      agreement: interval_in!(d["agreement"], {@calibration, :agreement}),
+      kappa: opt_float!(d["kappa"], {@calibration, :kappa}),
+      kappa_kind: enum_in!(@kappa_kinds, d["kappa_kind"], {@calibration, :kappa_kind}),
+      confusion: confusion_in!(d["confusion"]),
+      false_pass: interval_in!(d["false_pass"], {@calibration, :false_pass}),
+      error_rate: interval_in!(d["error_rate"], {@calibration, :error_rate}),
+      errors: Enum.map(list!(d["errors"], {@calibration, :errors}), &calibration_error_in!/1),
+      usage: decode_usage(d["usage"], {@calibration, :usage}),
+      calibrated_at: opt_dt_in!(d["calibrated_at"], {@calibration, :calibrated_at})
+    }
+  end
+
+  defp interval_out!(nil, _path), do: nil
+
+  defp interval_out!(%{estimate: e, ci: {lo, hi}, count: count, n: n}, _path)
+       when is_number(e) and is_number(lo) and is_number(hi) and is_integer(count) and
+              is_integer(n) do
+    %{"estimate" => e, "lower" => lo, "upper" => hi, "count" => count, "n" => n}
+  end
+
+  defp interval_out!(other, path), do: invalid!(path, other)
+
+  defp interval_in!(nil, _path), do: nil
+
+  defp interval_in!(
+         %{"estimate" => e, "lower" => lo, "upper" => hi, "count" => c, "n" => n},
+         path
+       ) do
+    %{
+      estimate: float!(e, path),
+      ci: {float!(lo, path), float!(hi, path)},
+      count: int!(c, path),
+      n: int!(n, path)
+    }
+  end
+
+  defp interval_in!(other, path), do: invalid!(path, other)
+
+  defp confusion_out!(%{labels: labels, matrix: matrix}) do
+    path = {@calibration, :confusion}
+
+    %{
+      "labels" => strings!(labels, path),
+      "matrix" =>
+        Enum.map(list!(matrix, path), fn row -> Enum.map(list!(row, path), &int!(&1, path)) end)
+    }
+  end
+
+  defp confusion_out!(other), do: invalid!({@calibration, :confusion}, other)
+
+  defp confusion_in!(%{"labels" => labels, "matrix" => matrix}) do
+    path = {@calibration, :confusion}
+
+    %{
+      labels: strings!(labels, path),
+      matrix:
+        Enum.map(list!(matrix, path), fn row -> Enum.map(list!(row, path), &int!(&1, path)) end)
+    }
+  end
+
+  defp confusion_in!(other), do: invalid!({@calibration, :confusion}, other)
+
+  defp calibration_error_out!(%{case_id: id, kind: kind} = error) do
+    path = {@calibration, :errors}
+
+    %{
+      "case_id" => string!(id, path),
+      "kind" => enum_out!(@scorer_error_kinds, kind, path),
+      "reason" => opt_string!(Map.get(error, :reason), path)
+    }
+  end
+
+  defp calibration_error_out!(other), do: invalid!({@calibration, :errors}, other)
+
+  defp calibration_error_in!(%{"case_id" => id, "kind" => kind} = error) do
+    path = {@calibration, :errors}
+
+    %{
+      case_id: string!(id, path),
+      kind: enum_in!(@scorer_error_kinds, kind, path),
+      reason: opt_string!(error["reason"], path)
+    }
+  end
+
+  defp calibration_error_in!(other), do: invalid!({@calibration, :errors}, other)
+
+  defp strings!(v, path) when is_list(v), do: Enum.map(v, &string!(&1, path))
+  defp strings!(v, path), do: invalid!(path, v)
+
+  defp float!(v, _path) when is_number(v), do: v / 1
+  defp float!(v, path), do: invalid!(path, v)
+
+  defp opt_float!(nil, _path), do: nil
+  defp opt_float!(v, path), do: float!(v, path)
 
   defp catch_invalid(fun) do
     {:ok, fun.()}

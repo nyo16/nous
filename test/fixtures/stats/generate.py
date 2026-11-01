@@ -3,7 +3,10 @@
 Run once from the repository root and commit the JSON it writes:
 
     uv run --with scipy --with statsmodels --with numpy --with scikit-learn \
-        --with mpmath python test/fixtures/stats/generate.py
+        --with mpmath python test/fixtures/stats/generate.py [FAMILY ...]
+
+Without arguments every file is regenerated; naming families (e.g.
+`agreement`) regenerates only those.
 
 Every JSON file records the library versions in "meta" and, per family, which
 reference produced the expected values:
@@ -654,11 +657,74 @@ def classifier_fixture():
     )
 
 
+# ── inter-rater agreement ─────────────────────────────────────────────────
+
+
+def agreement_fixture():
+    rng = np.random.default_rng(11)
+    rows = []
+
+    def add(name, a, b, labels, weights):
+        k = skm.cohen_kappa_score(a, b, labels=labels, weights=weights)
+        rows.append(
+            {
+                "name": name,
+                "a": list(a),
+                "b": list(b),
+                "labels": list(labels),
+                "weights": weights,
+                "kappa": None if math.isnan(k) else fl(k),
+            }
+        )
+
+    # Binary pass/fail: a judge that agrees with the human ~80% of the time.
+    human = rng.choice(["pass", "fail"], 120, p=[0.6, 0.4])
+    judge = np.where(rng.random(120) < 0.8, human, np.where(human == "pass", "fail", "pass"))
+    add("binary", human.tolist(), judge.tolist(), ["fail", "pass"], None)
+
+    # Ternary, with a judge biased towards "pass".
+    human3 = rng.choice(["fail", "partial", "pass"], 90, p=[0.3, 0.3, 0.4])
+    flip = rng.random(90)
+    judge3 = np.where(flip < 0.7, human3, np.where(flip < 0.9, "pass", "partial"))
+    add("ternary", human3.tolist(), judge3.tolist(), ["fail", "partial", "pass"], None)
+
+    # Likert 1-5, judge within one point most of the time.
+    human5 = rng.integers(1, 6, 150)
+    judge5 = np.clip(human5 + rng.choice([-1, 0, 0, 0, 1, 2], 150), 1, 5)
+    for weights in (None, "linear", "quadratic"):
+        add(f"likert_{weights}", [int(x) for x in human5], [int(x) for x in judge5], [1, 2, 3, 4, 5], weights)
+
+    # A label nobody used still counts in the weights of an ordinal scale.
+    add("likert_unused_label", [1, 2, 2, 4, 5, 5], [1, 2, 4, 4, 5, 4], [1, 2, 3, 4, 5], "quadratic")
+
+    # Perfect agreement, systematic disagreement, and the undefined case.
+    add("perfect", ["a", "b", "c", "a"], ["a", "b", "c", "a"], ["a", "b", "c"], None)
+    add("opposite", ["pass", "fail", "pass", "fail"], ["fail", "pass", "fail", "pass"], ["fail", "pass"], None)
+    add("single_label", ["pass"] * 5, ["pass"] * 5, ["pass"], None)
+
+    write(
+        "agreement",
+        {"kappa": "sklearn.metrics.cohen_kappa_score(a, b, labels=labels, weights=weights); NaN -> null"},
+        {"kappa": rows},
+    )
+
+
+FIXTURES = {
+    "special": special_fixture,
+    "descriptives": descriptives_fixture,
+    "proportions": proportions_fixture,
+    "pass_k": pass_k_fixture,
+    "hypothesis": hypothesis_fixture,
+    "power": power_fixture,
+    "classifier": classifier_fixture,
+    "agreement": agreement_fixture,
+}
+
+
 if __name__ == "__main__":
-    special_fixture()
-    descriptives_fixture()
-    proportions_fixture()
-    pass_k_fixture()
-    hypothesis_fixture()
-    power_fixture()
-    classifier_fixture()
+    # No arguments regenerates every file; name families to regenerate only
+    # those (e.g. `generate.py agreement`) without touching the others.
+    import sys
+
+    for name in sys.argv[1:] or FIXTURES:
+        FIXTURES[name]()
