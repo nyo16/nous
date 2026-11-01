@@ -55,6 +55,19 @@ defmodule Nous.AgentRunner.ContinuedContextTest do
     end
   end
 
+  # Contributes a fragment only while the latest user message asks for it,
+  # like a skill that matched on turn 1 and is inactive on turn 2.
+  defmodule SometimesPlugin do
+    @moduledoc false
+    @behaviour Nous.Plugin
+
+    @impl true
+    def system_prompt(_agent, ctx) do
+      last = ctx.messages |> Enum.filter(&(&1.role == :user)) |> List.last()
+      if Message.extract_text(last) =~ "skill", do: "SKILL INSTRUCTIONS", else: nil
+    end
+  end
+
   setup do
     Recorder.install(self())
     Nous.ModelDispatcher.put_dispatcher(Recorder)
@@ -65,6 +78,16 @@ defmodule Nous.AgentRunner.ContinuedContextTest do
     end)
 
     :ok
+  end
+
+  test "a fragment that stops contributing is not sent on the next run" do
+    agent = Agent.new("openai:test-model", instructions: "BASE", plugins: [SometimesPlugin])
+
+    {:ok, first} = AgentRunner.run(agent, "use the skill")
+    assert_receive {:model_request, 1, ["BASE\n\nSKILL INSTRUCTIONS"]}
+
+    {:ok, _} = AgentRunner.run(agent, "plain question", context: first.context)
+    assert_receive {:model_request, 2, ["BASE"]}
   end
 
   test "max_iterations caps each continued run, not the conversation" do
