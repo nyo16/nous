@@ -16,7 +16,7 @@ Every run hands you one:
 | Source | Contents |
 |--------|----------|
 | `result.all_messages` | The full conversation, including the system prompt and every tool result |
-| `result.new_messages` | Only the messages added from the first assistant reply onward |
+| `result.new_messages` | Exactly the messages this run appended: its user prompt, then the replies and tool results. `result.new_messages_truncated?` is `true` when compaction folded part of the run into a summary |
 | `result.context.messages` | Same list as `all_messages`, reachable from the `Nous.Agent.Context` you can serialize and resume |
 | `Nous.AgentServer.get_history/1` | The live message list held by a long-running agent process |
 

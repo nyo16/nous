@@ -170,6 +170,7 @@ defmodule Nous.AgentServer do
   @type agent_config :: %{
           optional(:hooks) => [Nous.Hook.t()],
           optional(:plugins) => [module()],
+          optional(:skills) => [module() | String.t() | Nous.Skill.t() | {:group, atom()}],
           optional(:permissions) => Nous.Permissions.Policy.t() | nil,
           optional(:max_iterations) => pos_integer(),
           model: String.t(),
@@ -242,6 +243,11 @@ defmodule Nous.AgentServer do
   - `:permissions` - Optional `Nous.Permissions.Policy` set on the agent (see
     `Nous.Agent.new/2`). Blocked tools are hidden from the model and from
     Code Mode bindings on every run.
+  - `:plugins` - Plugin modules (see `Nous.Plugin`). Plugin `init/2` runs once
+    for the session's context (again after a restore); `before_run/2` runs on
+    every turn.
+  - `:skills` - Skills, as for `Nous.Agent.new/2`. A skill activated on one
+    turn stays active on later turns, prompt and inbox runs alike.
   - `:max_iterations` - Iteration ceiling for each run (default: 15).
 
   """
@@ -408,15 +414,17 @@ defmodule Nous.AgentServer do
     # Create agent based on type
     agent_type = Map.get(agent_config, :type, :standard)
 
-    # `:plugins` is passed only when configured, so a ReAct agent keeps its
-    # default plugin set otherwise.
+    # `:plugins` and `:skills` are passed only when configured, so a ReAct
+    # agent keeps its default plugin set otherwise. Skills add
+    # `Nous.Plugins.Skills`, whose activations persist across the session's
+    # turns (plugin `init/2` runs once per context).
     agent_opts =
       [
         instructions: Map.get(agent_config, :instructions, ""),
         tools: Map.get(agent_config, :tools, []),
         model_settings: Map.get(agent_config, :model_settings, %{}),
         hooks: Map.get(agent_config, :hooks, [])
-      ] ++ Enum.to_list(Map.take(agent_config, [:plugins, :permissions]))
+      ] ++ Enum.to_list(Map.take(agent_config, [:plugins, :skills, :permissions]))
 
     agent =
       case agent_type do

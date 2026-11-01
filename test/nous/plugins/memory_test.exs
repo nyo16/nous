@@ -29,7 +29,6 @@ defmodule Nous.Plugins.MemoryTest do
       assert config[:auto_inject] == true
       assert config[:inject_strategy] == :first_only
       assert config[:inject_limit] == 5
-      assert config[:_inject_done] == false
     end
 
     test "warns and passes through if no store configured", %{agent: agent} do
@@ -40,14 +39,14 @@ defmodule Nous.Plugins.MemoryTest do
       assert result == ctx
     end
 
-    test "reuses existing store_state across runs instead of re-initializing",
+    test "reuses existing store_state instead of re-initializing",
          %{agent: agent, ctx: ctx} do
       # First run sets up the store.
       ctx = MemoryPlugin.init(agent, ctx)
       first_store_state = ctx.deps[:memory_config][:store_state]
 
-      # Second run on the same context (e.g. AgentRunner re-invoking init
-      # on subsequent calls) must NOT call store_mod.init/1 again, which
+      # A context that arrives at init/2 with a live store (restored, or built
+      # with a previous run's deps) must NOT call store_mod.init/1 again, which
       # would create a fresh ETS table and silently discard memories.
       ctx = MemoryPlugin.init(agent, ctx)
       second_store_state = ctx.deps[:memory_config][:store_state]

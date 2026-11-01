@@ -35,33 +35,62 @@ defmodule Nous.Plugins.Decisions do
     config = ctx.deps[:decisions_config] || %{}
     store_mod = config[:store]
 
-    unless store_mod do
-      Logger.warning(
-        "Nous.Plugins.Decisions: No :store configured in deps[:decisions_config]. " <>
-          "Decision tools will not function."
-      )
+    cond do
+      is_nil(store_mod) ->
+        Logger.warning(
+          "Nous.Plugins.Decisions: No :store configured in deps[:decisions_config]. " <>
+            "Decision tools will not function."
+        )
 
-      ctx
-    else
-      store_opts = Map.get(config, :store_opts, [])
-      store_opts = if is_map(store_opts), do: Map.to_list(store_opts), else: store_opts
+        ctx
 
-      case store_mod.init(store_opts) do
-        {:ok, store_state} ->
-          updated_config =
-            config
-            |> Map.put(:store_state, store_state)
-            |> Map.put_new(:auto_inject, true)
-            |> Map.put_new(:inject_strategy, :first_only)
-            |> Map.put_new(:decision_limit, 5)
-            |> Map.put(:_inject_done, false)
+      Map.has_key?(config, :store_state) ->
+        # A hand-built or restored context can arrive with a live store (the
+        # caller passed `deps: previous_result.deps`, say); calling
+        # store_mod.init/1 again would replace it with an empty graph.
+        %{ctx | deps: Map.put(ctx.deps, :decisions_config, apply_defaults(config))}
 
-          %{ctx | deps: Map.put(ctx.deps, :decisions_config, updated_config)}
+      true ->
+        do_init_store(store_mod, config, ctx)
+    end
+  end
 
-        {:error, reason} ->
-          Logger.error("Nous.Plugins.Decisions: Store init failed: #{inspect(reason)}")
-          ctx
-      end
+  defp do_init_store(store_mod, config, ctx) do
+    store_opts = Map.get(config, :store_opts, [])
+    store_opts = if is_map(store_opts), do: Map.to_list(store_opts), else: store_opts
+
+    case store_mod.init(store_opts) do
+      {:ok, store_state} ->
+        updated_config =
+          config
+          |> Map.put(:store_state, store_state)
+          |> apply_defaults()
+
+        %{ctx | deps: Map.put(ctx.deps, :decisions_config, updated_config)}
+
+      {:error, reason} ->
+        Logger.error("Nous.Plugins.Decisions: Store init failed: #{inspect(reason)}")
+        ctx
+    end
+  end
+
+  defp apply_defaults(config) do
+    config
+    |> Map.put_new(:auto_inject, true)
+    |> Map.put_new(:inject_strategy, :first_only)
+    |> Map.put_new(:decision_limit, 5)
+  end
+
+  # `init/2` runs once per context; `:first_only` injection means once per run,
+  # so the "done" flag is reset here.
+  @impl true
+  def before_run(_agent, ctx) do
+    case ctx.deps[:decisions_config] do
+      %{store_state: _} = config ->
+        %{ctx | deps: Map.put(ctx.deps, :decisions_config, Map.put(config, :_inject_done, false))}
+
+      _ ->
+        ctx
     end
   end
 

@@ -180,13 +180,16 @@ defmodule Nous.Session.D2MessageContractTest do
       assert result.context.messages == result.all_messages
     end
 
-    test "new_messages is the assistant-onward suffix of all_messages" do
+    test "new_messages is what the run appended: its prompt onward" do
       {:ok, result} = Nous.run(agent(), "say hello")
 
       assert result.new_messages ==
-               Enum.drop_while(result.all_messages, &(&1.role != :assistant))
+               Enum.drop_while(result.all_messages, &(&1.role != :user))
 
-      assert shape(result.new_messages) |> Enum.map(& &1.role) == [:assistant, :tool, :assistant]
+      assert shape(result.new_messages) |> Enum.map(& &1.role) ==
+               [:user, :assistant, :tool, :assistant]
+
+      assert result.new_messages_truncated? == false
     end
 
     test "output is the final assistant content" do

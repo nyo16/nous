@@ -280,9 +280,15 @@ defmodule Nous.Agent do
         context: result1.context
       )
 
-      # Continue conversation with message history
+      # Continue with history you keep yourself. `new_messages` is exactly what
+      # a run appended (its user prompt, then the replies), so the history is
+      # the concatenation of every run's `new_messages`
       {:ok, result2} = Agent.run(agent, "Tell me more",
         message_history: result1.new_messages
+      )
+
+      {:ok, result3} = Agent.run(agent, "And then?",
+        message_history: result1.new_messages ++ result2.new_messages
       )
 
       # With callbacks
@@ -311,7 +317,8 @@ defmodule Nous.Agent do
         output: "Result text or structured output",
         usage: %Usage{...},
         all_messages: [...],
-        new_messages: [...],
+        new_messages: [...],  # what this run appended, its user prompt first
+        new_messages_truncated?: false,  # true if compaction folded part of it away
         context: %Context{...}  # Can be used for continuation
       }}
 

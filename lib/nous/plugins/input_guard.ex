@@ -111,15 +111,16 @@ defmodule Nous.Plugins.InputGuard do
 
   @max_attachment_bytes 1_048_576
 
+  # The checked-message marker is an index into `ctx.messages`, which only
+  # means something within one run (it stops the tool-call loop re-checking a
+  # message): between runs compaction can shrink the transcript below it, and a
+  # carried index would then skip the next turn's message. So it is reset at
+  # the start of every run; a message the model already answered is still
+  # never checked again (see `Engine.unchecked_user_inputs/3`).
   @impl true
-  def init(_agent, ctx) do
-    config = get_config(ctx)
-
-    # Initialize last_checked_index to track which messages we've already checked.
-    # This prevents re-checking the same user message on tool-call loop iterations.
-    last_checked = Map.get(config, :last_checked_index, -1)
-    ctx = Context.merge_deps(ctx, %{input_guard_last_checked: last_checked})
-    ctx
+  def before_run(_agent, ctx) do
+    last_checked = Map.get(get_config(ctx), :last_checked_index, -1)
+    Context.merge_deps(ctx, %{input_guard_last_checked: last_checked})
   end
 
   @impl true
