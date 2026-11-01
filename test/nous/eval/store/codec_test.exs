@@ -219,6 +219,24 @@ defmodule Nous.Eval.Store.CodecTest do
       refute Enum.any?(trace.events, &(&1.seq == first["seq"]))
     end
 
+    test "every event Nous emits round-trips by name" do
+      events =
+        Nous.Telemetry.events()
+        |> Enum.with_index()
+        |> Enum.map(fn {name, seq} -> %Event{name: name, at: seq, seq: seq} end)
+
+      sample = %Sample{
+        case_id: "c1",
+        index: 0,
+        outcome: :ok,
+        trace: %Trace{trace_id: "t1", events: events}
+      }
+
+      assert [%Sample{trace: trace}] = roundtrip(%Run{id: "run-1", samples: [sample]}).samples
+      assert trace.dropped == 0
+      assert Enum.map(trace.events, & &1.name) == Nous.Telemetry.events()
+    end
+
     test "an atom that does not exist stays a flagged string and re-encodes to the same tag" do
       {:ok, map} = Codec.encode_run(run_with_metadata(%{outcome: :executed}))
 
