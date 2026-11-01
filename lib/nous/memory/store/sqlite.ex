@@ -550,7 +550,7 @@ else
     @moduledoc """
     SQLite-backed memory store (stub).
 
-    Add `{:exqlite, "~> 0.27"}` to your dependencies to enable this store.
+    Add `{:exqlite, "~> 0.43"}` to your dependencies to enable this store.
     """
 
     @behaviour Nous.Memory.Store
@@ -565,7 +565,7 @@ else
                search_vector: 3,
                list: 2}
 
-    @error {:error, "Exqlite is not available. Add {:exqlite, \"~> 0.27\"} to your dependencies."}
+    @error {:error, "Exqlite is not available. Add {:exqlite, \"~> 0.43\"} to your dependencies."}
 
     @impl true
     def init(_opts), do: @error

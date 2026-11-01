@@ -1,7 +1,7 @@
 # SQLite Memory Store
 #
 # Uses SQLite with FTS5 for full-text search. Single file, embedded database.
-# Requires: {:exqlite, "~> 0.27"}
+# Requires: {:exqlite, "~> 0.43"}
 #
 # Run: mix run examples/memory/sqlite_full.exs
 
@@ -27,7 +27,7 @@ store =
       mix.exs so it builds and tests here, but not pulled into your app unless
       you add it. In your app's mix.exs:
 
-          {:exqlite, "~> 0.27"},
+          {:exqlite, "~> 0.43"},
 
       then run `mix deps.get`.
       """)

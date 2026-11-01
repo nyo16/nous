@@ -142,8 +142,8 @@ defmodule Nous.MixProject do
       # this they were `if Code.ensure_loaded?` ghosts that never built
       # in-repo (audit D-M2). CI runs them in the `optional_deps` job
       # (`mix test --only sqlite --only duckdb --only prom_ex`).
-      {:exqlite, "~> 0.27", optional: true},
-      {:duckdbex, "~> 0.5", optional: true},
+      {:exqlite, "~> 0.43", optional: true},
+      {:duckdbex, "~> 0.7", optional: true},
       # Prometheus metrics via PromEx (`Nous.PromEx.Plugin`). Same story. plug
       # rides along because prom_ex 1.12's `PromEx.Plug` compiles
       # unconditionally against `Plug.Conn` even though prom_ex declares plug

@@ -443,7 +443,7 @@ else
     @moduledoc """
     DuckDB-backed decision graph store (stub).
 
-    Add `{:duckdbex, "~> 0.5"}` to your dependencies to enable this store.
+    Add `{:duckdbex, "~> 0.7"}` to your dependencies to enable this store.
     """
 
     @behaviour Nous.Decisions.Store
@@ -459,7 +459,7 @@ else
                query: 3}
 
     @error {:error,
-            "Duckdbex is not available. Add {:duckdbex, \"~> 0.5\"} to your dependencies."}
+            "Duckdbex is not available. Add {:duckdbex, \"~> 0.7\"} to your dependencies."}
 
     @impl true
     def init(_opts), do: @error
