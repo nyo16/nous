@@ -7,6 +7,119 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+A new `Nous.Eval` built on per-sample traces, honest statistics and a CI
+gate, plus correlation ids on every telemetry event. The old eval API is
+removed; read the "0.19.3 to 0.20.0" section of the migration guide.
+
+### Changed — Behavioral / breaking
+
+- **The old `Nous.Eval` is removed.** `Nous.Eval.Suite`, `TestCase`,
+  `Runner`, `Result`, `Metrics`, `Config`, `Evaluator` and its evaluators,
+  `Reporter`, `YamlLoader`, `Optimizer` (and its strategies),
+  `mix nous.optimize` and the old `mix nous.eval` are gone, with no shim.
+  The replacement is a task module (`use Nous.Eval`), a dataset file and
+  `Nous.Eval.run/2` (see Added).
+- **Plugin `init/2` runs once per context; new optional `before_run/2` runs
+  every run.** `run/3` and `run_stream/3` re-initialised plugins on every
+  continued run (`context:`), so a skill activated on one turn was
+  deactivated on the next and AgentServer prompt and inbox turns behaved
+  differently. Every entry point now runs `init/2` only for a context that
+  has not been initialised (fresh, hand-built or deserialized) and then
+  `before_run/2`. Memory, KnowledgeBase and Decisions inject once per run on
+  every path; InputGuard and HumanInTheLoop moved their per-run setup to
+  `before_run/2` and no longer define `init/2`. Decisions' `init/2` reuses a
+  store already in `deps` instead of re-creating it.
+- **`result.new_messages` is exactly what the run appended, its user prompt
+  included.** It used to be "everything from the first assistant message
+  on", which repeated earlier turns on `context:`, `run_with_context/3`,
+  `:message_history` and `messages:` runs and left out turn 1's prompt. The
+  result map gains `new_messages_truncated?` (always present), true when
+  compaction folded part of the run into a summary or the transcript was
+  rewritten under the run.
+- **`[:nous, :rate_limiter, :unavailable]` metadata key `agent` is renamed
+  `agent_name`**, like every other agent event.
+- **`[:nous, :agent, :run, *]` also fires from `run_with_context/3` and
+  `run_stream/3`** (so from AgentServer inbox runs and
+  `Nous.run(agent, messages: ...)`); the stream's `:stop` fires when it
+  yields `{:complete, _}`. `:stop` now fires after a successful
+  structured-output retry. `:exception` carries `model_name` and a real
+  stacktrace when the run raised (a raised run used to emit nothing).
+- **A tool with a timeout runs with the caller's `$callers` and telemetry
+  scope**, so `Nous.ModelDispatcher.put_dispatcher/1` stubs and run ids
+  reach timed tool bodies.
+- **The plugin system-prompt overlay is cleared when no plugin contributes
+  a fragment.** A continued context kept the previous run's fragment, so a
+  skill deactivated on a later turn still had its instructions sent.
+- **Optional store dependencies bumped:** `exqlite` `~> 0.27` → `~> 0.43`
+  and `duckdbex` `~> 0.5` → `~> 0.7`. The memory and decision stores need no
+  API change; update your own pins if you use them.
+
+### Added
+
+- **Correlation ids on every telemetry event:** `trace_id` (32 hex),
+  `agent_run_id` (16 hex), `parent_agent_run_id` and `tool_call_id`, always
+  present (`nil` outside a run). `[:nous, :agent, :run, :start]` also
+  carries `parent_tool_call_id`, `role`, `profile_id`, `sub_agent_template`
+  and `sub_agent_index`, so sub-agent runs link to the tool call that
+  started them. `hook.*` and `decision_guard.verdict` gain `tool_call_id`;
+  `decision_guard.verdict` gains `agent_name`; `fallback.used` gains
+  `iteration`. See the "Correlation ids" section of the observability guide.
+- **New events:** `[:nous, :agent, :model, :start | :stop | :exception]`
+  (requested and answering model, offered and permission-blocked tool
+  names, usage, `time_to_first_token` on streams, the request messages and
+  the response), `[:nous, :agent, :tool_call, :start | :stop]` (arguments,
+  `outcome`, `approval`, post-hook result, post-edit arguments),
+  `[:nous, :agent, :structured_output, :retry]`,
+  `[:nous, :input_guard | :decision_guard, :strategy_verdict]`,
+  `[:nous, :input_guard, :verdict]` and `[:nous, :loop_guard, :advisory]`.
+  Content keys carry user data; scrub them before forwarding off-box.
+- **`Nous.Telemetry.events/0`**, the list of every event Nous emits, and a
+  PromEx counter `nous_tool_call_total` tagged `tool_name` and `outcome`.
+- **`Nous.Plugins.InputGuard.Policy.action_for/2`** and
+  **`Nous.Plugins.InputGuard.Engine.evaluate/4`** (per-strategy results).
+- **Eval tasks and datasets:** `use Nous.Eval` task modules (`agent/1`,
+  `dataset/0`, `scorers/0`, `setup/1`, `teardown/1`, `deps/1`) and
+  `Nous.Eval.Dataset` (Elixir, YAML and JSONL with schema `nous.case/1`,
+  strict validation, content hash, stable group-hashed train/val/test
+  splits). Dataset files name scorers by string through
+  `Nous.Eval.Scorer.resolve/2` and `config :nous, :eval_scorers`; nothing in
+  a file becomes an atom.
+- **Scorers:** `Nous.Eval.Scorer` behaviour, `Nous.Eval.Scoring` (scorers
+  run isolated with time limits; a raise or timeout is a `ScorerError`, and
+  an errored sample is `:error`, never pass or fail; required scorers gate,
+  optional ones form a weighted soft group with a threshold, `weight: 0`
+  tracks only) and built-ins `Equals`, `Similarity`, `Contains`,
+  `NotContains`, `Regex`, `OutputSchema`, `Trajectory` (multiset bipartite
+  matching; strict, in-order, unordered, subset and superset modes),
+  `ToolArgs`, `ToolCount`, `NoToolErrors`, `GuardVerdict`, `MaxCost`,
+  `MaxLatency`, `MaxTokens`, `OutputRetries` and `Function`.
+- **Traces:** `Nous.Eval.Trace` with query helpers (`tool_calls/2`,
+  `model_calls/1`, `guard_verdicts/2`, `runs/1`, `usage/1`,
+  `transcript/2`, `output_retries/2`), filled per sample by a collector
+  that keeps partial traces of failed and killed runs.
+- **Statistics:** `Nous.Eval.Stats` (pure Elixir): Wilson, Clopper–Pearson,
+  Jeffreys and Beta-posterior intervals; clustered and paired standard
+  errors; unbiased pass@k and pass^k; exact McNemar, Fisher, the Tango
+  paired score test and interval with a non-inferiority gate, Holm and
+  Benjamini–Hochberg; a seeded paired cluster bootstrap that is identical
+  serially and in parallel; power, sample size and MDE; classifier metrics.
+  Tested against SciPy/statsmodels/scikit-learn golden values.
+- **Run store:** `Nous.Eval.Store` behaviour with `Store.File`,
+  `Store.SQLite` and `Store.DuckDB`, versioned records (`Nous.Eval.Codec`),
+  append-only baseline labels that never fall back to the latest run, and
+  `Nous.Eval.Store.Conformance` for your own backend.
+- **Comparison and reports:** `Nous.Eval.Summary.build/2`,
+  `Nous.Eval.Compare.compare/3` (cases matched by id; refuses a changed
+  dataset unless `allow_dataset_change: true`; fixed/broken/flaky labels;
+  seeded paired cluster bootstrap with Holm across gate metrics; verdict
+  `:pass | :regression | :error`) and `Nous.Eval.Reporter` with console,
+  Markdown and JSON output.
+- **`Nous.Eval.CanonicalJSON`** and **`Nous.Eval.Fingerprint`** (model,
+  instructions, tool schemas, guards, dataset, scorers, k, seed, whether
+  the seed reaches the provider). Providers expose `seed_param/0`;
+  `llamacpp:` declares no seed.
+- AgentServer `agent_config` accepts `:skills`.
+
 ## [0.19.3] - 2026-11-01
 
 Runner fixes that change what a continued or `messages:` run does; read
