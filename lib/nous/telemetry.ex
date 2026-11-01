@@ -445,6 +445,81 @@ defmodule Nous.Telemetry do
 
   require Logger
 
+  # Every event Nous emits under its default names: the catalog above as data.
+  # Consumers that must see everything (the eval trace collector) attach to
+  # this list, and stored traces decode event names only through it
+  # (`Nous.Eval.Codec`), so an event added to the catalog belongs here too.
+  @events [
+    [:nous, :agent, :run, :start],
+    [:nous, :agent, :run, :stop],
+    [:nous, :agent, :run, :exception],
+    [:nous, :agent, :iteration, :start],
+    [:nous, :agent, :iteration, :stop],
+    [:nous, :agent, :model, :start],
+    [:nous, :agent, :model, :stop],
+    [:nous, :agent, :model, :exception],
+    [:nous, :agent, :tool_call, :start],
+    [:nous, :agent, :tool_call, :stop],
+    [:nous, :agent, :structured_output, :retry],
+    [:nous, :agent, :fallback, :used],
+    [:nous, :fallback, :activated],
+    [:nous, :router, :route],
+    [:nous, :rate_limiter, :unavailable],
+    [:nous, :provider, :request, :start],
+    [:nous, :provider, :request, :stop],
+    [:nous, :provider, :request, :exception],
+    [:nous, :provider, :stream, :start],
+    [:nous, :provider, :stream, :connected],
+    [:nous, :provider, :stream, :exception],
+    [:nous, :tool, :execute, :start],
+    [:nous, :tool, :execute, :stop],
+    [:nous, :tool, :execute, :exception],
+    [:nous, :tool, :timeout],
+    [:nous, :context, :update],
+    [:nous, :callback, :execute],
+    [:nous, :hook, :execute, :start],
+    [:nous, :hook, :execute, :stop],
+    [:nous, :hook, :denied],
+    [:nous, :hook, :failed_closed],
+    [:nous, :hook, :decision],
+    [:nous, :decision_guard, :verdict],
+    [:nous, :decision_guard, :canary_failed],
+    [:nous, :decision_guard, :strategy_dropped],
+    [:nous, :decision_guard, :strategy_verdict],
+    [:nous, :input_guard, :strategy_dropped],
+    [:nous, :input_guard, :strategy_verdict],
+    [:nous, :input_guard, :verdict],
+    [:nous, :loop_guard, :advisory],
+    [:nous, :skill, :activate],
+    [:nous, :skill, :deactivate],
+    [:nous, :compaction, :start],
+    [:nous, :compaction, :stop],
+    [:nous, :compaction, :exception],
+    [:nous, :decision_model, :decide, :start],
+    [:nous, :decision_model, :decide, :stop],
+    [:nous, :decision_model, :decide, :exception],
+    [:nous, :session, :invariant, :violation],
+    [:nous, :workflow, :run, :start],
+    [:nous, :workflow, :run, :stop],
+    [:nous, :workflow, :run, :exception],
+    [:nous, :workflow, :node, :start],
+    [:nous, :workflow, :node, :stop],
+    [:nous, :workflow, :node, :exception]
+  ]
+
+  @doc """
+  Every event name Nous emits, as documented in the catalog above.
+
+  Names are the defaults: an event whose prefix is configurable (the
+  `Nous.Fallback` `:telemetry_prefix`, a guard engine's prefix) appears here
+  under its default prefix only.
+
+      :telemetry.attach_many("my-handler", Nous.Telemetry.events(), &MyApp.handle/4, nil)
+
+  """
+  @spec events() :: [[atom(), ...]]
+  def events, do: @events
+
   @doc """
   Attaches the default logging handler for Nous events.
 

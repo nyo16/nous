@@ -27,6 +27,10 @@ defmodule Nous.Application do
         # a supervised owner, suspended workflows could vanish whenever the
         # process that saved them exited.
         Nous.Workflow.Checkpoint.ETS,
+        # Eval trace collector tables (registry + event sink). Owned here so
+        # a sample task killed on timeout leaves its events behind for the
+        # caller to finalize.
+        Nous.Eval.Trace.Collector.TableOwner,
         # Names of the Nous.DecisionModel.Backend.LlamaCpp processes. The
         # backend resolves "llamacpp:<name>" only through this registry, so a
         # name never reaches a process it did not start, and an entry (with
