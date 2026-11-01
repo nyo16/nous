@@ -263,7 +263,10 @@ defmodule Nous.Agent do
         deps: %{database: MyApp.DB}
       )
 
-      # Message list directly
+      # Message list directly. The agent's instructions (or system prompt) and
+      # any structured-output instructions are prepended, as for a string
+      # prompt; a list that already starts with a system message keeps it
+      # instead.
       {:ok, result} = Agent.run(agent,
         messages: [
           Message.system("Be concise"),
@@ -343,22 +346,7 @@ defmodule Nous.Agent do
   end
 
   defp run_with_messages(agent, messages, opts) do
-    alias Nous.Agent.Context
-
-    # Build initial context from messages
-    ctx =
-      Context.new(
-        messages: messages,
-        deps: Keyword.get(opts, :deps, %{}),
-        max_iterations: Keyword.get(opts, :max_iterations, agent.max_iterations || 10),
-        callbacks: Keyword.get(opts, :callbacks, %{}),
-        notify_pid: Keyword.get(opts, :notify_pid),
-        agent_name: agent.name,
-        cancellation_check: Keyword.get(opts, :cancellation_check),
-        needs_response: true
-      )
-
-    # Run with pre-built context
+    ctx = Nous.AgentRunner.messages_context(agent, messages, opts)
     Nous.AgentRunner.run_with_context(agent, ctx, opts)
   end
 

@@ -35,6 +35,15 @@ defmodule Nous.Provider do
   - `request_stream/3` - High-level streaming with message conversion, telemetry
   - `count_tokens/1` - Token counting (defaults to rough estimate)
 
+  ## Options
+
+  Besides `:id`, `:default_base_url` and `:default_env_key`, `use Nous.Provider`
+  accepts:
+  - `:seed_param` - the request-body key the default request builder writes
+    `model_settings[:seed]` to (default `"seed"`). `nil` means the API has no
+    seed: the setting is dropped with a one-time `Logger.warning` per provider.
+    Providers that override `build_request_params/3` map the seed themselves.
+
   ## Injected Functions
 
   The `use` macro injects:
@@ -128,6 +137,7 @@ defmodule Nous.Provider do
     id = Keyword.fetch!(opts, :id)
     default_base_url = Keyword.fetch!(opts, :default_base_url)
     default_env_key = Keyword.fetch!(opts, :default_env_key)
+    seed_ast = seed_ast(Keyword.get(opts, :seed_param, "seed"))
 
     # Optionally inject the shared OpenAI-compatible `chat/2` + `chat_stream/2`
     # implementations (plus base-URL resolution and header helpers). Providers
@@ -441,6 +451,7 @@ defmodule Nous.Provider do
         |> maybe_put("frequency_penalty", merged_settings[:frequency_penalty])
         |> maybe_put("presence_penalty", merged_settings[:presence_penalty])
         |> maybe_put("stop", merged_settings[:stop_sequences] || merged_settings[:stop])
+        |> put_seed(merged_settings[:seed])
         |> maybe_put("tools", merged_settings[:tools])
         |> maybe_put("tool_choice", merged_settings[:tool_choice])
         # OpenAI-style streaming usage opt-in (no-op on Anthropic/Gemini)
@@ -464,6 +475,8 @@ defmodule Nous.Provider do
 
       defp maybe_put(params, _key, nil), do: params
       defp maybe_put(params, key, value), do: Map.put(params, key, value)
+
+      unquote(seed_ast)
 
       defp maybe_merge_extra_body(params, nil), do: params
       defp maybe_merge_extra_body(params, extra) when extra == %{}, do: params
@@ -526,6 +539,48 @@ defmodule Nous.Provider do
                        ] ++ chat_overridable
                      )
     end
+  end
+
+  @doc false
+  # `put_seed/2` for the default request builder, generated per provider so a
+  # provider without a seed gets no dead branch.
+  def seed_ast(nil) do
+    quote do
+      defp put_seed(params, nil), do: params
+
+      defp put_seed(params, _seed) do
+        Nous.Provider.warn_seed_dropped(@provider_id)
+        params
+      end
+    end
+  end
+
+  def seed_ast(key) when is_binary(key) do
+    quote do
+      defp put_seed(params, nil), do: params
+      defp put_seed(params, seed), do: Map.put(params, unquote(key), seed)
+    end
+  end
+
+  @doc false
+  # Called when `model_settings[:seed]` is set for a provider whose API has no
+  # seed parameter. Warns once per provider per node, so a seeded eval run does
+  # not flood the log, but the caller learns the seed is not reaching the wire.
+  def warn_seed_dropped(provider_id) do
+    key = {__MODULE__, :seed_dropped, provider_id}
+
+    unless :persistent_term.get(key, false) do
+      :persistent_term.put(key, true)
+
+      require Logger
+
+      Logger.warning(
+        "[Nous] #{provider_id} has no seed parameter: model_settings[:seed] is not sent, " <>
+          "so its responses are not reproducible by seed"
+      )
+    end
+
+    :ok
   end
 
   # ──────────────────────────────────────────────────────────────────────────

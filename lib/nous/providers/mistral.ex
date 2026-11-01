@@ -46,5 +46,7 @@ defmodule Nous.Providers.Mistral do
     id: :mistral,
     default_base_url: "https://api.mistral.ai/v1",
     default_env_key: "MISTRAL_API_KEY",
+    # Mistral names the sampling seed `random_seed`.
+    seed_param: "random_seed",
     chat: [base_url: :plain, headers: :bearer, timeout: 180_000, stream_timeout: 300_000]
 end

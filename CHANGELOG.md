@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.3] - 2026-11-01
+
+Runner fixes that change what a continued or `messages:` run does; read
+the "0.19.2 to 0.19.3" section of the migration guide.
+
+### Fixed (behavioral)
+
+- **`max_iterations` caps each run, not the whole conversation.** A
+  continued run (`Nous.run(agent, prompt, context: ctx)`,
+  `run_with_context/3`, every AgentServer turn) kept counting from the
+  previous run's iteration, so a session failed every later prompt with
+  `MaxIterationsExceeded` once it had made `max_iterations` model requests
+  in total (15 for AgentServer), without calling the model and without
+  keeping the rejected user message. Every run now counts from zero.
+- **`result.iterations` and the `[:nous, :agent, :run, :stop]`
+  `iterations` measurement are per run.** On continued runs they used to
+  report the conversation total.
+- **Plugin system-prompt fragments are rebuilt on every run.** They were
+  rebuilt only while the iteration counter was 0, so on continued runs a
+  plugin's `system_prompt/2` (for example a skill matched by the new
+  prompt) kept its turn-1 text.
+- **`Nous.run(agent, messages: [...])` sends the agent's system prompt.**
+  This entry point sent no system message at all: `instructions`,
+  `system_prompt`, the todo list and the structured-output instructions
+  (the `{:choice, _}` or JSON-schema suffix) never reached the model. It now
+  builds the same context as a string prompt, including the
+  `:approval_handler`, `:pubsub` and `:pubsub_topic` options. A list that
+  already starts with a `:system` message keeps it and gets no second
+  system prompt.
+- **`model_settings[:seed]` is sent to the provider.** Only Gemini and
+  Vertex AI forwarded it; OpenAI, OpenAI-compatible, custom, vLLM, SGLang
+  and LM Studio now send `seed`, and Mistral sends `random_seed`. The
+  Anthropic Messages API has no seed parameter: the setting is dropped
+  there with a one-time warning. Providers built with `use Nous.Provider`
+  take a new `:seed_param` option.
+
 ## [0.19.2] - 2026-10-31
 
 ### Fixed
@@ -3700,7 +3736,8 @@ Initial public release with multi-provider LLM support:
 - ReAct agent implementation
 
 <!-- Version comparison links -->
-[Unreleased]: https://github.com/nyo16/nous/compare/v0.19.2...HEAD
+[Unreleased]: https://github.com/nyo16/nous/compare/v0.19.3...HEAD
+[0.19.3]: https://github.com/nyo16/nous/compare/v0.19.2...v0.19.3
 [0.19.2]: https://github.com/nyo16/nous/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/nyo16/nous/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/nyo16/nous/compare/v0.18.3...v0.19.0

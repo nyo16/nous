@@ -108,8 +108,9 @@ defmodule Nous.AgentRunner do
     * `:message_history` - Previous messages
     * `:usage_limits` - Usage limits (not implemented yet)
     * `:model_settings` - Override model settings
-    * `:max_iterations` - Maximum iterations (default: the agent's
-      `:max_iterations`, else 10)
+    * `:max_iterations` - Maximum model requests for this run (default: the
+      agent's `:max_iterations`, else 10). Counted per run: a continued
+      `:context` starts again at zero.
     * `:cancellation_check` - Function to check if execution should be cancelled.
       Under `stream: true`, also invoked between every streamed chunk; on
       cancellation the consumer aborts cleanly without partial tool execution.
@@ -305,6 +306,7 @@ defmodule Nous.AgentRunner do
       |> Context.set_needs_response(true)
       |> Context.patch_dangling_tool_calls()
       |> IterationLoop.clear_runtime_models()
+      |> reset_iteration()
 
     # A context that never went through plugin init (built by hand, or
     # restored: the marker is runtime-only) gets it here, once. A continued
@@ -386,10 +388,9 @@ defmodule Nous.AgentRunner do
     plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
     all_tools = tools ++ plugin_tools
 
-    ctx =
-      if ctx.iteration == 0,
-        do: PromptAssembly.apply_plugin_system_prompts(agent, ctx),
-        else: ctx
+    # build_context/3 starts every run at iteration 0, so this is always the
+    # first request of the run.
+    ctx = PromptAssembly.apply_plugin_system_prompts(agent, ctx)
 
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
     all_tools = ToolExecution.visible_tools(agent, all_tools)
@@ -522,68 +523,92 @@ defmodule Nous.AgentRunner do
         |> maybe_update_cancellation_check(opts)
         |> maybe_update_approval_handler(opts)
         |> maybe_update_max_iterations(opts)
+        |> reset_iteration()
 
       nil ->
-        # Build fresh context
+        system_prompt = base_system_prompt(agent, opts)
         message_history = Keyword.get(opts, :message_history, [])
-        stream = Keyword.get(opts, :stream, false)
-
-        # Build system prompt
-        system_prompt =
-          resolve_prompt(agent.instructions, opts) ||
-            resolve_prompt(agent.system_prompt, opts)
-
-        # Handle todo injection if enabled
-        system_prompt =
-          if agent.enable_todos do
-            PromptAssembly.inject_todos_into_prompt(
-              system_prompt || "",
-              Keyword.get(opts, :deps, %{})
-            )
-          else
-            system_prompt
-          end
-
-        # Inject structured output schema instructions
-        system_prompt =
-          if agent.output_type != :string do
-            mode =
-              case agent.output_type do
-                {:one_of, _} -> :tool_call
-                _ -> Keyword.get(agent.structured_output, :mode, :auto)
-              end
-
-            suffix = OutputSchema.system_prompt_suffix(agent.output_type, mode: mode)
-
-            if suffix do
-              (system_prompt || "") <> "\n\n" <> suffix
-            else
-              system_prompt
-            end
-          else
-            system_prompt
-          end
-
-        # Build initial messages
         messages = build_initial_messages(message_history, prompt, system_prompt)
-
-        Context.new(
-          messages: messages,
-          system_prompt: system_prompt,
-          deps: Keyword.get(opts, :deps, %{}),
-          max_iterations:
-            Keyword.get(opts, :max_iterations, agent.max_iterations || @max_iterations),
-          callbacks: Keyword.get(opts, :callbacks, %{}),
-          notify_pid: Keyword.get(opts, :notify_pid),
-          agent_name: agent.name,
-          cancellation_check: Keyword.get(opts, :cancellation_check),
-          approval_handler: Keyword.get(opts, :approval_handler),
-          pubsub: Keyword.get(opts, :pubsub),
-          pubsub_topic: Keyword.get(opts, :pubsub_topic),
-          stream: stream
-        )
+        fresh_context(agent, messages, system_prompt, opts)
     end
   end
+
+  @doc false
+  # The context `Nous.Agent.run(agent, messages: [...])` runs: the same fresh
+  # context `run/3` builds for a prompt, so the agent's instructions (or
+  # system prompt), todo injection and structured-output suffix reach the model
+  # on this entry point too. A caller whose list already starts with a
+  # `:system` message keeps it and gets no second system prompt;
+  # `ctx.system_prompt` is then nil, because the agent's prompt is not in use.
+  @spec messages_context(Agent.t(), [Message.t()], keyword()) :: Context.t()
+  def messages_context(%Agent{} = agent, messages, opts) when is_list(messages) do
+    case messages do
+      [%Message{role: :system} | _] ->
+        fresh_context(agent, messages, nil, opts)
+
+      _ ->
+        # The run-level :output_type / :structured_output overrides decide the
+        # suffix, exactly as on the prompt path.
+        system_prompt = base_system_prompt(apply_runtime_overrides(agent, opts), opts)
+        fresh_context(agent, system_message(system_prompt) ++ messages, system_prompt, opts)
+    end
+  end
+
+  # The agent's system prompt for a fresh context: `instructions` (else
+  # `system_prompt`), the todo list when enabled, and the structured-output
+  # instructions for a non-string `output_type`.
+  defp base_system_prompt(agent, opts) do
+    system_prompt =
+      resolve_prompt(agent.instructions, opts) ||
+        resolve_prompt(agent.system_prompt, opts)
+
+    system_prompt =
+      if agent.enable_todos do
+        PromptAssembly.inject_todos_into_prompt(
+          system_prompt || "",
+          Keyword.get(opts, :deps, %{})
+        )
+      else
+        system_prompt
+      end
+
+    if agent.output_type != :string do
+      mode =
+        case agent.output_type do
+          {:one_of, _} -> :tool_call
+          _ -> Keyword.get(agent.structured_output, :mode, :auto)
+        end
+
+      case OutputSchema.system_prompt_suffix(agent.output_type, mode: mode) do
+        nil -> system_prompt
+        suffix -> (system_prompt || "") <> "\n\n" <> suffix
+      end
+    else
+      system_prompt
+    end
+  end
+
+  defp fresh_context(agent, messages, system_prompt, opts) do
+    Context.new(
+      messages: messages,
+      system_prompt: system_prompt,
+      deps: Keyword.get(opts, :deps, %{}),
+      max_iterations: Keyword.get(opts, :max_iterations, agent.max_iterations || @max_iterations),
+      callbacks: Keyword.get(opts, :callbacks, %{}),
+      notify_pid: Keyword.get(opts, :notify_pid),
+      agent_name: agent.name,
+      cancellation_check: Keyword.get(opts, :cancellation_check),
+      approval_handler: Keyword.get(opts, :approval_handler),
+      pubsub: Keyword.get(opts, :pubsub),
+      pubsub_topic: Keyword.get(opts, :pubsub_topic),
+      stream: Keyword.get(opts, :stream, false)
+    )
+  end
+
+  # `max_iterations` caps one run, so every run counts its model requests from
+  # zero. This also makes the run's first request the "first iteration" the
+  # plugin system-prompt gate in IterationLoop.prepare_tools/4 rebuilds on.
+  defp reset_iteration(ctx), do: %{ctx | iteration: 0}
 
   # When continuing from an existing context (the %Context{} branch above),
   # honor the `:stream` opt as an override.
@@ -626,11 +651,11 @@ defmodule Nous.AgentRunner do
   end
 
   defp build_initial_messages(history, prompt, system_prompt) do
-    system =
-      if system_prompt && system_prompt != "", do: [Message.system(system_prompt)], else: []
-
-    system ++ history ++ [Message.user(prompt)]
+    system_message(system_prompt) ++ history ++ [Message.user(prompt)]
   end
+
+  defp system_message(system_prompt) when system_prompt in [nil, ""], do: []
+  defp system_message(system_prompt), do: [Message.system(system_prompt)]
 
   defp resolve_prompt(nil, _opts), do: nil
   defp resolve_prompt(prompt, _opts) when is_binary(prompt), do: prompt

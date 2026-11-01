@@ -9,12 +9,12 @@ to change something.
 
 | | |
 |---|---|
-| Current version | `0.19.2` |
+| Current version | `0.19.3` |
 | Elixir | `~> 1.18` |
 
 ```elixir
 defp deps do
-  [{:nous, "~> 0.19.2"}]
+  [{:nous, "~> 0.19.3"}]
 end
 ```
 
@@ -39,6 +39,7 @@ inline.
 - [0.18.2 to 0.18.3](#0182-to-0183) — InputGuard checks every unanswered message and text attachments
 - [0.18.3 to 0.19.0](#0183-to-0190) — `llamacpp:` tool calling and `llama_cpp_ex ~> 0.8.63`, agent `max_iterations`
 - [0.19.0 to 0.19.1](#0190-to-0191) — plugins initialise on every entry point, memory `:namespace` scoping, KB health-check scoping
+- [0.19.2 to 0.19.3](#0192-to-0193) — per-run `max_iterations`, `messages:` sends the system prompt, `seed` forwarded
 - [Related guides](#related-guides)
 
 ## 0.15.x to 0.16.0
@@ -823,6 +824,46 @@ can change for shared stores. Custom `Nous.KnowledgeBase.Store` backends:
 the optional `link_endpoints/1` callback replaces `link_counts_by_source/1`
 (see the [Knowledge Base guide](knowledge_base.md)). Without it the check
 stays correct but calls `outlinks/2` once per entry.
+
+## 0.19.2 to 0.19.3
+
+No API removals. Four fixes can change what a working setup does:
+
+### `max_iterations` is per run
+
+Continued runs (`context:`, `run_with_context/3`, every AgentServer turn)
+used to share one iteration counter for the whole conversation, so long
+sessions eventually failed every prompt with `MaxIterationsExceeded`. Each
+run now counts its own model requests. If you relied on `max_iterations` as
+a budget for a whole conversation, count runs or tokens yourself.
+`result.iterations` and the `[:nous, :agent, :run, :stop]` `iterations`
+measurement are now per run too; dashboards that summed them per session
+were double counting and now add up correctly.
+
+### `Nous.run(agent, messages: [...])` sends the agent's prompt
+
+The agent's `instructions` (or `system_prompt`), todo list and
+structured-output instructions are now prepended, exactly as for a string
+prompt. If your list already starts with a `:system` message, it is kept
+and nothing is prepended, so code that worked around the old behaviour by
+supplying its own system message is unaffected. Code that relied on this
+path sending *no* system prompt should pass its own leading system
+message.
+
+### Plugin system prompts on continued runs
+
+A plugin's `system_prompt/2` now runs at the start of every run, not only
+the first run of a context, so its fragment reflects the new input.
+
+### `seed` reaches the provider
+
+`model_settings: %{seed: n}` is now sent by every OpenAI-style provider
+(`seed`) and Mistral (`random_seed`); responses become more reproducible.
+Anthropic has no seed parameter and logs a one-time warning instead. If you
+used `extra_body: %{seed: n}` as a workaround, it still works and wins over
+`:seed`. Custom providers built with `use Nous.Provider` and the default
+request builder now forward `seed`; pass `seed_param: "name"` to rename it
+or `seed_param: nil` if the API rejects it.
 
 ## Related guides
 

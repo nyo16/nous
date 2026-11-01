@@ -42,7 +42,9 @@ defmodule Nous.Providers.Anthropic do
   use Nous.Provider,
     id: :anthropic,
     default_base_url: "https://api.anthropic.com",
-    default_env_key: "ANTHROPIC_API_KEY"
+    default_env_key: "ANTHROPIC_API_KEY",
+    # The Messages API has no seed parameter.
+    seed_param: nil
 
   alias Nous.Providers.HTTP
 
