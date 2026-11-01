@@ -311,7 +311,9 @@ defmodule Nous.Eval.Scorers.TraceScorersTest do
                score(
                  Scorers.MaxCost,
                  [max_usd: 3.0, model: "openai:gpt-4o"],
-                 B.new() |> B.build(), usage: usage)
+                 B.new() |> B.build(),
+                 usage: usage
+               )
     end
 
     test "missing requests make the cost unprovable" do
