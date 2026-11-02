@@ -151,6 +151,16 @@ defmodule Nous.Eval do
     * `:splits` - run only these splits (`["test"]`; see
       `Nous.Eval.Case.splits/0`)
     * `:tags` - run only cases carrying at least one of these tags
+    * `:cases` - run only the cases with these ids (strings), after the
+      `:splits` and `:tags` filters; an id they do not hold is
+      `{:error, {:unknown_cases, ids}}`
+    * `:profile` - a `Nous.Profile` applied (`Nous.Profile.apply/2`) to every
+      agent `c:agent/1` builds, so the whole run uses the profile's text; the
+      fingerprint records its id. A profile that does not apply to the first
+      case's agent is `{:error, {:profile, %Nous.Errors.ProfileError{}}}`
+      before any model call; one that fails on a later case's agent makes
+      that sample `:error`. `Nous.Eval.Optimizer` evaluates its candidates
+      this way
     * `:budget` - `[max_tokens: n, max_cost: usd, max_samples: n]`, see
       "Budgets"
     * `:store` - `{store_module, init_opts}`: the run is persisted with
@@ -226,6 +236,9 @@ defmodule Nous.Eval do
     * a message string - the task module is invalid or one of its callbacks
       failed (see `Nous.Eval.Task`)
     * `:no_cases` - the filters left no case
+    * `{:unknown_cases, ids}` - `:cases` names ids the filtered dataset
+      does not hold
+    * `{:profile, error}` - the `:profile` does not apply to the task's agent
     * `{:unknown_options, keys}` / `{:invalid_option, key, value}`
     * `{:scorer_init_failed, module, reason}` - a scorer's options are
       invalid

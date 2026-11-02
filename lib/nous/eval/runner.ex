@@ -51,6 +51,8 @@ defmodule Nous.Eval.Runner do
     :seed,
     :splits,
     :tags,
+    :cases,
+    :profile,
     :budget,
     :store,
     :scorer_timeout,
@@ -84,9 +86,30 @@ defmodule Nous.Eval.Runner do
       [splits: config.splits, tags: config.tags]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-    case Dataset.filter(dataset, filters) do
-      %Dataset{cases: []} -> {:error, :no_cases}
-      selected -> {:ok, selected}
+    with {:ok, dataset} <- select_cases(Dataset.filter(dataset, filters), config.cases) do
+      case dataset do
+        %Dataset{cases: []} -> {:error, :no_cases}
+        selected -> {:ok, selected}
+      end
+    end
+  end
+
+  # `cases:` keeps the named ids after the split and tag filters; an id the
+  # filtered dataset does not hold is an error, never a silent omission.
+  defp select_cases(dataset, nil), do: {:ok, dataset}
+
+  defp select_cases(dataset, ids) do
+    known = MapSet.new(dataset.cases, & &1.id)
+
+    case ids |> Enum.reject(&MapSet.member?(known, &1)) |> Enum.uniq() do
+      [] ->
+        wanted = MapSet.new(ids)
+        cases = Enum.filter(dataset.cases, &MapSet.member?(wanted, &1.id))
+        # An empty filter only recomputes the hash, over the kept cases.
+        {:ok, Dataset.filter(%{dataset | cases: cases}, [])}
+
+      missing ->
+        {:error, {:unknown_cases, Enum.sort(missing)}}
     end
   end
 
@@ -244,7 +267,8 @@ defmodule Nous.Eval.Runner do
     [first | _] = dataset.cases
     seed = sample_seed(config.seed, first.id, 0)
 
-    with {:ok, agent} <- build_agent(task, first, 0, seed, deps, state) do
+    with {:ok, agent} <- build_agent(task, first, 0, seed, deps, state),
+         {:ok, agent} <- with_profile(agent, config.profile) do
       if seed != nil and agent.model_settings[:seed] == seed,
         do: {:ok, %{agent | model_settings: Map.delete(agent.model_settings, :seed)}},
         else: {:ok, agent}
@@ -253,6 +277,18 @@ defmodule Nous.Eval.Runner do
 
   defp build_agent(task, %Case{} = c, index, seed, deps, state) do
     EvalTask.agent(task, %{case: c, sample: index, seed: seed, deps: deps, state: state})
+  end
+
+  # `profile:` replaces the text of every agent the task builds. A profile
+  # that does not apply to the first case's agent fails the run before any
+  # model call; one that fails on a later case's agent fails that sample.
+  defp with_profile(agent, nil), do: {:ok, agent}
+
+  defp with_profile(agent, profile) do
+    case Nous.Profile.apply(profile, agent) do
+      {:ok, agent} -> {:ok, agent}
+      {:error, error} -> {:error, {:profile, error}}
+    end
   end
 
   # The models a cost budget must be able to price: the agent's model, its
@@ -327,37 +363,42 @@ defmodule Nous.Eval.Runner do
   end
 
   defp run_one(ctx, c, index, seed) do
-    case build_agent(ctx.task, c, index, seed, ctx.deps, ctx.state) do
-      {:ok, agent} ->
-        agent = inject_seed(agent, seed)
-        trace_id = RunScope.new_trace_id()
-        :ok = Budget.track(ctx.budget, trace_id)
-        check = Budget.cancellation_check(ctx.budget)
+    with {:ok, agent} <- build_agent(ctx.task, c, index, seed, ctx.deps, ctx.state),
+         {:ok, agent} <- with_profile(agent, ctx.config.profile) do
+      agent = inject_seed(agent, seed)
+      trace_id = RunScope.new_trace_id()
+      :ok = Budget.track(ctx.budget, trace_id)
+      check = Budget.cancellation_check(ctx.budget)
 
-        case Collector.run_sample(
-               fn -> invoke(agent, c.input, ctx.deps, check) end,
-               sample_opts(ctx.config, trace_id)
-             ) do
-          {:ok, collected} ->
-            {:sample, finish(ctx, c, index, seed, agent, collected)}
+      case Collector.run_sample(
+             fn -> invoke(agent, c.input, ctx.deps, check) end,
+             sample_opts(ctx.config, trace_id)
+           ) do
+        {:ok, collected} ->
+          {:sample, finish(ctx, c, index, seed, agent, collected)}
 
-          {:error, reason} ->
-            :atomics.put(ctx.abort, 1, 1)
-            {:aborted, reason}
-        end
-
-      {:error, message} ->
+        {:error, reason} ->
+          :atomics.put(ctx.abort, 1, 1)
+          {:aborted, reason}
+      end
+    else
+      {:error, reason} ->
         {:sample,
          %Sample{
            case_id: c.id,
            index: index,
            seed: seed,
            outcome: :error,
-           error: message,
+           error: sample_error(reason),
            verdict: :error
          }}
     end
   end
+
+  defp sample_error({:profile, error}),
+    do: "the profile does not apply: " <> Exception.message(error)
+
+  defp sample_error(message) when is_binary(message), do: message
 
   defp inject_seed(agent, nil), do: agent
 
@@ -756,6 +797,8 @@ defmodule Nous.Eval.Runner do
       seed: nil,
       splits: nil,
       tags: nil,
+      cases: nil,
+      profile: nil,
       budget: nil,
       store: nil,
       scorer_timeout: nil,
@@ -783,8 +826,9 @@ defmodule Nous.Eval.Runner do
        when key in [:k, :parallelism, :timeout] and is_integer(value) and value > 0,
        do: true
 
-  defp valid_option?(key, nil) when key in [:seed, :splits, :tags, :budget, :store],
-    do: true
+  defp valid_option?(key, nil)
+       when key in [:seed, :splits, :tags, :cases, :profile, :budget, :store],
+       do: true
 
   defp valid_option?(:seed, seed), do: is_integer(seed)
 
@@ -793,6 +837,9 @@ defmodule Nous.Eval.Runner do
 
   defp valid_option?(:tags, tags),
     do: is_list(tags) and tags != [] and Enum.all?(tags, &is_binary/1)
+
+  defp valid_option?(:cases, ids), do: is_list(ids) and ids != [] and Enum.all?(ids, &is_binary/1)
+  defp valid_option?(:profile, profile), do: is_struct(profile, Nous.Profile)
 
   defp valid_option?(:budget, budget), do: is_list(budget)
 

@@ -187,12 +187,22 @@ defmodule Nous.Eval.CLI do
   def open_store(nil), do: open_store(@default_store)
 
   def open_store(spec) do
-    with [kind, location] when location != "" <- String.split(spec, ":", parts: 2),
-         {:ok, {module, key}} <- lookup(@stores, kind, "store kind") do
-      case module.init([{key, location}]) do
+    with {:ok, {module, init_opts}} <- store_spec(spec) do
+      case module.init(init_opts) do
         {:ok, state} -> {:ok, {module, state, spec}}
         {:error, reason} -> {:error, "cannot open store #{spec}: #{describe(reason)}"}
       end
+    end
+  end
+
+  @doc false
+  # `file:DIR`, `sqlite:PATH` or `duckdb:PATH` → `{module, init_opts}`,
+  # without opening the store.
+  @spec store_spec(String.t()) :: {:ok, {module(), keyword()}} | {:error, String.t()}
+  def store_spec(spec) do
+    with [kind, location] when location != "" <- String.split(spec, ":", parts: 2),
+         {:ok, {module, key}} <- lookup(@stores, kind, "store kind") do
+      {:ok, {module, [{key, location}]}}
     else
       {:error, _} = error ->
         error
