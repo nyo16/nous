@@ -83,15 +83,16 @@ Provider-specific configuration and features:
 
 ## Evaluation Examples
 
-Test, benchmark, and optimize agents:
+Evaluate agents with `Nous.Eval` task modules, datasets and scorers. Every script runs offline (a scripted model is installed with `Nous.ModelDispatcher.put_dispatcher/1`), so no API key is needed. See the [evaluation guide](../docs/guides/evaluation.md).
 
 | File | Description |
 |------|-------------|
-| [eval/01_basic_evaluation.exs](eval/01_basic_evaluation.exs) | Build a suite, run it, read pass/fail metrics |
-| [eval/02_yaml_suite.exs](eval/02_yaml_suite.exs) | Load a test suite from YAML |
-| [eval/03_optimization.exs](eval/03_optimization.exs) | Optimize prompt/model parameters over a search space |
-| [eval/04_custom_evaluator.exs](eval/04_custom_evaluator.exs) | Write a custom evaluator |
-| [eval/05_ab_testing.exs](eval/05_ab_testing.exs) | A/B compare two agent configurations |
+| [eval/01_basic_evaluation.exs](eval/01_basic_evaluation.exs) | Task module, Elixir dataset, built-in scorers, `Nous.Eval.run/2`, console report |
+| [eval/02_yaml_dataset.exs](eval/02_yaml_dataset.exs) | YAML/JSONL datasets (`nous.case/1`, in `examples/eval/data/`) with scorers named in the file; markdown report |
+| [eval/03_custom_scorer.exs](eval/03_custom_scorer.exs) | A `Nous.Eval.Scorer` module, `Scorers.Function`, required gates vs weighted soft scorers, scorer errors |
+| [eval/04_baseline_compare.exs](eval/04_baseline_compare.exs) | Store runs, set a baseline label, gate a candidate with `Nous.Eval.Compare` |
+| [eval/05_trace_inspection.exs](eval/05_trace_inspection.exs) | Read a failing sample's trace (`Nous.Eval.Trace`) and re-score stored runs with `Nous.Eval.rescore/3` |
+| [eval/06_optimize_profile.exs](eval/06_optimize_profile.exs) | `Nous.Eval.Optimizer` (GEPA) turns a better tool description into an accepted `Nous.Profile`, then loads it into the agent |
 
 ## Decision Model Examples
 

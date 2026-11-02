@@ -56,10 +56,21 @@ defmodule Nous.Workflow.Telemetry do
   Every `start_time` argument is a `System.monotonic_time/0` reading taken when
   the corresponding `:start` event was emitted — the `:stop` and `:exception`
   events turn it into the `:duration` measurement.
+
+  ## Correlation keys
+
+  Every event also carries the agent-run correlation keys `trace_id`,
+  `agent_run_id`, `parent_agent_run_id` and `tool_call_id` (see
+  `Nous.Telemetry`): non-nil when the workflow runs inside an agent run (for
+  example from a tool) or an eval sample, nil otherwise. They identify the
+  *enclosing* agent run, never the workflow execution — `workflow_id` is the
+  graph id.
   """
 
   @typedoc "Monotonic timestamp captured when the matching `:start` event fired."
   @type start_time :: integer()
+
+  alias Nous.Telemetry.RunScope
 
   @doc """
   Emit `[:nous, :workflow, :run, :start]`.
@@ -78,8 +89,8 @@ defmodule Nous.Workflow.Telemetry do
       ...> )
       iex> Telemetry.workflow_start("wf_1", "research", 3)
       iex> :telemetry.detach("doctest-workflow-start")
-      iex> receive do: ({:telemetry, metadata} -> metadata)
-      %{workflow_id: "wf_1", workflow_name: "research", node_count: 3}
+      iex> %{workflow_id: "wf_1", workflow_name: "research", node_count: 3, trace_id: nil} =
+      ...>   receive do: ({:telemetry, metadata} -> metadata)
 
   """
   @spec workflow_start(String.t(), String.t() | nil, non_neg_integer()) :: :ok
@@ -87,7 +98,11 @@ defmodule Nous.Workflow.Telemetry do
     :telemetry.execute(
       [:nous, :workflow, :run, :start],
       %{system_time: System.system_time(), monotonic_time: System.monotonic_time()},
-      %{workflow_id: workflow_id, workflow_name: workflow_name, node_count: node_count}
+      RunScope.merge(%{
+        workflow_id: workflow_id,
+        workflow_name: workflow_name,
+        node_count: node_count
+      })
     )
   end
 
@@ -103,7 +118,7 @@ defmodule Nous.Workflow.Telemetry do
     :telemetry.execute(
       [:nous, :workflow, :run, :stop],
       %{duration: System.monotonic_time() - start_time},
-      %{workflow_id: workflow_id, status: status, nodes_executed: nodes_executed}
+      RunScope.merge(%{workflow_id: workflow_id, status: status, nodes_executed: nodes_executed})
     )
   end
 
@@ -118,7 +133,7 @@ defmodule Nous.Workflow.Telemetry do
     :telemetry.execute(
       [:nous, :workflow, :run, :exception],
       %{duration: System.monotonic_time() - start_time},
-      %{workflow_id: workflow_id, reason: reason}
+      RunScope.merge(%{workflow_id: workflow_id, reason: reason})
     )
   end
 
@@ -133,7 +148,7 @@ defmodule Nous.Workflow.Telemetry do
     :telemetry.execute(
       [:nous, :workflow, :node, :start],
       %{system_time: System.system_time(), monotonic_time: System.monotonic_time()},
-      %{workflow_id: workflow_id, node_id: node_id, node_type: node_type}
+      RunScope.merge(%{workflow_id: workflow_id, node_id: node_id, node_type: node_type})
     )
   end
 
@@ -149,7 +164,12 @@ defmodule Nous.Workflow.Telemetry do
     :telemetry.execute(
       [:nous, :workflow, :node, :stop],
       %{duration: System.monotonic_time() - start_time},
-      %{workflow_id: workflow_id, node_id: node_id, node_type: node_type, success: success}
+      RunScope.merge(%{
+        workflow_id: workflow_id,
+        node_id: node_id,
+        node_type: node_type,
+        success: success
+      })
     )
   end
 
@@ -164,7 +184,12 @@ defmodule Nous.Workflow.Telemetry do
     :telemetry.execute(
       [:nous, :workflow, :node, :exception],
       %{duration: System.monotonic_time() - start_time},
-      %{workflow_id: workflow_id, node_id: node_id, node_type: node_type, reason: reason}
+      RunScope.merge(%{
+        workflow_id: workflow_id,
+        node_id: node_id,
+        node_type: node_type,
+        reason: reason
+      })
     )
   end
 end

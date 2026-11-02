@@ -180,13 +180,16 @@ defmodule Nous.Session.D2MessageContractTest do
       assert result.context.messages == result.all_messages
     end
 
-    test "new_messages is the assistant-onward suffix of all_messages" do
+    test "new_messages is what the run appended: its prompt onward" do
       {:ok, result} = Nous.run(agent(), "say hello")
 
       assert result.new_messages ==
-               Enum.drop_while(result.all_messages, &(&1.role != :assistant))
+               Enum.drop_while(result.all_messages, &(&1.role != :user))
 
-      assert shape(result.new_messages) |> Enum.map(& &1.role) == [:assistant, :tool, :assistant]
+      assert shape(result.new_messages) |> Enum.map(& &1.role) ==
+               [:user, :assistant, :tool, :assistant]
+
+      assert result.new_messages_truncated? == false
     end
 
     test "output is the final assistant content" do
@@ -214,7 +217,8 @@ defmodule Nous.Session.D2MessageContractTest do
         Message.assistant("seeded assistant")
       ]
 
-      {:ok, result} = Nous.run(agent(system_prompt: nil), messages: seeded)
+      {:ok, result} =
+        Nous.run(agent(system_prompt: nil), messages: seeded, system_message: :caller)
 
       # The seeded prefix survives verbatim, in order, at the head.
       assert shape(Enum.take(result.all_messages, 3)) == shape(seeded)
@@ -249,9 +253,9 @@ defmodule Nous.Session.D2MessageContractTest do
 
       serialized = Context.serialize(result.context)
 
-      # v3: no second copy of the transcript in the blob (audit P-M10) — the
+      # v3+: no second copy of the transcript in the blob (audit P-M10) — the
       # events ARE the transcript, and the loader folds them back.
-      assert serialized.version == 3
+      assert serialized.version == 4
       refute Map.has_key?(serialized, :messages)
 
       {:ok, restored} = Context.deserialize(serialized)

@@ -1,194 +1,434 @@
 defmodule Nous.Eval.Reporter.Console do
   @moduledoc """
-  Console output for evaluation reports.
+  Plain-text report for a terminal.
+
+  Options:
+
+    * `:colors` - ANSI colors for verdicts and labels; default
+      `IO.ANSI.enabled?/0` (false when stdout is not a TTY)
+    * `:max_cases` - how many case ids to list per group, default `20`
+
+  Case ids and scorer names are printed as given, with control characters
+  replaced by `?` so stored data cannot move the cursor or recolor the
+  terminal.
   """
 
-  alias Nous.Eval.{SuiteResult, Result}
+  @behaviour Nous.Eval.Reporter
 
-  @doc """
-  Print a summary of results to console.
-  """
-  @spec print(SuiteResult.t(), keyword()) :: :ok
-  def print(%SuiteResult{} = result, opts \\ []) do
-    show_details = Keyword.get(opts, :details, false)
+  import Nous.Eval.Reporter,
+    only: [
+      pct: 1,
+      pp: 1,
+      pct_ci: 1,
+      pp_ci: 1,
+      p_value: 1,
+      money: 1,
+      number: 2,
+      relative: 1,
+      reason_text: 1
+    ]
 
-    print_header(result)
-    print_summary(result)
+  alias Nous.Eval.{Compare, Reporter, Run}
+  alias Nous.Eval.Compare.Metric
 
-    if show_details do
-      print_all_results(result)
-    else
-      print_failures(result)
-    end
+  @impl true
+  def render(subject, opts \\ [])
 
-    print_metrics(result)
-    print_footer(result)
+  def render(%Run{} = run, opts) do
+    s = Reporter.summary(run)
+    o = options(opts)
+    t = s["totals"]
+    v = t["verdicts"]
+    conf = conf_label(s["confidence"])
+    pr = s["pass_rate"]
 
-    :ok
+    [
+      line([
+        "Eval run ",
+        text(s["run_id"]),
+        " (",
+        text(s["task"] || "no task"),
+        "): ",
+        s["status"]
+      ]),
+      line(["Cases ", int(t["cases"]), ", samples ", int(t["samples"]), ", k ", int(s["k"])]),
+      line([
+        "Verdicts: ",
+        int(v["pass"]),
+        " pass, ",
+        int(v["fail"]),
+        " fail, ",
+        color(o, error_color(v["error"]), [int(v["error"]), " error"]),
+        ", ",
+        int(v["none"]),
+        " not run"
+      ]),
+      line(["Error rate: ", pct(t["error_rate"])]),
+      line([
+        "Pass rate: ",
+        pct(pr["estimate"]),
+        "  ",
+        conf,
+        " Wilson ",
+        pct_ci(pr["wilson"]),
+        "  ",
+        conf,
+        " clustered ",
+        pct_ci(pr["clustered"] && pr["clustered"]["ci"])
+      ]),
+      line([
+        "pass@#{s["pass_at_k"]["k"]}: ",
+        pct(s["pass_at_k"]["estimate"]),
+        "  pass^#{s["pass_hat_k"]["k"]}: ",
+        pct(s["pass_hat_k"]["estimate"]),
+        " (#{s["pass_hat_k"]["cases"]} cases)"
+      ]),
+      line([
+        "MDE (one-sided alpha #{s["mde"]["alpha"]}, #{number(s["mde"]["power"] * 100, 0)}% power): ",
+        mde(s["mde"]["pass_rate"])
+      ]),
+      scorers(s["scorers"]),
+      line(["Errors by kind: ", kinds(t["errors_by_kind"])]),
+      line(["Agent outcomes: ", outcomes(t["outcomes"])]),
+      resources(s["resources"]),
+      budget(s),
+      failing(s, o)
+    ]
   end
 
-  @doc """
-  Print detailed results including all tests.
-  """
-  @spec print_detailed(SuiteResult.t(), keyword()) :: :ok
-  def print_detailed(%SuiteResult{} = result, opts \\ []) do
-    print(result, Keyword.put(opts, :details, true))
+  def render(%Compare{} = c, opts) do
+    o = options(opts)
+
+    [
+      line(["Comparison: ", verdict(o, c.verdict)]),
+      line([
+        "  baseline ",
+        text(c.baseline.id),
+        " -> candidate ",
+        text(c.candidate.id)
+      ]),
+      reasons(c),
+      line([
+        "Cases: ",
+        int(c.comparable_cases),
+        " comparable, ",
+        int(length(c.dataset.added)),
+        " added, ",
+        int(length(c.dataset.removed)),
+        " removed",
+        if(c.dataset.changed?, do: " (dataset changed)", else: "")
+      ]),
+      gate(c, o),
+      mcnemar(c.mcnemar),
+      labels(c),
+      case_list(o, "Broken", Reporter.cases_with(c, :broken, o.max_cases), :red),
+      case_list(o, "Fixed", Reporter.cases_with(c, :fixed, o.max_cases), :green),
+      case_list(o, "Error changed", Reporter.error_changed(c, o.max_cases), :yellow),
+      breakdowns(c.breakdowns),
+      compare_resources(c.resources),
+      line([
+        "Errors by kind (candidate): ",
+        kinds(c.candidate.summary["totals"]["errors_by_kind"]),
+        "; error rate ",
+        pct(c.candidate.summary["totals"]["error_rate"])
+      ]),
+      line(["Fingerprint changes: ", fingerprint(c.fingerprint_changes)]),
+      line(
+        "No significant change is not evidence of no change: drops smaller than the MDE can go undetected."
+      )
+    ]
   end
 
-  defp print_header(result) do
-    IO.puts("")
-    IO.puts(colorize("=" |> String.duplicate(60), :cyan))
-    IO.puts(colorize("  Nous Evaluation Report: #{result.suite_name}", :cyan))
-    IO.puts(colorize("=" |> String.duplicate(60), :cyan))
-    IO.puts("")
+  defp options(opts) do
+    %{
+      colors: Keyword.get(opts, :colors, IO.ANSI.enabled?()),
+      max_cases: Keyword.get(opts, :max_cases, 20)
+    }
   end
 
-  defp print_summary(result) do
-    pass_color =
-      if result.pass_rate >= 0.8,
-        do: :green,
-        else: if(result.pass_rate >= 0.5, do: :yellow, else: :red)
+  # ── Run sections ────────────────────────────────────────────────────────
 
-    IO.puts("  Summary")
-    IO.puts("  -------")
-    IO.puts("  Total Tests:   #{result.total_count}")
-    IO.puts("  " <> colorize("Passed:        #{result.pass_count}", :green))
-    IO.puts("  " <> colorize("Failed:        #{result.fail_count}", :red))
+  defp scorers(scorers) when map_size(scorers) == 0, do: line("Scorers: none")
 
-    if result.error_count > 0 do
-      IO.puts("  " <> colorize("Errors:        #{result.error_count}", :yellow))
-    end
-
-    IO.puts("  " <> colorize("Pass Rate:     #{format_percent(result.pass_rate)}", pass_color))
-    IO.puts("  Avg Score:     #{Float.round(result.aggregate_score, 3)}")
-    IO.puts("  Duration:      #{result.duration_ms}ms")
-    IO.puts("")
-  end
-
-  defp print_all_results(%{results: results}) do
-    IO.puts("  Test Results")
-    IO.puts("  ------------")
-
-    Enum.each(results, fn r ->
-      status = if r.passed, do: colorize("PASS", :green), else: colorize("FAIL", :red)
-      score = Float.round(r.score, 2)
-      IO.puts("  [#{status}] #{r.test_case_name} (score: #{score}, #{r.duration_ms}ms)")
-
-      if not r.passed and r.evaluation_details[:reason] do
-        IO.puts("         " <> colorize("Reason: #{r.evaluation_details[:reason]}", :yellow))
+  defp scorers(scorers) do
+    [
+      line("Scorers:"),
+      for {name, m} <- Enum.sort(scorers) do
+        line([
+          "  ",
+          text(name),
+          ": ",
+          scorer_scores(m),
+          "skipped ",
+          int(m["skipped"]),
+          ", errors ",
+          kinds(m["errors"]),
+          labels_dist(m["labels"])
+        ])
       end
-    end)
-
-    IO.puts("")
+    ]
   end
 
-  defp print_failures(%{results: results}) do
-    failures = Enum.reject(results, & &1.passed)
+  defp scorer_scores(%{"samples" => 0}), do: "no scores, "
 
-    if failures != [] do
-      IO.puts("  " <> colorize("Failures", :red))
-      IO.puts("  --------")
+  defp scorer_scores(m) do
+    [
+      "pass ",
+      pct(m["pass_rate"]["estimate"]),
+      " ",
+      pct_ci(m["pass_rate"]["ci"]),
+      ", mean ",
+      number(m["mean"] && m["mean"]["estimate"], 3),
+      ", "
+    ]
+  end
 
-      Enum.each(failures, fn r ->
-        IO.puts("")
-        IO.puts("  " <> colorize("#{r.test_case_name}", :red))
+  defp labels_dist(labels) when map_size(labels) == 0, do: []
 
-        if Result.has_error?(r) do
-          IO.puts("    Error: #{inspect(r.error)}")
-        else
-          IO.puts("    Score: #{Float.round(r.score, 2)}")
+  defp labels_dist(labels) do
+    [", labels ", labels |> Enum.sort() |> Enum.map_join(" ", fn {l, n} -> "#{text(l)}=#{n}" end)]
+  end
 
-          if r.evaluation_details[:reason] do
-            IO.puts("    Reason: #{r.evaluation_details[:reason]}")
-          end
+  defp kinds(by_kind) when map_size(by_kind) == 0, do: "none"
 
-          IO.puts("    Expected: #{format_expected(r.expected_output)}")
-          IO.puts("    Actual:   #{format_actual(r.actual_output)}")
-        end
-      end)
+  defp kinds(by_kind),
+    do: by_kind |> Enum.sort() |> Enum.map_join(" ", fn {k, n} -> "#{text(k)}=#{n}" end)
 
-      IO.puts("")
+  defp outcomes(outcomes) do
+    Enum.map_join(["ok", "error", "killed", "budget_exhausted"], ", ", &"#{outcomes[&1]} #{&1}")
+  end
+
+  defp resources(r) do
+    line([
+      "Resources: cost ",
+      money(r["cost"]["total"]),
+      " total, ",
+      money(r["cost"]["mean"]),
+      "/sample; latency mean ",
+      number(r["duration_ms"]["mean"], 0),
+      " ms, p95 ",
+      number(r["duration_ms"]["p95"], 0),
+      " ms; tokens ",
+      int(r["tokens"]["total"]),
+      " total, ",
+      number(r["tokens"]["mean_total"], 0),
+      "/sample"
+    ])
+  end
+
+  defp budget(%{"budget" => %{"exhausted" => true, "unrun_samples" => n}}),
+    do: line(["Budget: exhausted, ", int(n), " samples not run"])
+
+  defp budget(_summary), do: []
+
+  defp failing(s, o) do
+    case Reporter.failing_cases(s, o.max_cases) do
+      {[], 0} -> []
+      {ids, total} -> line(["Failing cases (", int(total), "): ", ids_text(ids, total)])
     end
   end
 
-  defp print_metrics(%{metrics_summary: nil}), do: :ok
+  # ── Comparison sections ─────────────────────────────────────────────────
 
-  defp print_metrics(%{metrics_summary: metrics}) do
-    IO.puts("  Metrics")
-    IO.puts("  -------")
+  defp verdict(o, :pass), do: color(o, :green, "PASS")
+  defp verdict(o, :regression), do: color(o, :red, "REGRESSION")
+  defp verdict(o, :error), do: color(o, :yellow, "ERROR")
 
-    IO.puts(
-      "  Tokens:       #{metrics.total_tokens} total (avg: #{Float.round(metrics.mean_tokens, 1)})"
-    )
+  defp reasons(%Compare{reasons: []}), do: []
 
-    IO.puts(
-      "  Latency:      p50=#{metrics.p50_latency_ms}ms, p95=#{metrics.p95_latency_ms}ms, p99=#{metrics.p99_latency_ms}ms"
-    )
-
-    IO.puts("  Tool Calls:   #{metrics.total_tool_calls}")
-
-    if metrics.total_estimated_cost do
-      IO.puts("  Est. Cost:    $#{Float.round(metrics.total_estimated_cost, 4)}")
-    end
-
-    IO.puts("")
+  defp reasons(%Compare{reasons: reasons}) do
+    [line("Reasons:"), Enum.map(reasons, &line(["  - ", reason_text(&1)]))]
   end
 
-  defp print_footer(result) do
-    status =
-      cond do
-        result.pass_rate == 1.0 -> colorize("ALL TESTS PASSED", :green)
-        result.pass_rate >= 0.8 -> colorize("MOSTLY PASSED", :yellow)
-        true -> colorize("TESTS FAILED", :red)
+  defp gate(%Compare{gate: gate, metrics: metrics}, o) do
+    [
+      line([
+        "Gate (margin ",
+        number(gate.margin * 100, 1),
+        " pp, one-sided alpha ",
+        number(gate.alpha, 2),
+        ", Holm, max error rate ",
+        pct(gate.max_error_rate),
+        "):"
+      ]),
+      Enum.map(metrics, &gate_metric(&1, o)),
+      if(Enum.any?(metrics, & &1.small_n?),
+        do: line("  note: fewer than 100 cases; bootstrap intervals may undercover"),
+        else: []
+      )
+    ]
+  end
+
+  defp gate_metric(%{status: :untestable} = m, o) do
+    line([
+      "  ",
+      text(Metric.name(m.metric)),
+      ": ",
+      color(o, :yellow, "UNTESTABLE"),
+      " (",
+      inspect(m.detail),
+      ")"
+    ])
+  end
+
+  defp gate_metric(m, o) do
+    line([
+      "  ",
+      text(Metric.name(m.metric)),
+      ": ",
+      pct(m.baseline),
+      " -> ",
+      pct(m.candidate),
+      " (",
+      pp(m.delta),
+      ", CI ",
+      pp_ci(m.ci),
+      "), p ",
+      p_value(m.p_value),
+      ", Holm p ",
+      p_value(m.adjusted_p_value),
+      ", MDE ",
+      mde(m.mde),
+      ", n ",
+      int(m.n),
+      ": ",
+      if(m.regression?, do: color(o, :red, "REGRESSION"), else: color(o, :green, "ok"))
+    ])
+  end
+
+  defp mcnemar(nil), do: []
+
+  defp mcnemar(m) do
+    line([
+      "McNemar (majority pass): ",
+      int(m.b),
+      " fixed vs ",
+      int(m.c),
+      " broken, exact p ",
+      p_value(m.p_value),
+      ", mid-p ",
+      p_value(m.mid_p_value)
+    ])
+  end
+
+  defp labels(%Compare{counts: n}) do
+    line([
+      "Labels: ",
+      int(n.fixed),
+      " fixed, ",
+      int(n.broken),
+      " broken, ",
+      int(n.flaky),
+      " flaky, ",
+      int(n.unchanged),
+      " unchanged, ",
+      int(n.not_comparable),
+      " not comparable, ",
+      int(n.error_changed),
+      " error changed"
+    ])
+  end
+
+  defp case_list(_o, _title, {[], 0}, _color), do: []
+
+  defp case_list(o, title, {ids, total}, color) do
+    line([color(o, color, title), " (", int(total), "): ", ids_text(ids, total)])
+  end
+
+  defp breakdowns([]), do: []
+
+  defp breakdowns(entries) do
+    [
+      line("Breakdowns (exploratory, BH-adjusted):"),
+      for b <- entries do
+        line([
+          "  ",
+          Atom.to_string(b.kind),
+          " ",
+          text(b.name),
+          ": ",
+          pct(b.baseline),
+          " -> ",
+          pct(b.candidate),
+          " (",
+          pp(b.delta),
+          "), n ",
+          int(b.n),
+          ", p ",
+          p_value(b.p_value),
+          ", BH p ",
+          p_value(b.adjusted_p_value),
+          if(b.significant?, do: " *", else: "")
+        ])
       end
-
-    IO.puts(colorize("-" |> String.duplicate(60), :cyan))
-    IO.puts("  #{status}")
-    IO.puts(colorize("-" |> String.duplicate(60), :cyan))
-    IO.puts("")
+    ]
   end
 
-  defp format_percent(rate) do
-    "#{Float.round(rate * 100, 1)}%"
+  defp compare_resources(r) do
+    [
+      line("Resources:"),
+      resource_line("cost/sample", r.cost_mean, &money/1),
+      resource_line("cost total", r.cost_total, &money/1),
+      resource_line("latency mean", r.duration_ms_mean, &ms/1),
+      resource_line("latency p95", r.duration_ms_p95, &ms/1),
+      resource_line("tokens/sample", r.tokens_mean, &number(&1, 0))
+    ]
   end
 
-  defp format_expected(expected) when is_binary(expected) do
-    truncate(expected, 50)
+  defp resource_line(label, d, fmt) do
+    rel = relative(d.relative)
+
+    line([
+      "  ",
+      label,
+      " ",
+      fmt.(d.baseline),
+      " -> ",
+      fmt.(d.candidate),
+      if(rel == "", do: "", else: " (#{rel})")
+    ])
   end
 
-  defp format_expected(expected) do
-    expected |> inspect() |> truncate(50)
+  defp ms(nil), do: "n/a"
+  defp ms(x), do: number(x, 0) <> " ms"
+
+  defp fingerprint([]), do: "none"
+  defp fingerprint(changes), do: Enum.map_join(changes, ", ", &text(&1.key))
+
+  # ── Helpers ─────────────────────────────────────────────────────────────
+
+  defp mde(nil), do: "n/a"
+  defp mde(x), do: number(x * 100, 1) <> " pp"
+
+  defp conf_label(conf), do: number(conf * 100, 0) <> "%"
+
+  defp ids_text(ids, total) do
+    shown = Enum.map_join(ids, ", ", &text/1)
+    if total > length(ids), do: "#{shown}, ... (#{total - length(ids)} more)", else: shown
   end
 
-  defp format_actual(actual) when is_binary(actual) do
-    truncate(actual, 50)
-  end
+  defp error_color(0), do: nil
+  defp error_color(_), do: :yellow
 
-  defp format_actual(actual) do
-    actual |> inspect() |> truncate(50)
-  end
+  defp int(nil), do: "0"
+  defp int(n), do: Integer.to_string(n)
 
-  defp truncate(str, max_len) when byte_size(str) <= max_len, do: str
+  defp line(content), do: [content, ?\n]
 
-  defp truncate(str, max_len) do
-    String.slice(str, 0, max_len - 3) <> "..."
-  end
+  defp color(_o, nil, content), do: content
+  defp color(%{colors: false}, _color, content), do: content
+  defp color(%{colors: true}, color, content), do: [ansi(color), content, IO.ANSI.reset()]
 
-  defp colorize(text, color) do
-    color_code =
-      case color do
-        :red -> "\e[31m"
-        :green -> "\e[32m"
-        :yellow -> "\e[33m"
-        :cyan -> "\e[36m"
-      end
+  defp ansi(:red), do: IO.ANSI.red()
+  defp ansi(:green), do: IO.ANSI.green()
+  defp ansi(:yellow), do: IO.ANSI.yellow()
 
-    reset = "\e[0m"
+  # Untrusted text: no control characters (ANSI escapes, newlines).
+  defp text(nil), do: ""
 
-    if IO.ANSI.enabled?() do
-      "#{color_code}#{text}#{reset}"
-    else
-      text
-    end
+  defp text(value) do
+    value
+    |> to_string()
+    |> String.replace(~r/[\x{00}-\x{1f}\x{7f}-\x{9f}]/u, "?")
   end
 end

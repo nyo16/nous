@@ -63,7 +63,9 @@ IO.puts("--- Method 3: Custom Messages ---\n")
 
 alias Nous.Message
 
-# Build a message list directly
+# Build a message list directly. The agent has its own instructions, which
+# would replace this list's system message; `system_message: :caller` sends
+# the list's own system message instead.
 messages = [
   Message.system("You are a math tutor."),
   Message.user("What is the square root of 144?"),
@@ -71,7 +73,7 @@ messages = [
   Message.user("And what's 12 squared?")
 ]
 
-{:ok, result} = Nous.run(agent, messages: messages)
+{:ok, result} = Nous.run(agent, messages: messages, system_message: :caller)
 IO.puts("Continuing from custom history...")
 IO.puts("Assistant: #{result.output}\n")
 

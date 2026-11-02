@@ -44,12 +44,20 @@ defmodule Nous.Plugins.HumanInTheLoop do
     * `:reject` - Skip execution, return rejection message
     * `{:edit, new_args}` - Proceed with modified arguments
 
+  ## Handler installation
+
+  The handler is installed as the context's approval handler at the start of
+  every run (`c:Nous.Plugin.before_run/2`), not once per context. A continued
+  run therefore picks up a changed `deps[:hitl_config]`, and the plugin's
+  handler wins over an `:approval_handler` option passed alongside
+  `:context`, exactly as it does on a fresh run.
+
   """
 
   @behaviour Nous.Plugin
 
   @impl true
-  def init(_agent, ctx) do
+  def before_run(_agent, ctx) do
     config = get_in(ctx.deps, [:hitl_config])
 
     case config do

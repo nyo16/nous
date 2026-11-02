@@ -35,12 +35,24 @@ defmodule Nous.Provider do
   - `request_stream/3` - High-level streaming with message conversion, telemetry
   - `count_tokens/1` - Token counting (defaults to rough estimate)
 
+  ## Options
+
+  Besides `:id`, `:default_base_url` and `:default_env_key`, `use Nous.Provider`
+  accepts:
+  - `:seed_param` - the request-body key the default request builder writes
+    `model_settings[:seed]` to (default `"seed"`). `nil` means the API has no
+    seed: the setting is dropped with a one-time `Logger.warning` per provider.
+    Providers that override `build_request_params/3` map the seed themselves
+    and keep the option truthful: a provider that never sends a seed (e.g.
+    one with its own `request/3`) declares `seed_param: nil`.
+
   ## Injected Functions
 
   The `use` macro injects:
   - `provider_id/0` - Returns the provider atom ID
   - `default_base_url/0` - Returns the default API base URL
   - `default_env_key/0` - Returns the environment variable name for API key
+  - `seed_param/0` - Returns the `:seed_param` option (`nil`: no seed is sent)
   - `api_key/1` - Returns the API key from opts, env, or config
   - `base_url/1` - Returns base URL from opts, config, or default
   - `request/3` - High-level request (can be overridden)
@@ -122,12 +134,24 @@ defmodule Nous.Provider do
   """
   @callback count_tokens(messages :: list()) :: integer()
 
-  @optional_callbacks [count_tokens: 1, request: 3, request_stream: 3]
+  @doc """
+  The request-body key the provider writes `model_settings[:seed]` to, or
+  `nil` when the provider never sends a seed.
+
+  Injected by `use Nous.Provider` from its `:seed_param` option. Eval run
+  fingerprints read it to record whether a seeded run was reproducible by
+  seed (`Nous.Eval.Fingerprint.seed_forwarded?/1`).
+  """
+  @callback seed_param() :: String.t() | nil
+
+  @optional_callbacks [count_tokens: 1, request: 3, request_stream: 3, seed_param: 0]
 
   defmacro __using__(opts) do
     id = Keyword.fetch!(opts, :id)
     default_base_url = Keyword.fetch!(opts, :default_base_url)
     default_env_key = Keyword.fetch!(opts, :default_env_key)
+    seed_param = Keyword.get(opts, :seed_param, "seed")
+    seed_ast = seed_ast(seed_param)
 
     # Optionally inject the shared OpenAI-compatible `chat/2` + `chat_stream/2`
     # implementations (plus base-URL resolution and header helpers). Providers
@@ -148,6 +172,7 @@ defmodule Nous.Provider do
       @provider_id unquote(id)
       @default_base_url unquote(default_base_url)
       @default_env_key unquote(default_env_key)
+      @seed_param unquote(seed_param)
 
       @impl Nous.Provider
       def provider_id, do: @provider_id
@@ -157,6 +182,9 @@ defmodule Nous.Provider do
 
       @impl Nous.Provider
       def default_env_key, do: @default_env_key
+
+      @impl Nous.Provider
+      def seed_param, do: @seed_param
 
       @doc """
       Get the API key from options, environment, or application config.
@@ -230,11 +258,11 @@ defmodule Nous.Provider do
         :telemetry.execute(
           [:nous, :provider, :request, :start],
           %{system_time: System.system_time(), monotonic_time: start_time},
-          %{
+          Nous.Telemetry.RunScope.merge(%{
             provider: @provider_id,
             model_name: model.model,
             message_count: length(messages)
-          }
+          })
         )
 
         # Build request params and options
@@ -282,23 +310,23 @@ defmodule Nous.Provider do
                 output_tokens: Map.get(usage, :output_tokens) || 0,
                 total_tokens: Map.get(usage, :total_tokens) || 0
               },
-              %{
+              Nous.Telemetry.RunScope.merge(%{
                 provider: @provider_id,
                 model_name: model.model,
                 has_tool_calls: length(parsed_response.tool_calls) > 0
-              }
+              })
             )
 
           {:error, error} ->
             :telemetry.execute(
               [:nous, :provider, :request, :exception],
               %{duration: duration},
-              %{
+              Nous.Telemetry.RunScope.merge(%{
                 provider: @provider_id,
                 model_name: model.model,
                 kind: :error,
                 reason: error
-              }
+              })
             )
         end
 
@@ -316,11 +344,11 @@ defmodule Nous.Provider do
         :telemetry.execute(
           [:nous, :provider, :stream, :start],
           %{system_time: System.system_time(), monotonic_time: start_time},
-          %{
+          Nous.Telemetry.RunScope.merge(%{
             provider: @provider_id,
             model_name: model.model,
             message_count: length(messages)
-          }
+          })
         )
 
         # Build request params and options
@@ -335,10 +363,10 @@ defmodule Nous.Provider do
             :telemetry.execute(
               [:nous, :provider, :stream, :connected],
               %{duration: duration},
-              %{
+              Nous.Telemetry.RunScope.merge(%{
                 provider: @provider_id,
                 model_name: model.model
-              }
+              })
             )
 
             # Transform stream using normalizer
@@ -352,12 +380,12 @@ defmodule Nous.Provider do
             :telemetry.execute(
               [:nous, :provider, :stream, :exception],
               %{duration: duration},
-              %{
+              Nous.Telemetry.RunScope.merge(%{
                 provider: @provider_id,
                 model_name: model.model,
                 kind: :error,
                 reason: error
-              }
+              })
             )
 
             wrapped_error =
@@ -441,6 +469,7 @@ defmodule Nous.Provider do
         |> maybe_put("frequency_penalty", merged_settings[:frequency_penalty])
         |> maybe_put("presence_penalty", merged_settings[:presence_penalty])
         |> maybe_put("stop", merged_settings[:stop_sequences] || merged_settings[:stop])
+        |> put_seed(merged_settings[:seed])
         |> maybe_put("tools", merged_settings[:tools])
         |> maybe_put("tool_choice", merged_settings[:tool_choice])
         # OpenAI-style streaming usage opt-in (no-op on Anthropic/Gemini)
@@ -464,6 +493,8 @@ defmodule Nous.Provider do
 
       defp maybe_put(params, _key, nil), do: params
       defp maybe_put(params, key, value), do: Map.put(params, key, value)
+
+      unquote(seed_ast)
 
       defp maybe_merge_extra_body(params, nil), do: params
       defp maybe_merge_extra_body(params, extra) when extra == %{}, do: params
@@ -526,6 +557,48 @@ defmodule Nous.Provider do
                        ] ++ chat_overridable
                      )
     end
+  end
+
+  @doc false
+  # `put_seed/2` for the default request builder, generated per provider so a
+  # provider without a seed gets no dead branch.
+  def seed_ast(nil) do
+    quote do
+      defp put_seed(params, nil), do: params
+
+      defp put_seed(params, _seed) do
+        Nous.Provider.warn_seed_dropped(@provider_id)
+        params
+      end
+    end
+  end
+
+  def seed_ast(key) when is_binary(key) do
+    quote do
+      defp put_seed(params, nil), do: params
+      defp put_seed(params, seed), do: Map.put(params, unquote(key), seed)
+    end
+  end
+
+  @doc false
+  # Called when `model_settings[:seed]` is set for a provider whose API has no
+  # seed parameter. Warns once per provider per node, so a seeded eval run does
+  # not flood the log, but the caller learns the seed is not reaching the wire.
+  def warn_seed_dropped(provider_id) do
+    key = {__MODULE__, :seed_dropped, provider_id}
+
+    unless :persistent_term.get(key, false) do
+      :persistent_term.put(key, true)
+
+      require Logger
+
+      Logger.warning(
+        "[Nous] #{provider_id} has no seed parameter: model_settings[:seed] is not sent, " <>
+          "so its responses are not reproducible by seed"
+      )
+    end
+
+    :ok
   end
 
   # ──────────────────────────────────────────────────────────────────────────

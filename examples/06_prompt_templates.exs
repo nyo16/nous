@@ -52,7 +52,9 @@ IO.puts("--- Templates with Agent ---")
 
 agent = Nous.new("lmstudio:qwen3")
 
-# Using the messages: option (v0.8.0)
+# Using the messages: option. This agent has no instructions, so the
+# template's system message is sent as is (an agent with instructions would
+# put its own prompt first unless you pass `system_message: :caller`).
 system_template = PromptTemplate.system("You are a <%= @expert_type %> expert. Be concise.")
 user_template = PromptTemplate.user("Explain <%= @concept %> simply.")
 

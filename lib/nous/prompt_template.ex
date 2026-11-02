@@ -33,8 +33,9 @@ defmodule Nous.PromptTemplate do
         PromptTemplate.from_template("Tell me about <%= @topic %>", role: :user)
       ], %{persona: "a historian", topic: "ancient Rome"})
 
-      # Use with Agent.run
-      Agent.run(agent, messages: messages)
+      # Use with Agent.run. An agent with instructions puts its own prompt
+      # first; `system_message: :caller` sends this list's system message.
+      Agent.run(agent, messages: messages, system_message: :caller)
 
   ## Default Values
 

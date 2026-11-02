@@ -32,12 +32,15 @@ defmodule Nous.AgentRunner.PromptAssembly do
 
   # Apply plugin system prompt fragments to context. Called by
   # IterationLoop.prepare_tools/4 after the plugins' before_request, on the
-  # first iteration and on any step that claimed new user input.
+  # first iteration and on any step that claimed new user input. When no
+  # plugin contributes, the overlay is cleared: a continued context still
+  # carries the previous run's fragment, and keeping it would send the
+  # instructions of a skill that has since been deactivated.
   def apply_plugin_system_prompts(agent, ctx) do
-    case Plugin.collect_system_prompts(agent.plugins, agent, ctx) do
-      nil -> ctx
-      plugin_prompt -> Context.put_system_prompt_overlay(ctx, plugin_prompt)
-    end
+    Context.put_system_prompt_overlay(
+      ctx,
+      Plugin.collect_system_prompts(agent.plugins, agent, ctx)
+    )
   end
 
   # Inject todos into system prompt

@@ -943,13 +943,10 @@ defmodule Nous.AgentRunnerTest do
         assert is_list(tools_iter1) and tools_iter1 != []
         assert tools_iter1 == tools_iter2
 
-        # Cache is populated, keyed on {provider, tool-name set}, and stores
-        # exactly what was sent.
-        assert {{:openai, names}, cached_schemas} = result.context.tool_schema_cache
-        assert cached_schemas == tools_iter1
-        assert MapSet.member?(names, "test_tool")
-
-        # Runtime-only: never serialized to persistence.
+        # The memo is run-scoped: build_result clears it, so a continued
+        # context converts the tools its next run has (and nothing stale is
+        # ever persisted).
+        assert result.context.tool_schema_cache == nil
         refute Map.has_key?(Nous.Agent.Context.serialize(result.context), :tool_schema_cache)
       end)
     end

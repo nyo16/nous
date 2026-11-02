@@ -83,6 +83,8 @@ defmodule Nous.Plugins.Skills do
 
   @model_override_warned_key {__MODULE__, :model_override_warned}
 
+  # Once per context: the registry carries which skills are active, so a skill
+  # activated on one turn (by a match or a tool) stays active on the next.
   @impl true
   def init(agent, ctx) do
     if agent.skills == [] do

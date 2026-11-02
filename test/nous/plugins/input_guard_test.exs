@@ -13,16 +13,9 @@ defmodule Nous.Plugins.InputGuardTest do
   # --- Helper: build a context with a user message and config ---
 
   defp build_ctx(user_input, config \\ %{}) do
-    ctx = Context.new(deps: %{input_guard_config: config})
-
-    ctx =
-      if user_input do
-        Context.add_message(ctx, Message.user(user_input))
-      else
-        ctx
-      end
-
-    ctx
+    [deps: %{input_guard_config: config}]
+    |> Context.new()
+    |> Context.add_message(Message.user(user_input))
   end
 
   defp dummy_agent do
@@ -36,16 +29,6 @@ defmodule Nous.Plugins.InputGuardTest do
     }
   end
 
-  # --- init/2 ---
-
-  describe "init/2" do
-    test "initializes last_checked_index in deps" do
-      ctx = build_ctx(nil)
-      ctx = InputGuard.init(dummy_agent(), ctx)
-      assert ctx.deps[:input_guard_last_checked] == -1
-    end
-  end
-
   # --- before_request/3 with Pattern strategy ---
 
   describe "before_request/3 with pattern strategy" do
@@ -55,7 +38,7 @@ defmodule Nous.Plugins.InputGuardTest do
           strategies: [{Nous.Plugins.InputGuard.Strategies.Pattern, []}]
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
@@ -71,7 +54,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{suspicious: :warn, blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
@@ -90,7 +73,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -103,7 +86,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -116,7 +99,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -133,7 +116,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {ctx_after_first, _} = InputGuard.before_request(dummy_agent(), ctx, [])
 
@@ -157,7 +140,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{suspicious: :warn, blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
@@ -179,7 +162,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :log}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
@@ -203,7 +186,7 @@ defmodule Nous.Plugins.InputGuardTest do
           }
         )
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       # No user message to check, so should pass through
@@ -226,7 +209,7 @@ defmodule Nous.Plugins.InputGuardTest do
       # Use content parts with only whitespace text
       msg = %Message{role: :user, content: [%{type: :text, content: "   "}]}
       ctx = %{ctx | messages: [msg]}
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       # Should skip because extracted text is blank
@@ -247,7 +230,7 @@ defmodule Nous.Plugins.InputGuardTest do
 
       msg = %Message{role: :user, content: [%{type: :text, content: "   "}]}
       ctx = %{ctx | messages: [msg]}
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -268,7 +251,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -285,7 +268,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       # One safe + one blocked, :all mode = safe
@@ -305,7 +288,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -326,7 +309,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       # Should not crash — ErrorStrategy is never reached
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
@@ -347,7 +330,7 @@ defmodule Nous.Plugins.InputGuardTest do
           on_violation: fn result -> send(test_pid, {:violation, result.severity}) end
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       InputGuard.before_request(dummy_agent(), ctx, [])
       assert_receive {:violation, :blocked}
@@ -378,7 +361,7 @@ defmodule Nous.Plugins.InputGuardTest do
       }
 
       ctx = %{ctx | messages: [msg]}
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -400,7 +383,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       # ErrorStrategy excluded, SafeStrategy says safe — legacy opt-out behavior
@@ -419,7 +402,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == true
@@ -441,7 +424,7 @@ defmodule Nous.Plugins.InputGuardTest do
           # no fail_closed key → defaults true
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
@@ -464,7 +447,7 @@ defmodule Nous.Plugins.InputGuardTest do
             short_circuit: short_circuit
           })
 
-        ctx = InputGuard.init(dummy_agent(), ctx)
+        ctx = InputGuard.before_run(dummy_agent(), ctx)
         {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
         assert result_ctx.needs_response == false
@@ -483,7 +466,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{suspicious: :block, blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -500,7 +483,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{suspicious: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -516,7 +499,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{suspicious: :warn, blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       # AlwaysBlockStrategy's :blocked verdict wins, not a :suspicious downgrade
@@ -536,7 +519,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{suspicious: :block, blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == true
@@ -562,7 +545,7 @@ defmodule Nous.Plugins.InputGuardTest do
           strategies: [{__MODULE__.ErrorStrategy, []}, {__MODULE__.SafeStrategy, []}]
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
       {_result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
 
       assert_receive {:strategy_dropped, %{count: 1}, %{aggregation: :any, fail_closed: true}}
@@ -908,7 +891,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       assert result_ctx.needs_response == false
@@ -925,7 +908,7 @@ defmodule Nous.Plugins.InputGuardTest do
           policy: %{blocked: :block}
         })
 
-      ctx = InputGuard.init(dummy_agent(), ctx)
+      ctx = InputGuard.before_run(dummy_agent(), ctx)
 
       {result_ctx, _tools} = InputGuard.before_request(dummy_agent(), ctx, [])
       # Should pass because custom patterns don't match

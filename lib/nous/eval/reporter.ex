@@ -1,140 +1,173 @@
 defmodule Nous.Eval.Reporter do
   @moduledoc """
-  Report generation for evaluation results.
+  Renders an eval run or a comparison as text.
 
-  ## Example
+      Nous.Eval.Reporter.render(run)                        # console text
+      Nous.Eval.Reporter.render(comparison, format: :markdown)
+      Nous.Eval.Reporter.render(run, format: :json)
 
-      {:ok, result} = Nous.Eval.run(suite)
+  The subject is a `Nous.Eval.Run` (rendered from its `Nous.Eval.Summary`)
+  or a `Nous.Eval.Compare` result. Built-in formats:
 
-      # Print to console
-      Nous.Eval.Reporter.print(result)
+    * `:console` - `Nous.Eval.Reporter.Console`, plain text with optional
+      ANSI colors
+    * `:markdown` - `Nous.Eval.Reporter.Markdown`, for PR comments
+    * `:json` - `Nous.Eval.Reporter.JSON`, the summary or comparison as
+      canonical JSON
 
-      # Generate JSON
-      json = Nous.Eval.Reporter.to_json(result)
+  `:format` may also be a module implementing this behaviour. Every
+  reporter shows per-scorer metrics, error counts by kind, intervals and the
+  minimum detectable effect; none prints traces or agent output.
 
-      # Write to file
-      Nous.Eval.Reporter.to_file(result, "report.json")
-
+  A run whose `:summary` already holds a `Nous.Eval.Summary` (its
+  `"schema"` key) is rendered from it; otherwise the summary is built from
+  the samples.
   """
 
-  alias Nous.Eval.SuiteResult
+  alias Nous.Eval.{Compare, Run, Summary}
+
+  @doc "Renders `subject`; `opts` are reporter specific."
+  @callback render(subject :: Run.t() | Compare.t(), opts :: keyword()) :: iodata()
+
+  @formats %{
+    console: Nous.Eval.Reporter.Console,
+    markdown: Nous.Eval.Reporter.Markdown,
+    json: Nous.Eval.Reporter.JSON
+  }
 
   @doc """
-  Print results to console.
+  Renders `subject` with the reporter named by `opts[:format]` (default
+  `:console`); the other options go to the reporter.
+
+  Raises `ArgumentError` for an unknown format.
   """
-  @spec print(SuiteResult.t(), keyword()) :: :ok
-  defdelegate print(result, opts \\ []), to: Nous.Eval.Reporter.Console
-
-  @doc """
-  Print detailed results (including failures) to console.
-  """
-  @spec print_detailed(SuiteResult.t(), keyword()) :: :ok
-  defdelegate print_detailed(result, opts \\ []), to: Nous.Eval.Reporter.Console
-
-  @doc """
-  Generate JSON report.
-  """
-  @spec to_json(SuiteResult.t()) :: String.t()
-  defdelegate to_json(result), to: Nous.Eval.Reporter.Json
-
-  @doc """
-  Write report to JSON file.
-  """
-  @spec to_file(SuiteResult.t(), String.t()) :: :ok | {:error, term()}
-  defdelegate to_file(result, path), to: Nous.Eval.Reporter.Json
-
-  @doc """
-  Generate markdown report.
-  """
-  @spec to_markdown(SuiteResult.t()) :: String.t()
-  def to_markdown(%SuiteResult{} = result) do
-    """
-    # Evaluation Report: #{result.suite_name}
-
-    **Date:** #{DateTime.to_iso8601(result.completed_at)}
-    **Duration:** #{result.duration_ms}ms
-
-    ## Summary
-
-    | Metric | Value |
-    |--------|-------|
-    | Total Tests | #{result.total_count} |
-    | Passed | #{result.pass_count} |
-    | Failed | #{result.fail_count} |
-    | Errors | #{result.error_count} |
-    | Pass Rate | #{Float.round(result.pass_rate * 100, 1)}% |
-    | Average Score | #{Float.round(result.aggregate_score, 3)} |
-
-    #{metrics_section(result)}
-
-    ## Test Results
-
-    #{test_results_table(result)}
-
-    #{failures_section(result)}
-    """
+  @spec render(Run.t() | Compare.t(), keyword()) :: iodata()
+  def render(subject, opts \\ []) do
+    {format, opts} = Keyword.pop(opts, :format, :console)
+    reporter(format).render(subject, opts)
   end
 
-  defp metrics_section(%{metrics_summary: nil}), do: ""
+  @doc "The built-in format names."
+  @spec formats() :: [atom()]
+  def formats, do: @formats |> Map.keys() |> Enum.sort()
 
-  defp metrics_section(%{metrics_summary: metrics}) do
-    """
-    ## Metrics
+  defp reporter(format) when is_map_key(@formats, format), do: Map.fetch!(@formats, format)
 
-    | Metric | Value |
-    |--------|-------|
-    | Total Tokens | #{metrics.total_tokens} |
-    | Mean Tokens | #{Float.round(metrics.mean_tokens, 1)} |
-    | P50 Latency | #{metrics.p50_latency_ms}ms |
-    | P95 Latency | #{metrics.p95_latency_ms}ms |
-    | Tool Calls | #{metrics.total_tool_calls} |
-    #{if metrics.total_estimated_cost, do: "| Estimated Cost | $#{Float.round(metrics.total_estimated_cost, 4)} |", else: ""}
-    """
+  defp reporter(module) when is_atom(module) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :render, 2),
+      do: module,
+      else: raise(ArgumentError, "unknown reporter format: #{inspect(module)}")
   end
 
-  defp test_results_table(%{results: results}) do
-    header = "| Test | Status | Score | Duration |\n|------|--------|-------|----------|\n"
+  defp reporter(other), do: raise(ArgumentError, "unknown reporter format: #{inspect(other)}")
 
-    rows =
-      Enum.map(results, fn r ->
-        status = if r.passed, do: "PASS", else: "FAIL"
-        duration = "#{r.duration_ms}ms"
-        "| #{r.test_case_name} | #{status} | #{Float.round(r.score, 2)} | #{duration} |"
-      end)
-      |> Enum.join("\n")
+  # ── Shared by the built-in reporters ────────────────────────────────────
 
-    header <> rows
+  @doc false
+  @spec summary(Run.t()) :: Summary.t()
+  def summary(%Run{summary: %{"schema" => schema} = summary} = run) do
+    if schema == Summary.schema(), do: summary, else: Summary.build(run)
   end
 
-  defp failures_section(%{results: results}) do
-    failures = Enum.reject(results, & &1.passed)
+  def summary(%Run{} = run), do: Summary.build(run)
 
-    if failures == [] do
-      ""
-    else
-      """
-      ## Failures
+  @doc false
+  # "72.5%"; "n/a" for nil.
+  @spec pct(number() | nil) :: String.t()
+  def pct(nil), do: "n/a"
+  def pct(x), do: fixed(x * 100, 1) <> "%"
 
-      #{Enum.map_join(failures, "\n\n", &format_failure/1)}
-      """
-    end
+  @doc false
+  # Signed percentage points: "+5.0 pp", "-12.5 pp".
+  @spec pp(number() | nil) :: String.t()
+  def pp(nil), do: "n/a"
+  def pp(x), do: sign(x) <> fixed(abs(x) * 100, 1) <> " pp"
+
+  @doc false
+  # "[60.1%, 80.2%]"
+  @spec pct_ci([number()] | {number(), number()} | nil) :: String.t()
+  def pct_ci(nil), do: "n/a"
+  def pct_ci({lo, hi}), do: pct_ci([lo, hi])
+  def pct_ci([lo, hi]), do: "[" <> pct(lo) <> ", " <> pct(hi) <> "]"
+
+  @doc false
+  # "[-35.0, +5.0] pp"
+  @spec pp_ci([number()] | {number(), number()} | nil) :: String.t()
+  def pp_ci(nil), do: "n/a"
+  def pp_ci({lo, hi}), do: pp_ci([lo, hi])
+
+  def pp_ci([lo, hi]),
+    do:
+      "[" <>
+        sign(lo) <>
+        fixed(abs(lo) * 100, 1) <> ", " <> sign(hi) <> fixed(abs(hi) * 100, 1) <> "] pp"
+
+  @doc false
+  @spec p_value(number() | nil) :: String.t()
+  def p_value(nil), do: "n/a"
+  def p_value(p) when p < 0.001, do: "<0.001"
+  def p_value(p), do: fixed(p, 3)
+
+  @doc false
+  @spec money(number() | nil) :: String.t()
+  def money(nil), do: "n/a"
+  def money(x), do: "$" <> fixed(x, 4)
+
+  @doc false
+  @spec number(number() | nil, non_neg_integer()) :: String.t()
+  def number(nil, _decimals), do: "n/a"
+  def number(x, 0), do: x |> round() |> Integer.to_string()
+  def number(x, decimals), do: fixed(x, decimals)
+
+  @doc false
+  # "+12.0%" relative change; "" when unknown.
+  @spec relative(number() | nil) :: String.t()
+  def relative(nil), do: ""
+  def relative(r), do: sign(r) <> fixed(abs(r) * 100, 1) <> "%"
+
+  @doc false
+  # The comparison's per-case rows with `label`, capped at `max`.
+  @spec cases_with(Compare.t(), atom(), pos_integer()) :: {[String.t()], non_neg_integer()}
+  def cases_with(%Compare{cases: rows}, label, max) do
+    ids = for %{label: ^label, id: id} <- rows, do: id
+    {Enum.take(ids, max), length(ids)}
   end
 
-  defp format_failure(result) do
-    reason =
-      case result.evaluation_details[:reason] || result.error do
-        nil -> "Unknown"
-        r -> inspect(r)
-      end
-
-    """
-    ### #{result.test_case_name}
-
-    **Reason:** #{reason}
-
-    **Expected:** #{inspect(result.expected_output)}
-
-    **Actual:** #{inspect(result.actual_output)}
-    """
+  @doc false
+  @spec error_changed(Compare.t(), pos_integer()) :: {[String.t()], non_neg_integer()}
+  def error_changed(%Compare{cases: rows}, max) do
+    ids = for %{error_changed: true, id: id} <- rows, do: id
+    {Enum.take(ids, max), length(ids)}
   end
+
+  @doc false
+  # Case ids whose scored samples mostly failed or that only errored.
+  @spec failing_cases(Summary.t(), pos_integer()) :: {[String.t()], non_neg_integer()}
+  def failing_cases(summary, max) do
+    ids =
+      for %{"status" => s, "id" => id} <- summary["cases"],
+          s in ["fail", "mixed", "error"],
+          do: id
+
+    {Enum.take(ids, max), length(ids)}
+  end
+
+  @doc false
+  @spec reason_text(map()) :: String.t()
+  def reason_text(%{reason: :error_rate, error_rate: rate, max_error_rate: max}),
+    do: "candidate error rate #{pct(rate)} exceeds max_error_rate #{pct(max)}"
+
+  def reason_text(%{reason: :no_comparable_cases}), do: "no comparable cases"
+  def reason_text(%{reason: :run_aborted, run: run}), do: "#{run} run was aborted"
+
+  def reason_text(%{reason: :metric_untestable, metric: m, detail: detail}),
+    do: "gate metric #{Compare.Metric.name(m)} cannot be tested (#{inspect(detail)})"
+
+  def reason_text(%{reason: :regression, metric: m, delta: delta, adjusted_p_value: p}),
+    do: "#{Compare.Metric.name(m)} regressed by #{pp(delta)} (Holm p = #{p_value(p)})"
+
+  defp sign(x) when x < 0, do: "-"
+  defp sign(_x), do: "+"
+
+  defp fixed(x, decimals), do: :erlang.float_to_binary(x / 1, decimals: decimals)
 end

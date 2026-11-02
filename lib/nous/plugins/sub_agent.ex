@@ -37,6 +37,12 @@ defmodule Nous.Plugins.SubAgent do
   Both `delegate_task` and `spawn_agents` can reference templates by name or
   provide inline model/instructions for ad-hoc sub-agents.
 
+  A sub-agent runs with its template's `Nous.Profile` only: an `%Agent{}`
+  template built with `profile:` keeps it, and a config map accepts
+  `:profile` (a `%Nous.Profile{}`; one that does not apply to the template
+  fails the delegation with an error result). The parent's profile is never
+  inherited: its components name the parent's instructions and tools.
+
   ## Parallel Configuration
 
   Configure concurrency and timeout for `spawn_agents` via `deps`:
@@ -331,7 +337,7 @@ defmodule Nous.Plugins.SubAgent do
 
     with :ok <- check_depth(ctx),
          {:ok, agent} <- resolve_agent(ctx, template_name, args),
-         {:ok, result} <- run_sub_agent(agent, task, ctx) do
+         {:ok, result} <- run_sub_agent(agent, task, ctx, nil, template_name) do
       %{
         success: true,
         result: result.output,
@@ -374,9 +380,11 @@ defmodule Nous.Plugins.SubAgent do
       Nous.TaskSupervisor
       |> Task.Supervisor.async_stream_nolink(
         Enum.with_index(tasks),
-        fn {task_spec, index} ->
+        # Bound to this tool call's telemetry scope, so every child run links
+        # back to the call that spawned it.
+        Nous.Telemetry.RunScope.bind(fn {task_spec, index} ->
           run_parallel_task(ctx, task_spec, index)
-        end,
+        end),
         max_concurrency: max_concurrency,
         timeout: timeout,
         on_timeout: :kill_task
@@ -502,7 +510,7 @@ defmodule Nous.Plugins.SubAgent do
         {:ok, agent}
 
       %{} = config ->
-        {:ok, agent_from_config(config)}
+        agent_from_config(config)
     end
   end
 
@@ -521,20 +529,30 @@ defmodule Nous.Plugins.SubAgent do
     end
   end
 
+  # A config-map template. `:profile` (a `%Nous.Profile{}`) is the template's
+  # own: a parent's profile is never handed to a child, because its
+  # components address the parent's instructions and tools, not these.
   defp agent_from_config(config) do
     model = Map.get(config, :model) || Map.get(config, "model")
     instructions = Map.get(config, :instructions) || Map.get(config, "instructions", "")
     tools = Map.get(config, :tools) || Map.get(config, "tools", [])
     model_settings = Map.get(config, :model_settings) || Map.get(config, "model_settings", %{})
+    profile = Map.get(config, :profile) || Map.get(config, "profile")
 
-    Agent.new(model,
-      instructions: instructions,
-      tools: tools,
-      model_settings: model_settings
-    )
+    agent =
+      Agent.new(model,
+        instructions: instructions,
+        tools: tools,
+        model_settings: model_settings
+      )
+
+    case Nous.Profile.apply(profile, agent) do
+      {:ok, agent} -> {:ok, agent}
+      {:error, error} -> {:error, "Template profile rejected: " <> Exception.message(error)}
+    end
   end
 
-  defp run_sub_agent(agent, task, parent_ctx, index \\ nil) do
+  defp run_sub_agent(agent, task, parent_ctx, index, template_name) do
     label = if index, do: "[sub-agent #{index}]", else: "[sub-agent]"
     Logger.info("#{label} Starting: #{String.slice(task, 0, 80)}")
 
@@ -558,7 +576,12 @@ defmodule Nous.Plugins.SubAgent do
       approval_handler: Map.get(parent_ctx, :approval_handler)
     ]
 
-    case Agent.run(agent, task, run_opts) do
+    # The template (and spawn_agents index) label the child run: they reach
+    # its `[:nous, :agent, :run, :start]`, beside the parent run and tool-call
+    # ids the child reads off this scope.
+    labels = %{sub_agent_template: template_name, sub_agent_index: index}
+
+    case Nous.Telemetry.RunScope.merge_scope(labels, fn -> Agent.run(agent, task, run_opts) end) do
       {:ok, result} ->
         Logger.info("#{label} Completed successfully")
 
@@ -653,7 +676,7 @@ defmodule Nous.Plugins.SubAgent do
 
     case resolve_agent(ctx, template_name, task_spec) do
       {:ok, agent} ->
-        run_sub_agent(agent, task_prompt, ctx, index)
+        run_sub_agent(agent, task_prompt, ctx, index, template_name)
 
       {:error, reason} ->
         {:error, reason}

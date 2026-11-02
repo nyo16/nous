@@ -820,48 +820,81 @@ Attach handlers for monitoring:
 Nous.Telemetry.attach_default_handler()
 ```
 
-**Events:**
+**Events** (a selection; `Nous.Telemetry.events/0` lists every event Nous emits):
 - `[:nous, :agent, :run, :start/stop/exception]`
 - `[:nous, :agent, :iteration, :start/stop]`
+- `[:nous, :agent, :model, :start/stop/exception]` — each model request, with the answering model and usage
+- `[:nous, :agent, :tool_call, :start/stop]` — each tool call, with its arguments, `outcome` and `approval`
 - `[:nous, :provider, :request, :start/stop/exception]`
 - `[:nous, :tool, :execute, :start/stop/exception]`
 - `[:nous, :tool, :timeout]`
 - `[:nous, :fallback, :activated]` and `[:nous, :agent, :fallback, :used]`
 - `[:nous, :context, :update]`
+- `[:nous, :input_guard, :verdict]`, `[:nous, :decision_guard, :verdict]`, `[:nous, :loop_guard, :advisory]`
 - `[:nous, :workflow, :run, :start/stop/exception]`
 - `[:nous, :workflow, :node, :start/stop/exception]`
 
+Every event emitted inside a run carries the correlation ids `trace_id`,
+`agent_run_id`, `parent_agent_run_id` (and `tool_call_id` on tool events),
+so sub-agent runs link to the tool call that started them. See the
+[observability guide](docs/guides/observability.md#correlation-ids).
+
 ## Evaluation Framework
 
-Test, benchmark, and optimize your agents:
+Measure whether a prompt, tool, model or guard change made your agent better
+or worse. A task module names the agent, a dataset and the scorers; every
+case runs `k` times under a trace collector:
 
 ```elixir
-suite = Nous.Eval.Suite.new(
-  name: "my_tests",
-  default_model: "lmstudio:qwen3",
-  test_cases: [
-    Nous.Eval.TestCase.new(
-      id: "greeting",
-      input: "Say hello",
-      expected: %{contains: ["hello"]},
-      eval_type: :contains
-    )
-  ]
-)
+defmodule MyApp.Evals.Weather do
+  use Nous.Eval
 
-{:ok, result} = Nous.Eval.run(suite)
-Nous.Eval.Reporter.print(result)
+  alias Nous.Eval.Scorers.{Contains, NoToolErrors, Trajectory}
+
+  @impl true
+  def dataset do
+    [
+      %{
+        id: "weather-paris",
+        input: "What is the weather in Paris?",
+        scorers: [
+          {Trajectory, expected: [%{name: "get_weather", args: %{"city" => "Paris"}}]},
+          {Contains, values: ["Paris"]}
+        ]
+      }
+    ]
+  end
+
+  @impl true
+  def scorers, do: [NoToolErrors]
+
+  @impl true
+  def agent(_context) do
+    Nous.new("openai:gpt-4o-mini", tools: [&MyApp.Tools.get_weather/2])
+  end
+end
+
+{:ok, run} = Nous.Eval.run(MyApp.Evals.Weather, k: 3, seed: 1)
+IO.puts(Nous.Eval.Reporter.render(run))
 ```
 
-Six built-in evaluators (exact_match, fuzzy_match, contains, tool_usage,
-schema, llm_judge), metrics (latency, tokens, cost), A/B testing via
-`Nous.Eval.run_ab/2`, parameter optimization (Bayesian, grid, random
-search), and YAML test-suite definitions. CLI:
-`mix nous.eval --suite test/eval/suites/basic.yaml`,
-`mix nous.optimize --suite suite.yaml --strategy bayesian --trials 20`.
+Datasets in Elixir, YAML or JSONL (strictly validated, content-hashed,
+stable train/val/test splits); built-in scorers for output, tool
+trajectories and arguments, guard verdicts, cost and latency, plus an LLM
+judge with human-label calibration; per-sample traces of every model call,
+tool call and guard verdict; pass rates with clustered confidence intervals,
+pass@k and the minimum detectable effect; a run store with append-only
+baselines; and a regression gate for CI:
 
-See [docs/guides/evaluation.md](docs/guides/evaluation.md) for complete
-documentation.
+```bash
+mix nous.eval --task MyApp.Evals.Weather --set-baseline main      # on main
+mix nous.eval --task MyApp.Evals.Weather --baseline main \
+  --budget-cost 2 --format markdown --output eval.md              # on PRs; exit 0 / 1 / 2
+```
+
+Try it offline with `mix nous.eval --task Nous.Eval.Examples.Basic`. See
+[docs/guides/evaluation.md](docs/guides/evaluation.md) for the complete
+guide.
 
 ## Architecture
 

@@ -159,7 +159,11 @@ defmodule Nous.Skill.Registry do
         :telemetry.execute(
           [:nous, :skill, :activate],
           %{},
-          %{skill_name: name, group: skill.group, activation_type: skill.activation}
+          Nous.Telemetry.RunScope.merge(%{
+            skill_name: name,
+            group: skill.group,
+            activation_type: skill.activation
+          })
         )
 
         {instructions, tools, updated_registry}
@@ -181,7 +185,7 @@ defmodule Nous.Skill.Registry do
         :telemetry.execute(
           [:nous, :skill, :deactivate],
           %{},
-          %{skill_name: name, group: skill.group}
+          Nous.Telemetry.RunScope.merge(%{skill_name: name, group: skill.group})
         )
 
         %{

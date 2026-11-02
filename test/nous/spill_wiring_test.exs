@@ -131,7 +131,7 @@ defmodule Nous.SpillWiringTest do
     test "a search result over the cap is replaced by a preview and a locator" do
       text = oversized_text()
 
-      {message, _updates} = run_tool("file_grep", text, spill_deps(RecordingStore))
+      {message, _updates, _execution} = run_tool("file_grep", text, spill_deps(RecordingStore))
 
       # The store got the whole thing, not the preview.
       assert_receive {:saved, locator, saved}
@@ -159,7 +159,7 @@ defmodule Nous.SpillWiringTest do
     test "a result under the cap is passed through byte for byte" do
       small = "3 matches in 2 files\n"
 
-      {message, _updates} = run_tool("file_grep", small, spill_deps(RecordingStore))
+      {message, _updates, _execution} = run_tool("file_grep", small, spill_deps(RecordingStore))
 
       assert message.content == small
       refute_receive {:saved, _locator, _saved}
@@ -168,18 +168,18 @@ defmodule Nous.SpillWiringTest do
     test "the owner falls back to the agent name, and prefers the session id" do
       text = oversized_text()
 
-      {_message, _updates} = run_tool("file_grep", text, spill_deps(RecordingStore))
+      {_message, _updates, _execution} = run_tool("file_grep", text, spill_deps(RecordingStore))
       assert_receive {:saved, _locator, %{owner: "spill_wiring_agent"}}
 
       deps = spill_deps(RecordingStore, %{session_id: "session-abc"})
-      {_message, _updates} = run_tool("file_grep", text, deps)
+      {_message, _updates, _execution} = run_tool("file_grep", text, deps)
       assert_receive {:saved, _locator, %{owner: "session-abc"}}
     end
 
     test "a non-binary result is left structured rather than stringified" do
       rows = Enum.map(1..500, &%{"id" => &1, "body" => String.duplicate("y", 64)})
 
-      {message, _updates} = run_tool("file_grep", rows, spill_deps(RecordingStore))
+      {message, _updates, _execution} = run_tool("file_grep", rows, spill_deps(RecordingStore))
 
       # Message.tool/3 encodes a structured result; what matters is that no
       # locator was substituted for it and nothing was stored.
@@ -193,7 +193,7 @@ defmodule Nous.SpillWiringTest do
     test "a file_read result over the cap is never spilled" do
       text = oversized_text()
 
-      {message, _updates} = run_tool("file_read", text, spill_deps(RecordingStore))
+      {message, _updates, _execution} = run_tool("file_read", text, spill_deps(RecordingStore))
 
       # Spilling this would hand the model a locator whose retrieval hint says
       # "read it with file_read", whose result is also over the cap, forever.
@@ -208,7 +208,7 @@ defmodule Nous.SpillWiringTest do
 
       log =
         capture_log(fn ->
-          {message, updates} = run_tool("file_grep", text, spill_deps(ExplodingStore))
+          {message, updates, _execution} = run_tool("file_grep", text, spill_deps(ExplodingStore))
 
           assert message.content == text
           assert message.role == :tool
@@ -222,7 +222,7 @@ defmodule Nous.SpillWiringTest do
     test "with no spill config at all, an oversized result is untouched" do
       text = oversized_text()
 
-      {message, _updates} = run_tool("file_grep", text, %{})
+      {message, _updates, _execution} = run_tool("file_grep", text, %{})
 
       assert message.content == text
       refute_receive {:saved, _locator, _saved}
@@ -272,7 +272,7 @@ defmodule Nous.SpillWiringTest do
       ctx = bash_ctx(spill_deps(RecordingStore))
       agent = Nous.Agent.new("openai:test-model", name: "spill_wiring_agent")
 
-      {message, _updates} =
+      {message, _updates, _execution} =
         ToolInvocation.invoke([Tool.from_module(Bash)], call, ctx, agent)
 
       assert_receive {:saved, locator, _saved}, 5_000

@@ -419,7 +419,7 @@ else
     @moduledoc """
     DuckDB-backed memory store (stub).
 
-    Add `{:duckdbex, "~> 0.5"}` to your dependencies to enable this store.
+    Add `{:duckdbex, "~> 0.7"}` to your dependencies to enable this store.
     """
 
     @behaviour Nous.Memory.Store
@@ -435,7 +435,7 @@ else
                list: 2}
 
     @error {:error,
-            "Duckdbex is not available. Add {:duckdbex, \"~> 0.5\"} to your dependencies."}
+            "Duckdbex is not available. Add {:duckdbex, \"~> 0.7\"} to your dependencies."}
 
     @impl true
     def init(_opts), do: @error

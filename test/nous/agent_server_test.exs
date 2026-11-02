@@ -411,7 +411,7 @@ defmodule Nous.AgentServerTest do
       # The caller's contract is unchanged: :ok comes back only once the
       # backend write has actually landed.
       assert :ok = Task.await(saver, 5_000)
-      assert {:ok, %{version: 3}} = SlowPersistence.load(session_id)
+      assert {:ok, %{version: 4}} = SlowPersistence.load(session_id)
 
       GenServer.stop(pid)
     end

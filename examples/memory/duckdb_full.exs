@@ -1,7 +1,7 @@
 # DuckDB Memory Store
 #
 # Uses DuckDB with FTS and vector similarity search.
-# Requires: {:duckdbex, "~> 0.5"}
+# Requires: {:duckdbex, "~> 0.7"}
 #
 # Run: mix run examples/memory/duckdb_full.exs
 
@@ -26,7 +26,7 @@ store =
       mix.exs so it builds and tests here, but not pulled into your app unless
       you add it. In your app's mix.exs:
 
-          {:duckdbex, "~> 0.5"},
+          {:duckdbex, "~> 0.7"},
 
       then run `mix deps.get`.
       """)

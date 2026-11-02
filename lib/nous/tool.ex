@@ -35,6 +35,7 @@ defmodule Nous.Tool do
   @type t :: %Tool{
           name: String.t(),
           description: String.t(),
+          base_description: String.t() | nil,
           parameters: map(),
           function: function(),
           takes_ctx: boolean(),
@@ -56,6 +57,11 @@ defmodule Nous.Tool do
   defstruct [
     :name,
     :description,
+    # The developer's description when a `Nous.Profile` replaced
+    # `:description`; nil otherwise. A guard model reads this one, so text a
+    # profile (or the optimizer that wrote it) puts in front of the agent
+    # never frames a safety decision.
+    :base_description,
     :parameters,
     :function,
     :module,

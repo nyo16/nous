@@ -1,368 +1,588 @@
 defmodule Nous.Eval.Optimizer do
   @moduledoc """
-  Optimization engine for finding optimal agent configurations.
+  Improves an agent's text (its instructions and tool descriptions) against
+  an eval task, and produces a reviewed `Nous.Profile` rather than editing
+  code.
 
-  The optimizer runs evaluation suites with different parameter combinations
-  to find configurations that maximize performance metrics.
+      {:ok, result} =
+        Nous.Eval.Optimizer.run(MyApp.Evals.Support,
+          reflector: "openai:gpt-4o",
+          components: ["instructions", "tool:search_orders"],
+          budget: [max_cost: 5.0, max_metric_calls: 2_000],
+          k: 3,
+          store: {Nous.Eval.Store.File, root: ".nous/eval"},
+          name: "support_agent"
+        )
 
-  ## Supported Strategies
+      result.verdict                                       #=> :accepted
+      Nous.Eval.ProfileReport.render(result.report, format: :markdown)
 
-  - `:grid_search` - Exhaustive search over parameter grid
-  - `:bayesian` - Bayesian optimization with TPE (Tree-structured Parzen Estimator)
-  - `:random` - Random search over parameter space
+  The accepted profile is applied with `Nous.new(..., profile: profile)`;
+  nothing is deployed automatically.
 
-  ## Example
+  ## Splits
 
-      # Define parameter space
-      params = [
-        Optimizer.Parameter.float(:temperature, 0.0, 1.0, step: 0.1),
-        Optimizer.Parameter.integer(:max_tokens, 100, 1000, step: 100),
-        Optimizer.Parameter.choice(:model, [
-          "lmstudio:ministral-3-14b-reasoning",
-          "lmstudio:qwen-7b"
-        ])
-      ]
+  Every case needs a split (`Nous.Eval.Dataset` assigns them by group):
 
-      # Run optimization
-      {:ok, result} = Optimizer.optimize(suite, params,
-        strategy: :grid_search,
-        metric: :score,
-        maximize: true
-      )
+    * **train** feeds the search: reflection minibatches (GEPA) or the
+      fixed scoring subset (OPRO). Only train cases' text reaches the
+      reflector.
+    * **val** scores candidates for the Pareto pool and picks the best
+      (GEPA). The reflector only ever sees val **scores**.
+    * **test** is used once, for the accept/reject decision. No strategy
+      sees it.
 
-      IO.inspect(result.best_config)
-      IO.inspect(result.best_score)
+  Cases tagged `"guard"` (in any split) are the guard cases: a candidate
+  must not regress them (see "Guard non-regression").
 
-  ## Bayesian Optimization
+  ## Acceptance (on test)
 
-  For expensive evaluations, use Bayesian optimization which learns from
-  previous trials to focus on promising regions:
+  The best candidate and the seed are both evaluated on the test split
+  with `k` samples per case, and compared with `Nous.Eval.Compare` on the
+  gate metrics `[:case_score, :pass_rate]` (paired cluster bootstrap over
+  cases, Holm across the two metrics, `alpha` default 0.05):
 
-      {:ok, result} = Optimizer.optimize(suite, params,
-        strategy: :bayesian,
-        n_trials: 50,
-        metric: :score
-      )
+    1. **No regression**: `compare(seed, candidate)` must be `:pass` (no
+       metric significantly worse, candidate error rate within
+       `max_error_rate`, default 0).
+    2. **Improvement**: `compare(candidate, seed)` must be `:regression`,
+       i.e. on at least one gate metric the seed is significantly worse
+       than the candidate (Holm-adjusted one-sided test at `alpha`), and
+       an exact one-sided sign test on the test cases the candidate
+       improved versus worsened (by pass rate) must have p below `alpha`.
+       The bootstrap alone is anti-conservative on tiny splits; the sign
+       test sets the floor: at alpha 0.05 the smallest test split that can
+       pass is 5 cases, all improved (p = 0.5^5 = 0.03125).
+    3. **Guard non-regression** on the test split's guard cases.
 
-  ## Metrics
+  Only then is the verdict `:accepted` and, with a `:store`, the profile
+  persisted (`put_profile/2`). A rejected optimization still returns the
+  report, so the evidence can be read.
 
-  Optimization can target different metrics:
+  ## Feedback policy
 
-  - `:score` - Aggregate evaluation score (default)
-  - `:pass_rate` - Percentage of tests passing
-  - `:latency_p50` - Median latency
-  - `:latency_p95` - 95th percentile latency
-  - `:total_tokens` - Token efficiency
-  - `:cost` - Estimated cost
+  `feedback: :diagnostic` (default) shows the reflector, per train case,
+  the scorer names, pass/fail, values and reasons, the paths of
+  mismatched arguments, the names of expected tools that were not called
+  and a judge's critique, but never a case's `expected` values, a rubric
+  or judge prompt; reasons that quote them are withheld. This keeps the
+  optimizer from writing answers or grader wording into the agent's text.
+  `feedback: :with_expected` adds each train case's `expected` map (GEPA's
+  default); it is recorded in the profile's provenance. Either way the
+  lint (`Nous.Eval.Optimizer.Lint`) rejects proposals that repeat held-out
+  text or carry fence markers.
 
-  """
+  ## Budget
 
-  alias Nous.Eval.{Suite, Runner, SuiteResult}
-  alias Nous.Eval.Optimizer.{Parameter, SearchSpace}
-
-  @type optimization_result :: %{
-          best_config: map(),
-          best_score: float(),
-          all_trials: [trial()],
-          total_trials: non_neg_integer(),
-          duration_ms: non_neg_integer(),
-          strategy: atom(),
-          metric: atom(),
-          avg_score: float(),
-          std_score: float()
-        }
-
-  @type trial :: %{
-          config: map(),
-          score: float(),
-          metrics: map(),
-          duration_ms: non_neg_integer()
-        }
-
-  @type metric ::
-          :score
-          | :pass_rate
-          | :latency_p50
-          | :latency_p95
-          | :latency_p99
-          | :total_tokens
-          | :cost
-
-  @doc """
-  Run optimization to find best configuration.
+  `budget:` is required: `[max_tokens: n, max_cost: usd, max_metric_calls:
+  n]` (at least one). Metric calls are samples run (cases × k). Every
+  evaluation and reflector call is charged; with `max_cost`, an unpriced
+  agent or reflector model is refused before any call. The measured cost of
+  the seed's test evaluation is reserved for the final acceptance test, and
+  a budget that cannot cover the seed's validation and test evaluations is
+  refused (`{:error, {:budget_too_small, details}}`) — before any model
+  call when `max_metric_calls` alone shows it.
 
   ## Options
 
-    * `:strategy` - Optimization strategy (`:grid_search`, `:bayesian`, `:random`)
-    * `:metric` - Metric to optimize (default: `:score`)
-    * `:maximize` - Whether to maximize metric (default: `true`)
-    * `:n_trials` - Max trials for bayesian/random (default: 100)
-    * `:timeout` - Total timeout in ms (default: 3600000 = 1 hour)
-    * `:parallel` - Run trials in parallel (default: false)
-    * `:early_stop` - Stop if score reaches threshold
-    * `:verbose` - Print progress (default: true)
-
-  ## Returns
-
-      {:ok, %{
-        best_config: %{temperature: 0.3, max_tokens: 500},
-        best_score: 0.95,
-        all_trials: [...],
-        total_trials: 50,
-        duration_ms: 120000,
-        strategy: :bayesian,
-        metric: :score
-      }}
-
+    * `:reflector` - model string or keyword (required; see
+      `Nous.Eval.Optimizer.Reflector`)
+    * `:budget` - see above (required)
+    * `:strategy` - `:gepa` (default), `:opro`, or a module implementing
+      `Nous.Eval.Optimizer.Strategy`; `:strategy_opts` for it
+    * `:components` - component keys to optimize (`Nous.Profile` grammar);
+      default: the instructions (when static) and every app tool's
+      description
+    * `:max_steps` - search steps (default 20)
+    * `:k` - samples per case (default 3)
+    * `:minibatch_size` - GEPA train minibatch (default 3)
+    * `:mode` - GEPA component selection, `:round_robin` (default),
+      `:all` or `:coupled`
+    * `:merge` - GEPA merges allowed (default 0)
+    * `:seed` - integer seed for every random choice and sample seed
+      (default 0)
+    * `:feedback` - `:diagnostic` (default) or `:with_expected`
+    * `:alpha`, `:max_error_rate` - acceptance test settings
+    * `:guard` - a `fn before_eval, after_eval -> :ok | {:error, reason}`
+      over guard-case evaluations (default
+      `Nous.Eval.Optimizer.Context.guard_non_regression/2`), or `nil` to
+      disable
+    * `:adapter` - `{module, opts}` (default
+      `{Nous.Eval.Optimizer.AgentAdapter, []}`)
+    * `:store` - `{store_module, init_opts}` to persist an accepted profile
+    * `:name` - the profile name (`~r/\\A[a-z0-9][a-z0-9_.-]{0,63}\\z/`)
   """
-  @spec optimize(Suite.t(), [Parameter.t()], keyword()) ::
-          {:ok, optimization_result()} | {:error, term()}
-  def optimize(%Suite{} = suite, parameters, opts \\ []) do
-    strategy = Keyword.get(opts, :strategy, :grid_search)
-    metric = Keyword.get(opts, :metric, :score)
-    maximize = Keyword.get(opts, :maximize, true)
-    verbose = Keyword.get(opts, :verbose, true)
 
-    # Build search space
-    search_space = SearchSpace.from_parameters(parameters)
+  alias Nous.Eval.Budget
 
-    # Get strategy module
-    strategy_module = get_strategy_module(strategy)
+  alias Nous.Eval.Optimizer.{
+    AgentAdapter,
+    Candidate,
+    Context,
+    Evaluation,
+    Ledger,
+    Lint,
+    Reflector,
+    Result
+  }
 
-    if verbose do
-      IO.puts("\n=== Nous Optimizer ===")
-      IO.puts("Strategy: #{strategy}")
-      IO.puts("Metric: #{metric}")
-      IO.puts("Parameters: #{length(parameters)}")
-      IO.puts("Search space size: #{SearchSpace.size(search_space)}")
-      IO.puts("")
-    end
+  alias Nous.Eval.Optimizer.Strategies.{GEPA, OPRO}
+  alias Nous.Eval.{Compare, ProfileReport}
+  alias Nous.Eval.Stats.Hypothesis
+  alias Nous.Profile
 
-    start_time = System.monotonic_time(:millisecond)
+  @gate_metrics [:case_score, :pass_rate]
+  @strategies %{gepa: GEPA, opro: OPRO}
+  @name ~r/\A[a-z0-9][a-z0-9_.-]{0,63}\z/
 
-    # Run optimization
-    result = strategy_module.run(suite, search_space, metric, maximize, opts)
+  @defaults [
+    strategy: :gepa,
+    strategy_opts: [],
+    components: nil,
+    max_steps: 20,
+    k: 3,
+    minibatch_size: 3,
+    mode: :round_robin,
+    merge: 0,
+    seed: 0,
+    feedback: :diagnostic,
+    alpha: 0.05,
+    max_error_rate: 0.0,
+    guard: :default,
+    adapter: {AgentAdapter, []},
+    store: nil,
+    name: nil,
+    reflector: nil,
+    budget: nil
+  ]
 
-    end_time = System.monotonic_time(:millisecond)
-    duration_ms = end_time - start_time
+  @doc """
+  Runs an optimization for `task_module` (a `use Nous.Eval` task). See the
+  moduledoc for options. Returns `{:ok, %Nous.Eval.Optimizer.Result{}}`
+  (accepted or rejected) or `{:error, reason}` for a configuration or
+  operational problem.
+  """
+  @spec run(module(), keyword()) :: {:ok, Result.t()} | {:error, term()}
+  def run(task_module, opts) when is_list(opts) do
+    with {:ok, opts} <- validate(opts),
+         {adapter, adapter_opts} = opts[:adapter],
+         {:ok, adapter_state} <- adapter.init(task_module, adapter_opts),
+         agent = adapter.agent(adapter_state),
+         {:ok, splits} <- splits(adapter.cases(adapter_state)),
+         base_text = Profile.components(Profile.apply!(nil, agent)),
+         {:ok, components} <- components(opts[:components], base_text),
+         {:ok, reflector} <- Reflector.new(opts[:reflector]),
+         {:ok, limits} <- Ledger.limits(opts[:budget]),
+         :ok <- price_preflight(limits, [agent.model, reflector.model]),
+         :ok <- metric_calls_cover_seed(limits, splits, opts[:k]),
+         {:ok, seed} <- seed_profile(components, base_text, agent, opts) do
+      cache = :ets.new(:nous_optimizer, [:set, :public])
 
-    case result do
-      {:ok, trials} ->
-        # Find best trial
-        {best_trial, best_score} = find_best(trials, maximize)
+      try do
+        ctx = %Context{
+          adapter: adapter,
+          adapter_state: adapter_state,
+          agent: agent,
+          ledger: Ledger.new(limits),
+          reflector: reflector,
+          cache: cache,
+          name: opts[:name],
+          train: splits.train,
+          val: splits.val,
+          guard_cases: splits.guard,
+          components: components,
+          base_text: base_text,
+          k: opts[:k],
+          minibatch_size: opts[:minibatch_size],
+          seed: opts[:seed],
+          rng: :rand.seed_s(:exsss, opts[:seed]),
+          feedback: opts[:feedback],
+          mode: opts[:mode],
+          merge: opts[:merge],
+          guard: guard_fun(opts[:guard]),
+          heldout: Lint.heldout_windows(splits.heldout_cases),
+          provenance: provenance(opts, reflector),
+          strategy_opts: opts[:strategy_opts]
+        }
 
-        # Calculate statistics
-        {avg_score, std_score} = calculate_stats(trials)
-
-        if verbose do
-          IO.puts("\n=== Optimization Complete ===")
-          IO.puts("Total trials: #{length(trials)}")
-          IO.puts("Duration: #{Float.round(duration_ms / 1000, 1)}s")
-          IO.puts("Best score: #{Float.round(best_score, 4)}")
-          IO.puts("Avg score: #{Float.round(avg_score, 4)}")
-          IO.puts("Best config: #{inspect(best_trial.config)}")
-        end
-
-        {:ok,
-         %{
-           best_config: best_trial.config,
-           best_score: best_score,
-           all_trials: trials,
-           total_trials: length(trials),
-           duration_ms: duration_ms,
-           strategy: strategy,
-           metric: metric,
-           avg_score: avg_score,
-           std_score: std_score
-         }}
+        optimize(ctx, seed, splits, opts)
+      after
+        :ets.delete(cache)
+      end
     end
   end
 
-  @doc """
-  Run a single trial with given configuration.
-  """
-  @spec run_trial(Suite.t(), map(), atom(), keyword()) :: {:ok, trial()} | {:error, term()}
-  def run_trial(%Suite{} = suite, config, metric, opts \\ []) do
-    start_time = System.monotonic_time(:millisecond)
+  def run(_task_module, other), do: {:error, {:invalid_option, :opts, other}}
 
-    # Apply config to suite
-    configured_suite = apply_config(suite, config)
+  # A cost budget needs a price for every model the optimization pays for.
+  defp price_preflight(limits, models),
+    do: Budget.preflight(%{max_cost: limits.max_cost, max_tokens: nil, max_samples: nil}, models)
 
-    # Run evaluation
-    case Runner.run(configured_suite, opts) do
-      {:ok, result} ->
-        end_time = System.monotonic_time(:millisecond)
-        score = extract_metric(result, metric)
+  defp optimize(ctx, seed, splits, opts) do
+    strategy = Map.get(@strategies, opts[:strategy], opts[:strategy])
+    seed_candidate = %Candidate{profile: seed}
 
-        {:ok,
-         %{
-           config: config,
-           score: score,
-           metrics: extract_all_metrics(result),
-           duration_ms: end_time - start_time
-         }}
+    with {:ok, seed_test} <- seed_test(ctx, seed, splits.test),
+         {:ok, state} <- strategy_init(strategy, seed_candidate, ctx) do
+      {state, steps, stop_reason} = loop(strategy, state, ctx, 0, opts[:max_steps])
+      summary = strategy.summary(state)
+      best = strategy.best(state)
+
+      result = %Result{
+        verdict: :rejected,
+        seed_profile: seed,
+        candidates: summary.candidates,
+        rejections: summary.rejections,
+        steps: steps,
+        stop_reason: stop_reason
+      }
+
+      result =
+        if Candidate.id(best) == seed.id,
+          do: %{result | reasons: ["no candidate improved on the seed during the search"]},
+          else: accept(ctx, best, seed_test, splits, opts, result)
+
+      {:ok, %{result | budget: Ledger.report(ctx.ledger), run_ids: Context.run_ids(ctx)}}
+    end
+  end
+
+  # The seed's test evaluation runs first: its measured spend is reserved
+  # for the acceptance test of the final candidate.
+  defp seed_test(ctx, seed, test_ids) do
+    case Context.evaluate(ctx, seed, test_ids, "test") do
+      {:ok, evaluation} ->
+        Ledger.reserve(ctx.ledger, %{
+          tokens: evaluation.tokens,
+          cost: evaluation.cost,
+          metric_calls: evaluation.metric_calls
+        })
+
+        {:ok, evaluation}
+
+      {:error, :budget_exhausted} ->
+        {:error, {:budget_too_small, %{phase: :seed_test, budget: Ledger.report(ctx.ledger)}}}
+
+      {:error, {:evaluation_failed, reason}} ->
+        {:error, reason}
+    end
+  end
+
+  defp strategy_init(strategy, seed, ctx) do
+    case strategy.init(seed, ctx) do
+      {:ok, state} ->
+        {:ok, state}
+
+      {:error, :budget_exhausted} ->
+        {:error,
+         {:budget_too_small, %{phase: :seed_selection, budget: Ledger.report(ctx.ledger)}}}
+
+      {:error, {:evaluation_failed, reason}} ->
+        {:error, reason}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  @doc """
-  Extract a specific metric from an evaluation result.
+  defp loop(_strategy, state, _ctx, steps, max) when steps >= max, do: {state, steps, :max_steps}
 
-  Returns `0.0` when the suite produced no metrics summary — which is what
-  happens when every case errored, so an objective never crashes a search.
-  """
-  @spec extract_metric(SuiteResult.t(), metric()) :: float()
-  def extract_metric(result, :score), do: result.aggregate_score || 0.0
-  def extract_metric(result, :pass_rate), do: result.pass_rate || 0.0
-  def extract_metric(result, :latency_p50), do: summary_value(result, :p50_latency_ms)
-  def extract_metric(result, :latency_p95), do: summary_value(result, :p95_latency_ms)
-  def extract_metric(result, :latency_p99), do: summary_value(result, :p99_latency_ms)
-  def extract_metric(result, :total_tokens), do: summary_value(result, :total_tokens)
-  def extract_metric(result, :cost), do: summary_value(result, :total_estimated_cost)
-  def extract_metric(_result, _), do: 0.0
-
-  # `%Nous.Eval.SuiteResult{}` and `%Nous.Eval.Metrics.Summary{}` are plain
-  # structs and implement no Access behaviour, so `get_in/2` on them raises
-  # UndefinedFunctionError rather than returning nil. Read the fields.
-  defp summary_value(%{metrics_summary: nil}, _field), do: 0.0
-
-  defp summary_value(%{metrics_summary: summary}, field) do
-    case Map.get(summary, field) do
-      nil -> 0.0
-      value -> value / 1
-    end
-  end
-
-  # Private helpers
-
-  defp get_strategy_module(:grid_search), do: Nous.Eval.Optimizer.Strategies.GridSearch
-  defp get_strategy_module(:bayesian), do: Nous.Eval.Optimizer.Strategies.Bayesian
-  defp get_strategy_module(:random), do: Nous.Eval.Optimizer.Strategies.Random
-
-  defp find_best(trials, maximize) do
-    comparator = if maximize, do: &>=/2, else: &<=/2
-
-    best =
-      Enum.reduce(trials, {nil, if(maximize, do: -999_999.0, else: 999_999.0)}, fn trial,
-                                                                                   {best_trial,
-                                                                                    best_score} ->
-        if comparator.(trial.score, best_score) do
-          {trial, trial.score}
-        else
-          {best_trial, best_score}
-        end
-      end)
-
-    best
-  end
-
-  defp apply_config(suite, config) do
-    # Apply model if specified
-    suite =
-      if Map.has_key?(config, :model) do
-        %{suite | default_model: config.model}
-      else
-        suite
-      end
-
-    # Apply instructions if specified
-    suite =
-      if Map.has_key?(config, :instructions) do
-        %{suite | default_instructions: config.instructions}
-      else
-        suite
-      end
-
-    # Apply model settings to all test cases
-    if has_model_settings?(config) do
-      model_settings = extract_model_settings(config)
-
-      updated_cases =
-        Enum.map(suite.test_cases, fn tc ->
-          existing = tc.agent_config[:model_settings] || %{}
-          merged = Map.merge(existing, model_settings)
-          updated_config = Keyword.put(tc.agent_config || [], :model_settings, merged)
-          %{tc | agent_config: updated_config}
-        end)
-
-      %{suite | test_cases: updated_cases}
+  defp loop(strategy, state, ctx, steps, max) do
+    if Ledger.exhausted?(ctx.ledger, :search) do
+      {state, steps, :budget_exhausted}
     else
-      suite
+      case strategy.step(state, %{ctx | step: steps + 1}) do
+        {:cont, state} -> loop(strategy, state, ctx, steps + 1, max)
+        {:halt, reason, state} -> {state, steps + 1, reason}
+      end
     end
   end
 
-  defp has_model_settings?(config) do
-    Enum.any?([:temperature, :max_tokens, :top_p, :top_k], &Map.has_key?(config, &1))
+  # ── acceptance ─────────────────────────────────────────────────────────
+
+  defp accept(ctx, best, seed_test, splits, opts, result) do
+    profile = %{
+      best.profile
+      | provenance: Map.merge(best.profile.provenance, %{"run_ids" => Context.run_ids(ctx)})
+    }
+
+    result = %{result | profile: profile}
+
+    case Context.evaluate(ctx, best.profile, splits.test, "test", :final) do
+      {:ok, best_test} ->
+        decide(ctx, profile, seed_test, best_test, splits, opts, result)
+
+      {:error, reason} ->
+        report(
+          ctx,
+          %{result | reasons: ["the acceptance test could not run: #{inspect(reason)}"]},
+          nil,
+          []
+        )
+    end
   end
 
-  defp extract_model_settings(config) do
-    [:temperature, :max_tokens, :top_p, :top_k, :frequency_penalty, :presence_penalty]
-    |> Enum.filter(&Map.has_key?(config, &1))
-    |> Enum.map(fn key -> {key, Map.get(config, key)} end)
-    |> Map.new()
+  defp decide(ctx, profile, seed_test, best_test, splits, opts, result) do
+    gate = %{
+      metrics: @gate_metrics,
+      margin: 0.0,
+      alpha: opts[:alpha],
+      max_error_rate: opts[:max_error_rate]
+    }
+
+    with {:ok, comparison} <-
+           Compare.compare(seed_test.run, best_test.run, gate: gate, seed: opts[:seed]),
+         {:ok, improvement} <-
+           Compare.compare(best_test.run, seed_test.run,
+             gate: %{gate | max_error_rate: 1.0},
+             seed: opts[:seed]
+           ) do
+      guard = test_guard(ctx, seed_test, best_test, splits)
+      sign_test = sign_test(improvement)
+      improved? = improvement.verdict == :regression and sign_test.p_value < opts[:alpha]
+
+      reasons =
+        [
+          comparison.verdict != :pass &&
+            "the candidate is not free of regressions on test (#{comparison.verdict}: #{Enum.join(comparison.reasons, "; ")})",
+          not improved? &&
+            "no significant improvement on test (#{Enum.join(Enum.map(@gate_metrics, &Atom.to_string/1), ", ")}, Holm, alpha #{opts[:alpha]}; exact sign test p = #{format_p(sign_test.p_value)}, n = #{sign_test.b + sign_test.c})",
+          match?({:error, _}, guard) && "guard cases regressed: #{inspect(elem(guard, 1))}"
+        ]
+        |> Enum.filter(& &1)
+
+      verdict = if reasons == [], do: :accepted, else: :rejected
+
+      result = %{
+        result
+        | verdict: verdict,
+          reasons: reasons,
+          comparison: comparison,
+          improvement: improvement,
+          sign_test: sign_test,
+          guard: guard
+      }
+
+      gates = [
+        %{name: "no regression on test", passed?: comparison.verdict == :pass, detail: nil},
+        %{
+          name: "significant improvement on test",
+          passed?: improved?,
+          detail: sign_test_detail(sign_test)
+        },
+        %{
+          name: "guard non-regression",
+          passed?: not match?({:error, _}, guard),
+          detail: guard_detail(guard)
+        }
+      ]
+
+      result
+      |> then(&report(ctx, &1, comparison, gates))
+      |> persist(profile, opts)
+    else
+      {:error, reason} ->
+        report(
+          ctx,
+          %{result | reasons: ["the acceptance comparison failed: #{inspect(reason)}"]},
+          nil,
+          []
+        )
+    end
   end
 
-  defp extract_all_metrics(result) do
+  # Exact one-sided sign test on the per-case discordant pairs. `improvement`
+  # compares the candidate (baseline) with the seed (candidate), so a negative
+  # delta is a case the candidate improved.
+  defp sign_test(improvement) do
+    deltas = for %{delta: d} <- improvement.cases, is_number(d), do: d
+    b = Enum.count(deltas, &(&1 < 0))
+    c = Enum.count(deltas, &(&1 > 0))
+    {:ok, %{p_value: two_sided}} = Hypothesis.mcnemar(b, c)
+    %{b: b, c: c, p_value: if(b > c, do: two_sided / 2, else: 1.0)}
+  end
+
+  defp sign_test_detail(%{b: b, c: c, p_value: p}),
+    do: "exact sign test: #{b} improved, #{c} worsened, one-sided p = #{format_p(p)}"
+
+  defp format_p(p), do: :erlang.float_to_binary(p * 1.0, decimals: 4)
+
+  defp test_guard(%Context{guard: nil}, _seed_test, _best_test, _splits), do: :skipped
+
+  defp test_guard(ctx, seed_test, best_test, splits) do
+    case Enum.filter(splits.test, &(&1 in splits.guard)) do
+      [] ->
+        :skipped
+
+      ids ->
+        ctx.guard.(
+          Evaluation.take(seed_test, ids, "guard"),
+          Evaluation.take(best_test, ids, "guard")
+        )
+    end
+  end
+
+  defp guard_detail(:skipped), do: "no guard cases on test"
+  defp guard_detail(:ok), do: nil
+  defp guard_detail({:error, reason}), do: inspect(reason)
+
+  defp report(ctx, %Result{} = result, comparison, gates) do
+    evidence =
+      [
+        decision: if(result.verdict == :accepted, do: :accept, else: :reject),
+        split: "test",
+        gates: gates
+      ] ++
+        if(comparison, do: [comparison: comparison], else: [])
+
+    case ProfileReport.build(nil, result.profile, evidence, agent: ctx.agent) do
+      {:ok, report} -> %{result | report: report}
+      {:error, _} -> result
+    end
+  end
+
+  defp persist(%Result{verdict: :accepted} = result, profile, opts) do
+    case opts[:store] do
+      nil ->
+        result
+
+      {module, init_opts} ->
+        with {:ok, state} <- module.init(init_opts),
+             true <-
+               function_exported?(module, :put_profile, 2) || {:error, :store_without_profiles},
+             {:ok, stored, _state} <- module.put_profile(state, profile) do
+          %{result | profile: stored, stored?: true}
+        else
+          error ->
+            %{
+              result
+              | reasons: result.reasons ++ ["the profile could not be stored: #{inspect(error)}"]
+            }
+        end
+    end
+  end
+
+  defp persist(result, _profile, _opts), do: result
+
+  # ── setup ──────────────────────────────────────────────────────────────
+
+  defp validate(opts) do
+    case Keyword.validate(opts, @defaults) do
+      {:ok, opts} -> check(opts)
+      {:error, unknown} -> {:error, {:unknown_options, unknown}}
+    end
+  end
+
+  defp check(opts) do
+    Enum.find_value(opts, {:ok, opts}, fn {key, value} ->
+      if valid?(key, value), do: nil, else: {:error, {:invalid_option, key, value}}
+    end)
+  end
+
+  defp valid?(:strategy, s),
+    do:
+      Map.has_key?(@strategies, s) or
+        (is_atom(s) and Code.ensure_loaded?(s) and function_exported?(s, :step, 2))
+
+  defp valid?(:strategy_opts, o), do: Keyword.keyword?(o)
+  defp valid?(:components, nil), do: true
+  defp valid?(:components, c), do: is_list(c) and c != [] and Enum.all?(c, &is_binary/1)
+  defp valid?(key, n) when key in [:max_steps, :k, :minibatch_size], do: is_integer(n) and n > 0
+  defp valid?(:merge, n), do: is_integer(n) and n >= 0
+  defp valid?(:mode, m), do: m in [:round_robin, :all, :coupled]
+  defp valid?(:seed, s), do: is_integer(s)
+  defp valid?(:feedback, f), do: f in [:diagnostic, :with_expected]
+  defp valid?(:alpha, a), do: is_number(a) and a > 0 and a < 1
+  defp valid?(:max_error_rate, r), do: is_number(r) and r >= 0 and r <= 1
+  defp valid?(:guard, g), do: g in [:default, nil] or is_function(g, 2)
+  defp valid?(:adapter, {m, o}), do: is_atom(m) and is_list(o)
+  defp valid?(:store, nil), do: true
+  defp valid?(:store, {m, o}), do: is_atom(m) and is_list(o)
+  defp valid?(:name, nil), do: true
+  defp valid?(:name, n), do: is_binary(n) and Regex.match?(@name, n)
+  defp valid?(:reflector, nil), do: false
+  defp valid?(:reflector, _r), do: true
+  defp valid?(:budget, b), do: is_list(b)
+  defp valid?(_key, _value), do: false
+
+  defp splits(cases) do
+    by_split = Enum.group_by(cases, & &1.split)
+    ids = fn split -> by_split |> Map.get(split, []) |> Enum.map(& &1.id) end
+
+    case Enum.find(["train", "val", "test"], &(ids.(&1) == [])) do
+      nil ->
+        {:ok,
+         %{
+           train: ids.("train"),
+           val: ids.("val"),
+           test: ids.("test"),
+           guard: for(c <- cases, "guard" in c.tags, do: c.id),
+           heldout_cases: Map.get(by_split, "val", []) ++ Map.get(by_split, "test", [])
+         }}
+
+      missing ->
+        {:error, {:missing_split, missing}}
+    end
+  end
+
+  defp components(nil, base_text) do
+    case Map.keys(base_text)
+         |> Enum.filter(&(&1 == "instructions" or not String.contains?(&1, "#")))
+         |> Enum.sort() do
+      [] -> {:error, :no_components}
+      keys -> {:ok, keys}
+    end
+  end
+
+  defp components(keys, base_text) do
+    case Enum.reject(keys, &Map.has_key?(base_text, &1)) do
+      [] -> {:ok, Enum.uniq(keys)}
+      unknown -> {:error, {:unknown_components, unknown}}
+    end
+  end
+
+  defp metric_calls_cover_seed(%{max_metric_calls: nil}, _splits, _k), do: :ok
+
+  defp metric_calls_cover_seed(%{max_metric_calls: max}, splits, k) do
+    needed = (length(splits.val) + length(splits.test)) * k
+
+    if max >= needed,
+      do: :ok,
+      else:
+        {:error, {:budget_too_small, %{phase: :preflight, max_metric_calls: max, needed: needed}}}
+  end
+
+  # The seed carries the base text of every optimized component, so its
+  # behaviour is the agent's own and children differ only where changed.
+  defp seed_profile(components, base_text, agent, opts) do
+    seed = %Profile{
+      id: nil,
+      name: opts[:name],
+      components: Map.take(base_text, components),
+      manifest: %{},
+      provenance: %{"source" => "optimizer", "note" => "seed: the agent's base text"}
+    }
+
+    case Profile.seal(seed, agent) do
+      {:ok, sealed} -> {:ok, sealed}
+      {:error, error} -> {:error, {:invalid_components, Exception.message(error)}}
+    end
+  end
+
+  defp guard_fun(:default), do: &Context.guard_non_regression/2
+  defp guard_fun(nil), do: nil
+  defp guard_fun(fun) when is_function(fun, 2), do: fun
+
+  defp provenance(opts, reflector) do
     %{
-      score: result.aggregate_score,
-      pass_rate: result.pass_rate,
-      pass_count: result.pass_count,
-      fail_count: result.fail_count,
-      latency: latency_metrics(result.metrics_summary),
-      tokens: token_metrics(result.metrics_summary),
-      cost: cost_metrics(result.metrics_summary)
+      "source" => "optimizer",
+      "strategy" => strategy_name(opts[:strategy]),
+      "seed" => opts[:seed],
+      "k" => opts[:k],
+      "feedback" => Atom.to_string(opts[:feedback]),
+      "reflector" => reflector.model
     }
   end
 
-  defp latency_metrics(nil), do: %{}
-
-  defp latency_metrics(summary) do
-    %{
-      mean: summary.mean_latency_ms,
-      p50: summary.p50_latency_ms,
-      p95: summary.p95_latency_ms,
-      p99: summary.p99_latency_ms
-    }
-  end
-
-  defp token_metrics(nil), do: %{}
-
-  defp token_metrics(summary) do
-    %{
-      total: summary.total_tokens,
-      mean: summary.mean_tokens,
-      p50: summary.p50_tokens,
-      p95: summary.p95_tokens,
-      p99: summary.p99_tokens
-    }
-  end
-
-  defp cost_metrics(nil), do: %{}
-
-  defp cost_metrics(summary) do
-    %{total: summary.total_estimated_cost, mean_per_run: summary.mean_cost_per_run}
-  end
-
-  defp calculate_stats([]), do: {0.0, 0.0}
-
-  defp calculate_stats(trials) do
-    scores = Enum.map(trials, & &1.score)
-    n = length(scores)
-
-    # Mean
-    avg = Enum.sum(scores) / n
-
-    # Standard deviation
-    variance =
-      scores
-      |> Enum.map(fn s -> (s - avg) * (s - avg) end)
-      |> Enum.sum()
-      |> Kernel./(n)
-
-    std = :math.sqrt(variance)
-
-    {avg, std}
-  end
+  defp strategy_name(s) when is_map_key(@strategies, s), do: Atom.to_string(s)
+  defp strategy_name(module), do: inspect(module)
 end

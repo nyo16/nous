@@ -150,6 +150,7 @@ than retrying the known-bad primary every loop. Metadata:
 ```elixir
 %{
   agent_name: "agent_x1y2",
+  iteration: 0,
   original_provider: :openai,
   original_model: "gpt-4o",
   active_provider: :anthropic,

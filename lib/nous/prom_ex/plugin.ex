@@ -70,6 +70,12 @@ if Code.ensure_loaded?(PromEx) do
       * `nous_tool_execution_duration` - Distribution of tool execution durations
       * `nous_tool_execution_attempts` - Distribution of attempts per execution
       * `nous_tool_execution_exceptions_total` - Counter of tool exceptions
+      * `nous_tool_call_total` - Counter of agent tool calls
+        (`[:nous, :agent, :tool_call, :stop]`), tagged `tool_name` and
+        `outcome`
+
+    No metric is tagged with a correlation id (`trace_id`, `agent_run_id`,
+    `tool_call_id`): each is unique per run or call.
 
     """
 
@@ -289,6 +295,13 @@ if Code.ensure_loaded?(PromEx) do
             description: "Total number of tool execution exceptions",
             tags: [:tool_name, :will_retry, :error_kind],
             tag_values: &tool_exception_tag_values/1
+          ),
+          counter(
+            metric_prefix ++ [:tool, :call, :total],
+            event_name: [:nous, :agent, :tool_call, :stop],
+            description: "Total number of agent tool calls, by outcome",
+            tags: [:tool_name, :outcome],
+            tag_values: &tool_call_tag_values/1
           )
         ]
       )
@@ -345,6 +358,15 @@ if Code.ensure_loaded?(PromEx) do
         tool_name: metadata.tool_name,
         will_retry: to_string(metadata.will_retry),
         error_kind: normalize_error_kind(metadata.kind)
+      }
+    end
+
+    # `outcome` is a closed set of atoms; ids are deliberately not tags
+    # (unbounded cardinality).
+    defp tool_call_tag_values(metadata) do
+      %{
+        tool_name: metadata.tool_name,
+        outcome: to_string(metadata.outcome)
       }
     end
 

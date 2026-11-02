@@ -28,7 +28,7 @@ defmodule Nous.HITLTest do
     end
   end
 
-  describe "HumanInTheLoop plugin init/2" do
+  describe "HumanInTheLoop plugin before_run/2" do
     test "sets approval_handler on context when hitl_config has handler" do
       agent = Agent.new("openai:test-model")
 
@@ -42,7 +42,7 @@ defmodule Nous.HITLTest do
           }
         )
 
-      result = HumanInTheLoop.init(agent, ctx)
+      result = HumanInTheLoop.before_run(agent, ctx)
 
       assert is_function(result.approval_handler)
     end
@@ -51,7 +51,7 @@ defmodule Nous.HITLTest do
       agent = Agent.new("openai:test-model")
       ctx = Context.new()
 
-      result = HumanInTheLoop.init(agent, ctx)
+      result = HumanInTheLoop.before_run(agent, ctx)
 
       assert result.approval_handler == nil
     end
@@ -60,7 +60,7 @@ defmodule Nous.HITLTest do
       agent = Agent.new("openai:test-model")
       ctx = Context.new(deps: %{hitl_config: %{tools: ["send_email"]}})
 
-      result = HumanInTheLoop.init(agent, ctx)
+      result = HumanInTheLoop.before_run(agent, ctx)
 
       assert result.approval_handler == nil
     end

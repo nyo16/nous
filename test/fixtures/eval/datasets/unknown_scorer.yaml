@@ -1,0 +1,6 @@
+schema: nous.case/1
+cases:
+  - id: a
+    input: hello
+    scorers:
+      - scorer: no_such_scorer

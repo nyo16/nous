@@ -25,8 +25,8 @@ defmodule Nous.Plugins.InputGuard.Engine do
 
   ## Options
 
-    * `:telemetry_prefix` - prefix of the dropped-strategy event; the event is
-      `prefix ++ [:strategy_dropped]`. Default: `[:nous, :input_guard]`.
+    * `:telemetry_prefix` - prefix of the engine's events (see below).
+      Default: `[:nous, :input_guard]`.
     * `:label` - prefix of log messages. Default: `"InputGuard"`.
     * `:fail_closed_on` - the survivors' verdicts a fail-closed result may
       replace. Default: `[:safe]`. `Nous.Plugins.InputGuard` passes
@@ -37,10 +37,27 @@ defmodule Nous.Plugins.InputGuard.Engine do
 
   ## Telemetry
 
+  Both events carry the run correlation keys (`trace_id`, `agent_run_id`,
+  `parent_agent_run_id`; see `Nous.Telemetry`).
+
+    * `prefix ++ [:strategy_verdict]` - one strategy finished, was killed at
+      `:strategy_timeout`, or dropped.
+      * Measurements: `%{duration: native_time}`
+      * Metadata: `%{strategy: module, severity: :safe | :suspicious |
+        :blocked | nil, reason: String.t() | nil, details: map(), error: term | nil}`.
+        `details` is the strategy's `Nous.Plugins.InputGuard.Result` `metadata`
+        (e.g. `top_similarity`, `probabilities`); a dropped strategy has
+        `severity: nil`, `details: %{}` and the failure in `error`
+        (`:timeout` when it was killed). `reason` and `details` may quote the
+        classified input; scrub them before forwarding events off-box.
     * `prefix ++ [:strategy_dropped]` - one or more strategies errored, timed
       out or returned `{:error, reason}`.
       * Measurements: `%{count: integer}`
       * Metadata: `%{aggregation: :any | :majority | :all, fail_closed: boolean}`
+
+  The aggregate verdict is not an engine event: `Nous.Plugins.InputGuard`
+  emits `[:nous, :input_guard, :verdict]` itself, and DecisionGuard its own
+  `[:nous, :decision_guard, :verdict]`.
   """
 
   require Logger
@@ -50,6 +67,7 @@ defmodule Nous.Plugins.InputGuard.Engine do
   alias Nous.Message.ContentPart
   alias Nous.Plugins.InputGuard.Result
   alias Nous.Plugins.InputGuard.Strategies.Pattern
+  alias Nous.Telemetry.RunScope
 
   @default_prefix [:nous, :input_guard]
   @default_label "InputGuard"
@@ -65,21 +83,36 @@ defmodule Nous.Plugins.InputGuard.Engine do
   """
   @spec run(String.t(), Context.t() | nil, map(), keyword()) :: Result.t()
   def run(input, ctx, config, opts \\ []) do
+    input |> evaluate(ctx, config, opts) |> elem(0)
+  end
+
+  @doc """
+  `run/4`, also returning how many strategies were configured and how many
+  dropped: `{result, %{strategies: non_neg_integer, dropped: non_neg_integer}}`.
+  """
+  @spec evaluate(String.t(), Context.t() | nil, map(), keyword()) ::
+          {Result.t(), %{strategies: non_neg_integer(), dropped: non_neg_integer()}}
+  def evaluate(input, ctx, config, opts \\ []) do
     strategies = Map.get(config, :strategies, [{Pattern, []}])
     short_circuit = Map.get(config, :short_circuit, false)
     timeout = Map.get(config, :strategy_timeout, 30_000)
-    label = Keyword.get(opts, :label, @default_label)
 
-    {results, dropped} = run_strategies(strategies, input, ctx, short_circuit, timeout, label)
+    run_opts = %{
+      label: Keyword.get(opts, :label, @default_label),
+      prefix: Keyword.get(opts, :telemetry_prefix, @default_prefix),
+      timeout: timeout
+    }
+
+    {results, dropped} = run_strategies(strategies, input, ctx, short_circuit, run_opts)
 
     aggregated =
       results
       |> aggregate(length(strategies), config)
       |> apply_fail_closed(results, length(strategies), dropped, config, opts)
 
-    if aggregated.severity != :safe, do: fire_on_violation(aggregated, config, label)
+    if aggregated.severity != :safe, do: fire_on_violation(aggregated, config, run_opts.label)
 
-    aggregated
+    {aggregated, %{strategies: length(strategies), dropped: dropped}}
   end
 
   @doc """
@@ -245,10 +278,10 @@ defmodule Nous.Plugins.InputGuard.Engine do
   # apply_fail_closed/6). Strategies skipped by short-circuiting after a
   # :blocked result are NOT drops. Both variants bound each strategy by
   # `timeout`: a hung detector is a drop, never a hung run.
-  defp run_strategies(strategies, input, ctx, true = _short_circuit, timeout, label) do
+  defp run_strategies(strategies, input, ctx, true = _short_circuit, run_opts) do
     {results, dropped} =
       Enum.reduce_while(strategies, {[], 0}, fn {mod, opts}, {acc, dropped} ->
-        case bounded_check(mod, input, opts, ctx, timeout, label) do
+        case bounded_check(mod, input, opts, ctx, run_opts) do
           {:ok, %Result{severity: :blocked} = result} ->
             {:halt, {[result | acc], dropped}}
 
@@ -263,13 +296,17 @@ defmodule Nous.Plugins.InputGuard.Engine do
     {Enum.reverse(results), dropped}
   end
 
-  defp run_strategies(strategies, input, ctx, false = _short_circuit, timeout, label) do
+  defp run_strategies(strategies, input, ctx, false = _short_circuit, run_opts) do
+    started = System.monotonic_time()
+
     {results, dropped} =
       Task.Supervisor.async_stream_nolink(
         Nous.TaskSupervisor,
         strategies,
-        fn {mod, opts} -> safe_check(mod, input, opts, ctx, label) end,
-        timeout: timeout,
+        # The run's telemetry scope rides along explicitly, so strategy and
+        # decision-model events in the task carry the run's ids.
+        RunScope.bind(fn {mod, opts} -> safe_check(mod, input, opts, ctx, run_opts) end),
+        timeout: run_opts.timeout,
         on_timeout: :kill_task
       )
       |> Enum.zip(strategies)
@@ -283,32 +320,50 @@ defmodule Nous.Plugins.InputGuard.Engine do
 
         {{:exit, reason}, {mod, _opts}}, {acc, dropped} ->
           # Timeout kills bypass safe_check's rescue — log here
-          Logger.warning("#{label}: Strategy #{inspect(mod)} dropped (exit: #{inspect(reason)})")
+          Logger.warning(
+            "#{run_opts.label}: Strategy #{inspect(mod)} dropped (exit: #{inspect(reason)})"
+          )
 
+          emit_strategy_dropped(run_opts.prefix, mod, started, exit_error(reason))
           {acc, dropped + 1}
       end)
 
     {Enum.reverse(results), dropped}
   end
 
+  defp exit_error(:timeout), do: :timeout
+  defp exit_error(reason), do: {:exit, reason}
+
   # One strategy, run in a task so `timeout` applies on the sequential path
   # as it does on the parallel one.
-  defp bounded_check(mod, input, opts, ctx, timeout, label) do
-    task =
-      Task.Supervisor.async_nolink(Nous.TaskSupervisor, fn ->
-        safe_check(mod, input, opts, ctx, label)
-      end)
+  defp bounded_check(mod, input, opts, ctx, run_opts) do
+    started = System.monotonic_time()
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+    task =
+      Task.Supervisor.async_nolink(
+        Nous.TaskSupervisor,
+        RunScope.bind(fn -> safe_check(mod, input, opts, ctx, run_opts) end)
+      )
+
+    case Task.yield(task, run_opts.timeout) || Task.shutdown(task, :brutal_kill) do
       {:ok, outcome} ->
         outcome
 
       {:exit, reason} ->
-        Logger.warning("#{label}: Strategy #{inspect(mod)} dropped (exit: #{inspect(reason)})")
+        Logger.warning(
+          "#{run_opts.label}: Strategy #{inspect(mod)} dropped (exit: #{inspect(reason)})"
+        )
+
+        emit_strategy_dropped(run_opts.prefix, mod, started, {:exit, reason})
         :error
 
       nil ->
-        Logger.warning("#{label}: Strategy #{inspect(mod)} dropped (timeout after #{timeout}ms)")
+        Logger.warning(
+          "#{run_opts.label}: Strategy #{inspect(mod)} dropped " <>
+            "(timeout after #{run_opts.timeout}ms)"
+        )
+
+        emit_strategy_dropped(run_opts.prefix, mod, started, :timeout)
         :error
     end
   end
@@ -330,10 +385,11 @@ defmodule Nous.Plugins.InputGuard.Engine do
     mode = Map.get(config, :aggregation, :any)
     fail_closed = Map.get(config, :fail_closed, true)
 
-    :telemetry.execute(prefix ++ [:strategy_dropped], %{count: dropped}, %{
-      aggregation: mode,
-      fail_closed: fail_closed
-    })
+    :telemetry.execute(
+      prefix ++ [:strategy_dropped],
+      %{count: dropped},
+      RunScope.merge(%{aggregation: mode, fail_closed: fail_closed})
+    )
 
     Logger.warning(
       "#{label}: #{dropped} strateg#{if dropped == 1, do: "y", else: "ies"} dropped " <>
@@ -367,35 +423,80 @@ defmodule Nous.Plugins.InputGuard.Engine do
 
   # Normalises every way a strategy can fail to produce a verdict — raise,
   # throw/exit, or the contract's own `{:error, reason}` — to `:error`, so the
-  # two run_strategies/6 variants count all of them as dropped.
-  defp safe_check(mod, input, opts, ctx, label) do
+  # two run_strategies/5 variants count all of them as dropped. Emits the
+  # strategy's `:strategy_verdict` event either way.
+  defp safe_check(mod, input, opts, ctx, run_opts) do
+    started = System.monotonic_time()
+
+    case checked(mod, input, opts, ctx, run_opts.label) do
+      {:ok, %Result{} = result} = ok ->
+        emit_strategy_verdict(run_opts.prefix, mod, started, result)
+        ok
+
+      {:error, error} ->
+        emit_strategy_dropped(run_opts.prefix, mod, started, error)
+        :error
+    end
+  end
+
+  defp checked(mod, input, opts, ctx, label) do
     case mod.check(input, opts, ctx) do
       {:ok, %Result{}} = ok ->
         ok
 
-      {:error, reason} ->
+      {:error, reason} = error ->
         Logger.warning("#{label}: Strategy #{inspect(mod)} dropped: #{inspect(reason)}")
-        :error
+        error
     end
   rescue
     e ->
       Logger.warning("#{label}: Strategy #{inspect(mod)} failed: #{Exception.message(e)}")
-      :error
+      {:error, e}
   catch
     kind, reason ->
       Logger.warning(
         "#{label}: Strategy #{inspect(mod)} failed: #{inspect(kind)} #{inspect(reason)}"
       )
 
-      :error
+      {:error, {kind, reason}}
   end
 
-  # The survivors' verdict, with drops counted as votes that did not flag.
-  # Whether the drops could change it is apply_fail_closed/6's call, so an
-  # all-dropped run is :safe here and fail-closed there.
-  defp aggregate([], _configured_count, _config), do: %Result{severity: :safe}
+  defp emit_strategy_verdict(prefix, mod, started, %Result{} = result) do
+    :telemetry.execute(
+      prefix ++ [:strategy_verdict],
+      %{duration: System.monotonic_time() - started},
+      RunScope.merge(%{
+        strategy: mod,
+        severity: result.severity,
+        reason: result.reason,
+        details: result.metadata || %{},
+        error: nil
+      })
+    )
+  end
 
-  defp aggregate(results, configured_count, config) do
+  defp emit_strategy_dropped(prefix, mod, started, error) do
+    :telemetry.execute(
+      prefix ++ [:strategy_verdict],
+      %{duration: System.monotonic_time() - started},
+      RunScope.merge(%{strategy: mod, severity: nil, reason: nil, details: %{}, error: error})
+    )
+  end
+
+  @doc """
+  The survivors' verdict over strategy `results` under `config[:aggregation]`
+  (`:any`, default; `:majority`; `:all`), against `configured_count`
+  configured strategies: the aggregation `run/4` applies before its
+  fail-closed check for dropped strategies. A configured strategy missing
+  from `results` counts as a vote that did not flag, so a caller holding
+  per-strategy results with drops applies its own fail-closed rule (see the
+  moduledoc). Pure; calibration sweeps (`Nous.Eval.Guard`) re-aggregate
+  recorded per-strategy results with it.
+  """
+  @spec aggregate([Result.t()], non_neg_integer(), map()) :: Result.t()
+  def aggregate([], _configured_count, _config), do: %Result{severity: :safe}
+
+  def aggregate(results, configured_count, config) do
     mode = Map.get(config, :aggregation, :any)
     do_aggregate(results, configured_count, mode)
   end

@@ -9,12 +9,12 @@ to change something.
 
 | | |
 |---|---|
-| Current version | `0.19.2` |
+| Current version | `0.20.0` |
 | Elixir | `~> 1.18` |
 
 ```elixir
 defp deps do
-  [{:nous, "~> 0.19.2"}]
+  [{:nous, "~> 0.20.0"}]
 end
 ```
 
@@ -39,6 +39,8 @@ inline.
 - [0.18.2 to 0.18.3](#0182-to-0183) — InputGuard checks every unanswered message and text attachments
 - [0.18.3 to 0.19.0](#0183-to-0190) — `llamacpp:` tool calling and `llama_cpp_ex ~> 0.8.63`, agent `max_iterations`
 - [0.19.0 to 0.19.1](#0190-to-0191) — plugins initialise on every entry point, memory `:namespace` scoping, KB health-check scoping
+- [0.19.2 to 0.19.3](#0192-to-0193) — per-run `max_iterations`, `messages:` sends the system prompt, `seed` forwarded
+- [0.19.3 to 0.20.0](#0193-to-0200) — **breaking**: old `Nous.Eval` removed, plugin `before_run/2`, `new_messages` per run, telemetry keys, profiles, store dependency bumps
 - [Related guides](#related-guides)
 
 ## 0.15.x to 0.16.0
@@ -246,7 +248,7 @@ is a mechanical rename, and doing it now is what stops the warning.
 |------------|-------------|
 | `Nous.ToolSchema.to_openai/1` | `Nous.Tool.to_openai_schema/1` |
 | `Nous.Agent.tool/3` | `Nous.Agent.new/2` with `:tools`, or a `%Nous.Tool{}` |
-| `Nous.Eval.run!/2` | `Nous.Eval.run/2` |
+| `Nous.Eval.run!` | `Nous.Eval.run` on a suite (the suite API was removed in 0.20.0, see [0.19.3 to 0.20.0](#0193-to-0200)) |
 | `Nous.Decisions.path_between/4` | `store_mod.query(state, :path_between, from_id: ..., to_id: ...)` |
 | `Nous.Decisions.descendants/3` | `store_mod.query(state, :descendants, node_id: ...)` |
 | `Nous.Decisions.ancestors/3` | `store_mod.query(state, :ancestors, node_id: ...)` |
@@ -279,16 +281,10 @@ agent =
   )
 ```
 
-`Nous.Eval.run!/2` raised on failure; `Nous.Eval.run/2` returns the tuple the
-rest of the library uses.
-
-```elixir
-# Deprecated:
-report = Nous.Eval.run!(suite)
-
-# Preferred:
-{:ok, report} = Nous.Eval.run(suite)
-```
+The old `Nous.Eval.run!` raised on failure; `Nous.Eval.run` returned the
+tuple the rest of the library uses. Both took a suite, an API removed in
+0.20.0 (`run!` with it); see [0.19.3 to 0.20.0](#0193-to-0200) for the
+task-module replacement.
 
 The three graph-traversal helpers delegate straight to the store's `query/3`.
 Call the store yourself — it is one fewer indirection and the same result.
@@ -792,8 +788,10 @@ No API removals. Three fixes can change what a working setup does:
 
 ### Plugins run on `Nous.run(agent, messages: [...])` and AgentServer inbox runs
 
-These paths used to skip every plugin's `init/2`. Your configured plugins
-now actually run there:
+These paths used to skip plugin initialisation entirely. Your configured
+plugins now actually run there (since 0.20.0, `init/2` runs once per
+context and `before_run/2` on every run; see
+[0.19.3 to 0.20.0](#0193-to-0200)):
 
 - Skills activate and their `allowed_tools` restrict the request.
 - InputGuard screens the input.
@@ -823,6 +821,197 @@ can change for shared stores. Custom `Nous.KnowledgeBase.Store` backends:
 the optional `link_endpoints/1` callback replaces `link_counts_by_source/1`
 (see the [Knowledge Base guide](knowledge_base.md)). Without it the check
 stays correct but calls `outlinks/2` once per entry.
+
+## 0.19.2 to 0.19.3
+
+No API removals. Four fixes can change what a working setup does:
+
+### `max_iterations` is per run
+
+Continued runs (`context:`, `run_with_context/3`, every AgentServer turn)
+used to share one iteration counter for the whole conversation, so long
+sessions eventually failed every prompt with `MaxIterationsExceeded`. Each
+run now counts its own model requests. If you relied on `max_iterations` as
+a budget for a whole conversation, count runs or tokens yourself.
+`result.iterations` and the `[:nous, :agent, :run, :stop]` `iterations`
+measurement are now per run too; dashboards that summed them per session
+were double counting and now add up correctly.
+
+### `Nous.run(agent, messages: [...])` sends the agent's prompt
+
+The agent's `instructions` (or `system_prompt`), todo list and
+structured-output instructions are now sent, exactly as for a string
+prompt. The agent's prompt is authoritative: if your list (or
+`message_history:`) starts with a `:system` message, the agent's assembled
+prompt replaces it, and a warning is logged when the agent has
+instructions and the replaced message does not start with them. Further
+leading system messages that start with the agent's instructions (copies
+left by older continuations) are dropped; any other system message, such as
+the Summarization plugin's `[Conversation Summary]` or one in the middle of
+the conversation, is kept. Passing `result.all_messages` back as
+`message_history:` therefore sends the agent prompt once, with plugin
+fragments once. An agent with no prompt of its own sends your list as
+given. To send your own system message instead of the agent's, pass
+`system_message: :caller`; the messages are then sent as given (any other
+value raises `ArgumentError`). Code that relied on this path sending *no*
+system prompt should use an agent without instructions.
+
+### Plugin system prompts on continued runs
+
+A plugin's `system_prompt/2` now runs at the start of every run, not only
+the first run of a context, so its fragment reflects the new input.
+
+### `seed` reaches the provider
+
+`model_settings: %{seed: n}` is now sent by every OpenAI-style provider
+(`seed`) and Mistral (`random_seed`); responses become more reproducible.
+Anthropic has no seed parameter and logs a one-time warning instead. If you
+used `extra_body: %{seed: n}` as a workaround, it still works and wins over
+`:seed`. Custom providers built with `use Nous.Provider` and the default
+request builder now forward `seed`; pass `seed_param: "name"` to rename it
+or `seed_param: nil` if the API rejects it.
+
+## 0.19.3 to 0.20.0
+
+The old suite-based `Nous.Eval` is removed with no shim, and several runner
+fixes change what plugins, results and telemetry handlers see.
+
+### Plugin `init/2` runs once per context; per-run work moves to `before_run/2`
+
+`init/2` used to run again on every continued run (`context:`), which reset
+plugin state between turns. It now runs once per context lifetime: a
+previous run's `result.context` passed back through `:context`,
+`run_with_context/3` or an AgentServer turn is not initialised again. A
+fresh, hand-built or deserialized context is initialised once
+(`plugins_initialized` is runtime-only), so `init/2` should reuse state
+already in `ctx.deps`.
+
+Move per-run work (resetting "done this run" flags, re-deriving per-run
+options) into the new optional `before_run/2` callback, which runs at the
+start of every run, after `init/2`:
+
+```elixir
+# Before 0.20.0 — ran on every run
+def init(_agent, ctx), do: put_in(ctx.deps[:checked_this_run], false)
+
+# 0.20.0+ — init/2 once per context, before_run/2 every run
+def init(_agent, ctx), do: ctx
+def before_run(_agent, ctx), do: put_in(ctx.deps[:checked_this_run], false)
+```
+
+`Nous.Plugins.HumanInTheLoop` and `Nous.Plugins.InputGuard` no longer define
+`init/2`; if you called their `init/2` directly, call `before_run/2`.
+
+### `result.new_messages` is what this run appended
+
+It holds the run's user prompt, then its assistant and tool messages, plus
+any memory or knowledge-base context injected during the run. It no longer
+repeats earlier turns on `:context`, `run_with_context/3`,
+`:message_history` or `messages:` runs, and turn 1 now includes the
+prompt. For `run_with_context/3` and `messages:`, it starts at the user
+messages the transcript ends with. To keep history yourself, concatenate
+every run's `new_messages`.
+
+The result gains `new_messages_truncated?` (always present). It is `true`
+when compaction folded part of the run into a summary of earlier history,
+or the transcript was rewritten under the run; `new_messages` then holds
+only what survived.
+
+### Telemetry
+
+- `[:nous, :rate_limiter, :unavailable]` metadata key `agent` is renamed
+  `agent_name`. Update handlers that read it.
+- `[:nous, :agent, :run, *]` now also fires from `run_with_context/3` and
+  `run_stream/3` (so from AgentServer inbox runs and
+  `Nous.run(agent, messages: ...)`). `:stop` fires after a successful
+  structured-output retry; `:exception` carries `model_name` and the real
+  stacktrace when the run raised.
+- Every event carries the correlation keys `trace_id`, `agent_run_id`,
+  `parent_agent_run_id` and `tool_call_id` (`nil` outside a run). Handlers
+  that pattern-match a whole metadata map must allow the new keys.
+
+### Profiles
+
+- `Nous.Agent.Context.serialize/1` writes version 4 (adds `profile_id`).
+  Versions 1–3 still deserialize; older Nous releases reject v4 blobs.
+- New struct fields: `%Nous.Agent{profile: nil}`,
+  `%Nous.Tool{base_description: nil}` and
+  `%Nous.Agent.Context{profile_id: nil}`. Update code that matches whole
+  structs.
+- `Nous.Agent.new/2` and `Nous.new/2` raise `ArgumentError` when both
+  `instructions` and `system_prompt` are set. Keep one.
+- The tool-schema cache is cleared at the start of every run, and
+  `result.context.tool_schema_cache` is always `nil`. A continued context or
+  AgentServer turn sends the tools it has now; an edited tool used to keep
+  its old description.
+- When a continued context's profile differs from the agent's, the system
+  prompt is rebuilt. A leading system message the runner wrote is replaced;
+  one you kept with `system_message: :caller` makes the run return
+  `{:error, %Nous.Errors.ProfileError{reason: :system_message_diverged}}`.
+- AgentServer seeds the context's system prompt from the built agent
+  (function instructions seed `""`).
+- Decision guards read a tool's `base_description` when set, so they see
+  the developer's text rather than a profile's override.
+
+### The old `Nous.Eval` is removed
+
+`Nous.Eval.Suite`, `TestCase`, `Runner`, `Result`, `Metrics`, `Config`,
+the evaluators, the old `Reporter`, `YamlLoader`, the scalar `Optimizer` and
+the old `mix nous.eval` are gone, and `mix nous.optimize` now runs a
+different optimizer. The replacement is a task module (`use Nous.Eval`), a
+dataset, and `Nous.Eval.run/2` (or `mix nous.eval --task MyApp.Evals.Weather`).
+
+| Removed | Replacement |
+|---------|-------------|
+| `Suite`, `TestCase`, `agent_config` | A `use Nous.Eval` task module: `agent/1`, `dataset/0`, `scorers/0` |
+| `YamlLoader` | A dataset file (Elixir, YAML or JSONL); YAML needs `schema: nous.case/1` and `cases:`, unknown keys are errors |
+| `ExactMatch` evaluator | `Nous.Eval.Scorers.Equals` |
+| `FuzzyMatch` evaluator | `Nous.Eval.Scorers.Similarity` |
+| `ToolUsage` evaluator | `Nous.Eval.Scorers.Trajectory`, `Nous.Eval.Scorers.ToolArgs`, `Nous.Eval.Scorers.ToolCount`, `Nous.Eval.Scorers.NoToolErrors` |
+| `Schema` evaluator | `Nous.Eval.Scorers.OutputSchema` |
+| `Contains` evaluator | `Nous.Eval.Scorers.Contains` (an empty list or invalid regex is now a config error) |
+| `LLMJudge` evaluator | `Nous.Eval.Scorers.Judge` |
+| `Reporter.print` | `Nous.Eval.Reporter.render/2` with `format: :console`, `:markdown` or `:json` |
+| `run_ab` | `Nous.Eval.Compare.compare/3` on two stored runs |
+| `retry_failed` | Removed; run `k` samples per case and read the statistics |
+| `Config.cost_config` | Removed; prices come from `Nous.Usage.Pricing` and `config :nous, :model_prices` |
+| `Nous.Eval.Optimizer` (temperature/model/max-tokens search), `mix nous.optimize --suite` | `Nous.Eval.Optimizer.run/2` / `mix nous.optimize --task` search the agent's instructions and tool descriptions and return a `Nous.Profile` (see the [Profiles and Optimization guide](profiles.md)); scalar settings are not searched |
+
+```elixir
+defmodule MyApp.Evals.Weather do
+  use Nous.Eval
+
+  alias Nous.Eval.Scorers.{Contains, NoToolErrors}
+
+  @impl Nous.Eval
+  def dataset do
+    [%{id: "paris", input: "Weather in Paris?", scorers: [{Contains, values: ["Paris"]}]}]
+  end
+
+  @impl Nous.Eval
+  def scorers, do: [NoToolErrors]
+
+  @impl Nous.Eval
+  def agent(_ctx), do: Nous.new("openai:gpt-4o-mini", tools: [&MyApp.Tools.weather/2])
+end
+
+{:ok, run} = Nous.Eval.run(MyApp.Evals.Weather, k: 3, seed: 1)
+IO.puts(Nous.Eval.Reporter.render(run, format: :console))
+```
+
+Behaviour differences to expect:
+
+- `Nous.Eval.Scorers.Judge` requires a `judge:` model (no fallback to the
+  agent's model) and has no hidden 0.6 threshold: non-binary scales need
+  `threshold:`. A verdict outside the scale is a scorer error, not `0.0`.
+- A scorer error is not a failure: a sample with any scorer error is
+  `:error`, and `mix nous.eval` exits 2.
+
+### Optional store dependencies bumped
+
+`exqlite` `~> 0.27` → `~> 0.43` and `duckdbex` `~> 0.5` → `~> 0.7`. The
+memory and decision stores need no API change; update your own pins if you
+use these libraries.
 
 ## Related guides
 

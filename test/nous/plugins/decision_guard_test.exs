@@ -696,10 +696,14 @@ defmodule Nous.Plugins.DecisionGuardTest do
       assert_received {[:nous, :decision_guard, :verdict], ^ref, %{chunk_count: 1},
                        %{
                          surface: :user_input,
+                         agent_name: agent_name,
+                         tool_call_id: nil,
                          verdict: :deny,
                          result: :deny,
                          probabilities: %{verdict: [safe: _, suspicious: _, blocked: 0.95]}
                        }}
+
+      assert is_binary(agent_name)
     end
   end
 
@@ -922,7 +926,17 @@ defmodule Nous.Plugins.DecisionGuardTest do
       assert state["untrusted_content"] =~ "evil.example"
 
       assert_received {[:nous, :decision_guard, :verdict], ^ref, _,
-                       %{surface: :tool_call, verdict: :deny, result: :deny}}
+                       %{
+                         surface: :tool_call,
+                         verdict: :deny,
+                         result: :deny,
+                         tool_call_id: "call_1",
+                         agent_name: agent_name,
+                         agent_run_id: run_id
+                       }}
+
+      assert is_binary(agent_name)
+      assert run_id =~ ~r/\A[0-9a-f]{16}\z/
     end
 
     test "control: a safe call runs", %{bypass: bypass, test_pid: pid} do

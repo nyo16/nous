@@ -56,7 +56,7 @@ defmodule Nous.Plugins.KnowledgeBase do
 
   **Optional — auto-injection:**
     * `:auto_inject` - Auto-inject relevant KB entries before each request (default: true)
-    * `:inject_strategy` - `:first_only` (default) or `:every_iteration`
+    * `:inject_strategy` - `:first_only` (default: once per run, on its first request) or `:every_iteration`
     * `:inject_limit` - Max entries to inject (default: 3)
     * `:inject_min_score` - Minimum score for injection (default: 0.3)
 
@@ -87,17 +87,12 @@ defmodule Nous.Plugins.KnowledgeBase do
         ctx
 
       Map.has_key?(config, :store_state) ->
-        # Plugin.init/2 is called on every agent run; calling store_mod.init/1
-        # again would create a fresh ETS table (or DB handle) per run, silently
-        # discarding everything ingested on previous runs (or supplied by the
-        # caller) and leaking the prior table. Reuse the existing store_state
-        # and refresh per-run defaults.
-        updated_config =
-          config
-          |> apply_defaults()
-          |> Map.put(:_inject_done, false)
-
-        %{ctx | deps: Map.put(ctx.deps, :kb_config, updated_config)}
+        # A hand-built or restored context can arrive with a live store (the
+        # caller passed `deps: previous_result.deps`, or supplied its own);
+        # calling store_mod.init/1 again would create a fresh ETS table (or DB
+        # handle), silently discarding everything ingested so far and leaking
+        # the prior table. Reuse it.
+        %{ctx | deps: Map.put(ctx.deps, :kb_config, apply_defaults(config))}
 
       true ->
         do_init_store(store_mod, config, ctx)
@@ -114,7 +109,6 @@ defmodule Nous.Plugins.KnowledgeBase do
           config
           |> Map.put(:store_state, store_state)
           |> apply_defaults()
-          |> Map.put(:_inject_done, false)
 
         %{ctx | deps: Map.put(ctx.deps, :kb_config, updated_config)}
 
@@ -131,6 +125,19 @@ defmodule Nous.Plugins.KnowledgeBase do
     |> Map.put_new(:inject_limit, 3)
     |> Map.put_new(:inject_min_score, 0.3)
     |> Map.put_new(:auto_compile, false)
+  end
+
+  # `init/2` runs once per context; `:first_only` injection means once per run,
+  # so the "done" flag is reset here.
+  @impl true
+  def before_run(_agent, ctx) do
+    case ctx.deps[:kb_config] do
+      %{store_state: _} = config ->
+        %{ctx | deps: Map.put(ctx.deps, :kb_config, Map.put(config, :_inject_done, false))}
+
+      _ ->
+        ctx
+    end
   end
 
   @impl true

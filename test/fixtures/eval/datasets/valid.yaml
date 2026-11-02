@@ -1,0 +1,29 @@
+schema: nous.case/1
+name: refunds
+cases:
+  - id: refund-1
+    input: Refund order 42
+    expected:
+      tool: refund_order
+      args: {order_id: 42, reason: damaged}
+    tags: [refund, smoke]
+    threshold: 0.5
+    scorers:
+      - fixture_contains
+      - scorer: fixture_contains
+        values: [refund issued]
+        required: false
+        weight: 2
+  - id: refund-2
+    input:
+      - {role: system, content: You are terse.}
+      - {role: user, content: Refund order 43}
+    group: refund-paraphrase
+    split: test
+    metadata: {source: support-ticket, ticket: 991}
+  - id: refund-2b
+    input: Please refund order 43
+    group: refund-paraphrase
+  - id: greet-1
+    input: Hi!
+    tags: [smoke]

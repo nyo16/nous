@@ -46,8 +46,18 @@ defmodule Nous.AgentRunner.IterationLoop do
 
   alias Nous.{Errors, Hook, Message, Plugin, ToolCall}
   alias Nous.Agent.{Behaviour, Callbacks, Context}
-  alias Nous.AgentRunner.{PromptAssembly, RequestDispatch, Routing, ToolExecution}
+
+  alias Nous.AgentRunner.{
+    Instrumentation,
+    PromptAssembly,
+    RequestDispatch,
+    Routing,
+    Streaming,
+    ToolExecution
+  }
+
   alias Nous.Session.{Event, Log}
+  alias Nous.Telemetry.RunScope
 
   require Logger
 
@@ -150,31 +160,32 @@ defmodule Nous.AgentRunner.IterationLoop do
     :telemetry.execute(
       [:nous, :agent, :iteration, :start],
       %{system_time: System.system_time()},
-      %{
+      RunScope.merge(%{
         agent_name: agent.name,
         iteration: ctx.iteration,
         max_iterations: ctx.max_iterations
-      }
+      })
     )
 
     result = do_iteration_body(agent, behaviour, ctx, claimed)
 
     iteration_duration = System.monotonic_time() - iteration_start
 
-    iteration_meta = %{
-      agent_name: agent.name,
-      iteration: ctx.iteration,
-      tool_calls:
-        case result do
-          {:ok, %{usage: %{tool_calls: tc}}} -> tc
-          _ -> 0
-        end,
-      needs_response:
-        case result do
-          {:ok, %{needs_response: nr}} -> nr
-          _ -> false
-        end
-    }
+    iteration_meta =
+      RunScope.merge(%{
+        agent_name: agent.name,
+        iteration: ctx.iteration,
+        tool_calls:
+          case result do
+            {:ok, %{usage: %{tool_calls: tc}}} -> tc
+            _ -> 0
+          end,
+        needs_response:
+          case result do
+            {:ok, %{needs_response: nr}} -> nr
+            _ -> false
+          end
+      })
 
     :telemetry.execute(
       [:nous, :agent, :iteration, :stop],
@@ -186,7 +197,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   end
 
   def do_iteration_body(agent, behaviour, ctx, claimed) do
-    {ctx, all_tools, pre_step_result} = prepare_tools(agent, behaviour, ctx, claimed)
+    {ctx, all_tools, blocked_tool_names, pre_step_result} =
+      prepare_tools(agent, behaviour, ctx, claimed)
 
     # If a plugin (e.g. InputGuard) halted execution or a hook denied, skip the
     # LLM call. A denial here is the `pre_step` rejection: the claimed batch
@@ -212,7 +224,14 @@ defmodule Nous.AgentRunner.IterationLoop do
         "Agent iteration #{ctx.iteration + 1}/#{ctx.max_iterations}: requesting model response"
       )
 
-      case dispatch(request_agent, ctx, messages, model_settings, all_tools) do
+      case instrumented_dispatch(
+             request_agent,
+             ctx,
+             messages,
+             model_settings,
+             all_tools,
+             blocked_tool_names
+           ) do
         {:ok, response, active_model} ->
           ctx = record_active_model(agent, ctx, request_agent.model, active_model)
           handle_response(agent, behaviour, ctx, response, all_tools)
@@ -232,7 +251,8 @@ defmodule Nous.AgentRunner.IterationLoop do
   # Assemble the tool set the model will see this iteration (behaviour tools +
   # plugin tools, minus anything the permission policy blocks) and run the
   # pre_request hooks — which double as the `pre_step` interception point, since
-  # a step IS one model request. Returns `{ctx, all_tools, pre_step_verdict}`.
+  # a step IS one model request. Returns
+  # `{ctx, all_tools, blocked_tool_names, pre_step_verdict}`.
   def prepare_tools(agent, behaviour, ctx, claimed) do
     # Get tools from behaviour + plugins
     tools = behaviour.get_tools(agent)
@@ -260,7 +280,7 @@ defmodule Nous.AgentRunner.IterationLoop do
     # separately at execution time (see Nous.Permissions.enforce_approval/2).
     # Code Mode's `run_code` is injected after that filter — see
     # ToolExecution.visible_tools/2 for why it sits outside the restriction.
-    all_tools = ToolExecution.visible_tools(agent, all_tools)
+    {all_tools, blocked_tool_names} = ToolExecution.visible_tools(agent, all_tools)
 
     # Run pre_request hooks (can block the LLM call). `claimed`/`claimed_content`
     # describe the batch this step boundary just took from the inbox, which is
@@ -281,7 +301,7 @@ defmodule Nous.AgentRunner.IterationLoop do
         fn -> Hook.Decision.env(ctx, agent.name) end
       )
 
-    {ctx, all_tools, pre_step_result}
+    {ctx, all_tools, blocked_tool_names, pre_step_result}
   end
 
   # Build the messages and model settings for this iteration's model call.
@@ -297,7 +317,7 @@ defmodule Nous.AgentRunner.IterationLoop do
     messages = behaviour.build_messages(agent, ctx)
 
     # Add tools to model settings if any. Tool-schema conversion is memoized
-    # per run on the (provider, tool-name set) — the set is stable across
+    # per run on the (provider, tool-name set, profile) — stable across
     # iterations in the common case, so this skips re-converting every loop
     # (Anthropic conversion alone is ~12µs + ~90KB per iteration).
     {model_settings, ctx} =
@@ -305,7 +325,12 @@ defmodule Nous.AgentRunner.IterationLoop do
         {agent.model_settings, ctx}
       else
         {tool_schemas, ctx} =
-          converted_tool_schemas(ctx, request_agent.model.provider, all_tools)
+          converted_tool_schemas(
+            ctx,
+            request_agent.model.provider,
+            Nous.Profile.applied_id(request_agent),
+            all_tools
+          )
 
         {Map.put(agent.model_settings, :tools, tool_schemas), ctx}
       end
@@ -353,6 +378,36 @@ defmodule Nous.AgentRunner.IterationLoop do
       end
 
     {ctx, Map.get(ctx.deps, @active_model_key) || Routing.routed_model(ctx) || agent.model}
+  end
+
+  # The model span around one request: `[:nous, :agent, :model, :start]`
+  # before dispatch, `:stop` with the response (or `:exception` with the error)
+  # after it, fallback chain and rate limiter included.
+  defp instrumented_dispatch(request_agent, ctx, messages, settings, all_tools, blocked) do
+    span =
+      Instrumentation.model_start(%{
+        agent_name: request_agent.name,
+        iteration: ctx.iteration,
+        model: request_agent.model,
+        stream: ctx.stream,
+        tools: all_tools,
+        blocked_tool_names: blocked,
+        messages: messages
+      })
+
+    case dispatch(request_agent, ctx, messages, settings, all_tools) do
+      {:ok, response, active_model} ->
+        {first_token_at, metadata} =
+          Map.pop(response.metadata || %{}, Streaming.first_token_key())
+
+        response = %{response | metadata: metadata}
+        Instrumentation.model_stop(span, response, active_model, first_token_at)
+        {:ok, response, active_model}
+
+      {:error, reason} = error ->
+        Instrumentation.model_exception(span, :error, reason)
+        error
+    end
   end
 
   # Make the model request (with fallback chain if configured). `request_agent`
@@ -404,13 +459,14 @@ defmodule Nous.AgentRunner.IterationLoop do
       :telemetry.execute(
         [:nous, :agent, :fallback, :used],
         %{system_time: System.system_time()},
-        %{
+        RunScope.merge(%{
           agent_name: agent.name,
+          iteration: ctx.iteration,
           original_provider: original.provider,
           original_model: original.model,
           active_provider: active_model.provider,
           active_model: active_model.model
-        }
+        })
       )
 
       deps =
@@ -436,13 +492,14 @@ defmodule Nous.AgentRunner.IterationLoop do
   def fallback_used?(%Context{deps: deps}), do: Map.get(deps, @fallback_used_key, false)
 
   @doc false
-  # The sticky fallback, the fallback flag and the routing decision are
-  # runtime-only, like the turn exit reason: dropped at run start (a new run
-  # or AgentServer turn starts at the primary again and routes afresh) and
-  # from the result's deps/context so they are never persisted.
+  # The sticky fallback, the fallback flag, the routing decision and the
+  # tool-schema memo are runtime-only, like the turn exit reason: dropped at
+  # run start (a new run or AgentServer turn starts at the primary again,
+  # routes afresh and converts the tools it has now) and from the result's
+  # deps/context so they are never persisted.
   def clear_runtime_models(%Context{} = ctx) do
     deps = Map.drop(ctx.deps, [@active_model_key, @fallback_used_key])
-    Routing.clear(%{ctx | deps: deps})
+    Routing.clear(%{ctx | deps: deps, tool_schema_cache: nil})
   end
 
   # Fold a successful model response into the context (usage, the blocking
@@ -561,20 +618,24 @@ defmodule Nous.AgentRunner.IterationLoop do
 
   # Convert tools to provider schemas, memoized per run in a runtime-only ctx
   # field. The tool set (and its provider) is stable across loop iterations in
-  # the common case, so we re-convert ONLY when the (provider, tool-name set)
-  # changes — e.g. a plugin's before_request adds/removes a tool. Returns
-  # `{schemas, ctx}` so the caller threads the updated cache forward.
+  # the common case, so we re-convert ONLY when the (provider, tool-name set,
+  # profile id) changes — e.g. a plugin's before_request adds/removes a tool.
+  # Returns `{schemas, ctx}` so the caller threads the updated cache forward.
   #
-  # The name-set is the staleness guard the design accepts: a plugin swapping a
-  # tool for one with the SAME name but a different schema mid-run would not be
-  # detected (pathological; tools are otherwise stable structs).
+  # The memo is cleared at every run start (clear_runtime_models/1), so a
+  # continued context or AgentServer turn converts the tools it runs with now
+  # (a run-level profile, a tool edited between turns); within a run the
+  # profile is constant, so its id in the key costs no hashing. A plugin
+  # swapping a tool for one with the SAME name but a different schema mid-run
+  # is the one change the key does not see (pathological; tools are otherwise
+  # stable structs).
   #
   # NOT applied to: run_stream/3 (single-shot — converts once per call, never
   # reused) or rebuild_settings_for_model/4 (rare fallback path, different
   # provider, no ctx in scope). Both intentionally re-convert.
-  def converted_tool_schemas(ctx, provider, all_tools) do
+  def converted_tool_schemas(ctx, provider, profile_id, all_tools) do
     names = all_tools |> Enum.map(& &1.name) |> MapSet.new()
-    key = {provider, names}
+    key = {provider, names, profile_id}
 
     case ctx.tool_schema_cache do
       {^key, schemas} ->

@@ -113,34 +113,7 @@ defmodule Nous.ModelDispatcher do
   def resolve(module) when is_atom(module), do: module
 
   defp process_override do
-    case Process.get(@override_key) do
-      nil -> callers_override(Process.get(:"$callers", []))
-      module -> module
-    end
-  end
-
-  # Nothing to walk in the overwhelmingly common case, so production pays two
-  # process-dictionary reads and stops here.
-  defp callers_override([]), do: nil
-  defp callers_override(callers), do: Enum.find_value(callers, &caller_override/1)
-
-  # `process_info(pid, {:dictionary, key})` fetches one entry instead of
-  # copying the whole dictionary out of the other process. It landed in OTP 26;
-  # `elixir ~> 1.18` still supports OTP 25, so keep the copying form for it.
-  if String.to_integer(System.otp_release()) >= 26 do
-    defp caller_override(pid) do
-      case :erlang.process_info(pid, {:dictionary, @override_key}) do
-        {_key, module} when is_atom(module) and module != :undefined -> module
-        _ -> nil
-      end
-    end
-  else
-    defp caller_override(pid) do
-      case :erlang.process_info(pid, :dictionary) do
-        {:dictionary, dict} -> :proplists.get_value(@override_key, dict, nil)
-        _ -> nil
-      end
-    end
+    Nous.CallerLookup.lookup(@override_key, &(is_atom(&1) and &1 != :undefined))
   end
 
   @doc """

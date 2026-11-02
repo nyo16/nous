@@ -56,7 +56,7 @@ defmodule Nous.Plugins.Memory do
 
   **Optional — auto-injection:**
     * `:auto_inject` - Auto-inject relevant memories before each request (default: true)
-    * `:inject_strategy` - `:first_only` (default) or `:every_iteration`
+    * `:inject_strategy` - `:first_only` (default: once per run, on its first request) or `:every_iteration`
     * `:inject_limit` - Max memories to inject (default: 5)
     * `:inject_min_score` - Minimum score for injection (default: 0.3)
 
@@ -121,16 +121,12 @@ defmodule Nous.Plugins.Memory do
         ctx
 
       Map.has_key?(config, :store_state) ->
-        # Plugin.init/2 is called on every agent run; calling store_mod.init/1
-        # again would create a fresh ETS table (or DB handle) per run, silently
-        # discarding everything stored on previous runs and leaking the prior
-        # table. Reuse the existing store_state and refresh per-run defaults.
-        updated_config =
-          config
-          |> apply_defaults()
-          |> Map.put(:_inject_done, false)
-
-        %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
+        # A hand-built or restored context can arrive with a live store (the
+        # caller passed `deps: previous_result.deps`, say); calling
+        # store_mod.init/1 again would create a fresh ETS table (or DB handle),
+        # silently discarding everything stored so far and leaking the prior
+        # table. Reuse it.
+        %{ctx | deps: Map.put(ctx.deps, :memory_config, apply_defaults(config))}
 
       true ->
         do_init_store(store_mod, config, ctx)
@@ -147,7 +143,6 @@ defmodule Nous.Plugins.Memory do
           config
           |> Map.put(:store_state, store_state)
           |> apply_defaults()
-          |> Map.put(:_inject_done, false)
 
         %{ctx | deps: Map.put(ctx.deps, :memory_config, updated_config)}
 
@@ -171,6 +166,19 @@ defmodule Nous.Plugins.Memory do
     |> Map.put_new(:reflection_max_messages, 20)
     |> Map.put_new(:reflection_max_memories, 50)
     |> Map.put_new(:_run_count, 0)
+  end
+
+  # `init/2` runs once per context; `:first_only` injection means once per run,
+  # so the "done" flag is reset here.
+  @impl true
+  def before_run(_agent, ctx) do
+    case ctx.deps[:memory_config] do
+      %{store_state: _} = config ->
+        %{ctx | deps: Map.put(ctx.deps, :memory_config, Map.put(config, :_inject_done, false))}
+
+      _ ->
+        ctx
+    end
   end
 
   @impl true

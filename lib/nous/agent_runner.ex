@@ -41,18 +41,32 @@ defmodule Nous.AgentRunner do
       result.output          #=> "It's Tuesday, 12 August 2026 in Athens."
       result.iterations      #=> 2
       result.usage.total_tokens
-      result.new_messages    #=> the assistant/tool messages this run appended
+      result.new_messages    #=> the messages this run appended: its user prompt,
+                             #   then the assistant and tool messages
 
-  To continue a conversation, hand the previous run's messages back in — or
-  reuse `result.context` directly with `run_with_context/3`, which also
-  preserves any `deps` a tool mutated:
+  To continue a conversation, hand the previous run's context back in
+  (`:context`, or `run_with_context/3`) — the conversation, any `deps` a tool
+  mutated and plugin state carry over — or keep the history yourself:
+  `new_messages` is exactly what each run appended, so the running history is
+  the concatenation of every run's `new_messages`:
 
       {:ok, first} = Nous.AgentRunner.run(agent, "My name is Ada.")
-      {:ok, second} = Nous.AgentRunner.run(agent, "What is my name?",
-        message_history: first.all_messages
+      {:ok, second} = Nous.AgentRunner.run(agent, "What is my name?", context: first.context)
+
+      {:ok, again} = Nous.AgentRunner.run(agent, "What is my name?",
+        message_history: first.new_messages
       )
 
-      {:ok, third} = Nous.AgentRunner.run_with_context(agent, second.context)
+  The agent's prompt is authoritative: when `:message_history` (or
+  `Nous.Agent.run/3`'s `messages:`) starts with a system message, the agent's
+  assembled prompt replaces it, and further leading copies of that prompt are
+  dropped, so passing `result.all_messages` back is safe too. Other system
+  messages, such as a compaction summary, are kept. Pass
+  `system_message: :caller` to send your own leading system message instead.
+
+  `new_messages_truncated?` is `true` when compaction (for example
+  `Nous.Plugins.Summarization`) folded part of this run into a summary of
+  earlier history; `new_messages` then holds only what survived.
 
   Streaming is a flag on the same loop, not a separate code path. With
   `stream: true` the tool loop still runs; deltas arrive through callbacks:
@@ -89,12 +103,15 @@ defmodule Nous.AgentRunner do
   alias Nous.Agent.{Behaviour, Callbacks, Context}
 
   alias Nous.AgentRunner.{
+    Instrumentation,
     IterationLoop,
     PromptAssembly,
     RequestDispatch,
     Streaming,
     ToolExecution
   }
+
+  alias Nous.Session.Log
 
   require Logger
 
@@ -106,10 +123,24 @@ defmodule Nous.AgentRunner do
   ## Options
     * `:deps` - Dependencies for tools
     * `:message_history` - Previous messages
+    * `:system_message` - Which system message the conversation starts with,
+      `:agent` (default) or `:caller`; anything else raises `ArgumentError`.
+      Under `:agent`, the agent's assembled prompt replaces the first leading
+      `:system` message of `:message_history` (or `Nous.Agent.run/3`'s
+      `messages:`), or is prepended. Further leading system messages that
+      start with the agent's instructions (copies from older histories) are
+      dropped; any other system message stays where it is. So a continuation
+      from `result.all_messages` sends the agent prompt once, with the plugin
+      overlay once. A warning is logged when the agent has instructions and
+      the replaced message does not start with them. An agent with no
+      assembled prompt keeps the caller's messages as given. Under `:caller`,
+      the messages are sent as given and the agent's prompt is only added
+      when they have no leading system message. Ignored with `:context`.
     * `:usage_limits` - Usage limits (not implemented yet)
     * `:model_settings` - Override model settings
-    * `:max_iterations` - Maximum iterations (default: the agent's
-      `:max_iterations`, else 10)
+    * `:max_iterations` - Maximum model requests for this run (default: the
+      agent's `:max_iterations`, else 10). Counted per run: a continued
+      `:context` starts again at zero.
     * `:cancellation_check` - Function to check if execution should be cancelled.
       Under `stream: true`, also invoked between every streamed chunk; on
       cancellation the consumer aborts cleanly without partial tool execution.
@@ -128,7 +159,8 @@ defmodule Nous.AgentRunner do
       `requires_approval: true` runs (see `Nous.RunContext`). Without one such
       tools are rejected. `Nous.Plugins.HumanInTheLoop` can also install a
       handler via `deps[:hitl_config]`; when both are present the plugin's
-      wrapped handler wins (it is applied at plugin init, after context build).
+      wrapped handler wins, on every run including a continued `:context`
+      (the plugin installs it in `before_run/2`, after context build).
     * `:stream` - When `true`, the LLM call streams chunks while still running
       the tool-call loop (default: `false`). Fires `:on_llm_new_delta` per
       text chunk and `:on_llm_new_thinking_delta` per reasoning chunk.
@@ -136,36 +168,46 @@ defmodule Nous.AgentRunner do
       message, identical in shape to the non-streaming path. Works across all
       providers (OpenAI-compatible, Anthropic, Gemini) and is compatible with
       `output_type` (the synthetic-tool path is honored under streaming).
+    * `:profile` - Run with this `Nous.Profile` (applied to the agent's base
+      text) or, for `nil`, with the base text. See `Nous.Agent.run/3`.
 
   """
   @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(%Agent{} = agent, prompt, opts \\ []) do
-    agent = apply_runtime_overrides(agent, opts)
-    start_time = System.monotonic_time()
+    with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
+      Instrumentation.scoped(agent, opts, fn run_scope, start_time ->
+        do_run(agent, prompt, opts, run_scope, start_time)
+      end)
+    end
+  end
 
+  defp do_run(agent, prompt, opts, run_scope, start_time) do
     Logger.info(
       "Starting agent run: #{agent.name} with model #{agent.model.provider}:#{agent.model.model}"
     )
 
     Logger.debug("Agent has #{length(agent.tools)} tools available")
 
-    # Emit start event
-    :telemetry.execute(
-      [:nous, :agent, :run, :start],
-      %{system_time: System.system_time(), monotonic_time: start_time},
-      %{
-        agent_name: agent.name,
-        model_provider: agent.model.provider,
-        model_name: agent.model.model,
-        tool_count: length(agent.tools),
-        has_tools: length(agent.tools) > 0
-      }
-    )
+    case build_context(agent, prompt, opts) do
+      {:ok, ctx} ->
+        run_context(agent, ctx, run_scope, start_time)
 
-    # Build context from options. A continued context starts at the primary
-    # model again: the sticky fallback and the routing decision are
-    # runtime-only (see IterationLoop).
-    ctx = agent |> build_context(prompt, opts) |> IterationLoop.clear_runtime_models()
+      {:error, reason} = error ->
+        emit_error_telemetry(agent, run_scope, start_time, reason)
+        error
+    end
+  end
+
+  defp run_context(agent, ctx, run_scope, start_time) do
+    # A continued context starts at the primary model again: the sticky
+    # fallback and the routing decision are runtime-only (see IterationLoop).
+    ctx =
+      ctx
+      |> IterationLoop.clear_runtime_models()
+      |> Map.put(:run, run_scope)
+
+    # build_context/3 appends the prompt last, so this run starts at its event.
+    boundary = run_boundary(ctx, Log.count(ctx.log) - 1)
 
     # Execute callbacks
     Callbacks.execute(ctx, :on_agent_start, %{agent: agent})
@@ -176,8 +218,8 @@ defmodule Nous.AgentRunner do
     # Initialize context via behaviour (optional callback)
     ctx = Behaviour.call(behaviour, :init_context, [agent, ctx], ctx)
 
-    # Initialize context via plugins
-    ctx = init_plugins(agent, ctx)
+    # Plugin init (once per context) and before_run (every run)
+    ctx = prepare_plugins(agent, ctx)
 
     ctx = build_hook_registry(agent, ctx)
 
@@ -196,7 +238,7 @@ defmodule Nous.AgentRunner do
         # Extract output via behaviour
         case behaviour.extract_output(agent, final_ctx) do
           {:ok, output} ->
-            agent_result = build_result(agent, final_ctx, output)
+            agent_result = build_result(agent, final_ctx, output, boundary)
 
             # Run after_run plugin hooks
             updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
@@ -209,7 +251,7 @@ defmodule Nous.AgentRunner do
 
             agent_result =
               if updated_ctx != final_ctx,
-                do: build_result(agent, updated_ctx, output),
+                do: build_result(agent, updated_ctx, output, boundary),
                 else: agent_result
 
             duration_ms = System.convert_time_unit(duration, :native, :millisecond)
@@ -223,31 +265,7 @@ defmodule Nous.AgentRunner do
               Requests: #{final_ctx.usage.requests}
             """)
 
-            served_model = IterationLoop.served_model(final_ctx) || agent.model
-
-            :telemetry.execute(
-              [:nous, :agent, :run, :stop],
-              %{
-                duration: duration,
-                total_tokens: final_ctx.usage.total_tokens,
-                input_tokens: final_ctx.usage.input_tokens,
-                output_tokens: final_ctx.usage.output_tokens,
-                tool_calls: final_ctx.usage.tool_calls,
-                requests: final_ctx.usage.requests,
-                iterations: final_ctx.iteration
-              },
-              %{
-                agent_name: agent.name,
-                model_provider: agent.model.provider,
-                model_name: agent.model.model,
-                # When routing or fallback moved the run off the configured
-                # model, surface BOTH so observability can split metrics by
-                # configured and active (last used) model.
-                active_model_provider: served_model.provider,
-                active_model_name: served_model.model,
-                fallback_used: IterationLoop.fallback_used?(final_ctx)
-              }
-            )
+            emit_run_stop(agent, run_scope, start_time, final_ctx)
 
             # Execute completion callback
             Callbacks.execute(final_ctx, :on_agent_complete, agent_result)
@@ -259,24 +277,25 @@ defmodule Nous.AgentRunner do
 
             case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
               {:ok, retry_ctx, output} ->
-                agent_result = build_result(agent, retry_ctx, output)
+                agent_result = build_result(agent, retry_ctx, output, boundary)
+                emit_run_stop(agent, run_scope, start_time, retry_ctx)
                 Callbacks.execute(retry_ctx, :on_agent_complete, agent_result)
                 {:ok, agent_result}
 
               {:error, reason} ->
-                emit_error_telemetry(agent, duration, reason)
+                emit_error_telemetry(agent, run_scope, start_time, reason)
                 Callbacks.execute(final_ctx, :on_error, reason)
                 {:error, reason}
             end
 
           {:error, reason} ->
-            emit_error_telemetry(agent, duration, reason)
+            emit_error_telemetry(agent, run_scope, start_time, reason)
             Callbacks.execute(final_ctx, :on_error, reason)
             {:error, reason}
         end
 
       {:error, error} ->
-        emit_error_telemetry(agent, duration, error)
+        emit_error_telemetry(agent, run_scope, start_time, error)
         Callbacks.execute(ctx, :on_error, error)
         {:error, error}
     end
@@ -291,11 +310,37 @@ defmodule Nous.AgentRunner do
   context built by hand (as `Nous.run(agent, messages: [...])` does) or
   restored from a serialized session is initialised once here, while a
   `result.context` from an earlier run is continued as it is, so plugin state
-  such as an activated skill or InputGuard's checked-message index carries over.
+  such as an activated skill carries over. Plugin `before_run/2` runs on every
+  call.
+
+  There is no prompt to append, so the run's input is the user messages the
+  context ends with (the ones a caller added with `Context.add_message/2`, or
+  the trailing user messages of `Nous.run(agent, messages: [...])`):
+  `result.new_messages` starts with them.
   """
   @spec run_with_context(Agent.t(), Context.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_with_context(%Agent{} = agent, %Context{} = ctx, opts \\ []) do
-    agent = apply_runtime_overrides(agent, opts)
+    with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
+      Instrumentation.scoped(agent, ctx, fn run_scope, start_time ->
+        do_run_with_context(agent, ctx, opts, run_scope, start_time)
+      end)
+    end
+  end
+
+  defp do_run_with_context(agent, ctx, opts, run_scope, start_time) do
+    boundary = run_boundary(ctx, pending_input_position(ctx))
+
+    case switch_profile(agent, ctx, opts) do
+      {:ok, ctx} ->
+        continue_context(agent, ctx, opts, boundary, run_scope, start_time)
+
+      {:error, reason} = error ->
+        emit_error_telemetry(agent, run_scope, start_time, reason)
+        error
+    end
+  end
+
+  defp continue_context(agent, ctx, opts, boundary, run_scope, start_time) do
     # Merge any additional options into context
     ctx =
       ctx
@@ -305,11 +350,12 @@ defmodule Nous.AgentRunner do
       |> Context.set_needs_response(true)
       |> Context.patch_dangling_tool_calls()
       |> IterationLoop.clear_runtime_models()
+      |> reset_iteration()
+      |> Map.put(:run, run_scope)
 
-    # A context that never went through plugin init (built by hand, or
-    # restored: the marker is runtime-only) gets it here, once. A continued
-    # context keeps its plugin state; re-running init would reset it.
-    ctx = if ctx.plugins_initialized, do: ctx, else: init_plugins(agent, ctx)
+    # Plugin init only for a context that never went through it (built by
+    # hand, or restored: the marker is runtime-only); before_run every run.
+    ctx = prepare_plugins(agent, ctx)
 
     # A restored context carries no registry (it is runtime-only), so rebuild
     # it here exactly as run/3 does; otherwise an inbox run fires no hooks.
@@ -322,14 +368,15 @@ defmodule Nous.AgentRunner do
       {:ok, final_ctx} ->
         case behaviour.extract_output(agent, final_ctx) do
           {:ok, output} ->
-            agent_result = build_result(agent, final_ctx, output)
+            agent_result = build_result(agent, final_ctx, output, boundary)
             updated_ctx = Plugin.run_after_run(agent.plugins, agent, agent_result, final_ctx)
 
             agent_result =
               if updated_ctx != final_ctx,
-                do: build_result(agent, updated_ctx, output),
+                do: build_result(agent, updated_ctx, output, boundary),
                 else: agent_result
 
+            emit_run_stop(agent, run_scope, start_time, final_ctx)
             {:ok, agent_result}
 
           {:error, %Errors.ValidationError{} = err} ->
@@ -337,17 +384,21 @@ defmodule Nous.AgentRunner do
 
             case maybe_retry_validation(agent, behaviour, final_ctx, err, max_retries) do
               {:ok, retry_ctx, output} ->
-                {:ok, build_result(agent, retry_ctx, output)}
+                emit_run_stop(agent, run_scope, start_time, retry_ctx)
+                {:ok, build_result(agent, retry_ctx, output, boundary)}
 
-              {:error, _} = err ->
+              {:error, reason} = err ->
+                emit_error_telemetry(agent, run_scope, start_time, reason)
                 err
             end
 
-          {:error, _} = err ->
+          {:error, reason} = err ->
+            emit_error_telemetry(agent, run_scope, start_time, reason)
             err
         end
 
-      {:error, _} = err ->
+      {:error, reason} = err ->
+        emit_error_telemetry(agent, run_scope, start_time, reason)
         err
     end
   end
@@ -369,10 +420,26 @@ defmodule Nous.AgentRunner do
   """
   @spec run_stream(Agent.t(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
   def run_stream(%Agent{} = agent, prompt, opts \\ []) do
-    agent = apply_runtime_overrides(agent, opts)
-    # Build context
-    ctx = build_context(agent, prompt, opts)
+    with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
+      # The stream is enumerated after this returns, possibly in another
+      # process, so the run's scope is captured into it (see
+      # Streaming.instrument_run/2) and its stop event fires on `{:complete, _}`.
+      Instrumentation.scoped(agent, opts, fn run_scope, start_time ->
+        run_info = %{agent: agent, run_scope: run_scope, start_time: start_time}
 
+        case build_context(agent, prompt, opts) do
+          {:ok, ctx} ->
+            do_run_stream(agent, %{ctx | run: run_scope}, run_info)
+
+          {:error, reason} = error ->
+            emit_error_telemetry(agent, run_scope, start_time, reason)
+            error
+        end
+      end)
+    end
+  end
+
+  defp do_run_stream(agent, ctx, run_info) do
     # Get behaviour
     behaviour = Behaviour.get_module(agent)
 
@@ -380,19 +447,18 @@ defmodule Nous.AgentRunner do
     # apply to streaming too. Previously run_stream skipped this entirely, so an
     # InputGuard configured on the agent silently provided ZERO protection for
     # streamed requests — a security control that varied by transport.
-    ctx = init_plugins(agent, ctx)
+    ctx = prepare_plugins(agent, ctx)
 
     tools = behaviour.get_tools(agent)
     plugin_tools = Plugin.collect_tools(agent.plugins, agent, ctx)
     all_tools = tools ++ plugin_tools
 
-    ctx =
-      if ctx.iteration == 0,
-        do: PromptAssembly.apply_plugin_system_prompts(agent, ctx),
-        else: ctx
+    # build_context/3 starts every run at iteration 0, so this is always the
+    # first request of the run.
+    ctx = PromptAssembly.apply_plugin_system_prompts(agent, ctx)
 
     {ctx, all_tools} = Plugin.run_before_request(agent.plugins, agent, ctx, all_tools)
-    all_tools = ToolExecution.visible_tools(agent, all_tools)
+    {all_tools, blocked_tool_names} = ToolExecution.visible_tools(agent, all_tools)
 
     if ctx.needs_response do
       # Build messages via behaviour (reflects any plugin context changes)
@@ -417,25 +483,44 @@ defmodule Nous.AgentRunner do
           model_settings
         end
 
+      model_span =
+        Instrumentation.model_start(%{
+          agent_name: agent.name,
+          iteration: 0,
+          model: agent.model,
+          stream: true,
+          tools: all_tools,
+          blocked_tool_names: blocked_tool_names,
+          messages: messages
+        })
+
       # Request stream from model (with fallback chain if configured)
       case RequestDispatch.stream_with_fallback(agent, messages, model_settings, all_tools) do
-        {:ok, stream} ->
+        {:ok, stream, active_model} ->
           # Wrap stream to execute callbacks, then accumulate result
           wrapped_stream =
             stream
             |> Streaming.wrap_stream_with_callbacks(ctx)
             |> Streaming.wrap_stream_with_result()
+            |> Streaming.instrument_run(
+              Map.merge(run_info, %{model_span: model_span, active_model: active_model})
+            )
 
           {:ok, wrapped_stream}
 
-        error ->
+        {:error, reason} = error ->
+          Instrumentation.model_exception(model_span, :error, reason)
+          emit_error_telemetry(agent, run_info.run_scope, run_info.start_time, reason)
           error
       end
     else
       # A plugin (e.g. InputGuard) halted the request before any LLM call.
       # Emit the guard's message as a terminal stream instead of streaming a
       # model response.
-      {:ok, blocked_stream(ctx)}
+      {:ok,
+       ctx
+       |> blocked_stream()
+       |> Streaming.instrument_run(Map.merge(run_info, %{model_span: nil, active_model: nil}))}
     end
   end
 
@@ -462,8 +547,11 @@ defmodule Nous.AgentRunner do
   # Private functions
 
   # Apply per-run overrides for output_type, structured_output, model_settings,
-  # the sandbox policy and the router
+  # the sandbox policy, the router and the profile. Only the profile can fail,
+  # and it fails here, before the run starts and before any model call.
   defp apply_runtime_overrides(agent, opts) do
+    validate_system_message!(opts)
+
     agent
     |> then(fn a ->
       case Keyword.fetch(opts, :output_type) do
@@ -499,13 +587,28 @@ defmodule Nous.AgentRunner do
         :error -> a
       end
     end)
+    |> apply_profile_override(opts)
   end
 
-  # The one place plugin `init/2` runs for a run. Marks the context so
-  # run_with_context/3 can tell a context that was initialised (and carries
-  # plugin state) from one that never was.
-  defp init_plugins(agent, ctx) do
-    %{Plugin.run_init(agent.plugins, agent, ctx) | plugins_initialized: true}
+  defp apply_profile_override(agent, opts) do
+    case Keyword.fetch(opts, :profile) do
+      {:ok, profile} -> Nous.Profile.apply(profile, agent)
+      :error -> {:ok, agent}
+    end
+  end
+
+  # The one place plugins are set up for a run, on every entry point. `init/2`
+  # runs once per context: the marker it sets is how a continued context (a
+  # previous run's `result.context`) keeps its plugin state instead of being
+  # reset. It is runtime-only, so a restored context is initialised again.
+  # `before_run/2` runs on every run.
+  defp prepare_plugins(agent, ctx) do
+    ctx =
+      if ctx.plugins_initialized,
+        do: ctx,
+        else: %{Plugin.run_init(agent.plugins, agent, ctx) | plugins_initialized: true}
+
+    Plugin.run_before_run(agent.plugins, agent, ctx)
   end
 
   defp build_context(agent, prompt, opts) do
@@ -513,77 +616,145 @@ defmodule Nous.AgentRunner do
     case Keyword.get(opts, :context) do
       %Context{} = existing_ctx ->
         # Continue from existing context, add new user message
-        existing_ctx
-        |> Context.add_message(Message.user(prompt))
-        |> Context.set_needs_response(true)
-        |> maybe_update_callbacks(opts)
-        |> maybe_update_notify_pid(opts)
-        |> maybe_update_stream(opts)
-        |> maybe_update_cancellation_check(opts)
-        |> maybe_update_approval_handler(opts)
-        |> maybe_update_max_iterations(opts)
+        with {:ok, ctx} <- switch_profile(agent, existing_ctx, opts) do
+          {:ok,
+           ctx
+           |> Context.add_message(Message.user(prompt))
+           |> Context.set_needs_response(true)
+           |> maybe_update_callbacks(opts)
+           |> maybe_update_notify_pid(opts)
+           |> maybe_update_stream(opts)
+           |> maybe_update_cancellation_check(opts)
+           |> maybe_update_approval_handler(opts)
+           |> maybe_update_max_iterations(opts)
+           |> reset_iteration()}
+        end
 
       nil ->
-        # Build fresh context
-        message_history = Keyword.get(opts, :message_history, [])
-        stream = Keyword.get(opts, :stream, false)
+        history = Keyword.get(opts, :message_history, [])
+        instructions = resolve_instructions(agent, opts)
+        system_prompt = base_system_prompt(agent, instructions, opts)
 
-        # Build system prompt
-        system_prompt =
-          resolve_prompt(agent.instructions, opts) ||
-            resolve_prompt(agent.system_prompt, opts)
+        {messages, system_prompt} =
+          with_system_prompt(history, instructions, system_prompt, agent, opts)
 
-        # Handle todo injection if enabled
-        system_prompt =
-          if agent.enable_todos do
-            PromptAssembly.inject_todos_into_prompt(
-              system_prompt || "",
-              Keyword.get(opts, :deps, %{})
-            )
-          else
-            system_prompt
-          end
-
-        # Inject structured output schema instructions
-        system_prompt =
-          if agent.output_type != :string do
-            mode =
-              case agent.output_type do
-                {:one_of, _} -> :tool_call
-                _ -> Keyword.get(agent.structured_output, :mode, :auto)
-              end
-
-            suffix = OutputSchema.system_prompt_suffix(agent.output_type, mode: mode)
-
-            if suffix do
-              (system_prompt || "") <> "\n\n" <> suffix
-            else
-              system_prompt
-            end
-          else
-            system_prompt
-          end
-
-        # Build initial messages
-        messages = build_initial_messages(message_history, prompt, system_prompt)
-
-        Context.new(
-          messages: messages,
-          system_prompt: system_prompt,
-          deps: Keyword.get(opts, :deps, %{}),
-          max_iterations:
-            Keyword.get(opts, :max_iterations, agent.max_iterations || @max_iterations),
-          callbacks: Keyword.get(opts, :callbacks, %{}),
-          notify_pid: Keyword.get(opts, :notify_pid),
-          agent_name: agent.name,
-          cancellation_check: Keyword.get(opts, :cancellation_check),
-          approval_handler: Keyword.get(opts, :approval_handler),
-          pubsub: Keyword.get(opts, :pubsub),
-          pubsub_topic: Keyword.get(opts, :pubsub_topic),
-          stream: stream
-        )
+        {:ok, fresh_context(agent, messages ++ [Message.user(prompt)], system_prompt, opts)}
     end
   end
+
+  # A continued context remembers the profile its system prompt was written
+  # under. When this run's agent has another one (a run-level `:profile`, a
+  # rollback, an AgentServer restored under a new release), its system prompt
+  # is rebuilt with the fresh-context pipeline and replaces the old one:
+  # instructions are otherwise never re-resolved for a continued context, so
+  # the conversation would keep running on the old profile's text while its
+  # tool descriptions already switched. The replacement is a logged message
+  # event, so the transcript stays an honest record of what the model saw.
+  defp switch_profile(agent, %Context{} = ctx, opts) do
+    profile_id = Nous.Profile.applied_id(agent)
+
+    if ctx.profile_id == profile_id do
+      {:ok, ctx}
+    else
+      opts = Keyword.put_new(opts, :deps, ctx.deps)
+      prompt = base_system_prompt(agent, resolve_instructions(agent, opts), opts)
+
+      case Context.replace_system_prompt(ctx, prompt) do
+        {:ok, switched, action} ->
+          Instrumentation.profile_switched(agent, ctx.profile_id, action)
+          {:ok, %{switched | profile_id: profile_id}}
+
+        {:error, detail} ->
+          {:error,
+           Errors.ProfileError.exception(
+             reason: :system_message_diverged,
+             key: "instructions",
+             detail: detail
+           )}
+      end
+    end
+  end
+
+  @doc false
+  # The context `Nous.Agent.run(agent, messages: [...])` runs: the same fresh
+  # context `run/3` builds for a prompt, so the agent's instructions (or
+  # system prompt), todo injection and structured-output suffix reach the model
+  # on this entry point too.
+  @spec messages_context(Agent.t(), [Message.t()], keyword()) ::
+          {:ok, Context.t()} | {:error, Errors.ProfileError.t()}
+  def messages_context(%Agent{} = agent, messages, opts) when is_list(messages) do
+    # The run-level overrides (:output_type and :structured_output decide the
+    # suffix, :profile the instructions) apply exactly as on the prompt path.
+    with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
+      instructions = resolve_instructions(agent, opts)
+      system_prompt = base_system_prompt(agent, instructions, opts)
+
+      {messages, system_prompt} =
+        with_system_prompt(messages, instructions, system_prompt, agent, opts)
+
+      {:ok, fresh_context(agent, messages, system_prompt, opts)}
+    end
+  end
+
+  # `instructions` (else `system_prompt`), resolved once per run: a function
+  # prompt is called here only.
+  defp resolve_instructions(agent, opts),
+    do: resolve_prompt(agent.instructions, opts) || resolve_prompt(agent.system_prompt, opts)
+
+  # The agent's system prompt for a fresh context: the resolved instructions,
+  # the todo list when enabled, and the structured-output instructions for a
+  # non-string `output_type`.
+  defp base_system_prompt(agent, instructions, opts) do
+    system_prompt = instructions
+
+    system_prompt =
+      if agent.enable_todos do
+        PromptAssembly.inject_todos_into_prompt(
+          system_prompt || "",
+          Keyword.get(opts, :deps, %{})
+        )
+      else
+        system_prompt
+      end
+
+    if agent.output_type != :string do
+      mode =
+        case agent.output_type do
+          {:one_of, _} -> :tool_call
+          _ -> Keyword.get(agent.structured_output, :mode, :auto)
+        end
+
+      case OutputSchema.system_prompt_suffix(agent.output_type, mode: mode) do
+        nil -> system_prompt
+        suffix -> (system_prompt || "") <> "\n\n" <> suffix
+      end
+    else
+      system_prompt
+    end
+  end
+
+  defp fresh_context(agent, messages, system_prompt, opts) do
+    Context.new(
+      messages: messages,
+      system_prompt: system_prompt,
+      deps: Keyword.get(opts, :deps, %{}),
+      max_iterations: Keyword.get(opts, :max_iterations, agent.max_iterations || @max_iterations),
+      callbacks: Keyword.get(opts, :callbacks, %{}),
+      notify_pid: Keyword.get(opts, :notify_pid),
+      agent_name: agent.name,
+      cancellation_check: Keyword.get(opts, :cancellation_check),
+      approval_handler: Keyword.get(opts, :approval_handler),
+      pubsub: Keyword.get(opts, :pubsub),
+      pubsub_topic: Keyword.get(opts, :pubsub_topic),
+      stream: Keyword.get(opts, :stream, false),
+      profile_id: Nous.Profile.applied_id(agent)
+    )
+  end
+
+  # `max_iterations` caps one run, so every run counts its model requests from
+  # zero. This also makes the run's first request the "first iteration" the
+  # plugin system-prompt gate in IterationLoop.prepare_tools/4 rebuilds on.
+  defp reset_iteration(ctx), do: %{ctx | iteration: 0}
 
   # When continuing from an existing context (the %Context{} branch above),
   # honor the `:stream` opt as an override.
@@ -625,11 +796,89 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  defp build_initial_messages(history, prompt, system_prompt) do
-    system =
-      if system_prompt && system_prompt != "", do: [Message.system(system_prompt)], else: []
+  # A conversation has one system message, and it comes first: strict chat
+  # templates (Qwen, Llama) reject anything else. Which one that is depends
+  # on the run's `:system_message` option:
+  #
+  #   * `:agent` (default) - the agent's assembled prompt replaces the first
+  #     leading system message of the caller's list (or is prepended), so
+  #     `ctx.system_prompt` is always that prompt. A continuation's leading
+  #     message carries the plugin overlay (re-applied by Context on every
+  #     materialization) and old todo text, so replacing it, not keeping it,
+  #     is what keeps the overlay in the request exactly once. Further
+  #     leading system messages are dropped only when they are copies of the
+  #     agent's prompt (histories from before this rule); anything else,
+  #     such as the Summarization plugin's `[Conversation Summary]`, stays.
+  #     An agent with no prompt has nothing to put first and keeps the
+  #     caller's list as under `:caller`.
+  #   * `:caller` - the list is kept as it is; `ctx.system_prompt` records the
+  #     agent's prompt only when the leading message is exactly it.
+  #
+  # The system message takes the time of the message it replaces or precedes,
+  # so created_at stays non-decreasing.
+  defp with_system_prompt(messages, instructions, system_prompt, agent, opts) do
+    case Keyword.get(opts, :system_message, :agent) do
+      :agent when system_prompt in [nil, ""] -> caller_system_prompt(messages, system_prompt)
+      :agent -> agent_system_prompt(messages, instructions, system_prompt, agent)
+      :caller -> caller_system_prompt(messages, system_prompt)
+    end
+  end
 
-    system ++ history ++ [Message.user(prompt)]
+  defp agent_system_prompt(messages, instructions, system_prompt, agent) do
+    case Enum.split_while(messages, &match?(%Message{role: :system}, &1)) do
+      {[], _rest} ->
+        {[system_message(system_prompt, messages) | messages], system_prompt}
+
+      {[first | more], rest} ->
+        # Logging only: the first message is replaced whatever it contained.
+        # Without instructions there is nothing to recognise it by.
+        if instructions not in [nil, ""] and not own_prompt?(first, instructions) do
+          Logger.warning(
+            "Agent #{agent.name}: the leading system message in the supplied messages is " <>
+              "not the agent's prompt and was replaced by it. Pass `system_message: :caller` " <>
+              "to send your own system message instead."
+          )
+        end
+
+        kept = Enum.reject(more, &own_prompt?(&1, instructions))
+        {[system_message(system_prompt, messages) | kept] ++ rest, system_prompt}
+    end
+  end
+
+  defp caller_system_prompt([%Message{role: :system} = first | _] = messages, system_prompt) do
+    if Message.extract_text(first) == system_prompt,
+      do: {messages, system_prompt},
+      else: {messages, nil}
+  end
+
+  defp caller_system_prompt(messages, system_prompt) when system_prompt in [nil, ""],
+    do: {messages, system_prompt}
+
+  defp caller_system_prompt(messages, system_prompt),
+    do: {[system_message(system_prompt, messages) | messages], system_prompt}
+
+  # A copy of the agent's own prompt starts with its instructions (todo and
+  # overlay text follow them). Without instructions nothing is recognisably
+  # the agent's.
+  defp own_prompt?(_message, instructions) when instructions in [nil, ""], do: false
+
+  defp own_prompt?(message, instructions),
+    do: String.starts_with?(Message.extract_text(message), instructions)
+
+  defp system_message(system_prompt, [%Message{created_at: %DateTime{} = at} | _]),
+    do: %{Message.system(system_prompt) | created_at: at}
+
+  defp system_message(system_prompt, _messages), do: Message.system(system_prompt)
+
+  defp validate_system_message!(opts) do
+    case Keyword.get(opts, :system_message, :agent) do
+      mode when mode in [:agent, :caller] ->
+        :ok
+
+      other ->
+        raise ArgumentError,
+              ":system_message must be :agent or :caller, got: #{inspect(other)}"
+    end
   end
 
   defp resolve_prompt(nil, _opts), do: nil
@@ -641,11 +890,11 @@ defmodule Nous.AgentRunner do
   end
 
   # Rebuilt from the agent's hook sources — `agent.hooks` then every plugin's
-  # `hooks/2`, after `Plugin.run_init/3` — on every run, so it is idempotent
-  # across AgentServer turns (a registry carried in `result.context` is
-  # replaced, never added to) and survives a session restore (the registry is
-  # runtime-only and not serialized). With no hooks from either source, a
-  # hand-set `ctx.hook_registry` is kept.
+  # `hooks/2`, after every plugin's `init/2` and `before_run/2` — on every run,
+  # so it is idempotent across AgentServer turns (a registry carried in
+  # `result.context` is replaced, never added to) and survives a session
+  # restore (the registry is runtime-only and not serialized). With no hooks
+  # from either source, a hand-set `ctx.hook_registry` is kept.
   defp build_hook_registry(%Agent{} = agent, ctx) do
     case agent.hooks ++ Plugin.collect_hooks(agent.plugins, agent, ctx) do
       [] -> ctx
@@ -653,7 +902,7 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  defp build_result(_agent, ctx, output) do
+  defp build_result(_agent, ctx, output, boundary) do
     ctx = IterationLoop.clear_runtime_models(ctx)
 
     # `ctx.messages` is not a list the runner appended to any more: it is the
@@ -663,46 +912,98 @@ defmodule Nous.AgentRunner do
     # it here IS reading the fold; folding `ctx.log` directly instead would drop
     # that overlay and hand back a transcript the model never saw.
     transcript = ctx.messages
+    {new_messages, truncated?} = new_messages(ctx, boundary)
 
     %{
       output: output,
       usage: ctx.usage,
       iterations: ctx.iteration,
       all_messages: transcript,
-      new_messages: get_new_messages(transcript),
+      new_messages: new_messages,
+      new_messages_truncated?: truncated?,
       deps: ctx.deps,
       # Include context for continuation
       context: ctx
     }
   end
 
-  # Messages added during this run: the transcript from its first assistant turn
-  # on. Derived from the fold rather than diffed against a remembered length,
-  # because compaction can replace a range mid-run and a remembered index would
-  # then name the wrong message.
-  defp get_new_messages(transcript) do
-    Enum.drop_while(transcript, fn msg -> msg.role != :assistant end)
+  # Where this run starts in the session log — a surface position, see
+  # `Nous.Session.Log.messages_since/2` — and the log's newest event at that
+  # moment. The log is append-only, so the position survives compaction, which
+  # a remembered list length does not. The head is kept to notice the one thing
+  # that is not an append: a `%{ctx | messages: ...}` write re-seeds the log on
+  # the next append and renumbers every seq.
+  defp run_boundary(%Context{log: log}, position) do
+    head = log |> Log.since(max(Log.count(log) - 1, 0)) |> List.first()
+    {max(position, 0), head}
   end
 
-  defp emit_error_telemetry(agent, duration, error) do
-    duration_ms = System.convert_time_unit(duration, :native, :millisecond)
+  # run_with_context/3 appends no prompt: its input is the user messages the
+  # transcript ends with, if any. A user message that replaced another (a
+  # guard's placeholder) sits at the original's position, not its own seq.
+  defp pending_input_position(%Context{log: log}) do
+    log
+    |> Log.surface()
+    |> Enum.reverse()
+    |> Enum.take_while(&(&1.type == :user_message))
+    |> Enum.map(&Log.position/1)
+    |> Enum.min(fn -> Log.count(log) end)
+  end
 
-    Logger.error("""
-    Agent run failed: #{agent.name}
-      Duration: #{duration_ms}ms
-      Error: #{inspect(error)}
-    """)
+  # Exactly what this run appended — its user prompt included — or, when
+  # compaction folded part of it into a summary of earlier history, what
+  # survived, flagged as truncated.
+  defp new_messages(%Context{log: log}, {position, head}) do
+    if log_intact?(log, head) do
+      Log.messages_since(log, position)
+    else
+      {last_user_turn(Log.derive_messages(log)), true}
+    end
+  end
 
-    :telemetry.execute(
-      [:nous, :agent, :run, :exception],
-      %{duration: duration},
-      %{
-        agent_name: agent.name,
-        model_provider: agent.model.provider,
-        kind: :error,
-        reason: error,
-        stacktrace: []
-      }
+  defp log_intact?(_log, nil), do: true
+
+  defp log_intact?(log, %{seq: seq} = head) do
+    case Log.since(log, seq) do
+      [%{seq: ^seq} = event | _] -> event == head
+      # A snapshot drops shadowed events but never renumbers; a re-seeded log
+      # is numbered from zero without gaps, so it would still hold this seq.
+      [_later | _] -> true
+      [] -> false
+    end
+  end
+
+  # The log was re-seeded under the run, so its seqs say nothing about where
+  # the run began; the last user turn on is the closest honest answer.
+  defp last_user_turn(messages) do
+    case messages |> Enum.reverse() |> Enum.split_while(&(&1.role != :user)) do
+      {tail, [user | _]} -> [user | Enum.reverse(tail)]
+      {_tail, []} -> messages
+    end
+  end
+
+  # A run that returned `{:error, reason}`: no stack exists, so the event's
+  # stacktrace is `[]`. A run that raised gets its real one from
+  # Instrumentation.scoped/2.
+  defp emit_error_telemetry(agent, run_scope, start_time, error) do
+    Instrumentation.run_exception(agent, run_scope, start_time, :error, error, [])
+  end
+
+  defp emit_run_stop(agent, run_scope, start_time, final_ctx) do
+    # When routing or fallback moved the run off the configured model, surface
+    # BOTH so observability can split metrics by configured and active (last
+    # used) model.
+    served = %{
+      model: IterationLoop.served_model(final_ctx) || agent.model,
+      fallback_used: IterationLoop.fallback_used?(final_ctx)
+    }
+
+    Instrumentation.run_stop(
+      agent,
+      run_scope,
+      start_time,
+      Instrumentation.context_measurements(final_ctx),
+      served
     )
   end
 
@@ -726,9 +1027,14 @@ defmodule Nous.AgentRunner do
   end
 
   defp maybe_retry_validation(agent, behaviour, ctx, err, retries_left) do
+    error_text = OutputSchema.format_errors(err)
+
     Logger.info(
-      "Structured output validation failed, retrying (#{retries_left} retries left): #{OutputSchema.format_errors(err)}"
+      "Structured output validation failed, retrying (#{retries_left} retries left): #{error_text}"
     )
+
+    attempt = Keyword.get(agent.structured_output, :max_retries, 0) - retries_left + 1
+    Instrumentation.structured_output_retry(agent, attempt, retries_left - 1, error_text)
 
     # Find the raw response text from the last assistant message
     raw_response =
@@ -738,9 +1044,6 @@ defmodule Nous.AgentRunner do
         %Message{role: :assistant} = msg -> Messages.extract_text(msg)
         _ -> nil
       end)
-
-    # Build retry message
-    error_text = OutputSchema.format_errors(err)
 
     retry_msg =
       Message.user("""

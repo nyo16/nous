@@ -1,454 +1,196 @@
 defmodule Mix.Tasks.Nous.Optimize do
+  @shortdoc "Optimizes an agent's instructions and tool descriptions into a Nous.Profile"
+
   @moduledoc """
-  Run parameter optimization for Nous agent configurations.
+  Runs `Nous.Eval.Optimizer` on an eval task and prints the profile report.
 
-  ## Usage
+      mix nous.optimize --task MyApp.Evals.Support --reflector openai:gpt-4o \\
+        --budget-cost 5 --components instructions,tool:search_orders \\
+        --store file:.nous/eval --name support_agent --out priv/profiles/candidate.json
 
-      # Optimize with default parameters (temperature, max_tokens)
-      mix nous.optimize --suite test/eval/suites/basic.yaml
-
-      # Use different optimization strategy
-      mix nous.optimize --suite basic.yaml --strategy bayesian
-      mix nous.optimize --suite basic.yaml --strategy random
-      mix nous.optimize --suite basic.yaml --strategy grid_search
-
-      # Configure trials and timeout
-      mix nous.optimize --suite basic.yaml --trials 50 --timeout 1800000
-
-      # Optimize specific metric
-      mix nous.optimize --suite basic.yaml --metric pass_rate
-      mix nous.optimize --suite basic.yaml --metric latency_p50 --minimize
-
-      # Custom parameter file
-      mix nous.optimize --suite basic.yaml --params params.exs
-
-      # Early stopping
-      mix nous.optimize --suite basic.yaml --early-stop 0.95
-
-      # Output results
-      mix nous.optimize --suite basic.yaml --output results.json
+  The task's cases need train, val and test splits (see `Nous.Eval.Dataset`).
+  The search uses train (reflection) and val (selection); test decides once
+  whether the best candidate is accepted. Nothing is deployed: an accepted
+  profile is written to `--out` and, with `--store`, stored under `--name`;
+  promote it with `mix nous.profile.promote`.
 
   ## Options
 
-    * `--suite` - Path to evaluation suite file (required)
-    * `--strategy` - Optimization strategy: grid_search, random, bayesian (default: bayesian)
-    * `--trials` - Number of trials to run (default: 20)
-    * `--metric` - Metric to optimize: score, pass_rate, latency_p50, latency_p95, total_tokens, cost (default: score)
-    * `--minimize` - Minimize metric instead of maximize (useful for latency/cost)
-    * `--timeout` - Total timeout in ms (default: 3600000 = 1 hour)
-    * `--early-stop` - Stop if metric reaches threshold
-    * `--params` - Path to parameters file (Elixir script returning list of parameters)
-    * `--output` - Output file path for JSON results
-    * `--verbose` - Show detailed progress
-    * `--quiet` - Suppress progress output
+    * `--task MODULE` - the eval task (`use Nous.Eval`) (required)
+    * `--reflector MODEL` - the model that proposes new text (required)
+    * `--strategy gepa|opro` - default `gepa`
+    * `--components KEYS` - comma-separated component keys (default: the
+      instructions and every app tool description)
+    * `--budget-cost USD`, `--budget-tokens N`, `--budget-calls N` - the
+      optimization budget; at least one is required (`--budget-calls` caps
+      samples run)
+    * `--max-steps N` - search steps (default 20)
+    * `--k N` - samples per case (default 3)
+    * `--seed N` - default 0
+    * `--feedback diagnostic|with_expected` - what the reflector sees
+      (default `diagnostic`; `with_expected` adds train cases' expected
+      values and is recorded in the profile's provenance)
+    * `--store SPEC` - `file:DIR`, `sqlite:PATH` or `duckdb:PATH`, to store
+      an accepted profile
+    * `--name NAME` - the profile name
+    * `--out PATH` - write the accepted profile (canonical JSON)
+    * `--format console|markdown` - the report format (default `console`)
 
-  ## Parameters File
+  ## Exit status
 
-  Create a `.exs` file that returns a list of parameters:
-
-      # params.exs
-      alias Nous.Eval.Optimizer.Parameter
-
-      [
-        Parameter.float(:temperature, 0.0, 1.0, step: 0.1),
-        Parameter.integer(:max_tokens, 100, 1000, step: 100),
-        Parameter.choice(:model, ["gpt-4", "gpt-3.5-turbo"])
-      ]
-
-  ## Default Parameters
-
-  If no params file is specified, optimizes these parameters:
-
-    * `temperature` - Float from 0.0 to 1.0 (step: 0.1)
-    * `max_tokens` - Integer from 256 to 2048 (step: 256)
-
-  ## Example
-
-      # Quick optimization with Bayesian search
-      mix nous.optimize --suite test/eval/suites/basic.yaml --trials 30
-
-      # Grid search for small parameter space
-      mix nous.optimize --suite basic.yaml --strategy grid_search --max-trials 50
-
-      # Minimize latency
-      mix nous.optimize --suite basic.yaml --metric latency_p50 --minimize
-
+    * `0` - a profile was accepted
+    * `1` - the optimization ran and no profile was accepted
+    * `2` - an operational error: bad arguments, an unknown task or model
+      price, a budget too small for the seed evaluations, a failed write
   """
 
   use Mix.Task
 
+  alias Nous.Eval.{CLI, ProfileReport}
   alias Nous.Eval.Optimizer
-  alias Nous.Eval.Optimizer.Parameter
-
-  @shortdoc "Run parameter optimization for Nous agents"
+  alias Nous.Eval.Optimizer.Result
 
   @switches [
-    suite: :string,
+    task: :string,
+    reflector: :string,
     strategy: :string,
-    trials: :integer,
-    metric: :string,
-    minimize: :boolean,
-    timeout: :integer,
-    early_stop: :float,
-    params: :string,
-    output: :string,
-    verbose: :boolean,
-    quiet: :boolean,
-    max_trials: :integer,
-    n_initial: :integer,
-    gamma: :float
+    components: :string,
+    budget_cost: :float,
+    budget_tokens: :integer,
+    budget_calls: :integer,
+    max_steps: :integer,
+    k: :integer,
+    seed: :integer,
+    feedback: :string,
+    store: :string,
+    name: :string,
+    out: :string,
+    format: :string
   ]
 
+  @strategies %{"gepa" => :gepa, "opro" => :opro}
+  @feedback %{"diagnostic" => :diagnostic, "with_expected" => :with_expected}
+  @formats %{"console" => :console, "markdown" => :markdown}
+
   @impl Mix.Task
-  def run(args) do
-    # Start the application
-    {:ok, _} = Application.ensure_all_started(:nous)
-
-    {opts, _remaining, _invalid} = OptionParser.parse(args, switches: @switches)
-
-    # Validate required options
-    unless opts[:suite] do
-      Mix.shell().error("Error: --suite is required")
-      Mix.shell().info("\nUsage: mix nous.optimize --suite <path>")
-      exit({:shutdown, 1})
-    end
-
-    # Load suite
-    suite = load_suite(opts[:suite])
-
-    # Load parameters
-    parameters = load_parameters(opts)
-
-    # Build optimization options
-    opt_opts = build_opts(opts)
-
-    # Print header
-    unless opts[:quiet] do
-      print_header(suite, parameters, opts)
-    end
-
-    # Run optimization
-    {:ok, result} = Optimizer.optimize(suite, parameters, opt_opts)
-    output_results(result, opts)
+  def run(argv) do
+    Mix.Task.run("app.start")
+    CLI.finish("nous.optimize", execute(argv))
   end
 
-  defp load_suite(path) do
-    # Try path as-is first, then with default directory
-    full_path =
-      cond do
-        File.exists?(path) -> path
-        File.exists?("test/eval/suites/#{path}") -> "test/eval/suites/#{path}"
-        true -> path
-      end
+  defp execute(argv) do
+    with {:ok, opts, []} <- CLI.parse(argv, @switches),
+         {:ok, task} <- CLI.task_module(opts[:task]),
+         {:ok, reflector} <- required(opts[:reflector], "--reflector MODEL"),
+         {:ok, strategy} <- pick(@strategies, opts[:strategy] || "gepa", "--strategy"),
+         {:ok, feedback} <- pick(@feedback, opts[:feedback] || "diagnostic", "--feedback"),
+         {:ok, format} <- pick(@formats, opts[:format] || "console", "--format"),
+         {:ok, budget} <- budget(opts),
+         {:ok, store} <- store(opts[:store]) do
+      optimizer_opts =
+        [
+          reflector: reflector,
+          strategy: strategy,
+          feedback: feedback,
+          budget: budget,
+          components: components(opts[:components]),
+          max_steps: opts[:max_steps],
+          k: opts[:k],
+          seed: opts[:seed],
+          store: store,
+          name: opts[:name]
+        ]
+        |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-    case Nous.Eval.Suite.from_yaml(full_path) do
-      {:ok, suite} ->
-        suite
+      case Optimizer.run(task, optimizer_opts) do
+        {:ok, %Result{} = result} -> finish(result, format, opts[:out])
+        {:error, reason} -> {:error, describe(reason)}
+      end
+    else
+      {:ok, _opts, args} -> {:error, "unexpected arguments #{inspect(args)}"}
+      {:error, message} -> {:error, message}
+    end
+  end
+
+  defp finish(result, format, out) do
+    shell = Mix.shell()
+
+    if result.report, do: shell.info(ProfileReport.render(result.report, format: format))
+
+    shell.info("Verdict: #{result.verdict}")
+    Enum.each(result.reasons, &shell.info("  - " <> &1))
+
+    shell.info(
+      "Steps: #{result.steps} (#{inspect(result.stop_reason)}), " <>
+        "candidates: #{length(result.candidates)}, rejected proposals: #{length(result.rejections)}"
+    )
+
+    with :ok <- write(result, out) do
+      {:ok, if(result.verdict == :accepted, do: 0, else: 1)}
+    end
+  end
+
+  defp write(%Result{verdict: :accepted, profile: profile}, path) when is_binary(path) do
+    case File.write(path, Nous.Profile.encode(profile)) do
+      :ok ->
+        Mix.shell().info("Profile written to #{path}")
+        :ok
 
       {:error, reason} ->
-        Mix.shell().error("Failed to load suite '#{path}': #{inspect(reason)}")
-        exit({:shutdown, 1})
+        {:error, "cannot write #{path}: #{:file.format_error(reason)}"}
     end
   end
 
-  defp load_parameters(opts) do
-    case opts[:params] do
-      nil ->
-        # Default parameters
-        [
-          Parameter.float(:temperature, 0.0, 1.0, step: 0.1),
-          Parameter.integer(:max_tokens, 256, 2048, step: 256)
-        ]
+  defp write(_result, _path), do: :ok
 
-      path ->
-        load_parameters_from_file(path)
+  defp required(nil, what), do: {:error, "missing #{what}"}
+  defp required(value, _what), do: {:ok, value}
+
+  defp pick(table, value, flag) do
+    case Map.fetch(table, value) do
+      {:ok, atom} ->
+        {:ok, atom}
+
+      :error ->
+        {:error,
+         "invalid #{flag} #{inspect(value)}: expected one of #{Enum.join(Map.keys(table), ", ")}"}
     end
   end
 
-  # Prefer data formats (YAML/JSON) — they're parsed as pure data and never
-  # execute code. `.exs` files are still supported for the conditional-parameter
-  # DSL, but they run arbitrary Elixir, so they're gated behind an explicit
-  # extension check and a warning rather than being the default path.
-  defp load_parameters_from_file(path) do
-    case Path.extname(path) do
-      ext when ext in [".yaml", ".yml"] ->
-        path |> YamlElixir.read_from_file!() |> parse_data_parameters(path)
-
-      ".json" ->
-        path |> File.read!() |> JSON.decode!() |> parse_data_parameters(path)
-
-      ".exs" ->
-        Mix.shell().info(
-          "[nous.optimize] Evaluating Elixir parameters file #{inspect(path)} — " <>
-            "this executes arbitrary code. Prefer a .yaml/.json params file unless " <>
-            "you need conditional parameters."
-        )
-
-        load_exs_parameters(path)
-
-      other ->
-        Mix.shell().error(
-          "Unsupported parameters file extension #{inspect(other)}; use .yaml, .json, or .exs"
-        )
-
-        exit({:shutdown, 1})
+  defp budget(opts) do
+    case [
+           max_cost: opts[:budget_cost],
+           max_tokens: opts[:budget_tokens],
+           max_metric_calls: opts[:budget_calls]
+         ]
+         |> Enum.reject(fn {_key, value} -> is_nil(value) end) do
+      [] -> {:error, "a budget is required: --budget-cost, --budget-tokens or --budget-calls"}
+      budget -> {:ok, budget}
     end
   end
 
-  defp parse_data_parameters(data, path) when is_list(data) do
-    data
-    |> Enum.map(&Parameter.from_map/1)
-    |> Enum.reduce({[], []}, fn
-      {:ok, param}, {ok, errs} -> {[param | ok], errs}
-      {:error, reason}, {ok, errs} -> {ok, [reason | errs]}
-    end)
-    |> case do
-      {params, []} ->
-        Enum.reverse(params)
+  defp store(nil), do: {:ok, nil}
+  defp store(spec), do: CLI.store_spec(spec)
 
-      {_params, errors} ->
-        Mix.shell().error(
-          "Invalid parameters in #{path}:\n  - " <> Enum.join(Enum.reverse(errors), "\n  - ")
-        )
+  defp components(nil), do: nil
 
-        exit({:shutdown, 1})
+  defp components(text) do
+    case text
+         |> String.split(",", trim: true)
+         |> Enum.map(&String.trim/1)
+         |> Enum.reject(&(&1 == "")) do
+      [] -> nil
+      keys -> keys
     end
   end
 
-  defp parse_data_parameters(_other, path) do
-    Mix.shell().error("Parameters file #{path} must contain a list of parameter maps")
-    exit({:shutdown, 1})
-  end
+  defp describe({:budget_too_small, details}),
+    do: "the budget cannot cover the seed's evaluations: #{inspect(details)}"
 
-  defp load_exs_parameters(path) do
-    case Code.eval_file(path) do
-      {params, _} when is_list(params) ->
-        params
+  defp describe({:missing_split, split}),
+    do: "the task has no #{split} cases (every case needs a split)"
 
-      _ ->
-        Mix.shell().error("Parameters file must return a list of parameters")
-        exit({:shutdown, 1})
-    end
-  end
-
-  defp build_opts(opts) do
-    strategy =
-      case opts[:strategy] do
-        "grid_search" ->
-          :grid_search
-
-        "grid" ->
-          :grid_search
-
-        "random" ->
-          :random
-
-        "bayesian" ->
-          :bayesian
-
-        nil ->
-          :bayesian
-
-        other ->
-          Mix.shell().error("Unknown strategy: #{other}")
-          exit({:shutdown, 1})
-      end
-
-    metric =
-      case opts[:metric] do
-        "score" ->
-          :score
-
-        "pass_rate" ->
-          :pass_rate
-
-        "latency_p50" ->
-          :latency_p50
-
-        "latency_p95" ->
-          :latency_p95
-
-        "latency_p99" ->
-          :latency_p99
-
-        "total_tokens" ->
-          :total_tokens
-
-        "cost" ->
-          :cost
-
-        nil ->
-          :score
-
-        other ->
-          Mix.shell().error("Unknown metric: #{other}")
-          exit({:shutdown, 1})
-      end
-
-    opt_opts = [
-      strategy: strategy,
-      metric: metric,
-      maximize: !opts[:minimize],
-      verbose: opts[:verbose] && !opts[:quiet]
-    ]
-
-    opt_opts =
-      case strategy do
-        :grid_search ->
-          opt_opts
-          |> maybe_add(:max_trials, opts[:trials] || opts[:max_trials])
-          |> maybe_add(:timeout, opts[:timeout])
-          |> maybe_add(:early_stop, opts[:early_stop])
-
-        :random ->
-          opt_opts
-          |> maybe_add(:n_trials, opts[:trials] || 20)
-          |> maybe_add(:timeout, opts[:timeout])
-          |> maybe_add(:early_stop, opts[:early_stop])
-
-        :bayesian ->
-          opt_opts
-          |> maybe_add(:n_trials, opts[:trials] || 20)
-          |> maybe_add(:n_initial, opts[:n_initial])
-          |> maybe_add(:gamma, opts[:gamma])
-          |> maybe_add(:timeout, opts[:timeout])
-          |> maybe_add(:early_stop, opts[:early_stop])
-      end
-
-    opt_opts
-  end
-
-  defp maybe_add(opts, _key, nil), do: opts
-  defp maybe_add(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp print_header(suite, parameters, opts) do
-    strategy = opts[:strategy] || "bayesian"
-    metric = opts[:metric] || "score"
-    trials = opts[:trials] || 20
-
-    Mix.shell().info("""
-
-    ╔═══════════════════════════════════════════════════════════╗
-    ║               Nous Parameter Optimization                 ║
-    ╚═══════════════════════════════════════════════════════════╝
-
-    Suite:      #{suite.name}
-    Strategy:   #{strategy}
-    Metric:     #{metric} (#{if opts[:minimize], do: "minimize", else: "maximize"})
-    Trials:     #{trials}
-
-    Parameters:
-    """)
-
-    Enum.each(parameters, fn param ->
-      Mix.shell().info("  • #{param.name}: #{format_param(param)}")
-    end)
-
-    Mix.shell().info("")
-  end
-
-  defp format_param(%Parameter{type: :float, min: min, max: max, step: step}) do
-    if step do
-      "float [#{min}, #{max}] step=#{step}"
-    else
-      "float [#{min}, #{max}]"
-    end
-  end
-
-  defp format_param(%Parameter{type: :integer, min: min, max: max, step: step}) do
-    if step do
-      "integer [#{min}, #{max}] step=#{step}"
-    else
-      "integer [#{min}, #{max}]"
-    end
-  end
-
-  defp format_param(%Parameter{type: :choice, choices: choices}) do
-    "choice #{inspect(choices)}"
-  end
-
-  defp format_param(%Parameter{type: :bool}) do
-    "boolean"
-  end
-
-  defp output_results(result, opts) do
-    unless opts[:quiet] do
-      print_results(result)
-    end
-
-    if opts[:output] do
-      json = result_to_json(result)
-      File.write!(opts[:output], json)
-      Mix.shell().info("\nResults written to: #{opts[:output]}")
-    end
-  end
-
-  defp print_results(result) do
-    Mix.shell().info("""
-
-    ════════════════════════════════════════════════════════════
-                        OPTIMIZATION RESULTS
-    ════════════════════════════════════════════════════════════
-
-    Best Score: #{Float.round(result.best_score, 4)}
-
-    Best Configuration:
-    """)
-
-    Enum.each(result.best_config, fn {key, value} ->
-      Mix.shell().info("  #{key}: #{inspect(value)}")
-    end)
-
-    Mix.shell().info("""
-
-    Statistics:
-      Total trials:     #{result.total_trials}
-      Duration:         #{format_duration(result.duration_ms)}
-      Avg score:        #{Float.round(result.avg_score, 4)}
-      Score std dev:    #{Float.round(result.std_score, 4)}
-
-    Top 5 Configurations:
-    """)
-
-    result.all_trials
-    |> Enum.sort_by(& &1.score, :desc)
-    |> Enum.take(5)
-    |> Enum.with_index(1)
-    |> Enum.each(fn {trial, idx} ->
-      config_str =
-        trial.config
-        |> Enum.map(fn {k, v} -> "#{k}=#{inspect(v)}" end)
-        |> Enum.join(", ")
-
-      Mix.shell().info("  #{idx}. #{Float.round(trial.score, 4)} | #{config_str}")
-    end)
-
-    Mix.shell().info("")
-  end
-
-  defp format_duration(ms) when ms < 1000, do: "#{ms}ms"
-  defp format_duration(ms) when ms < 60_000, do: "#{Float.round(ms / 1000, 1)}s"
-  defp format_duration(ms), do: "#{Float.round(ms / 60_000, 1)}min"
-
-  defp result_to_json(result) do
-    %{
-      best_config: result.best_config,
-      best_score: result.best_score,
-      total_trials: result.total_trials,
-      duration_ms: result.duration_ms,
-      avg_score: result.avg_score,
-      std_score: result.std_score,
-      all_trials:
-        Enum.map(result.all_trials, fn trial ->
-          %{
-            config: trial.config,
-            score: trial.score,
-            metrics: trial.metrics,
-            duration_ms: trial.duration_ms
-          }
-        end),
-      generated_at: DateTime.to_iso8601(DateTime.utc_now())
-    }
-    |> Nous.JSON.pretty_encode!()
-  end
+  defp describe({:unknown_components, keys}), do: "unknown components #{Enum.join(keys, ", ")}"
+  defp describe(:no_components), do: "the agent has no text a profile can change"
+  defp describe(reason), do: CLI.describe(reason)
 end

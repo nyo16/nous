@@ -170,6 +170,7 @@ defmodule Nous.AgentServer do
   @type agent_config :: %{
           optional(:hooks) => [Nous.Hook.t()],
           optional(:plugins) => [module()],
+          optional(:skills) => [module() | String.t() | Nous.Skill.t() | {:group, atom()}],
           optional(:permissions) => Nous.Permissions.Policy.t() | nil,
           optional(:max_iterations) => pos_integer(),
           model: String.t(),
@@ -242,7 +243,16 @@ defmodule Nous.AgentServer do
   - `:permissions` - Optional `Nous.Permissions.Policy` set on the agent (see
     `Nous.Agent.new/2`). Blocked tools are hidden from the model and from
     Code Mode bindings on every run.
+  - `:plugins` - Plugin modules (see `Nous.Plugin`). Plugin `init/2` runs once
+    for the session's context (again after a restore); `before_run/2` runs on
+    every turn.
+  - `:skills` - Skills, as for `Nous.Agent.new/2`. A skill activated on one
+    turn stays active on later turns, prompt and inbox runs alike.
   - `:max_iterations` - Iteration ceiling for each run (default: 15).
+  - `:profile` - A `Nous.Profile` for the agent (see `Nous.Agent.new/2`).
+    The session's system prompt is the built agent's, so profile instructions
+    reach the model; a session restored under another profile switches to
+    this one on its next turn.
 
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -408,15 +418,17 @@ defmodule Nous.AgentServer do
     # Create agent based on type
     agent_type = Map.get(agent_config, :type, :standard)
 
-    # `:plugins` is passed only when configured, so a ReAct agent keeps its
-    # default plugin set otherwise.
+    # `:plugins`, `:skills`, `:permissions` and `:profile` are passed only
+    # when configured, so a ReAct agent keeps its default plugin set
+    # otherwise. Skills add `Nous.Plugins.Skills`, whose activations persist
+    # across the session's turns (plugin `init/2` runs once per context).
     agent_opts =
       [
         instructions: Map.get(agent_config, :instructions, ""),
         tools: Map.get(agent_config, :tools, []),
         model_settings: Map.get(agent_config, :model_settings, %{}),
         hooks: Map.get(agent_config, :hooks, [])
-      ] ++ Enum.to_list(Map.take(agent_config, [:plugins, :permissions]))
+      ] ++ Enum.to_list(Map.take(agent_config, [:plugins, :skills, :permissions, :profile]))
 
     agent =
       case agent_type do
@@ -430,10 +442,14 @@ defmodule Nous.AgentServer do
     # Teams.Coordinator's spawn_agent handle_call) waits the full load time.
     initial_deps = Map.get(agent_config, :deps, %{})
 
+    # The system prompt comes from the BUILT agent, not the raw config: a
+    # profile replaces `agent.instructions`, and every turn runs with this
+    # context, whose system prompt the behaviour prepends.
     context =
       Context.new(
         deps: initial_deps,
-        system_prompt: Map.get(agent_config, :instructions, ""),
+        system_prompt: session_system_prompt(agent),
+        profile_id: Nous.Profile.applied_id(agent),
         agent_name: "agent_server_#{session_id}",
         pubsub: pubsub,
         pubsub_topic: topic
@@ -586,6 +602,7 @@ defmodule Nous.AgentServer do
       Context.new(
         deps: state.context.deps,
         system_prompt: state.context.system_prompt,
+        profile_id: state.context.profile_id,
         agent_name: state.context.agent_name
       )
 
@@ -1116,6 +1133,16 @@ defmodule Nous.AgentServer do
     %{ctx | deps: Map.delete(ctx.deps, :claim_inbox), cancellation_check: nil}
   end
 
+  # The system prompt a session's context carries: the agent's instructions
+  # (after its profile, if any), else its system prompt. Only text: the
+  # context has no deps-time hook to resolve a function prompt with.
+  defp session_system_prompt(agent) do
+    case agent.instructions || agent.system_prompt do
+      text when is_binary(text) -> text
+      _ -> ""
+    end
+  end
+
   defp run_agent_and_respond(server_pid, state, kind, cancelled_ref, generation) do
     # Check if cancelled (or already superseded) before starting
     if :atomics.get(cancelled_ref, 1) == 1 or :atomics.get(cancelled_ref, 2) != generation do
@@ -1133,7 +1160,13 @@ defmodule Nous.AgentServer do
       | deps: Map.put(state.context.deps, :claim_inbox, claim_inbox_fun(server_pid, generation))
     }
 
-    result = run_agent(state, ctx, kind, server_pid, cancelled_ref, generation)
+    # Every turn reports this session as `session_id` on its run start
+    # (`Nous.Telemetry`), so session-level consumers can group the turns.
+    result =
+      Nous.Telemetry.RunScope.merge_scope(%{session_id: state.session_id}, fn ->
+        run_agent(state, ctx, kind, server_pid, cancelled_ref, generation)
+      end)
+
     report_run(result, server_pid, state, cancelled_ref, generation)
   end
 

@@ -1,30 +1,153 @@
 defmodule Nous.Telemetry do
   @moduledoc """
-  Telemetry integration for Nous AI.
+  Telemetry integration for Nous AI: the catalog of every event Nous emits.
 
-  Nous executes the following Telemetry events:
+  All times are in `:native` time unit. Use `System.convert_time_unit/3` to
+  convert to the unit you report in.
+
+  ## Correlation keys
+
+  Every event below carries these metadata keys, always present:
+
+    * `trace_id` — 32 lowercase hex chars. One trace spans a root agent run and
+      every run nested in it (a sub-agent, an agent a tool starts).
+    * `agent_run_id` — 16 lowercase hex chars, unique per agent run. Minted by
+      `Nous.run/3`, `Nous.AgentRunner.run/3`, `run_with_context/3`,
+      `run_stream/3` and every `Nous.AgentServer` turn; concurrent runs never
+      share one.
+    * `parent_agent_run_id` — the enclosing run's `agent_run_id`, or `nil` for a
+      root run.
+    * `tool_call_id` — the provider tool-call id being executed, or `nil`.
+      Set on everything a tool body emits (its `[:nous, :tool, *]` events, a
+      provider call it makes), and explicitly on `[:nous, :agent, :tool_call, *]`,
+      hook events about a tool call and DecisionGuard verdicts on tool
+      surfaces. A run nested in a tool starts with `tool_call_id: nil` and
+      records the spawning call as `parent_tool_call_id` on its run start.
+
+  The values are `nil` outside an agent run, so a handler can match
+  `%{trace_id: trace_id}` uniformly. Ids are opaque strings, never atoms.
+  `[:nous, :agent, :run, :start]` additionally carries `parent_tool_call_id`
+  (the tool call that started this run, e.g. a `Nous.Plugins.SubAgent`
+  delegation), `role` (`:agent`, or `:judge | :simulator | :reflector` for
+  runs Nous starts on its own behalf), `profile_id` (the id of the
+  `Nous.Profile` the run's agent applies, `nil` without one), `session_id`
+  (the conversation the run belongs to: the run's `deps[:session_id]` when it
+  is a string, else the enclosing run's session, else the `Nous.AgentServer`
+  session id; `nil` when none; a sub-agent reports its root's session; the
+  value is application data, so treat it as content when forwarding) and,
+  for sub-agent runs, `sub_agent_template` (the template name, `nil` for an
+  inline model) and `sub_agent_index` (the task's position in a
+  `spawn_agents` call, else `nil`).
+
+  The ids follow the work across processes Nous starts: parallel tool calls,
+  timed tool bodies, hook and guard tasks, sub-agents, AgentServer turn tasks,
+  and a `run_stream/3` stream enumerated in another process. A process you
+  start yourself with `Task` inherits them through `$callers`; one started
+  with `spawn/1` or a GenServer does not.
+
+  ## Content keys and off-box handlers
+
+  Several keys carry user and model content by reference: `messages` and
+  `response` (model events), `arguments` and `result` (tool-call events),
+  `details`/`reason` (guard strategy verdicts), `errors` (structured-output
+  retries), and every raw `reason`/`stacktrace`/`error`. They are safe for
+  in-process handlers, but a model response or tool result can contain
+  secrets or personal data, so **any subscriber that forwards these events
+  off-box (Sentry, Honeycomb, log shippers) MUST scrub those keys first.**
+  Nous does not redact, to preserve debuggability for trusted handlers.
 
   ## Agent Events
 
-    * `[:nous, :agent, :run, :start]` - Dispatched before agent execution starts
+    * `[:nous, :agent, :run, :start]` - an agent run starts (every entry point).
       * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
-      * Metadata: `%{agent_name: string, model_provider: atom, model_name: string, tool_count: integer, has_tools: boolean}`
+      * Metadata: `%{agent_name: string, model_provider: atom, model_name: string,
+        tool_count: integer, has_tools: boolean, trace_id, agent_run_id,
+        parent_agent_run_id, tool_call_id, parent_tool_call_id, role, profile_id,
+        session_id, sub_agent_template, sub_agent_index}`
 
-    * `[:nous, :agent, :run, :stop]` - Dispatched after agent execution completes
-      * Measurement: `%{duration: native_time, total_tokens: integer, input_tokens: integer, output_tokens: integer, tool_calls: integer, requests: integer, iterations: integer}`
-      * Metadata: `%{agent_name: string, model_provider: atom, model_name: string}`
+    * `[:nous, :agent, :run, :stop]` - an agent run completes. Also fires after
+      a successful structured-output retry; for `run_stream/3` it fires when the
+      stream yields `{:complete, _}` (a consumer that stops enumerating earlier
+      leaves a start without a stop).
+      * Measurement: `%{duration: native_time, total_tokens: integer, input_tokens: integer,
+        output_tokens: integer, tool_calls: integer, requests: integer, iterations: integer}`
+      * Metadata: `%{agent_name: string, model_provider: atom, model_name: string,
+        active_model_provider: atom, active_model_name: string, fallback_used: boolean,
+        profile_id: string | nil}`.
+        `model_*` is the configured model, `active_model_*` the one the run's
+        last request went to (routing or a fallback may differ).
 
-    * `[:nous, :agent, :run, :exception]` - Dispatched when agent execution fails
+    * `[:nous, :agent, :run, :exception]` - an agent run fails: it returned
+      `{:error, reason}` (`kind: :error`, `stacktrace: []`), or raised, threw or
+      exited (`kind` and the real `stacktrace`; the raise then propagates). A
+      process killed mid-run emits nothing.
       * Measurement: `%{duration: native_time}`
-      * Metadata: `%{agent_name: string, model_provider: atom, kind: atom, reason: term, stacktrace: list}`
+      * Metadata: `%{agent_name: string, model_provider: atom, model_name: string,
+        kind: atom, reason: term, stacktrace: list, profile_id: string | nil}`
 
-    * `[:nous, :agent, :iteration, :start]` - Dispatched before each agent iteration
+    * `[:nous, :agent, :iteration, :start]` - before each agent iteration
       * Measurement: `%{system_time: native_time}`
       * Metadata: `%{agent_name: string, iteration: integer, max_iterations: integer}`
 
-    * `[:nous, :agent, :iteration, :stop]` - Dispatched after each agent iteration
+    * `[:nous, :agent, :iteration, :stop]` - after each agent iteration
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{agent_name: string, iteration: integer, tool_calls: integer, needs_response: boolean}`
+
+    * `[:nous, :agent, :model, :start]` - one model request of a run (fallback
+      chain and rate limiter included), from the agent loop and `run_stream/3`.
+      * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
+      * Metadata: `%{agent_name, iteration: integer, model_provider: atom,
+        model_name: string, stream: boolean, tool_names: [string],
+        blocked_tool_names: [string], messages: [Nous.Message.t()]}`.
+        `model_*` is the model the request was built for; `tool_names` the
+        tools offered; `blocked_tool_names` the tools the agent's permission
+        policy removed from the offer.
+
+    * `[:nous, :agent, :model, :stop]` - the model answered.
+      * Measurement: `%{duration: native_time, input_tokens, output_tokens,
+        total_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+        tool_calls: integer}` (token keys are the `Nous.Usage` fields; 0 when
+        the provider reported none) plus `time_to_first_token: native_time`
+        on streamed requests that produced output.
+      * Metadata: `%{agent_name, iteration, model_provider, model_name,
+        active_model_provider, active_model_name, fallback_used: boolean,
+        finish_reason: term, requested_tool_calls: [%{tool_call_id, tool_name}],
+        response: Nous.Message.t()}`
+
+    * `[:nous, :agent, :model, :exception]` - the request failed (after the
+      whole fallback chain).
+      * Measurement: `%{duration: native_time}`
+      * Metadata: `%{agent_name, iteration, model_provider, model_name, kind: atom, reason: term}`
+
+    * `[:nous, :agent, :tool_call, :start]` - the runner starts handling one
+      tool call the model requested (before hooks and approval).
+      * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
+      * Metadata: `%{agent_name, tool_call_id, tool_name, arguments, iteration}`
+        (`iteration` matches the model span that requested the call)
+
+    * `[:nous, :agent, :tool_call, :stop]` - the call's result message is final.
+      Failures are outcomes, never a separate exception event; a crash of the
+      run process itself leaves a start without a stop.
+      * Measurement: `%{duration: native_time}`
+      * Metadata: `%{agent_name, tool_call_id, tool_name, outcome, approval,
+        result, result_modified: boolean, error}` and, when `approval: :edited`,
+        the post-edit `arguments`.
+        * `outcome`: `:executed` (the tool ran to a return; `error` holds an
+          `{:error, term}` it returned), `:invalid_arguments` (unparseable JSON or
+          a schema refusal), `:collapsed` (not callable under Code Mode),
+          `:hook_denied`, `:hook_stage_failed` (the parallel pre_tool_use stage
+          crashed or timed out), `:approval_rejected`, `:not_found`, `:timeout`,
+          `:crashed` (raised, threw or exited)
+        * `approval`: `:not_required` (no approval was consulted: the tool needs
+          none, or the call never reached the gate), `:approved`, `:edited`,
+          `:rejected`
+        * `result`: the content the model sees (after post_tool_use hooks);
+          `result_modified`: a post_tool_use hook rewrote it
+
+    * `[:nous, :agent, :structured_output, :retry]` - structured output failed
+      validation and the runner asks the model again.
+      * Measurement: `%{retries_left: integer}` (remaining after this retry)
+      * Metadata: `%{agent_name, attempt: integer, errors: string}`
 
   ## Provider Events
 
@@ -54,7 +177,13 @@ defmodule Nous.Telemetry do
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{provider: atom, model_name: string, kind: atom, reason: term}`
 
+  There is no provider stream `:stop`; the model span's `:stop` carries a
+  streamed request's usage and `time_to_first_token`.
+
   ## Tool Events
+
+  Emitted by `Nous.ToolExecutor` for every attempt; inside an agent run they
+  carry the call's `tool_call_id` from the correlation keys.
 
     * `[:nous, :tool, :execute, :start]` - Dispatched before tool execution
       * Measurement: `%{system_time: native_time, monotonic_time: monotonic_time}`
@@ -67,6 +196,7 @@ defmodule Nous.Telemetry do
     * `[:nous, :tool, :execute, :exception]` - Dispatched when tool fails
       * Measurement: `%{duration: native_time}`
       * Metadata: `%{tool_name: string, attempt: integer, will_retry: boolean, kind: atom, reason: term, stacktrace: list}`
+        (the timeout variant has `kind: :timeout` and no `stacktrace`)
 
     * `[:nous, :tool, :timeout]` - Dispatched when tool times out
       * Measurement: `%{timeout: integer}`
@@ -90,12 +220,15 @@ defmodule Nous.Telemetry do
       the one the request was built for (the routed model, else the agent's)
       answered (sticky-fallback). Use this to alert on provider degradation.
       * Measurement: `%{system_time: native_time}`
-      * Metadata: `%{agent_name, original_provider, original_model, active_provider, active_model}`
+      * Metadata: `%{agent_name, iteration, original_provider, original_model,
+        active_provider, active_model}`
 
     * `[:nous, :fallback, :activated]` - Dispatched when the fallback chain
-      promotes to the next model after the primary returns an error.
-      * Measurement: depends on the call site
-      * Metadata: includes the active model and the reason for activation
+      promotes to the next model after one returns a fallback-eligible error
+      (the prefix is configurable with `Nous.Fallback`'s `:telemetry_prefix`).
+      * Measurement: `%{system_time: native_time}`
+      * Metadata: `%{failed_provider: atom, failed_model: string,
+        next_provider: atom, next_model: string, reason: term}`
 
   ## Router Events
 
@@ -105,41 +238,154 @@ defmodule Nous.Telemetry do
       * Metadata: `%{agent_name, router, granularity, turn, iteration, cause,
         tier, probabilities, confidence, reason, model_provider, model_name}`
 
+  ## Rate Limiter Events
+
+    * `[:nous, :rate_limiter, :unavailable]` - a team `Nous.Teams.RateLimiter`
+      could not be reached; the request went through un-limited (fail open).
+      * Measurement: `%{count: 1}`
+      * Metadata: `%{agent_name}`
+
   ## Hook Events
+
+  `tool_call_id` on every hook event is the `:pre_tool_use` /
+  `:post_tool_use` payload's `:tool_id` (else the correlation key).
 
     * `[:nous, :hook, :execute, :start]` / `[:nous, :hook, :execute, :stop]`
       * Measurement: `%{system_time | duration}`
-      * Metadata: `%{event, hook_name, hook_type, result?}`
+      * Metadata: `%{event, hook_name, hook_type, tool_call_id, result?}`
     * `[:nous, :hook, :denied]` - emitted when a blocking hook returns :deny
       or when a fail_closed hook errors.
-      * Metadata: `%{event, hook_name, hook_type, reason?}`
+      * Metadata: `%{event, hook_name, hook_type, tool_call_id, reason?}`
     * `[:nous, :hook, :failed_closed]` - emitted when a `fail_closed: true` hook
       errors (including a timeout): the event was denied, or on `:post_tool_use`
       the tool result was withheld.
       * Measurement: `%{system_time}`
-      * Metadata: `%{event, hook_name, hook_type, reason}`
+      * Metadata: `%{event, hook_name, hook_type, tool_call_id, reason}`
     * `[:nous, :hook, :decision]` - one evaluation of a `:decision` hook
       (`Nous.Hook.Decision`).
       * Measurement: `%{duration, chunk_count}`
-      * Metadata: `%{event, hook_name, verdict, result, probabilities, backend,
-        model, canary_failed, error}`
+      * Metadata: `%{event, hook_name, tool_call_id, verdict, result,
+        probabilities, backend, model, canary_failed, error}`
+
+  ## Guard Events
+
     * `[:nous, :decision_guard, :verdict]` - one check by
-      `Nous.Plugins.DecisionGuard`, on any surface.
+      `Nous.Plugins.DecisionGuard`, on any surface. On hook surfaces the same
+      check also emits `[:nous, :hook, :decision]` (hook name
+      `"decision_guard:<surface>"`).
       * Measurement: `%{duration, chunk_count}`
-      * Metadata: `%{surface, verdict, result, probabilities, canary_failed, error}`
+      * Metadata: `%{surface, agent_name, tool_call_id, verdict, result,
+        probabilities, canary_failed, error}`
     * `[:nous, :decision_guard, :canary_failed]` - a DecisionGuard canary was
       answered wrongly.
       * Measurement: `%{count}`
       * Metadata: `%{surface}`
-    * `[:nous, :decision_guard, :strategy_dropped]` - a DecisionGuard
-      user-input strategy produced no verdict (`Nous.Plugins.InputGuard.Engine`).
+    * `[:nous, :input_guard, :verdict]` - the aggregate verdict of one
+      `Nous.Plugins.InputGuard` check (all unchecked user messages of a request).
+      * Measurement: `%{duration, strategies: integer, dropped: integer}`
+        (`strategies` configured per message; `dropped` summed over messages)
+      * Metadata: `%{agent_name, severity: :safe | :suspicious | :blocked,
+        aggregation, fail_closed: boolean, action}`. `fail_closed` is true when
+        the verdict is a fail-closed result; `action` is the policy action
+        taken (`Nous.Plugins.InputGuard.Policy.action_for/2`).
+    * `[:nous, :input_guard, :strategy_verdict]` /
+      `[:nous, :decision_guard, :strategy_verdict]` - one strategy's verdict
+      (`Nous.Plugins.InputGuard.Engine`).
+      * Measurement: `%{duration}`
+      * Metadata: `%{strategy: module, severity, reason, details: map, error}`
+    * `[:nous, :input_guard, :strategy_dropped]` /
+      `[:nous, :decision_guard, :strategy_dropped]` - one or more strategies
+      produced no verdict (`Nous.Plugins.InputGuard.Engine`).
       * Measurement: `%{count}`
       * Metadata: `%{aggregation, fail_closed}`
+    * `[:nous, :loop_guard, :advisory]` - `Nous.Plugins.LoopGuard` injected an
+      advisory about a repeated tool call.
+      * Measurement: `%{chain_length}`
+      * Metadata: `%{agent_name, threshold, tier, signatures: [tool_name]}`
 
   ## Skill Events
 
-    * `[:nous, :skill, :activate]` / `[:nous, :skill, :deactivate]`
-      * Metadata: `%{skill_name, agent_name}`
+    * `[:nous, :skill, :activate]`
+      * Metadata: `%{skill_name, group, activation_type}`
+    * `[:nous, :skill, :deactivate]`
+      * Metadata: `%{skill_name, group}`
+
+  ## Compaction Events
+
+  Emitted by `Nous.Plugins.Summarization` (see its moduledoc).
+
+    * `[:nous, :compaction, :start]`
+      * Measurement: `%{system_time, monotonic_time}`
+      * Metadata: `%{agent_name, messages_before}`
+    * `[:nous, :compaction, :stop]`
+      * Measurement: `%{duration, bytes_before, bytes_after}`
+      * Metadata: `%{agent_name, messages_before, messages_after, llm_called,
+        summarized, provider, model, usage}`
+    * `[:nous, :compaction, :exception]`
+      * Measurement: `%{duration}`
+      * Metadata: `%{agent_name, messages_before, messages_after, llm_called,
+        kind, reason, stacktrace}`
+
+  ## Decision Model Events
+
+  Emitted by `Nous.DecisionModel.decide/4` (guard and router classifier cost).
+
+    * `[:nous, :decision_model, :decide, :start]`
+      * Measurement: `%{system_time, monotonic_time}`
+      * Metadata: `%{backend, model, question_count}`
+    * `[:nous, :decision_model, :decide, :stop]`
+      * Measurement: `%{duration, input_tokens}`
+      * Metadata: `%{backend, model, question_count}`
+    * `[:nous, :decision_model, :decide, :exception]`
+      * Measurement: `%{duration}`
+      * Metadata: `%{backend, model, question_count, kind, reason, stacktrace?}`
+
+  ## Profile Events
+
+    * `[:nous, :profile, :switched]` - a run continued a context started
+      under another `Nous.Profile` (or none), so the conversation's system
+      prompt was rebuilt from this run's profile before the first request.
+      * Measurement: `%{system_time: native_time}`
+      * Metadata: `%{agent_name: string, profile_id: string | nil,
+        previous_profile_id: string | nil, action: :replaced | :updated}`.
+        `:replaced` - the leading system message was replaced (a logged
+        message event); `:updated` - the transcript has no system message
+        (the AgentServer shape), so only `ctx.system_prompt` changed.
+
+  ## Session Events
+
+    * `[:nous, :session, :invariant, :violation]` - a request's message list
+      broke a session invariant (`Nous.Session.Invariant`).
+      * Measurement: `%{count: 1}`
+      * Metadata: the violation details (`kind`, …) plus `agent_name, mode`
+
+  ## Simulator Events
+
+  Emitted by `Nous.Eval.Simulator` during a simulated eval episode, under
+  the episode's trace (so the eval trace collector stores them in order with
+  the agent's runs). The simulator's own model calls run under another
+  trace id (`sim_trace_id`) with role `:simulator`. `message` and `thought`
+  are content keys.
+
+    * `[:nous, :eval, :sim, :turn]` - one simulated user turn.
+      * Measurement: `%{input_tokens, output_tokens, total_tokens}` (the
+        simulator call; `0` for a scripted opener)
+      * Metadata: `%{turn: integer (messages sent before it), source: :scripted |
+        :llm, action: :message | :stop | :transfer | :out_of_scope, sent:
+        boolean (the message went to the agent), message: string | nil,
+        thought: string | nil, sim_model: string, sim_trace_id: string,
+        template_version: string}`
+    * `[:nous, :eval, :sim, :error]` - the simulator could not produce a turn;
+      the episode ends as `:user_error`.
+      * Measurement: `%{count: 1}`
+      * Metadata: `%{turn, kind: :invalid_output | :run_failed |
+        :fence_collision, reason: string}`
+    * `[:nous, :eval, :sim, :episode, :stop]` - an episode ended.
+      * Measurement: `%{duration: native_time, turns, agent_iterations,
+        simulator_tokens}`
+      * Metadata: `%{case_kind: :task | :adversarial, termination: :stop |
+        :transfer | :out_of_scope | :max_turns | :agent_error | :user_error |
+        :setup_error | :budget, end_state_status: :ok | :error | :none}`
 
   ## Workflow Events
 
@@ -148,9 +394,55 @@ defmodule Nous.Telemetry do
     * `[:nous, :workflow, :node, :start]` / `[:nous, :workflow, :node, :stop]`
       / `[:nous, :workflow, :node, :exception]`
       * See `Nous.Workflow.Telemetry` for full measurement/metadata payloads.
+        The correlation keys identify the enclosing agent run, if any — never
+        the workflow execution.
 
-  All times are in `:native` time unit. Use `System.convert_time_unit/3` to
-  convert to desired unit.
+  ## Online Eval Events
+
+  Emitted by `Nous.Eval.Online` from its own processes, never from the
+  request path. No metadata key carries content (no prompt, output, tool
+  argument, error message or session id); `instance` is the configured
+  instance name.
+
+    * `[:nous, :eval, :online, :window]` - the coverage of one stats window
+      (`:window_ms`, default one minute), emitted every window.
+      * Measurement: `%{seen_roots, sampled, captured, dropped_admission,
+        dropped_queue, dropped_store, lost, filter_error, session_key_missing,
+        redaction_failed, scored, score_failed, skipped_budget, abandoned,
+        stored}` (integers, counted during the window). `seen_roots` counts
+        root runs (not eval-internal ones); `sampled` those the rate, the
+        `agents` allowlist and the filter admitted; `captured` those admitted
+        under `max_in_flight`; `stored` the samples written. `captured /
+        seen_roots` is the effective capture rate under overload.
+      * Metadata: `%{instance, window_ms}`
+    * `[:nous, :eval, :online, :dropped]` - captures shed during the window,
+      one event per reason with a non-zero count.
+      * Measurement: `%{count}`
+      * Metadata: `%{instance, reason: :admission | :queue | :store | :lost}`
+        (`:admission` - `max_in_flight` reached at run start; `:queue` -
+        `max_queue` reached at run stop; `:store` - the store refused a batch
+        after its retries; `:lost` - the capture vanished with a restarted
+        process)
+    * `[:nous, :eval, :online, :redaction_failed]` - the redactor failed on a
+      sample; the sample is stored without content.
+      * Measurement: `%{count: 1}`
+      * Metadata: `%{instance, kind: :raised | :thrown | :exited | :timeout |
+        :invalid_return | :trace_id_changed | :skeleton_changed |
+        :keys_changed | :not_json | :undecodable}`
+    * `[:nous, :eval, :online, :score, :stop]` - one scorer finished on a
+      sample.
+      * Measurement: `%{duration: native_time, cost: float}` (`cost` in USD,
+        `0.0` for scorers that call no model)
+      * Metadata: `%{instance, rule, scorer, status: :ok | :error | :timeout |
+        :skip | :skipped_budget}`
+    * `[:nous, :eval, :online, :budget_exhausted]` - a model-calling scorer
+      was skipped because the window's budget was spent or reserved.
+      * Measurement: `%{spent: float, max_cost: float}`
+      * Metadata: `%{instance, rule, scorer}`
+    * `[:nous, :eval, :online, :handler_reattached]` - the online telemetry
+      handler was found detached and attached again.
+      * Measurement: `%{count: 1}`
+      * Metadata: `%{instance}`
 
   ## Default Handler
 
@@ -245,6 +537,91 @@ defmodule Nous.Telemetry do
   """
 
   require Logger
+
+  # Every event Nous emits under its default names: the catalog above as data.
+  # Consumers that must see everything (the eval trace collector) attach to
+  # this list, and stored traces decode event names only through it
+  # (`Nous.Eval.Codec`), so an event added to the catalog belongs here too.
+  @events [
+    [:nous, :agent, :run, :start],
+    [:nous, :agent, :run, :stop],
+    [:nous, :agent, :run, :exception],
+    [:nous, :agent, :iteration, :start],
+    [:nous, :agent, :iteration, :stop],
+    [:nous, :agent, :model, :start],
+    [:nous, :agent, :model, :stop],
+    [:nous, :agent, :model, :exception],
+    [:nous, :agent, :tool_call, :start],
+    [:nous, :agent, :tool_call, :stop],
+    [:nous, :agent, :structured_output, :retry],
+    [:nous, :agent, :fallback, :used],
+    [:nous, :fallback, :activated],
+    [:nous, :router, :route],
+    [:nous, :rate_limiter, :unavailable],
+    [:nous, :provider, :request, :start],
+    [:nous, :provider, :request, :stop],
+    [:nous, :provider, :request, :exception],
+    [:nous, :provider, :stream, :start],
+    [:nous, :provider, :stream, :connected],
+    [:nous, :provider, :stream, :exception],
+    [:nous, :tool, :execute, :start],
+    [:nous, :tool, :execute, :stop],
+    [:nous, :tool, :execute, :exception],
+    [:nous, :tool, :timeout],
+    [:nous, :context, :update],
+    [:nous, :callback, :execute],
+    [:nous, :hook, :execute, :start],
+    [:nous, :hook, :execute, :stop],
+    [:nous, :hook, :denied],
+    [:nous, :hook, :failed_closed],
+    [:nous, :hook, :decision],
+    [:nous, :decision_guard, :verdict],
+    [:nous, :decision_guard, :canary_failed],
+    [:nous, :decision_guard, :strategy_dropped],
+    [:nous, :decision_guard, :strategy_verdict],
+    [:nous, :input_guard, :strategy_dropped],
+    [:nous, :input_guard, :strategy_verdict],
+    [:nous, :input_guard, :verdict],
+    [:nous, :loop_guard, :advisory],
+    [:nous, :skill, :activate],
+    [:nous, :skill, :deactivate],
+    [:nous, :compaction, :start],
+    [:nous, :compaction, :stop],
+    [:nous, :compaction, :exception],
+    [:nous, :decision_model, :decide, :start],
+    [:nous, :decision_model, :decide, :stop],
+    [:nous, :decision_model, :decide, :exception],
+    [:nous, :profile, :switched],
+    [:nous, :session, :invariant, :violation],
+    [:nous, :eval, :sim, :turn],
+    [:nous, :eval, :sim, :error],
+    [:nous, :eval, :sim, :episode, :stop],
+    [:nous, :workflow, :run, :start],
+    [:nous, :workflow, :run, :stop],
+    [:nous, :workflow, :run, :exception],
+    [:nous, :workflow, :node, :start],
+    [:nous, :workflow, :node, :stop],
+    [:nous, :workflow, :node, :exception],
+    [:nous, :eval, :online, :window],
+    [:nous, :eval, :online, :dropped],
+    [:nous, :eval, :online, :redaction_failed],
+    [:nous, :eval, :online, :score, :stop],
+    [:nous, :eval, :online, :budget_exhausted],
+    [:nous, :eval, :online, :handler_reattached]
+  ]
+
+  @doc """
+  Every event name Nous emits, as documented in the catalog above.
+
+  Names are the defaults: an event whose prefix is configurable (the
+  `Nous.Fallback` `:telemetry_prefix`, a guard engine's prefix) appears here
+  under its default prefix only.
+
+      :telemetry.attach_many("my-handler", Nous.Telemetry.events(), &MyApp.handle/4, nil)
+
+  """
+  @spec events() :: [[atom(), ...]]
+  def events, do: @events
 
   @doc """
   Attaches the default logging handler for Nous events.

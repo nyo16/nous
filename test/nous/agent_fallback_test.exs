@@ -3,6 +3,7 @@ defmodule Nous.AgentFallbackTest do
 
   alias Nous.{Agent, AgentRunner, Message, Model, Usage}
   alias Nous.Errors
+  alias Nous.Telemetry.RunScope
 
   import ExUnit.CaptureLog
 
@@ -405,8 +406,29 @@ defmodule Nous.AgentFallbackTest do
   end
 
   describe "telemetry integration" do
-    test "emits fallback:activated when falling back in agent run" do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :fallback, :activated]])
+    # `[:nous, :fallback, :activated]` handlers are global and this module is
+    # async, so each test runs under its own trace id and only counts events
+    # carrying it.
+    setup do
+      trace_id = RunScope.new_trace_id()
+      test_pid = self()
+      handler_id = {__MODULE__, trace_id}
+
+      :ok =
+        :telemetry.attach(
+          handler_id,
+          [:nous, :fallback, :activated],
+          fn _event, _measurements, meta, _config ->
+            if meta[:trace_id] == trace_id, do: send(test_pid, {:fallback_activated, meta})
+          end,
+          nil
+        )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+      %{trace_id: trace_id}
+    end
+
+    test "emits fallback:activated when falling back in agent run", %{trace_id: trace_id} do
       FallbackMockDispatcher.configure(fail_providers: [:openai])
 
       agent =
@@ -415,10 +437,11 @@ defmodule Nous.AgentFallbackTest do
         )
 
       capture_log(fn ->
-        {:ok, _result} = AgentRunner.run(agent, "Hello")
+        {:ok, _result} =
+          RunScope.with_scope(%{trace_id: trace_id}, fn -> AgentRunner.run(agent, "Hello") end)
       end)
 
-      assert_received {[:nous, :fallback, :activated], ^ref, %{system_time: _},
+      assert_received {:fallback_activated,
                        %{
                          failed_provider: :openai,
                          failed_model: "gpt-4",
@@ -427,8 +450,7 @@ defmodule Nous.AgentFallbackTest do
                        }}
     end
 
-    test "does not emit fallback telemetry when primary succeeds" do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:nous, :fallback, :activated]])
+    test "does not emit fallback telemetry when primary succeeds", %{trace_id: trace_id} do
       FallbackMockDispatcher.configure(fail_providers: [])
 
       agent =
@@ -437,10 +459,11 @@ defmodule Nous.AgentFallbackTest do
         )
 
       capture_log(fn ->
-        {:ok, _result} = AgentRunner.run(agent, "Hello")
+        {:ok, _result} =
+          RunScope.with_scope(%{trace_id: trace_id}, fn -> AgentRunner.run(agent, "Hello") end)
       end)
 
-      refute_received {[:nous, :fallback, :activated], ^ref, _, _}
+      refute_received {:fallback_activated, _}
     end
   end
 end

@@ -1,281 +1,172 @@
 defmodule Mix.Tasks.Nous.Eval do
+  @shortdoc "Runs an eval task, stores the run and gates it against a baseline"
+
   @moduledoc """
-  Run evaluation suites for Nous agents.
+  Runs a `Nous.Eval` task (`Nous.Eval.run/2`), stores the run, prints its
+  report and, with `--baseline`, compares it with a stored baseline run
+  (`Nous.Eval.Compare`).
 
-  ## Usage
-
-      # Run all suites from default directory (test/eval/suites)
-      mix nous.eval
-
-      # Run a specific suite file
-      mix nous.eval --suite test/eval/suites/basic.yaml
-
-      # Run from a different directory
-      mix nous.eval --dir priv/eval
-
-      # Filter by tags
-      mix nous.eval --tags basic,tool
-
-      # Exclude tags
-      mix nous.eval --exclude slow,stress
-
-      # Override model
-      mix nous.eval --model lmstudio:ministral-3-14b-reasoning
-
-      # Set parallelism
-      mix nous.eval --parallel 4
-
-      # Output format
-      mix nous.eval --format json
-      mix nous.eval --format json --output results.json
-
-      # Verbose mode
-      mix nous.eval --verbose
+      mix nous.eval --task MyApp.Evals.Refunds --k 3 --seed 42
+      mix nous.eval --task MyApp.Evals.Refunds --set-baseline main
+      mix nous.eval --task MyApp.Evals.Refunds --baseline main --gate pass_rate,scorer:judge
 
   ## Options
 
-    * `--suite` - Path to a specific suite file (YAML)
-    * `--dir` - Directory containing suite files (default: test/eval/suites)
-    * `--tags` - Only run test cases with these tags (comma-separated)
-    * `--exclude` - Exclude test cases with these tags (comma-separated)
-    * `--model` - Override default model for all tests
-    * `--parallel` - Number of concurrent tests (default: 1)
-    * `--timeout` - Default timeout in ms (default: 30000)
-    * `--format` - Output format: console, json, markdown (default: console)
-    * `--output` - Output file path (for json/markdown formats)
-    * `--verbose` - Show detailed output including passed tests
-    * `--retry` - Number of retries for failed tests (default: 0)
+    * `--task MODULE` - the task module (required); it must be compiled into
+      the project
+    * `--k N` - samples per case (default 3)
+    * `--split SPLITS` - comma-separated: `train`, `val`, `test`
+    * `--tag TAG` - run only cases with this tag; repeatable, or
+      comma-separated
+    * `--seed N` - base seed; each sample's seed is derived from it
+    * `--parallelism N` - samples in flight (default: schedulers online)
+    * `--timeout MS` - per-sample limit (default 120000)
+    * `--budget-cost USD`, `--budget-tokens N`, `--budget-samples N` - run
+      budget (see "Budgets" in `Nous.Eval.run/2`). `--budget-cost` refuses
+      to start when a model has no known price
+    * `--store SPEC` - `file:DIR` (default `file:.nous/eval`),
+      `sqlite:PATH` or `duckdb:PATH`. The run is stored there, and LLM
+      judges look up the calibration `mix nous.eval.judge.calibrate` stored
+      there (`require_calibration`)
+    * `--baseline LABEL` - compare against the run the label points at
+      (checked before the eval starts)
+    * `--gate METRICS` - comma-separated gate metrics: `pass_rate`
+      (default), `case_score`, `scorer:NAME`
+    * `--margin F` - tolerated drop, in `[0, 1)` (default 0.0)
+    * `--max-error-rate F` - tolerated share of `:error` samples, in
+      `[0, 1)` (default 0.0)
+    * `--allow-dataset-change` - compare with a baseline of a different
+      dataset on the common case ids
+    * `--format FORMAT` - `console` (default), `markdown` or `json`. With a
+      baseline, `json` prints the comparison (which holds both summaries)
+    * `--output PATH` - write the report there instead of printing it
+    * `--set-baseline LABEL` - point the label at this run, only when the
+      exit status is 0
 
-  ## Configuration
+  ## Exit status
 
-  You can also configure defaults in your config:
+  | Status | Meaning |
+  |---|---|
+  | 0 | pass: the run completed, its scorer error rate is within `--max-error-rate`, and (with `--baseline`) no gate metric regressed |
+  | 1 | regression: a gate metric dropped by more than `--margin` with significance (see `Nous.Eval.Compare`) |
+  | 2 | operational error: bad arguments, unknown task, no cases selected, store failure, budget refused (unknown price) or exhausted, aborted run, scorer error rate above `--max-error-rate`, or a comparison that cannot decide |
 
-      config :nous, Nous.Eval,
-        default_model: "lmstudio:ministral-3-14b-reasoning",
-        default_timeout: 30_000,
-        parallelism: 4
+  A run that exhausted its budget exits 2 even if its finished samples
+  passed: the unrun cases were never checked, and a gate must not pass on
+  partial results.
 
+  ## CI
+
+      mix nous.eval --task MyApp.Evals.Refunds --seed 1 --budget-cost 2.00 \\
+        --baseline main --format markdown --output eval-report.md
+
+  On the main branch, refresh the baseline with `--set-baseline main` (or
+  `mix nous.eval.baseline set RUN main`).
   """
 
   use Mix.Task
 
-  @shortdoc "Run Nous agent evaluation suites"
+  alias Nous.Eval.{CLI, Compare}
 
   @switches [
-    suite: :string,
-    dir: :string,
-    tags: :string,
-    exclude: :string,
-    model: :string,
-    parallel: :integer,
+    task: :string,
+    k: :integer,
+    split: :string,
+    tag: [:string, :keep],
+    seed: :integer,
+    parallelism: :integer,
     timeout: :integer,
+    budget_cost: :float,
+    budget_tokens: :integer,
+    budget_samples: :integer,
+    store: :string,
+    baseline: :string,
+    gate: :string,
+    margin: :float,
+    max_error_rate: :float,
+    allow_dataset_change: :boolean,
     format: :string,
     output: :string,
-    verbose: :boolean,
-    retry: :integer
+    set_baseline: :string
   ]
 
   @impl Mix.Task
-  def run(args) do
-    # Start the application
-    {:ok, _} = Application.ensure_all_started(:nous)
+  def run(argv) do
+    Mix.Task.run("app.start")
+    CLI.finish("nous.eval", execute(argv))
+  end
 
-    {opts, _remaining, _invalid} = OptionParser.parse(args, switches: @switches)
-
-    # Load suites
-    suites = load_suites(opts)
-
-    if suites == [] do
-      Mix.shell().error("No evaluation suites found!")
-      exit({:shutdown, 1})
-    end
-
-    # Build run options
-    run_opts = build_run_opts(opts)
-
-    # Run evaluations
-    results = run_suites(suites, run_opts, opts)
-
-    # Output results
-    output_results(results, opts)
-
-    # Exit with appropriate code
-    all_passed = Enum.all?(results, fn {_, result} -> result.pass_rate == 1.0 end)
-
-    unless all_passed do
-      exit({:shutdown, 1})
+  defp execute(argv) do
+    with {:ok, opts, []} <- parse(argv),
+         {:ok, module} <- CLI.task_module(opts[:task]),
+         {:ok, task} <- Nous.Eval.Task.load(module),
+         {:ok, format} <- CLI.format(opts[:format]),
+         {:ok, gate} <- CLI.gate(opts),
+         {:ok, splits} <- CLI.splits(opts[:split]),
+         {:ok, label} <- CLI.label(opts[:set_baseline], "--set-baseline"),
+         {:ok, store} <- CLI.open_store(opts[:store]),
+         {:ok, baseline} <- baseline(store, opts[:baseline]),
+         {:ok, run} <- eval(module, opts, splits, store),
+         :ok <- CLI.stored(store, run),
+         {:ok, comparison} <- compare(baseline, run, task, gate, opts),
+         :ok <- CLI.emit(subjects(run, comparison, format), format, opts[:output]) do
+      code = CLI.exit_code(run, comparison, gate.max_error_rate)
+      with :ok <- maybe_set_baseline(store, label, run, code), do: {:ok, code}
     end
   end
 
-  defp load_suites(opts) do
-    cond do
-      opts[:suite] ->
-        # Load specific suite
-        case Nous.Eval.Suite.from_yaml(opts[:suite]) do
-          {:ok, suite} ->
-            [suite]
-
-          {:error, reason} ->
-            Mix.shell().error("Failed to load suite: #{inspect(reason)}")
-            []
-        end
-
-      true ->
-        # Load from directory
-        dir = opts[:dir] || "test/eval/suites"
-
-        if File.dir?(dir) do
-          case Nous.Eval.Suite.from_directory(dir) do
-            {:ok, suites} ->
-              suites
-
-            {:error, reason} ->
-              Mix.shell().error("Failed to load suites: #{inspect(reason)}")
-              []
-          end
-        else
-          Mix.shell().info("Creating evaluation directory: #{dir}")
-          File.mkdir_p!(dir)
-          []
-        end
+  defp parse(argv) do
+    case CLI.parse(argv, @switches) do
+      {:ok, opts, []} -> {:ok, opts, []}
+      {:ok, _opts, [arg | _]} -> {:error, "unexpected argument #{inspect(arg)}"}
+      error -> error
     end
   end
 
-  defp build_run_opts(opts) do
-    run_opts = []
+  defp baseline(_store, nil), do: {:ok, nil}
+  defp baseline(store, label), do: CLI.baseline_run(store, label)
 
+  defp eval(module, opts, splits, store) do
     run_opts =
-      if opts[:tags] do
-        Keyword.put(run_opts, :tags, parse_tags(opts[:tags]))
-      else
-        run_opts
-      end
+      [
+        k: opts[:k],
+        seed: opts[:seed],
+        parallelism: opts[:parallelism],
+        timeout: opts[:timeout],
+        splits: splits,
+        tags: CLI.tags(opts),
+        budget: CLI.budget(opts),
+        store: CLI.run_store(store)
+      ]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-    run_opts =
-      if opts[:exclude] do
-        Keyword.put(run_opts, :exclude_tags, parse_tags(opts[:exclude]))
-      else
-        run_opts
-      end
-
-    run_opts =
-      if opts[:model] do
-        Keyword.put(run_opts, :model, opts[:model])
-      else
-        run_opts
-      end
-
-    run_opts =
-      if opts[:parallel] do
-        Keyword.put(run_opts, :parallelism, opts[:parallel])
-      else
-        run_opts
-      end
-
-    run_opts =
-      if opts[:timeout] do
-        Keyword.put(run_opts, :timeout, opts[:timeout])
-      else
-        run_opts
-      end
-
-    run_opts =
-      if opts[:retry] do
-        Keyword.put(run_opts, :retry_failed, opts[:retry])
-      else
-        run_opts
-      end
-
-    run_opts
-  end
-
-  # Parse a comma-separated tag list from CLI input.
-  # NEVER use String.to_atom/1 on CLI args - a CI invocation that takes
-  # repo-supplied filenames or env vars could exhaust the BEAM atom table.
-  # Tags that don't already exist as atoms can't match any registered test
-  # case anyway, so skipping them is safe.
-  defp parse_tags(arg) when is_binary(arg) do
-    arg
-    |> String.split(",", trim: true)
-    |> Enum.map(&String.trim/1)
-    |> Enum.map(fn tag ->
-      try do
-        String.to_existing_atom(tag)
-      rescue
-        ArgumentError ->
-          Mix.shell().info("Skipping unknown tag: #{tag}")
-          nil
-      end
-    end)
-    |> Enum.reject(&is_nil/1)
-  end
-
-  defp run_suites(suites, run_opts, opts) do
-    verbose = opts[:verbose] || false
-
-    Enum.map(suites, fn suite ->
-      if verbose do
-        Mix.shell().info("\nRunning suite: #{suite.name}")
-        Mix.shell().info("Test cases: #{Nous.Eval.Suite.count(suite)}")
-      end
-
-      case Nous.Eval.run(suite, run_opts) do
-        {:ok, result} ->
-          {suite.name, result}
-
-        {:error, reason} ->
-          Mix.shell().error("Suite #{suite.name} failed: #{inspect(reason)}")
-          {suite.name, nil}
-      end
-    end)
-    |> Enum.reject(fn {_, result} -> is_nil(result) end)
-  end
-
-  defp output_results(results, opts) do
-    format = opts[:format] || "console"
-    output_path = opts[:output]
-    verbose = opts[:verbose] || false
-
-    case format do
-      "console" ->
-        Enum.each(results, fn {_name, result} ->
-          if verbose do
-            Nous.Eval.Reporter.print_detailed(result)
-          else
-            Nous.Eval.Reporter.print(result)
-          end
-        end)
-
-      "json" ->
-        json_output =
-          results
-          |> Enum.map(fn {name, result} -> {name, Nous.Eval.Reporter.Json.to_map(result)} end)
-          |> Enum.into(%{})
-          |> Map.put(:generated_at, DateTime.to_iso8601(DateTime.utc_now()))
-          |> Nous.JSON.pretty_encode!()
-
-        if output_path do
-          File.write!(output_path, json_output)
-          Mix.shell().info("Results written to: #{output_path}")
-        else
-          IO.puts(json_output)
-        end
-
-      "markdown" ->
-        md_output =
-          Enum.map_join(results, "\n\n---\n\n", fn {_name, result} ->
-            Nous.Eval.Reporter.to_markdown(result)
-          end)
-
-        if output_path do
-          File.write!(output_path, md_output)
-          Mix.shell().info("Results written to: #{output_path}")
-        else
-          IO.puts(md_output)
-        end
-
-      _ ->
-        Mix.shell().error("Unknown format: #{format}")
+    case Nous.Eval.run(module, run_opts) do
+      {:ok, run} -> {:ok, run}
+      {:error, reason} -> {:error, CLI.describe(reason)}
     end
+  end
+
+  defp compare(nil, _run, _task, _gate, _opts), do: {:ok, nil}
+
+  defp compare(baseline, run, task, gate, opts) do
+    case Compare.compare(baseline, run,
+           gate: gate,
+           cases: task.dataset.cases,
+           allow_dataset_change: Keyword.get(opts, :allow_dataset_change, false)
+         ) do
+      {:ok, comparison} -> {:ok, comparison}
+      {:error, reason} -> {:error, "cannot compare with the baseline: " <> CLI.describe(reason)}
+    end
+  end
+
+  defp subjects(run, nil, _format), do: [run]
+  defp subjects(_run, comparison, :json), do: [comparison]
+  defp subjects(run, comparison, _format), do: [run, comparison]
+
+  defp maybe_set_baseline(_store, nil, _run, _code), do: :ok
+  defp maybe_set_baseline(store, label, run, 0), do: CLI.set_baseline(store, label, run.id)
+
+  defp maybe_set_baseline(_store, label, _run, _code) do
+    Mix.shell().error("Baseline #{label} not updated: the run did not pass")
   end
 end

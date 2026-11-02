@@ -3,8 +3,13 @@ defmodule Nous.Plugins.InputGuard.Strategies.Semantic do
   Embedding-based semantic similarity strategy for detecting malicious input.
 
   Computes cosine similarity between the user input embedding and a set of
-  pre-computed attack vector embeddings. If the similarity exceeds a threshold,
-  the input is flagged.
+  pre-computed attack vector embeddings. If the similarity reaches the
+  threshold the input is `:suspicious`, from `threshold + 0.1` `:blocked`.
+
+  Every verdict, `:safe` included, carries `metadata: %{top_similarity,
+  top_match, matches}` (`matches` are the hits at or above the threshold), so
+  a calibration sweep (`Nous.Eval.Guard`) can move the threshold either way
+  from recorded results.
 
   ## Configuration
 
@@ -82,32 +87,44 @@ defmodule Nous.Plugins.InputGuard.Strategies.Semantic do
      }}
   end
 
+  # `top_similarity` / `top_match` are recorded on every verdict, `:safe`
+  # included, so an offline calibration sweep (`Nous.Eval.Guard`) can move the
+  # threshold in both directions; `matches` lists only the hits at or above
+  # the threshold. Both are nil when there are no attack embeddings.
   defp check_similarities(input_vec, attack_embeddings, threshold) do
-    matches =
+    ranked =
       attack_embeddings
-      |> Enum.map(fn {label, attack_vec} ->
-        similarity = cosine_similarity(input_vec, attack_vec)
-        {label, similarity}
-      end)
-      |> Enum.filter(fn {_label, sim} -> sim >= threshold end)
+      |> Enum.map(fn {label, attack_vec} -> {label, cosine_similarity(input_vec, attack_vec)} end)
       |> Enum.sort_by(fn {_label, sim} -> sim end, :desc)
+
+    {top_match, top_similarity} = List.first(ranked, {nil, nil})
+    matches = Enum.filter(ranked, fn {_label, sim} -> sim >= threshold end)
+    metadata = %{matches: matches, top_match: top_match, top_similarity: top_similarity}
 
     case matches do
       [] ->
-        {:ok, %Result{severity: :safe, strategy: __MODULE__}}
+        {:ok, %Result{severity: :safe, strategy: __MODULE__, metadata: metadata}}
 
       [{label, similarity} | _] ->
-        severity = if similarity >= threshold + 0.1, do: :blocked, else: :suspicious
-
         {:ok,
          %Result{
-           severity: severity,
+           severity: severity(similarity, threshold),
            reason: "Semantic match: #{label} (similarity: #{Float.round(similarity, 3)})",
            strategy: __MODULE__,
-           metadata: %{matches: matches, top_match: label, top_similarity: similarity}
+           metadata: metadata
          }}
     end
   end
+
+  @doc false
+  # The severity for a top similarity at `threshold`: `:blocked` from
+  # `threshold + 0.1`, `:suspicious` from `threshold`, else `:safe`. Shared
+  # with calibration replays, so a swept threshold means what it means here.
+  @spec severity(float() | nil, number()) :: :safe | :suspicious | :blocked
+  def severity(nil, _threshold), do: :safe
+  def severity(similarity, threshold) when similarity >= threshold + 0.1, do: :blocked
+  def severity(similarity, threshold) when similarity >= threshold, do: :suspicious
+  def severity(_similarity, _threshold), do: :safe
 
   defp cosine_similarity(a, b) when is_list(a) and is_list(b) do
     dot = Enum.zip(a, b) |> Enum.reduce(0.0, fn {x, y}, acc -> acc + x * y end)

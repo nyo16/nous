@@ -138,13 +138,22 @@ defmodule Nous.Plugins.DecisionGuard do
 
     * `[:nous, :decision_guard, :verdict]` — every classified check.
       * Measurements: `%{duration: native_time, chunk_count: integer}`
-      * Metadata: `%{surface, verdict, result, probabilities, canary_failed, error}`,
-        with `verdict` one of `:allow`, `:escalate`, `:deny` and `result` one of
-        `:allow`, `:deny`, `:modify` (after escalation).
+      * Metadata: `%{surface, agent_name, tool_call_id, verdict, result,
+        probabilities, canary_failed, error}`, with `verdict` one of `:allow`,
+        `:escalate`, `:deny` and `result` one of `:allow`, `:deny`, `:modify`
+        (after escalation). `tool_call_id` is the guarded call on the
+        `:tool_call` / `:tool_result` surfaces and nil on `:user_input`.
     * `[:nous, :decision_guard, :canary_failed]` — a canary was answered
       wrongly. Measurements `%{count: integer}`, metadata `%{surface}`.
+    * `[:nous, :decision_guard, :strategy_verdict]` — one user-input
+      strategy's verdict (see `Nous.Plugins.InputGuard.Engine`).
     * `[:nous, :decision_guard, :strategy_dropped]` — a user-input strategy
       produced no verdict (see `Nous.Plugins.InputGuard.Engine`).
+
+  Every event also carries the run correlation keys (`trace_id`,
+  `agent_run_id`, `parent_agent_run_id`; see `Nous.Telemetry`). On hook
+  surfaces each check also emits `[:nous, :hook, :decision]` (hook name
+  `"decision_guard:<surface>"`); count verdicts on one of the two.
   """
 
   @behaviour Nous.Plugin
@@ -159,6 +168,7 @@ defmodule Nous.Plugins.DecisionGuard do
   alias Nous.Plugins.InputGuard.{Engine, Policy, Result}
   alias Nous.Plugins.InputGuard.Strategies
   alias Nous.Session.Log
+  alias Nous.Telemetry.RunScope
 
   @surfaces [:user_input, :tool_call, :tool_result, :model_output]
   @packs %{
@@ -190,8 +200,10 @@ defmodule Nous.Plugins.DecisionGuard do
 
   # ── Plugin callbacks ───────────────────────────────────────────────────────
 
+  # Checked on every run, not once per context: a continued context can be run
+  # by a different agent, and the ordering is a property of that agent.
   @impl true
-  def init(agent, ctx) do
+  def before_run(agent, ctx) do
     if Map.has_key?(ctx.deps, :decision_guard_config), do: check_plugin_order!(agent.plugins)
     ctx
   end
@@ -371,7 +383,7 @@ defmodule Nous.Plugins.DecisionGuard do
           resolve_escalations(checks, inputs, ctx, tools, surface)
       end
 
-    Enum.zip_with(checks, outcomes, &emit_check/2)
+    Enum.zip_with(checks, outcomes, &emit_check(&1, &2, ctx.agent_name))
     ctx_and_tools
   end
 
@@ -495,8 +507,10 @@ defmodule Nous.Plugins.DecisionGuard do
     end
   end
 
-  defp emit_check(check, outcome) do
+  defp emit_check(check, outcome, agent_name) do
     emit_verdict(:user_input, check.duration, %{
+      agent_name: agent_name,
+      tool_call_id: nil,
       verdict: check.verdict,
       result: outcome,
       probabilities: Map.get(check.model_info, :probabilities, %{}),
@@ -600,6 +614,17 @@ defmodule Nous.Plugins.DecisionGuard do
   # ── hook surfaces ──────────────────────────────────────────────────────────
 
   defp hook(config, surface, opts) do
+    Hook.new(Map.fetch!(@events, surface),
+      name: "decision_guard:#{surface}",
+      handler: hook_decision(config, surface, opts),
+      priority: @priority,
+      fail_closed: true,
+      timeout: opts[:timeout] || config.timeout,
+      matcher: opts[:matcher]
+    )
+  end
+
+  defp hook_decision(config, surface, opts) do
     pack = Map.fetch!(@packs, surface)
 
     pack_opts =
@@ -608,34 +633,83 @@ defmodule Nous.Plugins.DecisionGuard do
       |> Map.to_list()
       |> Keyword.put(:model_family, config.model_family)
 
-    decision =
-      Decision.new(
-        [
-          model: config.model,
-          state: &pack.state/2,
-          on_error: opts[:on_error] || config.on_error,
-          oversize: opts[:oversize] || config.oversize,
-          max_chunks: opts[:max_chunks] || config.max_chunks,
-          canary: Map.get(opts, :canary, config.canary),
-          on_escalate: Map.get(opts, :on_escalate, config.on_escalate),
-          on_verdict: &hook_verdict(surface, &1)
-        ] ++ Pack.build(pack, pack_opts)
-      )
-
-    Hook.new(Map.fetch!(@events, surface),
-      name: "decision_guard:#{surface}",
-      handler: decision,
-      priority: @priority,
-      fail_closed: true,
-      timeout: opts[:timeout] || config.timeout,
-      matcher: opts[:matcher]
+    Decision.new(
+      [
+        model: config.model,
+        state: &pack.state/2,
+        on_error: opts[:on_error] || config.on_error,
+        oversize: opts[:oversize] || config.oversize,
+        max_chunks: opts[:max_chunks] || config.max_chunks,
+        canary: Map.get(opts, :canary, config.canary),
+        on_escalate: Map.get(opts, :on_escalate, config.on_escalate),
+        on_verdict: &hook_verdict(surface, &1)
+      ] ++ Pack.build(pack, pack_opts)
     )
   end
+
+  # ── calibration ────────────────────────────────────────────────────────────
+
+  @doc """
+  The `Nous.Hook.Decision` this guard classifies `surface` with, built from a
+  `:decision_guard_config` (map or keyword list, as in `deps`) by the same
+  code the plugin runs: the guard as configured, not a re-derivation.
+
+  A surface the config does not list gets its default options. On
+  `:user_input` the decision is what `Strategies.DecisionModel` builds (with
+  the surface's `:on_error`); the plugin also runs `Strategies.Pattern` beside
+  it when `:pattern_ensemble` is on. Raises `ArgumentError` on an invalid
+  config, as the plugin does.
+
+  `Nous.Eval.Guard` records the guard's answers with
+  `Nous.Hook.Decision.verdict/3` (`record: :all_chunks`) and replays them
+  under candidate bands with `Nous.Hook.Decision.replay/2`.
+  """
+  @spec decision(map() | keyword(), :user_input | :tool_call | :tool_result | :model_output) ::
+          Decision.t()
+  def decision(config, surface), do: surface_settings(config, surface).decision
+
+  @doc false
+  # `decision/2` plus what the guard runs around it on that surface:
+  # `%{decision, pattern_ensemble, timeout, on_error}` (`pattern_ensemble` is
+  # false on hook surfaces).
+  @spec surface_settings(map() | keyword(), atom()) :: %{
+          decision: Decision.t(),
+          pattern_ensemble: boolean(),
+          timeout: non_neg_integer() | :infinity,
+          on_error: :deny | :escalate | :allow
+        }
+  def surface_settings(config, surface) when surface in @surfaces do
+    config = normalize(Map.new(config))
+    opts = config.surfaces[surface] || %{}
+    on_error = opts[:on_error] || config.on_error
+
+    decision =
+      case surface do
+        :user_input -> %{user_input_decision(config, opts) | on_error: on_error}
+        hook_surface -> hook_decision(config, hook_surface, opts)
+      end
+
+    %{
+      decision: decision,
+      pattern_ensemble: surface == :user_input and config.pattern_ensemble,
+      timeout: opts[:timeout] || config.timeout,
+      on_error: on_error
+    }
+  end
+
+  def surface_settings(_config, surface),
+    do:
+      raise(
+        ArgumentError,
+        "unknown DecisionGuard surface #{inspect(surface)}; expected one of #{inspect(@surfaces)}"
+      )
 
   defp hook_verdict(surface, report) do
     canary_telemetry(surface, report.canary_failed)
 
     emit_verdict(surface, report.duration, %{
+      agent_name: Map.get(report, :agent_name),
+      tool_call_id: Map.get(report, :tool_call_id),
       verdict: report.verdict,
       result: report.result,
       probabilities: report.probabilities,
@@ -648,17 +722,21 @@ defmodule Nous.Plugins.DecisionGuard do
   # ── telemetry ──────────────────────────────────────────────────────────────
 
   defp emit_verdict(surface, duration, report) do
+    scope = RunScope.metadata()
+
     :telemetry.execute(
       [:nous, :decision_guard, :verdict],
       %{duration: duration, chunk_count: report.chunk_count},
-      %{
+      Map.merge(scope, %{
         surface: surface,
+        agent_name: report.agent_name,
+        tool_call_id: report.tool_call_id || scope.tool_call_id,
         verdict: report.verdict,
         result: report.result,
         probabilities: report.probabilities,
         canary_failed: report.canary_failed,
         error: report.error
-      }
+      })
     )
   end
 
@@ -667,9 +745,11 @@ defmodule Nous.Plugins.DecisionGuard do
   defp canary_telemetry(surface, count) do
     Logger.warning("DecisionGuard: #{count} canary check(s) failed on #{surface}")
 
-    :telemetry.execute([:nous, :decision_guard, :canary_failed], %{count: count}, %{
-      surface: surface
-    })
+    :telemetry.execute(
+      [:nous, :decision_guard, :canary_failed],
+      %{count: count},
+      RunScope.merge(%{surface: surface})
+    )
   end
 
   # ── config ─────────────────────────────────────────────────────────────────

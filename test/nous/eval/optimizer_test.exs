@@ -1,80 +1,486 @@
+defmodule NousTest.OptimizerTools do
+  @moduledoc false
+  # Outside the `Nous` namespace: a profile refuses to address tools whose
+  # function is defined under `Nous` (built-in tools).
+  def lookup(_ctx, _args), do: "order 42 shipped"
+end
+
 defmodule Nous.Eval.OptimizerTest do
+  # One scripted model plays both roles: the agent under test (it calls the
+  # `lookup` tool only when the tool's description says ALWAYS) and the
+  # reflector (its system prompt says so; it answers from the test's
+  # script). Every request is reported back, so assertions are on what each
+  # model actually received.
   use ExUnit.Case, async: true
 
-  alias Nous.Eval.Metrics
+  alias Nous.{Message, Usage}
   alias Nous.Eval.Optimizer
-  alias Nous.Eval.SuiteResult
+  alias Nous.Eval.Optimizer.{Candidate, Lint, Result}
+  alias Nous.Eval.Optimizer.Strategies.GEPA
+  alias Nous.Eval.ProfileReport
+  alias Nous.Eval.Store
 
-  # Regression: every metric other than :score and :pass_rate used
-  # `get_in(result, [:metrics_summary, :latency, :p50])`. `%SuiteResult{}` and
-  # `%Metrics.Summary{}` are plain structs with no Access implementation, so
-  # that raised UndefinedFunctionError instead of returning nil — and the
-  # nested `:latency`/`:tokens`/`:cost` keys do not exist on the summary in the
-  # first place. `mix run examples/eval/03_optimization.exs` crashed on it.
-  describe "extract_metric/2" do
-    setup do
-      summary = %Metrics.Summary{
-        count: 2,
-        mean_score: 0.75,
-        total_tokens: 900,
-        mean_tokens: 450.0,
-        p50_tokens: 400,
-        p95_tokens: 500,
-        p99_tokens: 500,
-        mean_latency_ms: 150.0,
-        p50_latency_ms: 120,
-        p95_latency_ms: 400,
-        p99_latency_ms: 800,
-        total_estimated_cost: 0.25,
-        mean_cost_per_run: 0.125,
-        pass_rate: 0.5
-      }
+  @moduletag :capture_log
 
-      %{
-        result: %SuiteResult{
-          suite_name: "s",
-          aggregate_score: 0.75,
-          pass_rate: 0.5,
-          metrics_summary: summary
-        },
-        empty: %SuiteResult{suite_name: "s", metrics_summary: nil}
-      }
-    end
+  @key :"$nous_optimizer_test"
+  @good_description "ALWAYS call this tool to look up an order before answering."
 
-    test "reads latency percentiles off the summary", %{result: result} do
-      assert Optimizer.extract_metric(result, :latency_p50) == 120.0
-      assert Optimizer.extract_metric(result, :latency_p95) == 400.0
-      assert Optimizer.extract_metric(result, :latency_p99) == 800.0
-    end
+  defmodule Model do
+    @moduledoc false
+    alias Nous.{Message, Usage}
 
-    test "reads token and cost totals off the summary", %{result: result} do
-      assert Optimizer.extract_metric(result, :total_tokens) == 900.0
-      assert Optimizer.extract_metric(result, :cost) == 0.25
-    end
+    def request(_model, messages, settings) do
+      %{pid: pid, reflector: reflector} = Nous.CallerLookup.lookup(:"$nous_optimizer_test")
 
-    test "reads score and pass rate", %{result: result} do
-      assert Optimizer.extract_metric(result, :score) == 0.75
-      assert Optimizer.extract_metric(result, :pass_rate) == 0.5
-    end
+      system =
+        messages
+        |> Enum.filter(&(&1.role == :system))
+        |> Enum.map_join("\n", &Message.extract_text/1)
 
-    # A suite where every case errored has no summary. An objective must
-    # degrade to a neutral score, not crash the whole search.
-    test "returns 0.0 for every metric when the suite produced no summary", %{empty: empty} do
-      for metric <- [
-            :score,
-            :pass_rate,
-            :latency_p50,
-            :latency_p95,
-            :latency_p99,
-            :total_tokens,
-            :cost
-          ] do
-        assert Optimizer.extract_metric(empty, metric) == 0.0
+      user = messages |> Enum.filter(&(&1.role == :user)) |> List.last() |> Message.extract_text()
+
+      cond do
+        system =~ "You improve the text" ->
+          send(pid, {:reflect, user, settings})
+          {:ok, text(reflector.(:reflect, user))}
+
+        system =~ "You write the text" ->
+          send(pid, {:generate, user, settings})
+          {:ok, text(reflector.(:generate, user))}
+
+        true ->
+          send(pid, {:agent, settings})
+          {:ok, agent(messages, settings)}
       end
     end
 
-    test "returns 0.0 for an unknown metric", %{result: result} do
-      assert Optimizer.extract_metric(result, :not_a_metric) == 0.0
+    def request_stream(_model, _messages, _settings), do: {:error, :not_supported}
+    def count_tokens(_messages), do: 0
+
+    defp agent(messages, settings) do
+      last = messages |> Enum.reject(&(&1.role == :system)) |> List.last()
+      description = tool_description(Map.get(settings, :tools, []))
+
+      cond do
+        last.role == :tool ->
+          text("Order found: " <> Message.extract_text(last))
+
+        description =~ "ALWAYS" ->
+          call = %{
+            id: "call_#{System.unique_integer([:positive])}",
+            name: "lookup",
+            arguments: %{"q" => "x"}
+          }
+
+          Message.assistant("", tool_calls: [call], metadata: meta("tool_calls"))
+
+        true ->
+          text("I don't know.")
+      end
+    end
+
+    defp tool_description(tools) do
+      Enum.find_value(tools, "", fn tool ->
+        function = tool["function"] || tool[:function] || tool
+        function["description"] || function[:description]
+      end)
+    end
+
+    defp text(content), do: Message.assistant(content, metadata: meta("stop"))
+
+    defp meta(finish),
+      do: %{
+        usage: %Usage{requests: 1, input_tokens: 10, output_tokens: 5, total_tokens: 15},
+        finish_reason: finish
+      }
+  end
+
+  defmodule Task do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def agent(_context) do
+      Nous.new("openai:test-model",
+        instructions: "Answer order questions.",
+        tools: [
+          Nous.Tool.from_function(&NousTest.OptimizerTools.lookup/2,
+            name: "lookup",
+            description: "Looks things up.",
+            parameters: %{"type" => "object", "properties" => %{"q" => %{"type" => "string"}}}
+          )
+        ]
+      )
+    end
+
+    # Six test cases: with all improved, the exact sign test gives
+    # p = 0.5^6 = 0.016, below alpha 0.05.
+    @impl true
+    def dataset, do: dataset(6)
+
+    def dataset(test_cases) do
+      for {split, n} <- [{"train", 4}, {"val", 4}, {"test", test_cases}], i <- 1..n do
+        %{
+          id: "#{split}-#{i}",
+          input: "Where is order #{split} #{i}? Please check carefully for me today.",
+          split: split,
+          expected: %{"output" => "Order found"},
+          tags: if(i == 1, do: ["guard"], else: [])
+        }
+      end
+    end
+
+    @impl true
+    def scorers, do: [{Nous.Eval.Scorers.Contains, values: ["found"]}]
+  end
+
+  defmodule SmallTestTask do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def agent(context), do: Nous.Eval.OptimizerTest.Task.agent(context)
+
+    @impl true
+    def dataset, do: Nous.Eval.OptimizerTest.Task.dataset(3)
+
+    @impl true
+    def scorers, do: Nous.Eval.OptimizerTest.Task.scorers()
+  end
+
+  defp install(reflector) do
+    Process.put(@key, %{pid: self(), reflector: reflector})
+    Nous.ModelDispatcher.put_dispatcher(Model)
+  end
+
+  defp reflect_with(text) do
+    fn
+      :reflect, _prompt ->
+        JSON.encode!(%{
+          "updates" => [%{"component" => "tool:lookup", "text" => text}],
+          "rationale" => "Make the tool mandatory."
+        })
+
+      :generate, _prompt ->
+        JSON.encode!(%{"candidates" => [%{"tool:lookup" => text}]})
+    end
+  end
+
+  defp run(opts) do
+    defaults = [
+      reflector: "openai:reflector-model",
+      components: ["tool:lookup"],
+      budget: [max_metric_calls: 400],
+      k: 1,
+      max_steps: 4,
+      minibatch_size: 2,
+      seed: 7
+    ]
+
+    Optimizer.run(Task, Keyword.merge(defaults, opts))
+  end
+
+  test "GEPA finds a better tool description and the accepted profile carries it to the wire" do
+    install(reflect_with(@good_description))
+
+    assert {:ok, %Result{verdict: :accepted, reasons: []} = result} = run([])
+    assert result.profile.components["tool:lookup"] == @good_description
+    assert result.profile.parent_id == result.seed_profile.id
+    assert result.profile.provenance["strategy"] == "gepa"
+    assert result.improvement.verdict == :regression
+    assert result.comparison.verdict == :pass
+    assert %{b: 6, c: 0, p_value: p} = result.sign_test
+    assert p < 0.05
+    assert result.run_ids != []
+
+    markdown = ProfileReport.render(result.report, format: :markdown)
+    assert markdown =~ "ALWAYS call this tool"
+
+    assert ProfileReport.render(result.report, format: :console) =~
+             "exact sign test: 6 improved, 0 worsened"
+
+    # The accepted profile, applied to the agent, changes the request body.
+    flush()
+
+    agent =
+      Nous.new("openai:test-model",
+        instructions: "Answer order questions.",
+        tools: Task.agent(%{}).tools,
+        profile: result.profile
+      )
+
+    {:ok, _} = Nous.run(agent, "Where is order 9?")
+    assert_received {:agent, settings}
+    assert inspect(settings[:tools]) =~ @good_description
+  end
+
+  test "an all-improved test split of 3 cases is rejected by the exact sign test" do
+    install(reflect_with(@good_description))
+
+    assert {:ok, %Result{verdict: :rejected} = result} =
+             Optimizer.run(SmallTestTask,
+               reflector: "openai:reflector-model",
+               components: ["tool:lookup"],
+               budget: [max_metric_calls: 400],
+               k: 1,
+               max_steps: 4,
+               minibatch_size: 2,
+               seed: 7
+             )
+
+    assert %{b: 3, c: 0, p_value: p} = result.sign_test
+    assert_in_delta p, 0.125, 1.0e-9
+    assert p >= 0.05
+
+    # The bootstrap alone would accept: the candidate is free of regressions
+    # and the seed is significantly worse. Only the sign test rejects.
+    assert result.comparison.verdict == :pass
+    assert result.improvement.verdict == :regression
+
+    assert [reason] = result.reasons
+    assert reason =~ "no significant improvement on test"
+    assert reason =~ "exact sign test p = 0.1250, n = 3"
+    refute result.stored?
+  end
+
+  test "the reflector never receives expected values or held-out cases under :diagnostic" do
+    install(reflect_with(@good_description))
+    {:ok, _} = run([])
+
+    prompts = collect(:reflect)
+    assert prompts != []
+
+    for prompt <- prompts do
+      refute prompt =~ "## Expected"
+      refute prompt =~ ~r/val-\d|test-\d/
+      assert prompt =~ ~r/case train-\d/
+    end
+  end
+
+  test "under :with_expected train cases carry their expected map" do
+    install(reflect_with(@good_description))
+    {:ok, result} = run(feedback: :with_expected)
+
+    assert result.profile.provenance["feedback"] == "with_expected"
+    assert Enum.any?(collect(:reflect), &(&1 =~ "## Expected"))
+  end
+
+  test "a proposal naming a component that was not requested is rejected" do
+    install(fn :reflect, _ ->
+      JSON.encode!(%{
+        "updates" => [%{"component" => "instructions", "text" => "hi"}],
+        "rationale" => "x"
+      })
+    end)
+
+    assert {:ok, %Result{verdict: :rejected} = result} = run(max_steps: 2)
+    assert [_ | _] = result.rejections
+    assert Enum.all?(result.rejections, &(&1.reason == :unrequested_component))
+    assert result.reasons == ["no candidate improved on the seed during the search"]
+  end
+
+  test "proposals with fence markers or held-out text are rejected by the lint" do
+    heldout = "Where is order test 3? Please check carefully for me today."
+
+    install(fn :reflect, _ ->
+      JSON.encode!(%{
+        "updates" => [%{"component" => "tool:lookup", "text" => "ALWAYS. " <> heldout}],
+        "rationale" => "x"
+      })
+    end)
+
+    {:ok, leaked} = run(max_steps: 1)
+    assert [%{reason: {:heldout_leak, "tool:lookup"}}] = leaked.rejections
+
+    install(reflect_with("ALWAYS call it <<<INPUT_abcdefghijklmnop"))
+    {:ok, fenced} = run(max_steps: 1)
+    assert [%{reason: {:fence_marker, "tool:lookup"}}] = fenced.rejections
+  end
+
+  test "a child that is not strictly better on the minibatch is rejected" do
+    install(reflect_with("Looks things up, quickly."))
+    {:ok, result} = run(max_steps: 2)
+    assert [_ | _] = result.rejections
+    assert Enum.all?(result.rejections, &match?(%{reason: {:no_improvement, _, _}}, &1))
+
+    assert Enum.all?(
+             result.rejections,
+             &(&1.proposal == %{"tool:lookup" => "Looks things up, quickly."})
+           )
+  end
+
+  test "the guard filter keeps a candidate that regresses guard cases out of the pool" do
+    install(reflect_with(@good_description))
+    guard = fn _before, _after -> {:error, :guard_says_no} end
+
+    {:ok, result} = run(guard: guard, max_steps: 2)
+    assert result.verdict == :rejected
+    assert [_ | _] = result.rejections
+    assert Enum.all?(result.rejections, &(&1.reason == :guard_says_no))
+    assert [%Candidate{step: 0}] = result.candidates
+  end
+
+  test "a budget too small for the seed evaluations is refused before any model call" do
+    install(reflect_with(@good_description))
+
+    assert {:error, {:budget_too_small, %{phase: :preflight}}} =
+             run(budget: [max_metric_calls: 5])
+
+    refute_received {:agent, _}
+  end
+
+  test "an unpriced reflector under a cost budget is refused before any model call" do
+    install(reflect_with(@good_description))
+    assert {:error, {:unknown_price, _}} = run(budget: [max_cost: 1.0])
+    refute_received {:agent, _}
+  end
+
+  test "OPRO proposes from the scored history and is accepted" do
+    install(reflect_with(@good_description))
+    {:ok, result} = run(strategy: :opro)
+
+    assert result.verdict == :accepted
+    assert result.profile.provenance["strategy"] == "opro"
+    [prompt | _] = collect(:generate)
+    assert prompt =~ "# Version 1 (score 0.000)"
+  end
+
+  test "an accepted profile is persisted in the store", %{} = _ctx do
+    root = Path.join(System.tmp_dir!(), "nous_opt_#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(root) end)
+    install(reflect_with(@good_description))
+
+    {:ok, result} = run(store: {Store.File, [root: root]}, name: "lookup_agent")
+    assert result.stored?
+    assert result.profile.version == 1
+
+    {:ok, state} = Store.File.init(root: root)
+    assert {:ok, stored} = Store.File.get_profile(state, {:id, result.profile.id})
+    assert stored.components["tool:lookup"] == @good_description
+  end
+
+  test "Pareto sampling weights candidates by validation wins and drops dominated ones" do
+    p = fn id, scores ->
+      %Candidate{profile: %Nous.Profile{id: id, components: %{}, manifest: %{}}, scores: scores}
+    end
+
+    a = p.("a", %{"1" => 1.0, "2" => 0.0})
+    b = p.("b", %{"1" => 0.0, "2" => 1.0})
+    c = p.("c", %{"1" => 0.0, "2" => 0.0})
+
+    weights =
+      GEPA.pareto_weights([a, b, c]) |> Map.new(fn {cand, w} -> {Candidate.id(cand), w} end)
+
+    assert weights == %{"a" => 1, "b" => 1}
+
+    rng = :rand.seed_s(:exsss, 1)
+    {first, _} = GEPA.pareto_sample([a, b, c], rng)
+    {again, _} = GEPA.pareto_sample([a, b, c], :rand.seed_s(:exsss, 1))
+    assert Candidate.id(first) == Candidate.id(again)
+  end
+
+  test "the lint flags an 8-word held-out run but not shorter overlaps" do
+    windows =
+      Lint.heldout_windows([
+        %Nous.Eval.Case{id: "v", input: "one two three four five six seven eight nine"}
+      ])
+
+    assert {:error, {:heldout_leak, "k"}} =
+             Lint.check(%{"k" => "x One two three four five six seven eight."}, windows)
+
+    assert :ok = Lint.check(%{"k" => "one two three four five six seven"}, windows)
+  end
+
+  describe "mix nous.optimize" do
+    defp mix_optimize(argv) do
+      Mix.Task.reenable("nous.optimize")
+
+      ExUnit.CaptureIO.capture_io(fn ->
+        code =
+          try do
+            Mix.Task.run("nous.optimize", argv)
+            0
+          catch
+            :exit, {:shutdown, code} -> code
+          end
+
+        send(self(), {:exit_code, code})
+      end)
+
+      assert_received {:exit_code, code}
+      code
+    end
+
+    @base_argv ~w(--task Nous.Eval.OptimizerTest.Task --reflector openai:reflector-model
+                  --components tool:lookup --budget-calls 400 --k 1 --max-steps 3 --seed 7)
+
+    test "exits 0 and writes the profile when one is accepted" do
+      out = Path.join(System.tmp_dir!(), "nous_opt_#{System.unique_integer([:positive])}.json")
+      on_exit(fn -> File.rm(out) end)
+      install(reflect_with(@good_description))
+
+      assert mix_optimize(@base_argv ++ ["--out", out]) == 0
+      assert {:ok, profile} = Nous.Profile.load(out)
+      assert profile.components["tool:lookup"] == @good_description
+    end
+
+    test "exits 1 when nothing is accepted and 2 on operational errors" do
+      install(reflect_with("Looks things up, quickly."))
+      assert mix_optimize(@base_argv) == 1
+
+      assert mix_optimize(~w(--task Nous.Eval.OptimizerTest.Task --reflector openai:r)) == 2
+      assert mix_optimize(@base_argv ++ ~w(--budget-calls 2)) == 2
+    end
+  end
+
+  defp collect(kind) do
+    Stream.repeatedly(fn ->
+      receive do
+        {^kind, prompt, _settings} -> prompt
+      after
+        0 -> nil
+      end
+    end)
+    |> Enum.take_while(& &1)
+  end
+
+  defp flush do
+    receive do
+      _ -> flush()
+    after
+      0 -> :ok
+    end
+  end
+end
+
+defmodule Nous.Eval.OptimizerCLIAtomTest do
+  # async: false - Mix.Task.reenable/run touch global task state.
+  use ExUnit.Case, async: false
+
+  test "unknown mix nous.optimize flag values exit 2 without creating atoms" do
+    suffix = Base.encode32(:crypto.strong_rand_bytes(10), case: :lower, padding: false)
+    strategy = "strategy" <> suffix
+    feedback = "feedback" <> suffix
+
+    for flag <- [["--strategy", strategy], ["--feedback", feedback]] do
+      Mix.Task.reenable("nous.optimize")
+
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        try do
+          Mix.Task.run(
+            "nous.optimize",
+            ~w(--task Nous.Eval.OptimizerTest.Task --reflector openai:r --budget-calls 9) ++ flag
+          )
+        catch
+          :exit, {:shutdown, code} -> send(self(), {:code, code})
+        end
+      end)
+
+      assert_received {:code, 2}
+    end
+
+    for name <- [strategy, feedback] do
+      assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
     end
   end
 end

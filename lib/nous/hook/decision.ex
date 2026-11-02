@@ -83,9 +83,9 @@ defmodule Nous.Hook.Decision do
       a second call per chunk. Weak evidence: a correct answer never lowers
       a verdict.
     * `:on_verdict` - `(report -> any)`, called after every evaluation with
-      the `[:nous, :hook, :decision]` telemetry metadata plus its
-      measurements (`:duration`, `:chunk_count`).
-      Errors in it are logged and ignored.
+      the `[:nous, :hook, :decision]` telemetry metadata (without the run
+      correlation keys) plus its measurements (`:duration`, `:chunk_count`)
+      and the `env`'s `:agent_name`. Errors in it are logged and ignored.
 
   Escalation is resolved here, inside the hook, so a decision hook still
   returns only `:allow`, `{:deny, reason}` or `{:modify, changes}`. On
@@ -110,9 +110,13 @@ defmodule Nous.Hook.Decision do
 
     * `[:nous, :hook, :decision]`
       * Measurements: `%{duration: native_time, chunk_count: integer}`
-      * Metadata: `%{event, hook_name, verdict: :allow | :escalate | :deny,
+      * Metadata: `%{event, hook_name, tool_call_id, verdict: :allow | :escalate | :deny,
         result: :allow | :deny | :modify, probabilities: %{id => [{key, p}]},
-        backend, model, canary_failed: integer, error: term | nil}`
+        backend, model, canary_failed: integer, error: term | nil}` plus the
+        run correlation keys (`trace_id`, `agent_run_id`, `parent_agent_run_id`;
+        see `Nous.Telemetry`). `tool_call_id` is the `:pre_tool_use` /
+        `:post_tool_use` payload's `:tool_id` (nil on other events, unless
+        the hook runs inside a tool call).
   """
 
   alias Nous.Agent.Context
@@ -331,8 +335,10 @@ defmodule Nous.Hook.Decision do
     end
   end
 
-  defp tool_info(%Tool{name: name, description: description, category: category}),
-    do: %{name: name, description: description, category: category}
+  # The developer's description, not one a `Nous.Profile` swapped in: the
+  # guard's trusted framing must not move with optimized prompt text.
+  defp tool_info(%Tool{name: name, category: category} = tool),
+    do: %{name: name, description: tool.base_description || tool.description, category: category}
 
   defp tool_info(_), do: nil
 
@@ -436,6 +442,7 @@ defmodule Nous.Hook.Decision do
     report = %{
       event: event,
       hook_name: hook.name,
+      tool_call_id: Nous.Hook.Runner.payload_tool_call_id(payload),
       verdict: verdict,
       result: result_kind(result),
       probabilities: info.probabilities,
@@ -446,14 +453,21 @@ defmodule Nous.Hook.Decision do
     }
 
     measurements = %{duration: System.monotonic_time() - start, chunk_count: info.chunk_count}
-    :telemetry.execute([:nous, :hook, :decision], measurements, report)
-    notify(d, Map.merge(report, measurements))
+    scope = Nous.Telemetry.RunScope.metadata()
+
+    report = %{report | tool_call_id: report.tool_call_id || scope.tool_call_id}
+    :telemetry.execute([:nous, :hook, :decision], measurements, Map.merge(scope, report))
+
+    notify(
+      d,
+      report |> Map.merge(measurements) |> Map.put(:agent_name, env_agent_name(env))
+    )
 
     result
   end
 
   defp safe_verdict(d, hook, event, payload, env) do
-    run_verdict(d, fn -> build_state(d, event, payload, env) end, hook.timeout)
+    run_verdict(d, fn -> build_state(d, event, payload, env) end, hook.timeout, false)
   rescue
     e -> {:error, e, empty_info()}
   catch
@@ -477,6 +491,9 @@ defmodule Nous.Hook.Decision do
 
   defp empty_info, do: %{chunk_count: 0, probabilities: %{}, canary_failed: 0, why: :band}
 
+  defp env_agent_name(%{agent_name: name}), do: name
+  defp env_agent_name(_env), do: nil
+
   @doc """
   Classifies `state` with the config's model, questions and bands, without
   resolving an escalation: the verdict a hook built from `d` would act on.
@@ -490,43 +507,153 @@ defmodule Nous.Hook.Decision do
     * `:timeout` - per decision-model call, in ms (default `10_000`). The
       token counting and window planning before the calls are bounded by it
       too.
+    * `:record` - `:all_chunks` classifies **every** planned chunk instead of
+      stopping at the first deny, and adds the recorded data to `info` (see
+      below). For offline calibration sweeps (`Nous.Eval.Guard`): it costs up
+      to `:max_chunks` calls (twice that with `:canary`) where the default
+      stops early. The verdict is the same either way.
 
   Returns `{:ok, verdict, info}` or `{:error, reason, info}`, where `info` is
   `%{probabilities: %{id => [{key, p}]}, chunk_count: integer, canary_failed:
   integer, why: :band | :oversize | :canary}`. `:probabilities` are the
   answers of the chunk that set the verdict.
+
+  With `record: :all_chunks`, `info` also carries `:chunks` (one
+  `t:chunk/0` per classified chunk, in order; on an error, the chunks
+  classified before it) and `:floor` (the oversize floor), i.e. a
+  `t:recording/0` that `replay/2` turns back into the verdict.
   """
   @spec verdict(t(), term(), keyword()) ::
           {:ok, verdict(), map()} | {:error, term(), map()}
   def verdict(%__MODULE__{} = d, state, opts \\ []) do
-    run_verdict(d, fn -> state end, Keyword.get(opts, :timeout, 10_000))
+    record? =
+      case Keyword.get(opts, :record) do
+        nil -> false
+        :all_chunks -> true
+        other -> raise ArgumentError, ":record must be :all_chunks, got: #{inspect(other)}"
+      end
+
+    run_verdict(d, fn -> state end, Keyword.get(opts, :timeout, 10_000), record?)
   end
 
-  defp run_verdict(d, state_fun, timeout) do
+  @typedoc """
+  One classified chunk: the answer to every question of the config, and the
+  canary outcome (`nil` when no canary ran: `:canary` off, or the chunk was
+  already denied).
+  """
+  @type chunk :: %{
+          answers: %{Question.id() => Answer.t()},
+          canary: :passed | :failed | nil
+        }
+
+  @typedoc """
+  What `verdict/3` recorded with `record: :all_chunks`: the classified chunks
+  and the oversize floor (`:allow`, or `:escalate` when part of the content
+  was never classified).
+  """
+  @type recording :: %{required(:chunks) => [chunk()], required(:floor) => verdict()}
+
+  @doc """
+  The verdict `d` gives recorded chunk answers, without calling the model:
+  per chunk the bands, then `:combine`, then the recorded canary outcome; the
+  worst chunk wins and the oversize floor applies last.
+
+  This is the function the hook itself decides with (its chunks are the ones
+  classified up to the first deny), so a sweep that replays a recording
+  under other bands gets exactly the verdict a hook configured with those
+  bands would have reached on the same answers. Only the decision fields of
+  `d` matter (`:questions`, `:bands`, `:combine`); the questions must be the
+  ones recorded.
+
+  Returns `{:ok, verdict, info}` (`info` as in `verdict/3`, with
+  `chunk_count` the number of chunks replayed) or `{:error, {:missing_answer,
+  question_id}}` when a chunk lacks an answer a band needs.
+  """
+  @spec replay(t(), recording()) :: {:ok, verdict(), map()} | {:error, term()}
+  def replay(%__MODULE__{} = d, %{chunks: chunks, floor: floor})
+      when is_list(chunks) and floor in [:allow, :escalate, :deny] do
+    initial = %{verdict: :allow, why: :band, probabilities: %{}, canary_failed: 0}
+
+    chunks
+    |> Enum.reduce_while({:ok, initial}, fn chunk, {:ok, acc} ->
+      case chunk_verdict(d, chunk) do
+        {:ok, verdict, why, probs} -> {:cont, {:ok, replay_step(acc, chunk, verdict, why, probs)}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, acc} ->
+        verdict = worst_verdict(acc.verdict, floor)
+        why = if verdict == acc.verdict, do: acc.why, else: :oversize
+
+        {:ok, verdict,
+         %{
+           probabilities: acc.probabilities,
+           chunk_count: length(chunks),
+           canary_failed: acc.canary_failed,
+           why: why
+         }}
+
+      error ->
+        error
+    end
+  end
+
+  # The worst verdict wins and its probabilities are the ones reported.
+  defp replay_step(acc, chunk, verdict, why, probs) do
+    acc = %{acc | canary_failed: acc.canary_failed + if(chunk.canary == :failed, do: 1, else: 0)}
+
+    if rank(verdict) > rank(acc.verdict) or acc.probabilities == %{},
+      do: %{acc | verdict: worst_verdict(verdict, acc.verdict), why: why, probabilities: probs},
+      else: acc
+  end
+
+  # One chunk: the bands, the `:combine` rule (which can only raise the
+  # verdict), then the canary outcome. A failed canary floors an allowed
+  # chunk at :escalate.
+  defp chunk_verdict(d, %{answers: answers, canary: canary}) do
+    with {:ok, verdict, probs} <- score(d, answers) do
+      case {combine(d, answers, verdict), canary} do
+        {:allow, :failed} -> {:ok, :escalate, :canary, probs}
+        {verdict, _canary} -> {:ok, verdict, :band, probs}
+      end
+    end
+  end
+
+  defp run_verdict(d, state_fun, timeout, record?) do
     case plan_bounded(d, state_fun, timeout) do
       {:error, reason} ->
-        {:error, reason, empty_info()}
+        {:error, reason, record_info(empty_info(), record?, [], nil)}
 
       {states, floor} ->
-        case decide_all(d, timeout, states) do
-          {:ok, acc} ->
-            verdict = worst_verdict(acc.verdict, floor)
-            why = if verdict == acc.verdict, do: acc.why, else: :oversize
+        case decide_all(d, timeout, states, record?) do
+          {:ok, chunks} ->
+            case replay(d, %{chunks: chunks, floor: floor}) do
+              {:ok, verdict, info} ->
+                {:ok, verdict,
+                 record_info(%{info | chunk_count: length(states)}, record?, chunks, floor)}
 
-            {:ok, verdict,
-             %{
-               probabilities: acc.probabilities,
-               chunk_count: length(states),
-               canary_failed: acc.canary_failed,
-               why: why
-             }}
+              {:error, reason} ->
+                {:error, reason, failed_info(states, chunks, floor, record?)}
+            end
 
-          {:error, reason, canary_failed} ->
-            {:error, reason,
-             %{empty_info() | chunk_count: length(states), canary_failed: canary_failed}}
+          {:error, reason, chunks} ->
+            {:error, reason, failed_info(states, chunks, floor, record?)}
         end
     end
   end
+
+  defp failed_info(states, chunks, floor, record?) do
+    canary_failed = Enum.count(chunks, &(&1.canary == :failed))
+
+    %{empty_info() | chunk_count: length(states), canary_failed: canary_failed}
+    |> record_info(record?, chunks, floor)
+  end
+
+  defp record_info(info, false, _chunks, _floor), do: info
+
+  defp record_info(info, true, chunks, floor),
+    do: Map.merge(info, %{chunks: chunks, floor: floor})
 
   defp build_state(%__MODULE__{state: nil}, event, payload, env),
     do: default_state(event, payload, env)
@@ -581,55 +708,88 @@ defmodule Nous.Hook.Decision do
     calls * (timeout + @yield_margin)
   end
 
-  # Classify chunk by chunk, stopping at the first deny. The worst verdict wins
-  # and its probabilities are the ones reported.
-  defp decide_all(d, timeout, states) do
-    initial = %{verdict: :allow, why: :band, probabilities: %{}, canary_failed: 0}
-
-    Enum.reduce_while(states, {:ok, initial}, fn state, {:ok, acc} ->
+  # Classify chunk by chunk, stopping at the first deny unless recording.
+  # Returns the classified chunks in order; `replay/2` turns them into the
+  # verdict.
+  defp decide_all(d, timeout, states, record?) do
+    Enum.reduce_while(states, {:ok, []}, fn state, {:ok, chunks} ->
       case decide_chunk(d, timeout, state) do
-        {:ok, verdict, why, chunk_probs, failed} ->
-          acc = %{acc | canary_failed: acc.canary_failed + failed}
+        {:ok, chunk, :deny} when not record? -> {:halt, {:ok, [chunk | chunks]}}
+        {:ok, chunk, _verdict} -> {:cont, {:ok, [chunk | chunks]}}
+        {:error, reason} -> {:halt, {:error, reason, chunks}}
+      end
+    end)
+    |> case do
+      {:ok, chunks} -> {:ok, Enum.reverse(chunks)}
+      {:error, reason, chunks} -> {:error, reason, Enum.reverse(chunks)}
+    end
+  end
 
-          acc =
-            if rank(verdict) > rank(acc.verdict) or acc.probabilities == %{},
-              do: %{
-                acc
-                | verdict: worst_verdict(verdict, acc.verdict),
-                  why: why,
-                  probabilities: chunk_probs
-              },
-              else: acc
+  # One chunk: the questions, then - unless the bands and `:combine` already
+  # deny it - the canary in its own call, so it cannot perturb the joint
+  # answers. Returns the recorded chunk and its verdict.
+  defp decide_chunk(d, timeout, state) do
+    with {:ok, %Result{} = result} <- decide_bounded(d.model, timeout, state, d.questions),
+         answers = answers(d, result),
+         {:ok, verdict, _probs} <- score(d, answers),
+         verdict = combine(d, answers, verdict),
+         {:ok, canary} <- maybe_canary(d, timeout, state, verdict) do
+      chunk = %{answers: answers, canary: canary}
+      {:ok, verdict, _why, _probs} = chunk_verdict(d, chunk)
+      {:ok, chunk, verdict}
+    end
+  end
 
-          if verdict == :deny, do: {:halt, {:ok, acc}}, else: {:cont, {:ok, acc}}
+  defp maybe_canary(%__MODULE__{canary: true} = d, timeout, state, verdict)
+       when verdict != :deny do
+    case canary(d.model, timeout, state) do
+      {:error, _} = err -> err
+      outcome -> {:ok, outcome}
+    end
+  end
 
-        {:error, reason} ->
-          {:halt, {:error, reason, acc.canary_failed}}
+  defp maybe_canary(_d, _timeout, _state, _verdict), do: {:ok, nil}
+
+  defp answers(d, %Result{} = result) do
+    for q <- d.questions,
+        {:ok, %Answer{} = answer} <- [Result.fetch(result, q.id)],
+        into: %{},
+        do: {q.id, answer}
+  end
+
+  @doc false
+  # The probabilities the bands of `d` read from one chunk's answers, as
+  # `[{question_id, band_key | nil, p}]` (`band_key` is the `:choice` band's
+  # option or option list; nil for `:noul` / `:score`). Calibration sweeps
+  # use the maximum as the item's scalar risk score.
+  @spec band_readings(t(), %{Question.id() => Answer.t()}) ::
+          {:ok, [{Question.id(), term(), float()}]} | {:error, term()}
+  def band_readings(%__MODULE__{} = d, answers) when is_map(answers) do
+    Enum.reduce_while(d.questions, {:ok, []}, fn q, {:ok, acc} ->
+      case readings(q, Map.get(answers, q.id), Map.fetch!(d.bands, q.id)) do
+        {:ok, rs} -> {:cont, {:ok, acc ++ rs}}
+        :error -> {:halt, {:error, {:missing_answer, q.id}}}
       end
     end)
   end
 
-  # One chunk: the questions, the `:combine` rule (which can only raise the
-  # verdict), then - unless already denied - the canary in its own call, so
-  # it cannot perturb the joint answers. A failed canary floors the chunk at
-  # :escalate.
-  defp decide_chunk(d, timeout, state) do
-    with {:ok, %Result{} = result} <- decide_bounded(d.model, timeout, state, d.questions),
-         {:ok, verdict, probs, answers} <- score(d, result) do
-      verdict = combine(d, answers, verdict)
+  defp readings(%Question{id: id, type: :noul}, %Answer{noul: p}, _band) when is_number(p),
+    do: {:ok, [{id, nil, p / 1}]}
 
-      if d.canary and verdict != :deny do
-        case canary(d.model, timeout, state) do
-          :passed -> {:ok, verdict, :band, probs, 0}
-          :failed when verdict == :allow -> {:ok, :escalate, :canary, probs, 1}
-          :failed -> {:ok, verdict, :band, probs, 1}
-          {:error, _} = err -> err
-        end
-      else
-        {:ok, verdict, :band, probs, 0}
+  defp readings(%Question{id: id, type: :score, criteria: levels}, %Answer{score: s}, _band)
+       when is_number(s),
+       do: {:ok, [{id, nil, s / max(length(levels) - 1, 1)}]}
+
+  defp readings(%Question{id: id, type: :choice}, %Answer{probabilities: probs}, bands) do
+    Enum.reduce_while(bands, {:ok, []}, fn {options, _band}, {:ok, acc} ->
+      case option_probability(probs, options) do
+        {:ok, p} -> {:cont, {:ok, acc ++ [{id, options, p / 1}]}}
+        :error -> {:halt, :error}
       end
-    end
+    end)
   end
+
+  defp readings(_question, _answer, _band), do: :error
 
   defp combine(%__MODULE__{combine: nil}, _answers, verdict), do: verdict
 
@@ -686,13 +846,11 @@ defmodule Nous.Hook.Decision do
     end
   end
 
-  defp score(d, %Result{} = result) do
-    Enum.reduce_while(d.questions, {:ok, :allow, %{}, %{}}, fn q, {:ok, worst, probs, answers} ->
-      with {:ok, %Answer{} = answer} <- Result.fetch(result, q.id),
+  defp score(d, answers) when is_map(answers) do
+    Enum.reduce_while(d.questions, {:ok, :allow, %{}}, fn q, {:ok, worst, probs} ->
+      with {:ok, %Answer{} = answer} <- Map.fetch(answers, q.id),
            {:ok, verdict} <- question_verdict(q, answer, Map.fetch!(d.bands, q.id)) do
-        {:cont,
-         {:ok, worst_verdict(verdict, worst), Map.put(probs, q.id, answer.probabilities),
-          Map.put(answers, q.id, answer)}}
+        {:cont, {:ok, worst_verdict(verdict, worst), Map.put(probs, q.id, answer.probabilities)}}
       else
         _ -> {:halt, {:error, {:missing_answer, q.id}}}
       end
