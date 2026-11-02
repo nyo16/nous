@@ -299,7 +299,18 @@ these, it will be rejected.
     allowlists: unknown keys, roles, splits or scorer names are errors, and
     scorers named in a file resolve through `config :nous, :eval_scorers`.
     Content hashes go through `Nous.Eval.CanonicalJSON`, so the same data
-    hashes the same regardless of key order or file format.
+    hashes the same regardless of key order or file format. The same holds
+    for `nous.guard_case/1` and `nous.sim_case/1`.
+11. **Guard settings change only through reviewed config.** Guard
+    calibration (`Nous.Eval.Guard`) proposes a config patch for bands and
+    thresholds; it is never applied automatically and guard prompts,
+    questions and bands are never `Nous.Profile` components, so the
+    optimizer cannot weaken a guard to raise task scores.
+12. **Online eval stays off the request path and redacts first.**
+    `Nous.Eval.Online` never makes a process call from the emitting process,
+    and content is redacted before it is scored, stored or exported. Any
+    new trace metadata key is content unless it is added to the skeleton
+    allowlist in `Nous.Eval.Online.Redaction`.
 
 ## Common workflows
 

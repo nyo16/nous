@@ -18,7 +18,7 @@ defmodule Nous.Eval.Guard.Report do
       `Nous.Eval.Guard.Gate.check/3` of tuned against configured). The
       sweep never reads these splits
     * `:patch` - the **proposed config patch** `%{data: map, text: string}`:
-      `data` is what `Nous.Eval.Guard.apply_patch/3` merges into the guard
+      `data` is what `Nous.Eval.Guard.apply_patch/2` merges into the guard
       config; `text` is the same patch as reviewed Elixir with its evidence.
       It is never applied automatically and never becomes a
       `Nous.Profile` component: guard settings change only through a

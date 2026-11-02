@@ -15,10 +15,6 @@ defmodule Nous.Eval.Online.Promote do
 
   @surfaces ["user_input", "tool_call", "tool_result", "model_output"]
 
-  # The split `Nous.Eval.Guard.Hygiene.hashed_split/1` assigns a group by
-  # default (seed "nous-guard-v1", tune 0.4 / holdout 0.3 / test 0.3).
-  @split_seed "nous-guard-v1"
-
   @type target :: :case | {:guard_case, keyword()}
 
   @doc false
@@ -179,7 +175,7 @@ defmodule Nous.Eval.Online.Promote do
            # Unlabelled until a human reviews it: the guard's own verdict is
            # never the label (it would certify the guard against itself).
            "label" => nil,
-           "split" => split(group),
+           "split" => Nous.Eval.Guard.Hygiene.hashed_split(group),
            "group" => group,
            "tags" => ["online"],
            "input" => input,
@@ -326,17 +322,6 @@ defmodule Nous.Eval.Online.Promote do
 
       _ ->
         nil
-    end
-  end
-
-  defp split(group) do
-    <<n::unsigned-64, _::binary>> = :crypto.hash(:sha256, @split_seed <> ":" <> group)
-    u = n / 18_446_744_073_709_551_616
-
-    cond do
-      u < 0.4 -> "tune"
-      u < 0.7 -> "holdout"
-      true -> "test"
     end
   end
 

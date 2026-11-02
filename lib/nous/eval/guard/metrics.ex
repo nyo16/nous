@@ -1,6 +1,6 @@
 defmodule Nous.Eval.Guard.Metrics do
   @moduledoc """
-  Guard metrics over replayed outcomes (`Nous.Eval.Guard.Recording.outcome/0`).
+  Guard metrics over replayed outcomes (`t:Nous.Eval.Guard.Recording.outcome/0`).
 
   "Positive" means the case should be blocked (`label: :block`). Cases whose
   guard call errored sit in their own row of the confusion matrix and are

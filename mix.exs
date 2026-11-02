@@ -276,6 +276,9 @@ defmodule Nous.MixProject do
         {"docs/guides/evaluation.md",
          filename: "evaluation", title: "Evaluation Framework Guide"},
         {"docs/guides/profiles.md", filename: "profiles", title: "Profiles & Optimization Guide"},
+        {"docs/guides/eval_simulation.md",
+         filename: "eval_simulation", title: "Simulated Users Guide"},
+        {"docs/guides/online_eval.md", filename: "online_eval", title: "Online Evaluation Guide"},
         {"docs/guides/structured_output.md",
          filename: "structured_output", title: "Structured Output Guide"},
         {"docs/guides/workflows.md", filename: "workflows", title: "Workflow Engine Guide"},
@@ -352,6 +355,7 @@ defmodule Nous.MixProject do
         "Nous.Eval.Stats.Guards",
         "Nous.Eval.Trace.Collector",
         "Nous.Eval.Trace.Collector.TableOwner",
+        "Nous.Eval.Online.Redaction",
         # Removed in 0.20.0; named only by older CHANGELOG entries.
         "Nous.Eval.run!/2",
         "Nous.Eval.run_ab/2",
@@ -389,6 +393,8 @@ defmodule Nous.MixProject do
           "migration_guide.html",
           "evaluation.html",
           "profiles.html",
+          "eval_simulation.html",
+          "online_eval.html",
           "structured_output.html",
           "memory.html",
           "context.html",
@@ -655,6 +661,34 @@ defmodule Nous.MixProject do
           Nous.Eval.Optimizer.Reflector,
           Nous.Eval.Optimizer.Lint
         ],
+        "Evaluation: Guards, Simulation & Online": [
+          Nous.Eval.Guard,
+          Nous.Eval.Guard.Case,
+          Nous.Eval.Guard.Dataset,
+          Nous.Eval.Guard.Hygiene,
+          Nous.Eval.Guard.Recording,
+          Nous.Eval.Guard.Subject,
+          Nous.Eval.Guard.Metrics,
+          Nous.Eval.Guard.Gate,
+          Nous.Eval.Guard.Report,
+          Nous.Eval.Guard.Deterministic,
+          Nous.Eval.Guard.Registry,
+          Nous.Eval.Guard.Fetch,
+          Nous.Eval.Guard.Generate,
+          Nous.Eval.Simulator,
+          Nous.Eval.Simulator.Scenario,
+          Nous.Eval.Simulator.Scorers.State,
+          Nous.Eval.Simulator.Scorers.Said,
+          Nous.Eval.Simulator.Scorers.Tools,
+          Nous.Eval.Simulator.Scorers.Rubric,
+          Nous.Eval.Simulator.Scorers.Breach,
+          Nous.Eval.Online,
+          Nous.Eval.Online.Redactor,
+          Nous.Eval.Online.Content,
+          Nous.Eval.Online.Review,
+          Nous.Eval.Online.Sampler,
+          Nous.Eval.Online.OTel
+        ],
         "Hooks System": [
           Nous.Hook,
           Nous.Hook.Registry,
@@ -851,7 +885,9 @@ defmodule Nous.MixProject do
           Mix.Tasks.Nous.Profile.Promote,
           Mix.Tasks.Nous.Profile.Rebase,
           Mix.Tasks.Nous.Profile.Seal,
-          Mix.Tasks.Nous.Optimize
+          Mix.Tasks.Nous.Optimize,
+          Mix.Tasks.Nous.Eval.Datasets.Fetch,
+          Mix.Tasks.Nous.Eval.Promote
         ]
       ]
     ]

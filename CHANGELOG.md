@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Guard calibration, simulated users and online evaluation, all additive.
+
+### Added
+
+- **Guard calibration:** `Nous.Eval.Guard` records DecisionGuard and
+  InputGuard verdicts on labelled `nous.guard_case/1` data, tunes bands or
+  thresholds on the `tune` split and reports on `holdout` only (FAR, FPR,
+  hard-negative FPR, escalation and error rates with Wilson intervals,
+  PR-AUC, recall@FPR, a cost-weighted operating point, prevalence-adjusted
+  PPV/NPV, a confusion matrix with an error row). The output is a reviewed
+  config patch, never a profile component. `Nous.Eval.Guard.gate/4` and
+  `Nous.Eval.Guard.Gate` apply a paired Tango non-inferiority test on FAR
+  per surface (margin 0.02), zero tolerance on `critical` cases, error-rate
+  and attack-success gates, and refuse to certify below the sample size the
+  margin needs. `Nous.Eval.Guard.optimizer_filter/1` plugs the gate into
+  `Nous.Eval.Optimizer.run/2` (`guard:`).
+- `Nous.Hook.Decision.verdict/3` with `record: :all_chunks` and the pure
+  `Nous.Hook.Decision.replay/2` (the production hook now decides through
+  it, unchanged); `Nous.Plugins.DecisionGuard.decision/2`; public
+  `Nous.Plugins.InputGuard.Engine.aggregate/3`; the Semantic strategy
+  records `top_similarity` on every verdict.
+- **Guard datasets:** a built-in, licence-checked guard dataset (838 cases
+  over four surfaces, with `NOTICE` and sha256 manifest), deterministic
+  decision tables for Permissions, LoopGuard and hooks,
+  `mix nous.eval.datasets.fetch` (compiled-in registry pinned to commits
+  and checksums, `--accept-terms` for gated sources), hygiene (dedup,
+  near-duplicate grouping, group-hashed splits, licence allowlist, PII
+  lint) and red-team / hard-negative generators that refuse to use the
+  guard's own model.
+- **Simulated users:** `Nous.Eval.Simulator` runs multi-turn
+  `nous.sim_case/1` cases (YAML/JSONL) with an LLM user that never sees the
+  expected outcome, one trace per episode, `sim.state` / `sim.said` /
+  `sim.tools` / `sim.rubric` scorers with a product reward, pass^k, and
+  adversarial cases scored by `sim.breach` with breach@k attributed to
+  guard verdicts. New optional task callbacks `simulator/0`,
+  `episode_setup/1`, `episode_state/1`, `episode_teardown/1`; telemetry
+  events `[:nous, :eval, :sim, :turn | :error]` and
+  `[:nous, :eval, :sim, :episode, :stop]`; `Nous.Eval.ScorerError` kind
+  `:unscoreable`.
+- **Online evaluation:** `{Nous.Eval.Online, opts}` samples production
+  runs deterministically by trace id, requires a redactor
+  (`Nous.Eval.Online.Redactor` or `:drop_content`), a retention policy and,
+  for model-graded scorers, a budget, and refuses to start without them.
+  Nothing runs on the request path (no process call), content is redacted
+  before it is scored, stored or exported, and a failing redactor drops the
+  content. `Nous.Eval.promote/3` and `mix nous.eval.promote` turn reviewed
+  samples into dataset or guard cases (unlabelled until a human labels them,
+  `Nous.Eval.Online.Review`). Optional OpenTelemetry span mapping. Six
+  `[:nous, :eval, :online, ...]` telemetry events and `session_id` on
+  `[:nous, :agent, :run, :start]`.
+- Optional store callback `delete_runs_before/3` (File, SQLite, DuckDB;
+  in `Nous.Eval.Store.Conformance`) and optional scorer callback
+  `content/0` (scorers that read no content run under `:drop_content`).
+
+### Changed
+
+- The DecisionGuard corpus fixture moved to
+  `test/fixtures/guard/user_input.jsonl` in the `nous.guard_case/1` schema,
+  and its test asserts calibration with Wilson intervals instead of an
+  accuracy floor.
+- `Nous.Eval.Sample.iterations` sums every root run of the trace (one per
+  user turn in a simulated episode; unchanged for ordinary samples).
+
 ## [0.20.0] - 2026-11-01
 
 A new `Nous.Eval` built on per-sample traces, honest statistics and a CI

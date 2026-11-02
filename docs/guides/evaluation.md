@@ -25,6 +25,7 @@ requests in CI.
 - [Comparing runs](#comparing-runs)
 - [CI gate](#ci-gate)
 - [Optimizing the agent's text](#optimizing-the-agents-text)
+- [Beyond single-turn offline cases](#beyond-single-turn-offline-cases)
 - [Re-scoring](#re-scoring)
 - [Examples](#examples)
 
@@ -847,6 +848,21 @@ descriptions against it. It uses the train split to propose text, val to
 pick a candidate and test once to accept or reject it, and returns a
 reviewed `Nous.Profile` with a diff report instead of editing code. See the
 [Profiles and Optimization guide](profiles.md).
+
+## Beyond single-turn offline cases
+
+- **Multi-turn conversations**: `Nous.Eval.Simulator` plays the user from
+  a persona and a goal (`nous.sim_case/1` cases), scores end state, what
+  the agent said and the tools it called, and runs adversarial users with
+  breach@k. See the [Simulated Users guide](eval_simulation.md).
+- **Production traffic**: `{Nous.Eval.Online, opts}` samples live runs,
+  redacts them before anything is scored or stored, and keeps them under a
+  retention policy; `mix nous.eval.promote` turns reviewed samples into
+  dataset cases. See the [Online Evaluation guide](online_eval.md).
+- **Guards**: `Nous.Eval.Guard` calibrates DecisionGuard and InputGuard on
+  labelled `nous.guard_case/1` data and gates config changes with a paired
+  non-inferiority test. See the calibration section of the
+  [DecisionGuard guide](decision_guard.md).
 
 ## Re-scoring
 
