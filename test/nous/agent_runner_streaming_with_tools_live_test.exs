@@ -96,11 +96,16 @@ defmodule Nous.AgentRunnerStreamingWithToolsLiveTest do
       counter = :counters.new(1, [])
       parent = self()
 
+      # Thinking deltas count too: a reasoning model streams its reasoning
+      # first, and can finish within max_tokens before five text deltas.
+      delta = fn _e, _t ->
+        :counters.add(counter, 1, 1)
+        send(parent, :delta)
+      end
+
       callbacks = %{
-        on_llm_new_delta: fn _e, _t ->
-          :counters.add(counter, 1, 1)
-          send(parent, :delta)
-        end,
+        on_llm_new_delta: delta,
+        on_llm_new_thinking_delta: delta,
         on_tool_call: fn _e, _ -> send(parent, :tool_call_fired) end,
         on_tool_response: fn _e, _ -> send(parent, :tool_response_fired) end
       }
