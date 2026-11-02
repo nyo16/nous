@@ -15,7 +15,7 @@ the same way as the [HexDocs sidebar](https://hexdocs.pm/nous).
 - **[Hooks](hooks.md)** — lifecycle interceptors to block, modify, or audit agent actions.
 - **[Memory](memory.md)** — persistent, searchable agent memory (keyword + vector, decay, scoping).
 - **[Knowledge Base](knowledge_base.md)** — structured, linkable knowledge store and tools.
-- **[Evaluation](evaluation.md)** — test suites, evaluators, metrics, and the optimizer.
+- **[Evaluation](evaluation.md)** — eval task modules, datasets, scorers and LLM judges, traces, statistics, baselines and a CI regression gate.
 - **[Permissions & Guardrails](permissions.md)** — tool permission policies, approval gates, and session guardrails.
 - **[Observability & Telemetry](observability.md)** — telemetry events, default handler, and Prometheus via PromEx.
 

@@ -38,7 +38,7 @@
 #   * REAL, offline - the failover run (section 5). A real Nous.run/2, a real
 #     [:nous, :agent, :run, :stop] event, real result.usage, served by a
 #     loopback :gen_tcp stub. Local inference is priced at $0, matching the
-#     Nous.Eval.Config defaults for lmstudio/ollama/vllm.
+#     Nous.Usage.Pricing rule for lmstudio/ollama/vllm.
 #   * REAL, network - section 6 only, and only if ANTHROPIC_API_KEY is set.
 #     Anthropic is the interesting provider here: Nous.Messages.Anthropic
 #     .parse_usage/1 is the one parser that fills BOTH cache counters.
@@ -73,8 +73,8 @@ IO.puts("=== Nous AI - Cost-Aware Model Routing ===\n")
 #                Nous.Messages.Gemini.parse_usage/1, which maps Gemini's
 #                cachedContentTokenCount (part of promptTokenCount).
 #
-# Nous does ship a cost helper - Nous.Eval.Config.estimate_cost/3 - but it is
-# per-PROVIDER, per-1K, and cache-blind. Section 7 contrasts the two.
+# Nous ships a built-in pricer - Nous.Usage.cost/2 over the dated snapshot in
+# Nous.Usage.Pricing. Section 7 cross-checks this table against it.
 
 defmodule Pricing do
   @unpriced %{
@@ -842,23 +842,34 @@ budget:          #{usd.(Ledger.remaining())} of #{usd.(Ledger.budget())} left
 by source:       #{by_source}
 """)
 
-# Nous.Eval.Config.estimate_cost/3 is the built-in helper. It is per-provider,
-# per-1K, and reads input/output tokens only - so on the cache-heavy traffic
-# above it prices a different (and, for anything using a prompt cache, wrong)
-# number. Useful for eval-suite comparisons; not a billing model.
-builtin =
-  Enum.reduce(entries, 0.0, fn e, acc ->
-    acc + Nous.Eval.Config.estimate_cost(e.model, e.usage.input_tokens, e.usage.output_tokens)
+# Nous.Usage.cost/2 is the built-in pricer: per model, per 1M tokens, cache
+# aware, backed by the dated snapshot in Nous.Usage.Pricing (the eval runner
+# prices samples and budgets with it). A model it has no entry for returns
+# {:error, :unknown_model} rather than a guess, so those entries are counted
+# separately. Add or correct rates with `config :nous, :model_prices`.
+{builtin, unpriced} =
+  Enum.reduce(entries, {0.0, []}, fn e, {sum, unpriced} ->
+    case Nous.Usage.cost(e.usage, e.model) do
+      {:ok, cost} -> {sum + cost.total, unpriced}
+      {:error, :unknown_model} -> {sum, [e.model | unpriced]}
+    end
   end)
 
+unpriced_note =
+  case Enum.uniq(unpriced) do
+    [] -> "none"
+    models -> Enum.join(Enum.sort(models), ", ")
+  end
+
 IO.puts("""
-Cross-check with the built-in helper:
+Cross-check with the built-in pricer:
 
-  Nous.Eval.Config.estimate_cost/3 total: #{usd.(builtin)}
-  cache-aware table total:                #{usd.(total_cost)}
+  Nous.Usage.cost/2 total:   #{usd.(builtin)}
+  section 1 table total:     #{usd.(total_cost)}
+  unpriced by Nous.Usage:    #{unpriced_note}
 
-The helper keys rates by PROVIDER (not model), bills per 1K tokens, and ignores
-cache_creation_input_tokens / cache_read_input_tokens entirely. Use it for
-relative eval comparisons; use a per-model, cache-aware table like the one in
-section 1 when the number has to match an invoice.
+Both are per-model and cache-aware, so they agree whenever their rates agree.
+They drift apart when a vendor reprices (Nous.Usage.Pricing is a dated
+snapshot) or a model has no built-in entry; override the built-in rates with
+`config :nous, :model_prices` when the number has to match an invoice.
 """)
