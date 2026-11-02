@@ -7,191 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Guard calibration, simulated users and online evaluation, all additive.
-
-### Added
-
-- **Guard calibration:** `Nous.Eval.Guard` records DecisionGuard and
-  InputGuard verdicts on labelled `nous.guard_case/1` data, tunes bands or
-  thresholds on the `tune` split and reports on `holdout` only (FAR, FPR,
-  hard-negative FPR, escalation and error rates with Wilson intervals,
-  PR-AUC, recall@FPR, a cost-weighted operating point, prevalence-adjusted
-  PPV/NPV, a confusion matrix with an error row). The output is a reviewed
-  config patch, never a profile component. `Nous.Eval.Guard.gate/4` and
-  `Nous.Eval.Guard.Gate` apply a paired Tango non-inferiority test on FAR
-  per surface (margin 0.02), zero tolerance on `critical` cases, error-rate
-  and attack-success gates, and refuse to certify below the sample size the
-  margin needs. `Nous.Eval.Guard.optimizer_filter/1` plugs the gate into
-  `Nous.Eval.Optimizer.run/2` (`guard:`).
-- `Nous.Hook.Decision.verdict/3` with `record: :all_chunks` and the pure
-  `Nous.Hook.Decision.replay/2` (the production hook now decides through
-  it, unchanged); `Nous.Plugins.DecisionGuard.decision/2`; public
-  `Nous.Plugins.InputGuard.Engine.aggregate/3`; the Semantic strategy
-  records `top_similarity` on every verdict.
-- **Guard datasets:** a built-in, licence-checked guard dataset (838 cases
-  over four surfaces, with `NOTICE` and sha256 manifest), deterministic
-  decision tables for Permissions, LoopGuard and hooks,
-  `mix nous.eval.datasets.fetch` (compiled-in registry pinned to commits
-  and checksums, `--accept-terms` for gated sources), hygiene (dedup,
-  near-duplicate grouping, group-hashed splits, licence allowlist, PII
-  lint) and red-team / hard-negative generators that refuse to use the
-  guard's own model.
-- **Simulated users:** `Nous.Eval.Simulator` runs multi-turn
-  `nous.sim_case/1` cases (YAML/JSONL) with an LLM user that never sees the
-  expected outcome, one trace per episode, `sim.state` / `sim.said` /
-  `sim.tools` / `sim.rubric` scorers with a product reward, pass^k, and
-  adversarial cases scored by `sim.breach` with breach@k attributed to
-  guard verdicts. New optional task callbacks `simulator/0`,
-  `episode_setup/1`, `episode_state/1`, `episode_teardown/1`; telemetry
-  events `[:nous, :eval, :sim, :turn | :error]` and
-  `[:nous, :eval, :sim, :episode, :stop]`; `Nous.Eval.ScorerError` kind
-  `:unscoreable`.
-- **Online evaluation:** `{Nous.Eval.Online, opts}` samples production
-  runs deterministically by trace id, requires a redactor
-  (`Nous.Eval.Online.Redactor` or `:drop_content`), a retention policy and,
-  for model-graded scorers, a budget, and refuses to start without them.
-  Nothing runs on the request path (no process call), content is redacted
-  before it is scored, stored or exported, and a failing redactor drops the
-  content. `Nous.Eval.promote/3` and `mix nous.eval.promote` turn reviewed
-  samples into dataset or guard cases (unlabelled until a human labels them,
-  `Nous.Eval.Online.Review`). Optional OpenTelemetry span mapping. Six
-  `[:nous, :eval, :online, ...]` telemetry events and `session_id` on
-  `[:nous, :agent, :run, :start]`.
-- Optional store callback `delete_runs_before/3` (File, SQLite, DuckDB;
-  in `Nous.Eval.Store.Conformance`) and optional scorer callback
-  `content/0` (scorers that read no content run under `:drop_content`).
-- **Run option `system_message: :agent | :caller`** (default `:agent`). It
-  decides which system message a `message_history:` or `messages:` run
-  starts with; see Fixed below. Any other value raises `ArgumentError`.
-- Online evaluation option `:sampling_salt` (a secret binary of at least
-  16 bytes, with `sample_by: :session`). Session sampling then uses
-  `HMAC-SHA-256(salt, session_id)`, so a client cannot choose session ids
-  that avoid sampling. Without it, sampling is predictable from the id.
-  The salt is opaque in process state, telemetry handler config and crash
-  reports.
-- Each guard dataset registry file has a `max_bytes` cap: 16 MiB for the
-  built-in dataset, 256 MiB for upstream sources. A file without a positive
-  integer cap is refused before download.
-- Optimizer rejections made after a proposal (GEPA reflection, OPRO
-  versions) carry the rejected text as `proposal: %{component => text}`.
-- `Nous.Eval.run/2`'s `:store` also accepts a store the caller has already
-  opened, `{:opened, module, state}`. The runner uses it and never closes
-  it.
-- A run logs one warning naming the cases whose soft scorers fall back to
-  the default 0.5 because the case sets no `threshold`; an optimization
-  logs it once, not on every evaluation.
-- Judge option `:max_transcript_bytes` (default 40 000) caps the total size
-  of a message list. Messages from the middle are left out, with a note
-  outside the fences and `"TRANSCRIPT_OMITTED"` / `"REQUEST_OMITTED"` in
-  the `truncated` metadata.
-
-### Changed
-
-- **Locked `llama_cpp_ex` 0.8.63 → 0.8.65**, which fixes the macOS / Metal
-  abort at VM halt while a model is still referenced
-  (nyo16/llama_cpp_ex#116, noted under 0.19.0). The `~> 0.8.63` requirement
-  already allows it, so apps pick up the fix with
-  `mix deps.update llama_cpp_ex`.
-- **The optimizer accepts a candidate only if an exact sign test agrees.**
-  On top of the bootstrap, the "significant improvement on test" gate needs
-  a one-sided exact sign test over the per-case results (improved vs
-  worsened cases, ties dropped) with p < `alpha`. At alpha 0.05 a test split
-  needs at least 5 cases, all improved (p = 0.03125). A 3-case split can no
-  longer be accepted, and the rejection reason gives the sign-test p and n.
-  `Nous.Eval.Optimizer.Result` gains `:sign_test` (`%{b:, c:, p_value:}`),
-  and the report's gate line shows it.
-- **The eval judge prompt changed, so stored judge calibrations are
-  refused.** A judge reading `include: :transcript`, or an `:input` given
-  as messages, gets every message and every tool call in its own fence
-  (see Fixed), and `SYSTEM_n` messages are presented as data, not fact.
-  The prompt is part of the judge fingerprint, so calibrations stored
-  before this change no longer match: re-run
-  `mix nous.eval.judge.calibrate`. `sim.rubric` now reads the episode as
-  `include: [:transcript]`, and transcript judges cannot be calibrated, so
-  `sim.rubric` with `require_calibration: true` is refused.
-- **Guard recording caches are JSON** (`*.guard_recording.json`). Every item
-  is checked against the subject and cases on read, and a misshapen or
-  tampered file is refused and re-recorded. Old binary-term caches are
-  ignored and re-recorded. The cache directory must still be trusted.
-- A custom `:http` function for `Nous.Eval.Guard.Fetch` now receives
-  `max_bytes` as a third argument.
-- `mix nous.eval.judge.calibrate` parses `--store` like the other eval
-  tasks; an unknown kind reads `unknown store kind "s3"`.
-- The DecisionGuard corpus fixture moved to
-  `test/fixtures/guard/user_input.jsonl` in the `nous.guard_case/1` schema,
-  and its test asserts calibration with Wilson intervals instead of an
-  accuracy floor.
-- `Nous.Eval.Sample.iterations` sums every root run of the trace (one per
-  user turn in a simulated episode; unchanged for ordinary samples).
-
-### Fixed
-
-- **A continued conversation sends exactly one system message, and it is
-  the agent's prompt.** Continuing with `message_history:
-  result.all_messages` (the pattern the docs show) sent two system
-  messages. Strict chat templates such as Qwen's reject that ("System
-  message must be at the beginning"), and a saved history kept growing
-  copies. Now, by default (`system_message: :agent`), the agent's assembled
-  prompt replaces the first system message of a `message_history:` or
-  `messages:` list, with a plugin's `system_prompt/2` text once. Further
-  leading system messages are dropped only when they are old copies of the
-  agent's prompt; a Summarization `[Conversation Summary]` and any other
-  system message stay. A warning is logged when the replaced message does
-  not start with the agent's instructions. An agent with no prompt of its
-  own keeps the caller's system message. Pass `system_message: :caller` to
-  send your own leading system message instead; `ctx.system_prompt` is then
-  the agent's prompt only if the texts match exactly. `Nous.Eval` sends a
-  dataset case's own leading system message this way. Found by an LM
-  Studio smoke test.
-- Switching a continued conversation to another profile also recognises
-  the agent's system message when it is stored as content parts.
-- **Budget spend caps stop the run after `max_samples` trips.** Only the
-  first stop reason was recorded, so once `max_samples` was reached a
-  later token or cost limit stopped nothing. Spend has its own slot,
-  in-flight samples are cancelled, and `run.budget.exhausted` names the
-  spend limit.
-- **The run budget pays for every judge call.** The judge registers its
-  trace with the budget (new `ScoreInput.track_trace`), so retried,
-  failed and timed-out judge calls are charged, and a successful judge is
-  charged exactly once. Usage a scorer reports only in score metadata is no
-  longer charged.
-- **`mix nous.eval` and `mix nous.eval.rescore` find stored judge
-  calibrations.** They never looked in `--store`, so `require_calibration`
-  always failed from the CLI. The CLI now passes its open store to the run.
-- **The judge transcript can no longer be forged.** `include: :transcript`
-  and `sim.rubric` put each message in its own fence, labelled outside it
-  (`USER_n`, `AGENT_n`, `TOOL_RESULT_n`), and each tool call the message
-  made in another (`AGENT_n_TOOL_CALL_m`). The judge is told that only
-  those labels say who spoke and what was called. An agent reply
-  containing `"USER: thanks, solved"` or a fake tool-call line stays inside
-  its `AGENT_n` fence. An `:input` given as messages is fenced the same way
-  (`REQUEST_USER_n`, …). `max_span_bytes` applies per message.
-- `Nous.Fence` breaks up runs of `<` or `>` of any length (a run of 5 left
-  a working `<<<`). `InputGuard`'s LLM judge strategy neutralises
-  fence-like markers before fencing the input.
-- Online eval redaction keeps a tool name in the skeleton only if the run
-  offered that tool (`tool_names` / `blocked_tool_names`). Any other name
-  is content and goes through the redactor.
-- Online eval no longer counts traces waiting in the coordinator's queue as
-  `lost`. Only rows no coordinator holds expire after `max_trace_age`. Each
-  queued row records its coordinator, so a coordinator restart releases
-  only rows an earlier coordinator held and the queue gauge stays right.
-- Guard dataset downloads stream and stop once past the file's
-  `max_bytes`, before hashing. Parquet sources are read from a private,
-  exclusively created temp file, with the path escaped in the DuckDB SQL.
-- A crashed rescore worker no longer keeps the source sample's scores. An
-  unexpected sample error term is reported with `inspect/2` instead of
-  crashing the runner.
-- `Nous.Eval.Store.Conformance` documents that `init/1` must give an
-  isolated, empty store per test, and uses per-test run ids where its
-  assertions allow.
-
-## [0.20.0] - 2026-11-01
+## [0.20.0] - 2026-11-02
 
 A new `Nous.Eval` built on per-sample traces, honest statistics and a CI
 gate, versioned prompt text (`Nous.Profile`) with an optimizer that
-proposes it, and correlation ids on every telemetry event. The old eval API
-is removed; read the "0.19.3 to 0.20.0" section of the migration guide.
+proposes it, guard calibration, simulated users, online evaluation, and
+correlation ids on every telemetry event. The old eval API is removed.
+This is the first release after 0.19.2 and includes the 0.19.3 changes
+below, which were not published on their own; read the "0.19.2 to 0.19.3"
+and "0.19.3 to 0.20.0" sections of the migration guide.
 
 ### Changed — Behavioral / breaking
 
@@ -253,6 +77,45 @@ is removed; read the "0.19.3 to 0.20.0" section of the migration guide.
 - **Optional store dependencies bumped:** `exqlite` `~> 0.27` → `~> 0.43`
   and `duckdbex` `~> 0.5` → `~> 0.7`. The memory and decision stores need no
   API change; update your own pins if you use them.
+
+### Changed
+
+- **Locked `llama_cpp_ex` 0.8.63 → 0.8.65**, which fixes the macOS / Metal
+  abort at VM halt while a model is still referenced
+  (nyo16/llama_cpp_ex#116, noted under 0.19.0). The `~> 0.8.63` requirement
+  already allows it, so apps pick up the fix with
+  `mix deps.update llama_cpp_ex`.
+- **The optimizer accepts a candidate only if an exact sign test agrees.**
+  On top of the bootstrap, the "significant improvement on test" gate needs
+  a one-sided exact sign test over the per-case results (improved vs
+  worsened cases, ties dropped) with p < `alpha`. At alpha 0.05 a test split
+  needs at least 5 cases, all improved (p = 0.03125). A 3-case split can no
+  longer be accepted, and the rejection reason gives the sign-test p and n.
+  `Nous.Eval.Optimizer.Result` gains `:sign_test` (`%{b:, c:, p_value:}`),
+  and the report's gate line shows it.
+- **The eval judge prompt changed, so stored judge calibrations are
+  refused.** A judge reading `include: :transcript`, or an `:input` given
+  as messages, gets every message and every tool call in its own fence
+  (see Fixed), and `SYSTEM_n` messages are presented as data, not fact.
+  The prompt is part of the judge fingerprint, so calibrations stored
+  before this change no longer match: re-run
+  `mix nous.eval.judge.calibrate`. `sim.rubric` now reads the episode as
+  `include: [:transcript]`, and transcript judges cannot be calibrated, so
+  `sim.rubric` with `require_calibration: true` is refused.
+- **Guard recording caches are JSON** (`*.guard_recording.json`). Every item
+  is checked against the subject and cases on read, and a misshapen or
+  tampered file is refused and re-recorded. Old binary-term caches are
+  ignored and re-recorded. The cache directory must still be trusted.
+- A custom `:http` function for `Nous.Eval.Guard.Fetch` now receives
+  `max_bytes` as a third argument.
+- `mix nous.eval.judge.calibrate` parses `--store` like the other eval
+  tasks; an unknown kind reads `unknown store kind "s3"`.
+- The DecisionGuard corpus fixture moved to
+  `test/fixtures/guard/user_input.jsonl` in the `nous.guard_case/1` schema,
+  and its test asserts calibration with Wilson intervals instead of an
+  accuracy floor.
+- `Nous.Eval.Sample.iterations` sums every root run of the trace (one per
+  user turn in a simulated episode; unchanged for ordinary samples).
 
 ### Added
 
@@ -360,11 +223,147 @@ is removed; read the "0.19.3 to 0.20.0" section of the migration guide.
   significantly better and not regress guard-tagged cases. Proposals that
   repeat held-out text or carry fence markers are rejected; the budget is
   required and fails closed.
+- **Guard calibration:** `Nous.Eval.Guard` records DecisionGuard and
+  InputGuard verdicts on labelled `nous.guard_case/1` data, tunes bands or
+  thresholds on the `tune` split and reports on `holdout` only (FAR, FPR,
+  hard-negative FPR, escalation and error rates with Wilson intervals,
+  PR-AUC, recall@FPR, a cost-weighted operating point, prevalence-adjusted
+  PPV/NPV, a confusion matrix with an error row). The output is a reviewed
+  config patch, never a profile component. `Nous.Eval.Guard.gate/4` and
+  `Nous.Eval.Guard.Gate` apply a paired Tango non-inferiority test on FAR
+  per surface (margin 0.02), zero tolerance on `critical` cases, error-rate
+  and attack-success gates, and refuse to certify below the sample size the
+  margin needs. `Nous.Eval.Guard.optimizer_filter/1` plugs the gate into
+  `Nous.Eval.Optimizer.run/2` (`guard:`).
+- `Nous.Hook.Decision.verdict/3` with `record: :all_chunks` and the pure
+  `Nous.Hook.Decision.replay/2` (the production hook now decides through
+  it, unchanged); `Nous.Plugins.DecisionGuard.decision/2`; public
+  `Nous.Plugins.InputGuard.Engine.aggregate/3`; the Semantic strategy
+  records `top_similarity` on every verdict.
+- **Guard datasets:** a built-in, licence-checked guard dataset (838 cases
+  over four surfaces, with `NOTICE` and sha256 manifest), deterministic
+  decision tables for Permissions, LoopGuard and hooks,
+  `mix nous.eval.datasets.fetch` (compiled-in registry pinned to commits
+  and checksums, `--accept-terms` for gated sources), hygiene (dedup,
+  near-duplicate grouping, group-hashed splits, licence allowlist, PII
+  lint) and red-team / hard-negative generators that refuse to use the
+  guard's own model.
+- **Simulated users:** `Nous.Eval.Simulator` runs multi-turn
+  `nous.sim_case/1` cases (YAML/JSONL) with an LLM user that never sees the
+  expected outcome, one trace per episode, `sim.state` / `sim.said` /
+  `sim.tools` / `sim.rubric` scorers with a product reward, pass^k, and
+  adversarial cases scored by `sim.breach` with breach@k attributed to
+  guard verdicts. New optional task callbacks `simulator/0`,
+  `episode_setup/1`, `episode_state/1`, `episode_teardown/1`; telemetry
+  events `[:nous, :eval, :sim, :turn | :error]` and
+  `[:nous, :eval, :sim, :episode, :stop]`; `Nous.Eval.ScorerError` kind
+  `:unscoreable`.
+- **Online evaluation:** `{Nous.Eval.Online, opts}` samples production
+  runs deterministically by trace id, requires a redactor
+  (`Nous.Eval.Online.Redactor` or `:drop_content`), a retention policy and,
+  for model-graded scorers, a budget, and refuses to start without them.
+  Nothing runs on the request path (no process call), content is redacted
+  before it is scored, stored or exported, and a failing redactor drops the
+  content. `Nous.Eval.promote/3` and `mix nous.eval.promote` turn reviewed
+  samples into dataset or guard cases (unlabelled until a human labels them,
+  `Nous.Eval.Online.Review`). Optional OpenTelemetry span mapping. Six
+  `[:nous, :eval, :online, ...]` telemetry events and `session_id` on
+  `[:nous, :agent, :run, :start]`.
+- Optional store callback `delete_runs_before/3` (File, SQLite, DuckDB;
+  in `Nous.Eval.Store.Conformance`) and optional scorer callback
+  `content/0` (scorers that read no content run under `:drop_content`).
+- **Run option `system_message: :agent | :caller`** (default `:agent`). It
+  decides which system message a `message_history:` or `messages:` run
+  starts with; see Fixed below. Any other value raises `ArgumentError`.
+- Online evaluation option `:sampling_salt` (a secret binary of at least
+  16 bytes, with `sample_by: :session`). Session sampling then uses
+  `HMAC-SHA-256(salt, session_id)`, so a client cannot choose session ids
+  that avoid sampling. Without it, sampling is predictable from the id.
+  The salt is opaque in process state, telemetry handler config and crash
+  reports.
+- Each guard dataset registry file has a `max_bytes` cap: 16 MiB for the
+  built-in dataset, 256 MiB for upstream sources. A file without a positive
+  integer cap is refused before download.
+- Optimizer rejections made after a proposal (GEPA reflection, OPRO
+  versions) carry the rejected text as `proposal: %{component => text}`.
+- `Nous.Eval.run/2`'s `:store` also accepts a store the caller has already
+  opened, `{:opened, module, state}`. The runner uses it and never closes
+  it.
+- A run logs one warning naming the cases whose soft scorers fall back to
+  the default 0.5 because the case sets no `threshold`; an optimization
+  logs it once, not on every evaluation.
+- Judge option `:max_transcript_bytes` (default 40 000) caps the total size
+  of a message list. Messages from the middle are left out, with a note
+  outside the fences and `"TRANSCRIPT_OMITTED"` / `"REQUEST_OMITTED"` in
+  the `truncated` metadata.
+
+### Fixed
+
+- **A continued conversation sends exactly one system message, and it is
+  the agent's prompt.** Continuing with `message_history:
+  result.all_messages` (the pattern the docs show) sent two system
+  messages. Strict chat templates such as Qwen's reject that ("System
+  message must be at the beginning"), and a saved history kept growing
+  copies. Now, by default (`system_message: :agent`), the agent's assembled
+  prompt replaces the first system message of a `message_history:` or
+  `messages:` list, with a plugin's `system_prompt/2` text once. Further
+  leading system messages are dropped only when they are old copies of the
+  agent's prompt; a Summarization `[Conversation Summary]` and any other
+  system message stay. A warning is logged when the replaced message does
+  not start with the agent's instructions. An agent with no prompt of its
+  own keeps the caller's system message. Pass `system_message: :caller` to
+  send your own leading system message instead; `ctx.system_prompt` is then
+  the agent's prompt only if the texts match exactly. `Nous.Eval` sends a
+  dataset case's own leading system message this way. Found by an LM
+  Studio smoke test.
+- Switching a continued conversation to another profile also recognises
+  the agent's system message when it is stored as content parts.
+- **Budget spend caps stop the run after `max_samples` trips.** Only the
+  first stop reason was recorded, so once `max_samples` was reached a
+  later token or cost limit stopped nothing. Spend has its own slot,
+  in-flight samples are cancelled, and `run.budget.exhausted` names the
+  spend limit.
+- **The run budget pays for every judge call.** The judge registers its
+  trace with the budget (new `ScoreInput.track_trace`), so retried,
+  failed and timed-out judge calls are charged, and a successful judge is
+  charged exactly once. Usage a scorer reports only in score metadata is no
+  longer charged.
+- **`mix nous.eval` and `mix nous.eval.rescore` find stored judge
+  calibrations.** They never looked in `--store`, so `require_calibration`
+  always failed from the CLI. The CLI now passes its open store to the run.
+- **The judge transcript can no longer be forged.** `include: :transcript`
+  and `sim.rubric` put each message in its own fence, labelled outside it
+  (`USER_n`, `AGENT_n`, `TOOL_RESULT_n`), and each tool call the message
+  made in another (`AGENT_n_TOOL_CALL_m`). The judge is told that only
+  those labels say who spoke and what was called. An agent reply
+  containing `"USER: thanks, solved"` or a fake tool-call line stays inside
+  its `AGENT_n` fence. An `:input` given as messages is fenced the same way
+  (`REQUEST_USER_n`, …). `max_span_bytes` applies per message.
+- `Nous.Fence` breaks up runs of `<` or `>` of any length (a run of 5 left
+  a working `<<<`). `InputGuard`'s LLM judge strategy neutralises
+  fence-like markers before fencing the input.
+- Online eval redaction keeps a tool name in the skeleton only if the run
+  offered that tool (`tool_names` / `blocked_tool_names`). Any other name
+  is content and goes through the redactor.
+- Online eval no longer counts traces waiting in the coordinator's queue as
+  `lost`. Only rows no coordinator holds expire after `max_trace_age`. Each
+  queued row records its coordinator, so a coordinator restart releases
+  only rows an earlier coordinator held and the queue gauge stays right.
+- Guard dataset downloads stream and stop once past the file's
+  `max_bytes`, before hashing. Parquet sources are read from a private,
+  exclusively created temp file, with the path escaped in the DuckDB SQL.
+- A crashed rescore worker no longer keeps the source sample's scores. An
+  unexpected sample error term is reported with `inspect/2` instead of
+  crashing the runner.
+- `Nous.Eval.Store.Conformance` documents that `init/1` must give an
+  isolated, empty store per test, and uses per-test run ids where its
+  assertions allow.
 
 ## [0.19.3] - 2026-11-01
 
 Runner fixes that change what a continued or `messages:` run does; read
-the "0.19.2 to 0.19.3" section of the migration guide.
+the "0.19.2 to 0.19.3" section of the migration guide. Not published on
+its own: these changes first shipped to Hex in 0.20.0.
 
 ### Fixed (behavioral)
 
@@ -390,7 +389,7 @@ the "0.19.2 to 0.19.3" section of the migration guide.
   `:approval_handler`, `:pubsub` and `:pubsub_topic` options. The agent's
   prompt replaces the list's first `:system` message (an agent with no
   prompt keeps it); `system_message: :caller` sends the list's own instead
-  (see [Unreleased]).
+  (see 0.20.0).
 - **`model_settings[:seed]` is sent to the provider.** Only Gemini and
   Vertex AI forwarded it; OpenAI, OpenAI-compatible, custom, vLLM, SGLang
   and LM Studio now send `seed`, and Mistral sends `random_seed`. The
@@ -4092,8 +4091,7 @@ Initial public release with multi-provider LLM support:
 
 <!-- Version comparison links -->
 [Unreleased]: https://github.com/nyo16/nous/compare/v0.20.0...HEAD
-[0.20.0]: https://github.com/nyo16/nous/compare/v0.19.3...v0.20.0
-[0.19.3]: https://github.com/nyo16/nous/compare/v0.19.2...v0.19.3
+[0.20.0]: https://github.com/nyo16/nous/compare/v0.19.2...v0.20.0
 [0.19.2]: https://github.com/nyo16/nous/compare/v0.19.1...v0.19.2
 [0.19.1]: https://github.com/nyo16/nous/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/nyo16/nous/compare/v0.18.3...v0.19.0
