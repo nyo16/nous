@@ -82,6 +82,22 @@ defmodule Nous.Eval.Summary do
       can contain agent output; renderers escape them.
     * `"bootstrap"` - `"seed"`, `"resamples"`, `"streams"`, `"algorithm"`
       of the per-scorer bootstrap, so the summary is reproducible
+    * `"simulation"` - only when the run has simulated episodes
+      (`Nous.Eval.Simulator`): `"episodes"`, `"terminations"` (episodes per
+      termination; `"timeout"` for a killed sample), `"unscoreable"`,
+      `"turns"` (`"mean"`, `"max"` messages the user sent), `"simulator"`
+      (`"tokens"`, `"cost"`, `"models"` of the simulated user), `"task"`
+      (benign cases: `"cases"`, `"episodes"`, `"scored"`, `"passes"`,
+      `"pass_rate"`, `"pass_hat_k"` with `"estimate"` over the cases with k
+      scored episodes, and `"false_blocks"`: failed episodes whose trace has a
+      block or deny guard verdict), `"adversarial"` (`"cases"`,
+      `"episodes"`, `"scored"`, `"breaches"`, `"breach_rate"`,
+      `"breach_at_k"` with `"estimate"` over `"certified"` cases and the
+      `"cannot_certify"` case ids, `"attacker_refused"`) and `"cases"` (per
+      case: `"id"`, `"kind"`, `"episodes"`, `"terminations"`,
+      `"unscoreable"`, then `"scored"`/`"passes"`/`"pass_hat_k"` for a task
+      case or `"breaches"`/`"defended"`/`"breached_at_k"` for an adversarial
+      one)
 
   ## Minimum detectable effect
 
@@ -185,6 +201,14 @@ defmodule Nous.Eval.Summary do
         "algorithm" => "exsss"
       }
     }
+    |> put_simulation(samples, k)
+  end
+
+  defp put_simulation(summary, samples, k) do
+    case Nous.Eval.Simulator.Summary.build(samples, k) do
+      nil -> summary
+      simulation -> Map.put(summary, "simulation", simulation)
+    end
   end
 
   defp validate_opts!(opts, run) do

@@ -34,6 +34,8 @@ defmodule Nous.Eval.Runner do
 
   alias Nous.Eval.Scorer.Spec
   alias Nous.Eval.Scorers.Judge
+  alias Nous.Eval.Simulator
+  alias Nous.Eval.Simulator.{Episode, Scenario}
 
   alias Nous.Eval.Task, as: EvalTask
   alias Nous.Eval.Trace.{Collector, Event}
@@ -133,15 +135,21 @@ defmodule Nous.Eval.Runner do
   defp execute(task, dataset, state, config, started_at, store) do
     with {:ok, deps} <- EvalTask.deps(task, state),
          {:ok, scorers} <- init_scorers(task, dataset, store),
+         {:ok, sim} <- Simulator.preflight(task.module, dataset),
          {:ok, agent} <- fingerprint_agent(task, dataset, deps, state, config),
          {:ok, fingerprint} <-
            Fingerprint.build(task.module, agent, dataset, task.scorers,
              k: config.k,
              seed: config.seed,
-             deps: deps
+             deps: deps,
+             simulator: Simulator.fingerprint(sim)
            ),
          :ok <- Collector.attach(),
-         :ok <- Budget.preflight(config.budget, priced_models(agent, scorers)) do
+         :ok <-
+           Budget.preflight(
+             config.budget,
+             priced_models(agent, scorers) ++ Simulator.models(sim)
+           ) do
       budget = Budget.start(config.budget)
 
       try do
@@ -152,6 +160,7 @@ defmodule Nous.Eval.Runner do
           config: config,
           budget: budget,
           scorers: scorers,
+          sim: sim,
           abort: :atomics.new(1, [])
         }
 
@@ -371,7 +380,7 @@ defmodule Nous.Eval.Runner do
       check = Budget.cancellation_check(ctx.budget)
 
       case Collector.run_sample(
-             fn -> invoke(agent, c.input, ctx.deps, check) end,
+             fn -> invoke(agent, c, {index, seed}, ctx, check) end,
              sample_opts(ctx.config, trace_id)
            ) do
         {:ok, collected} ->
@@ -405,11 +414,28 @@ defmodule Nous.Eval.Runner do
   defp inject_seed(agent, seed),
     do: %{agent | model_settings: Map.put(agent.model_settings, :seed, seed)}
 
-  defp invoke(agent, input, deps, check) when is_binary(input),
-    do: Nous.run(agent, input, deps: deps, cancellation_check: check)
+  # A simulated case (`nous.sim_case/1`) runs as one multi-turn episode in
+  # the same sample: one trace, timeout and budget for the whole conversation.
+  defp invoke(agent, %Case{input: %Scenario{}} = c, {index, seed}, ctx, check) do
+    Episode.run(%{
+      task: ctx.task.module,
+      case: c,
+      sample: index,
+      seed: seed,
+      agent: agent,
+      deps: ctx.deps,
+      state: ctx.state,
+      sim: ctx.sim,
+      budget: ctx.budget,
+      check: check
+    })
+  end
 
-  defp invoke(agent, messages, deps, check) when is_list(messages),
-    do: Nous.run(agent, messages: messages, deps: deps, cancellation_check: check)
+  defp invoke(agent, %Case{input: input}, _sample, ctx, check) when is_binary(input),
+    do: Nous.run(agent, input, deps: ctx.deps, cancellation_check: check)
+
+  defp invoke(agent, %Case{input: messages}, _sample, ctx, check) when is_list(messages),
+    do: Nous.run(agent, messages: messages, deps: ctx.deps, cancellation_check: check)
 
   defp sample_opts(config, trace_id) do
     [
@@ -580,31 +606,34 @@ defmodule Nous.Eval.Runner do
     end
   end
 
-  # From the root run's stop event; a run that never stopped (failed,
-  # killed, cancelled) counts the iterations it started.
+  # From each root run's stop event (one root run per sample; one per user
+  # turn in a simulated episode); a run that never stopped (failed, killed,
+  # cancelled) counts the iterations it started.
   defp iterations(trace) do
-    case Trace.root_run_id(trace) do
-      nil ->
-        0
+    trace
+    |> Trace.runs()
+    |> Enum.filter(&is_nil(&1.parent_agent_run_id))
+    |> Enum.map(&run_iterations(trace, &1.agent_run_id))
+    |> Enum.sum()
+  end
 
-      root ->
-        Enum.find_value(trace.events, fn
-          %Event{
-            name: @run_stop,
-            metadata: %{agent_run_id: ^root},
-            measurements: %{iterations: n}
-          }
-          when is_integer(n) ->
-            n
+  defp run_iterations(trace, run_id) do
+    Enum.find_value(trace.events, fn
+      %Event{
+        name: @run_stop,
+        metadata: %{agent_run_id: ^run_id},
+        measurements: %{iterations: n}
+      }
+      when is_integer(n) ->
+        n
 
-          _ ->
-            nil
-        end) ||
-          Enum.count(trace.events, fn
-            %Event{name: @iteration_start, metadata: %{agent_run_id: ^root}} -> true
-            _ -> false
-          end)
-    end
+      _ ->
+        nil
+    end) ||
+      Enum.count(trace.events, fn
+        %Event{name: @iteration_start, metadata: %{agent_run_id: ^run_id}} -> true
+        _ -> false
+      end)
   end
 
   defp status(_samples, reason) when reason != nil, do: :aborted

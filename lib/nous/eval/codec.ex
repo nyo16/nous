@@ -135,6 +135,10 @@ defmodule Nous.Eval.Codec do
     openai anthropic gemini vertex_ai groq mistral ollama lmstudio llamacpp
     openrouter together vllm sglang openai_compatible custom
     text image_url image file file_url thinking
+    source scripted llm sent message thought sim_model sim_trace_id template_version
+    invalid_output run_failed fence_collision case_kind termination end_state_status
+    turns agent_iterations simulator_tokens task adversarial transfer out_of_scope
+    max_turns agent_error user_error setup_error budget none
   )a
 
   @atom_table Map.new(@known_atoms, &{Atom.to_string(&1), &1})
