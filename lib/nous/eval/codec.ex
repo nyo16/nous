@@ -37,6 +37,12 @@ defmodule Nous.Eval.Codec do
   record, `encode_calibration_json/1`, marked `"schema":
   "nous.judge_calibration/1"` and versioned by that marker.
 
+  Profiles (`Nous.Profile`) are stored in their own file form,
+  `encode_profile_json/1`: the canonical JSON of `Nous.Profile.to_map/1`,
+  versioned by its `"nous_profile"` marker and always carrying `"id"`.
+  `decode_profile_json/1` recomputes the content hash, so a record whose
+  text was changed after it was written is refused.
+
   ## Open values
 
   Open fields (`fingerprint`, `budget`, `summary`, `metadata`, `output`,
@@ -79,6 +85,7 @@ defmodule Nous.Eval.Codec do
   alias Nous.Eval.Trace.Event
   alias Nous.Message
   alias Nous.Message.ContentPart
+  alias Nous.Profile
 
   # Event names decode through the one catalog of what Nous emits.
   @event_table Map.new(Nous.Telemetry.events(), fn name ->
@@ -252,6 +259,88 @@ defmodule Nous.Eval.Codec do
   def decode_calibration_json(text) when is_binary(text) do
     with {:ok, data} <- decode_json(text), do: decode_calibration(data)
   end
+
+  ## Profiles
+
+  @doc """
+  Validates `profile` and returns its file form (`Nous.Profile.to_map/1`)
+  with `"id"` set. A profile that fails a structural check or whose declared
+  id is not its content hash is `{:error, %Nous.Errors.ProfileError{}}`.
+  """
+  @spec encode_profile(Profile.t()) :: {:ok, json_map()} | {:error, term()}
+  def encode_profile(%Profile{} = profile) do
+    # The file form is built here, not by `Profile.to_map/1`, because that
+    # expects a valid profile: `from_map/1` is what validates.
+    with {:ok, components} <- nest_profile_components(profile.components),
+         {:ok, checked} <-
+           %{
+             "nous_profile" => profile.schema,
+             "components" => components,
+             "manifest" => profile.manifest,
+             "provenance" => profile.provenance
+           }
+           |> put_set("id", profile.id)
+           |> put_set("name", profile.name)
+           |> put_set("version", profile.version)
+           |> put_set("parent_id", profile.parent_id)
+           |> Profile.from_map() do
+      {:ok, Profile.to_map(checked)}
+    end
+  end
+
+  @doc "Encodes `profile` as canonical JSON text. See `encode_profile/1`."
+  @spec encode_profile_json(Profile.t()) :: {:ok, String.t()} | {:error, term()}
+  def encode_profile_json(%Profile{} = profile) do
+    with {:ok, map} <- encode_profile(profile), do: {:ok, Nous.Eval.CanonicalJSON.encode(map)}
+  end
+
+  @doc """
+  Decodes a stored profile record. The record must declare its `"id"`
+  (`{:error, {:corrupt_profile, :missing_id}}` otherwise), and the id must
+  be the content hash (`Nous.Errors.ProfileError` with reason
+  `:id_mismatch` otherwise).
+  """
+  @spec decode_profile(map()) :: {:ok, Profile.t()} | {:error, term()}
+  def decode_profile(%{"id" => id} = data) when is_binary(id), do: Profile.from_map(data)
+  def decode_profile(%{}), do: {:error, {:corrupt_profile, :missing_id}}
+
+  @doc "Decodes profile JSON text. See `decode_profile/1`."
+  @spec decode_profile_json(String.t()) :: {:ok, Profile.t()} | {:error, term()}
+  def decode_profile_json(text) when is_binary(text) do
+    with {:ok, data} <- decode_json(text), do: decode_profile(data)
+  end
+
+  defp nest_profile_components(%{} = components) do
+    Enum.reduce_while(components, {:ok, %{}}, fn
+      {"instructions", text}, {:ok, acc} ->
+        {:cont, {:ok, Map.put(acc, "instructions", text)}}
+
+      {"tool:" <> rest = key, text}, {:ok, acc} ->
+        path =
+          case String.split(rest, "#", parts: 2) do
+            [name] -> [name, "description"]
+            [name, pointer] -> [name, "params", pointer]
+          end
+
+        if hd(path) == "",
+          do: {:halt, {:error, {:invalid_field, {Profile, :components}, key}}},
+          else: {:cont, {:ok, put_nested(acc, ["tools" | path], text)}}
+
+      {key, _text}, _acc ->
+        {:halt, {:error, {:invalid_field, {Profile, :components}, key}}}
+    end)
+  end
+
+  defp nest_profile_components(other),
+    do: {:error, {:invalid_field, {Profile, :components}, other}}
+
+  defp put_nested(map, [key], value), do: Map.put(map, key, value)
+
+  defp put_nested(map, [key | rest], value),
+    do: Map.put(map, key, put_nested(Map.get(map, key, %{}), rest, value))
+
+  defp put_set(map, _key, nil), do: map
+  defp put_set(map, key, value), do: Map.put(map, key, value)
 
   ## Open values
 

@@ -11,7 +11,10 @@ if Code.ensure_loaded?(Exqlite) do
     columns `list_runs/2` filters and sorts on. Baselines are rows of
     `nous_eval_baselines`, only ever inserted. Judge calibrations are rows of
     `nous_eval_calibrations` (`Nous.Eval.Codec.encode_calibration_json/1`
-    text); the latest row for a fingerprint id wins.
+    text); the latest row for a fingerprint id wins. Profiles are rows of
+    `nous_eval_profiles` (`Nous.Eval.Codec.encode_profile_json/1` text in
+    `payload`, unique by `id` and by `(name, version)`), profile labels rows
+    of `nous_eval_profile_labels`, only ever inserted.
 
     ## Options
 
@@ -22,7 +25,7 @@ if Code.ensure_loaded?(Exqlite) do
 
     alias Exqlite.Sqlite3
     alias Nous.Eval.{Codec, Run, Store}
-    alias Nous.Eval.Store.{Baseline, RunSummary}
+    alias Nous.Eval.Store.{Baseline, ProfileLabel, RunSummary}
 
     @schema [
       """
@@ -56,6 +59,29 @@ if Code.ensure_loaded?(Exqlite) do
       """
       CREATE INDEX IF NOT EXISTS nous_eval_calibrations_fingerprint
         ON nous_eval_calibrations(fingerprint_id, seq)
+      """,
+      """
+      CREATE TABLE IF NOT EXISTS nous_eval_profiles (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        id TEXT NOT NULL UNIQUE,
+        name TEXT,
+        version INTEGER,
+        payload TEXT NOT NULL,
+        UNIQUE (name, version)
+      )
+      """,
+      """
+      CREATE TABLE IF NOT EXISTS nous_eval_profile_labels (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        label TEXT NOT NULL,
+        profile_id TEXT NOT NULL,
+        set_at TEXT NOT NULL
+      )
+      """,
+      """
+      CREATE INDEX IF NOT EXISTS nous_eval_profile_labels_name
+        ON nous_eval_profile_labels(name, label, seq)
       """
     ]
 
@@ -212,6 +238,103 @@ if Code.ensure_loaded?(Exqlite) do
       end
     end
 
+    @impl true
+    def put_profile(conn, profile) do
+      with {:ok, profile} <- Store.validate_profile(profile) do
+        # IMMEDIATE: the version read and the insert cannot interleave with
+        # another writer's.
+        transaction(conn, fn ->
+          with {:ok, rows} <-
+                 query(conn, "SELECT payload FROM nous_eval_profiles WHERE id = ?1", [profile.id]) do
+            case rows do
+              [[payload]] -> stored_profile(conn, profile, payload)
+              [] -> insert_profile(conn, profile)
+            end
+          end
+        end)
+        |> case do
+          {:ok, {stored, conn}} -> {:ok, stored, conn}
+          error -> error
+        end
+      end
+    end
+
+    @impl true
+    def get_profile(conn, ref) do
+      with :ok <- Store.validate_profile_ref(ref),
+           {:ok, rows} <- profile_rows(conn, ref) do
+        case rows do
+          [[payload]] -> decode_profile(payload, ref)
+          [] -> {:error, :not_found}
+        end
+      end
+    end
+
+    @impl true
+    def list_profiles(conn, name) do
+      with :ok <- Store.validate_profile_name(name),
+           {:ok, rows} <-
+             query(
+               conn,
+               "SELECT version, payload FROM nous_eval_profiles WHERE name = ?1 ORDER BY version DESC",
+               [name]
+             ) do
+        decode_all(rows, fn [version, payload] ->
+          decode_profile(payload, {:version, name, version})
+        end)
+      end
+    end
+
+    @impl true
+    def put_profile_label(conn, name, label, profile_id) do
+      with :ok <- Store.validate_profile_name(name),
+           :ok <- Store.validate_label(label),
+           :ok <- Store.validate_profile_id(profile_id) do
+        transaction(conn, fn ->
+          case query(
+                 conn,
+                 "SELECT 1 FROM nous_eval_profiles WHERE id = ?1 AND name = ?2",
+                 [profile_id, name]
+               ) do
+            {:ok, []} ->
+              {:error, :not_found}
+
+            {:ok, _rows} ->
+              with {:ok, _} <-
+                     query(
+                       conn,
+                       """
+                       INSERT INTO nous_eval_profile_labels (name, label, profile_id, set_at)
+                       VALUES (?1, ?2, ?3, ?4)
+                       """,
+                       [name, label, profile_id, DateTime.to_iso8601(DateTime.utc_now())]
+                     ),
+                   do: {:ok, conn}
+
+            {:error, _} = error ->
+              error
+          end
+        end)
+      end
+    end
+
+    @impl true
+    def list_profile_labels(conn, name, label) do
+      with :ok <- Store.validate_profile_name(name),
+           :ok <- Store.validate_label(label),
+           {:ok, rows} <-
+             query(
+               conn,
+               """
+               SELECT name, label, profile_id, set_at FROM nous_eval_profile_labels
+               WHERE name = ?1 AND label = ?2 ORDER BY seq DESC
+               """,
+               [name, label]
+             ) do
+        decode_all(rows, &decode_profile_label/1)
+      end
+    end
+
     # -- helpers -------------------------------------------------------------
 
     defp create_schema(conn) do
@@ -221,6 +344,82 @@ if Code.ensure_loaded?(Exqlite) do
           {:error, _} = error -> {:halt, error}
         end
       end)
+    end
+
+    defp stored_profile(conn, profile, payload) do
+      with {:ok, stored} <- decode_profile(payload, {:id, profile.id}) do
+        if profile.name && stored.name != profile.name,
+          do: {:error, {:name_conflict, stored.name}},
+          else: {:ok, {stored, conn}}
+      end
+    end
+
+    defp insert_profile(conn, %{name: nil} = profile) do
+      write_profile(conn, %{profile | version: nil})
+    end
+
+    defp insert_profile(conn, profile) do
+      with {:ok, [[latest]]} <-
+             query(
+               conn,
+               "SELECT COALESCE(MAX(version), 0) FROM nous_eval_profiles WHERE name = ?1",
+               [profile.name]
+             ) do
+        write_profile(conn, %{profile | version: latest + 1})
+      end
+    end
+
+    defp write_profile(conn, profile) do
+      with {:ok, payload} <- Codec.encode_profile_json(profile),
+           {:ok, _} <-
+             query(
+               conn,
+               "INSERT INTO nous_eval_profiles (id, name, version, payload) VALUES (?1, ?2, ?3, ?4)",
+               [profile.id, profile.name, profile.version, payload]
+             ) do
+        {:ok, {profile, conn}}
+      end
+    end
+
+    defp profile_rows(conn, {:id, id}),
+      do: query(conn, "SELECT payload FROM nous_eval_profiles WHERE id = ?1", [id])
+
+    defp profile_rows(conn, {:version, name, version}) do
+      query(
+        conn,
+        "SELECT payload FROM nous_eval_profiles WHERE name = ?1 AND version = ?2",
+        [name, version]
+      )
+    end
+
+    # The label's latest entry, joined to the profile it names.
+    defp profile_rows(conn, {:label, name, label}) do
+      query(
+        conn,
+        """
+        SELECT p.payload FROM nous_eval_profile_labels l
+        JOIN nous_eval_profiles p ON p.id = l.profile_id
+        WHERE l.name = ?1 AND l.label = ?2
+        ORDER BY l.seq DESC LIMIT 1
+        """,
+        [name, label]
+      )
+    end
+
+    defp decode_profile(payload, ref) do
+      with {:ok, profile} <- Codec.decode_profile_json(payload),
+           :ok <- Store.check_profile_ref(profile, ref),
+           do: {:ok, profile}
+    end
+
+    defp decode_profile_label([name, label, profile_id, set_at] = row) do
+      case DateTime.from_iso8601(set_at) do
+        {:ok, at, _offset} ->
+          {:ok, %ProfileLabel{name: name, label: label, profile_id: profile_id, set_at: at}}
+
+        {:error, _} ->
+          {:error, {:corrupt_profile_label, row}}
+      end
     end
 
     # `suffix` is a literal from this module, never caller data.
@@ -331,7 +530,12 @@ else
                get_baseline: 2,
                list_baselines: 2,
                put_calibration: 3,
-               get_calibration: 2}
+               get_calibration: 2,
+               put_profile: 2,
+               get_profile: 2,
+               list_profiles: 2,
+               put_profile_label: 4,
+               list_profile_labels: 3}
 
     @error {:error, "Exqlite is not available. Add {:exqlite, \"~> 0.43\"} to your dependencies."}
 
@@ -361,5 +565,20 @@ else
 
     @impl true
     def get_calibration(_state, _fingerprint_id), do: @error
+
+    @impl true
+    def put_profile(_state, _profile), do: @error
+
+    @impl true
+    def get_profile(_state, _ref), do: @error
+
+    @impl true
+    def list_profiles(_state, _name), do: @error
+
+    @impl true
+    def put_profile_label(_state, _name, _label, _profile_id), do: @error
+
+    @impl true
+    def list_profile_labels(_state, _name, _label), do: @error
   end
 end

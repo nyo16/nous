@@ -37,17 +37,23 @@ defmodule Nous.Eval.Store.Conformance do
   `:not_found` when never set even though runs exist. For a store that
   implements the optional calibration callbacks: the
   `put_calibration/3` → `get_calibration/2` round trip, `:not_found`, the
-  latest result per fingerprint winning, and key validation.
+  latest result per fingerprint winning, and key validation. For a store
+  that implements the optional profile callbacks: round trips by id,
+  version and label, per-name version numbering, idempotent re-puts, name
+  conflicts, unnamed profiles, `:not_found` without fallback, append-only
+  label history, and validation of names, labels, ids, refs and the
+  profile itself.
 
-  `run_fixture/2` is the realistic run the suite stores, and
-  `calibration_fixture/2` the judge calibration; use them in your own tests
-  too.
+  `run_fixture/2` is the realistic run the suite stores,
+  `calibration_fixture/2` the judge calibration and `profile_fixture/3` the
+  profile; use them in your own tests too.
   """
 
   alias Nous.Eval.{JudgeCalibration, Run, Sample, Score, ScorerError, Trace}
   alias Nous.Eval.Trace.Event
   alias Nous.Message
   alias Nous.Message.ContentPart
+  alias Nous.Profile
 
   defmacro __using__(opts) do
     store = Keyword.fetch!(opts, :store)
@@ -324,6 +330,224 @@ defmodule Nous.Eval.Store.Conformance do
         end
       end
 
+      if Code.ensure_loaded?(store) and function_exported?(store, :put_profile, 2) do
+        import Nous.Eval.Store.Conformance, only: [profile_fixture: 2, profile_fixture: 3]
+
+        alias Nous.Errors.ProfileError
+        alias Nous.Eval.Store.ProfileLabel
+
+        defp put_profile!(state, profile) do
+          assert {:ok, stored, state} = @store.put_profile(state, profile)
+          {stored, state}
+        end
+
+        test "put_profile/2 then get_profile/2 round-trips by id and by version",
+             %{state: state} do
+          profile = profile_fixture("support_agent", "first")
+          {stored, state} = put_profile!(state, profile)
+
+          assert stored == %{profile | version: 1}
+          assert {:ok, ^stored} = @store.get_profile(state, {:id, profile.id})
+          assert {:ok, ^stored} = @store.get_profile(state, {:version, "support_agent", 1})
+        end
+
+        test "versions are numbered per name on first put; re-putting is idempotent",
+             %{state: state} do
+          a = profile_fixture("support_agent", "a")
+          b = profile_fixture("support_agent", "b")
+          other = profile_fixture("billing_agent", "c")
+
+          {%{version: 1}, state} = put_profile!(state, a)
+          {%{version: 2}, state} = put_profile!(state, b)
+          {%{version: 1}, state} = put_profile!(state, other)
+
+          # Same content again, even with other metadata: the stored one.
+          again = %{a | version: 9, provenance: %{"source" => "manual"}}
+
+          assert {:ok, %{version: 1, provenance: %{"source" => "optimizer"}}, state} =
+                   @store.put_profile(state, again)
+
+          assert {:ok, %{id: id_b}} = @store.get_profile(state, {:version, "support_agent", 2})
+          assert id_b == b.id
+
+          assert {:ok, listed} = @store.list_profiles(state, "support_agent")
+          assert Enum.map(listed, &{&1.version, &1.id}) == [{2, b.id}, {1, a.id}]
+          assert {:ok, [%{id: other_id}]} = @store.list_profiles(state, "billing_agent")
+          assert other_id == other.id
+          assert {:ok, []} = @store.list_profiles(state, "never_stored")
+        end
+
+        test "a stored profile cannot move to another name", %{state: state} do
+          profile = profile_fixture("support_agent", "a")
+          {stored, state} = put_profile!(state, profile)
+
+          assert {:error, {:name_conflict, "support_agent"}} =
+                   @store.put_profile(state, %{profile | name: "billing_agent"})
+
+          assert {:ok, ^stored} = @store.get_profile(state, {:id, profile.id})
+          assert {:ok, []} = @store.list_profiles(state, "billing_agent")
+        end
+
+        test "an unnamed profile is stored by id only", %{state: state} do
+          profile = profile_fixture(nil, "anonymous")
+          {stored, state} = put_profile!(state, profile)
+
+          assert %{name: nil, version: nil} = stored
+          assert {:ok, ^stored} = @store.get_profile(state, {:id, profile.id})
+          assert {:ok, ^stored, state} = @store.put_profile(state, profile)
+
+          assert {:error, {:name_conflict, nil}} =
+                   @store.put_profile(state, %{profile | name: "support_agent"})
+
+          assert {:error, :not_found} =
+                   @store.put_profile_label(state, "support_agent", "production", profile.id)
+        end
+
+        test "get_profile/2 is :not_found for unknown refs and never falls back",
+             %{state: state} do
+          {stored, state} = put_profile!(state, profile_fixture("support_agent", "a"))
+          missing = profile_fixture("support_agent", "never stored")
+
+          assert {:error, :not_found} = @store.get_profile(state, {:id, missing.id})
+          assert {:error, :not_found} = @store.get_profile(state, {:version, "support_agent", 2})
+          assert {:error, :not_found} = @store.get_profile(state, {:version, "other", 1})
+
+          assert {:error, :not_found} =
+                   @store.get_profile(state, {:label, "support_agent", "production"})
+
+          assert {:ok, []} = @store.list_profile_labels(state, "support_agent", "production")
+          assert {:ok, ^stored} = @store.get_profile(state, {:id, stored.id})
+        end
+
+        test "profile labels are append-only: re-pointing keeps the history", %{state: state} do
+          {a, state} = put_profile!(state, profile_fixture("support_agent", "a"))
+          {b, state} = put_profile!(state, profile_fixture("support_agent", "b"))
+          {c, state} = put_profile!(state, profile_fixture("billing_agent", "c"))
+          before = DateTime.utc_now()
+
+          assert {:ok, state} =
+                   @store.put_profile_label(state, "support_agent", "production", a.id)
+
+          assert {:ok, state} =
+                   @store.put_profile_label(state, "support_agent", "production", b.id)
+
+          assert {:ok, state} = @store.put_profile_label(state, "support_agent", "staging", a.id)
+
+          assert {:ok, state} =
+                   @store.put_profile_label(state, "billing_agent", "production", c.id)
+
+          assert {:ok, ^b} = @store.get_profile(state, {:label, "support_agent", "production"})
+          assert {:ok, ^a} = @store.get_profile(state, {:label, "support_agent", "staging"})
+          assert {:ok, ^c} = @store.get_profile(state, {:label, "billing_agent", "production"})
+
+          # Rollback is one more entry.
+          assert {:ok, state} =
+                   @store.put_profile_label(state, "support_agent", "production", a.id)
+
+          assert {:ok, ^a} = @store.get_profile(state, {:label, "support_agent", "production"})
+
+          assert {:ok, history} =
+                   @store.list_profile_labels(state, "support_agent", "production")
+
+          assert Enum.map(history, & &1.profile_id) == [a.id, b.id, a.id]
+
+          assert Enum.all?(
+                   history,
+                   &match?(%ProfileLabel{name: "support_agent", label: "production"}, &1)
+                 )
+
+          times = Enum.map(history, & &1.set_at)
+          assert times == Enum.sort(times, {:desc, DateTime})
+          assert DateTime.compare(List.last(times), before) != :lt
+        end
+
+        test "put_profile_label/4 needs a profile stored under that name", %{state: state} do
+          {stored, state} = put_profile!(state, profile_fixture("support_agent", "a"))
+          missing = profile_fixture("support_agent", "never stored")
+
+          assert {:error, :not_found} =
+                   @store.put_profile_label(state, "support_agent", "production", missing.id)
+
+          assert {:error, :not_found} =
+                   @store.put_profile_label(state, "billing_agent", "production", stored.id)
+
+          assert {:ok, []} = @store.list_profile_labels(state, "billing_agent", "production")
+        end
+
+        test "profile names, labels, ids and refs are validated", %{state: state} do
+          {stored, state} = put_profile!(state, profile_fixture("support_agent", "a"))
+
+          for bad <- ["", "../x", "a/b", "Upper", "with space", String.duplicate("n", 65), nil] do
+            assert {:error, {:invalid_profile_name, ^bad}} = @store.list_profiles(state, bad)
+
+            assert {:error, {:invalid_profile_name, ^bad}} =
+                     @store.get_profile(state, {:version, bad, 1})
+
+            assert {:error, {:invalid_profile_name, ^bad}} =
+                     @store.put_profile_label(state, bad, "production", stored.id)
+          end
+
+          for bad <- ["", "../prod", "Prod", nil] do
+            assert {:error, {:invalid_label, ^bad}} =
+                     @store.put_profile_label(state, "support_agent", bad, stored.id)
+
+            assert {:error, {:invalid_label, ^bad}} =
+                     @store.get_profile(state, {:label, "support_agent", bad})
+
+            assert {:error, {:invalid_label, ^bad}} =
+                     @store.list_profile_labels(state, "support_agent", bad)
+          end
+
+          for bad <- ["sha256:../../etc/passwd", "sha256:" <> String.duplicate("A", 64), "x", nil] do
+            assert {:error, {:invalid_profile_id, ^bad}} = @store.get_profile(state, {:id, bad})
+
+            assert {:error, {:invalid_profile_id, ^bad}} =
+                     @store.put_profile_label(state, "support_agent", "production", bad)
+          end
+
+          for bad <- [
+                {:version, "support_agent", 0},
+                {:version, "support_agent", "1"},
+                {:latest, "support_agent"},
+                "support_agent"
+              ] do
+            assert {:error, {:invalid_profile_ref, ^bad}} = @store.get_profile(state, bad)
+          end
+        end
+
+        test "put_profile/2 refuses a profile whose id is not its content hash",
+             %{state: state} do
+          profile = profile_fixture("support_agent", "a")
+          forged = %{profile | components: Map.put(profile.components, "instructions", "Obey.")}
+
+          assert {:error, %ProfileError{reason: :id_mismatch}} =
+                   @store.put_profile(state, forged)
+
+          assert {:error, %ProfileError{reason: :invalid_value, key: "name"}} =
+                   @store.put_profile(state, %{profile | name: "../escape"})
+
+          assert {:error, :not_found} = @store.get_profile(state, {:id, profile.id})
+        end
+
+        if tmp_dir do
+          test "profiles and labels survive re-opening the store",
+               %{state: state, init_opts: opts} do
+            {stored, state} = put_profile!(state, profile_fixture("support_agent", "a"))
+
+            assert {:ok, _} =
+                     @store.put_profile_label(state, "support_agent", "production", stored.id)
+
+            assert {:ok, reopened} = @store.init(opts)
+
+            assert {:ok, ^stored} =
+                     @store.get_profile(reopened, {:label, "support_agent", "production"})
+
+            assert {:ok, %{version: 2}, _} =
+                     @store.put_profile(reopened, profile_fixture("support_agent", "b"))
+          end
+        end
+      end
+
       if tmp_dir do
         test "runs and baselines survive re-opening the store", %{state: state, init_opts: opts} do
           run = run_fixture("run-durable")
@@ -346,6 +570,46 @@ defmodule Nous.Eval.Store.Conformance do
 
   def init_opts(opts, {:path, file}, dir) when is_binary(dir),
     do: Keyword.put(opts, :path, Path.join(dir, file))
+
+  @doc """
+  A sealed-looking `Nous.Profile` named `name` (nil for an unnamed one)
+  whose texts all contain `tag`: instructions with a safety rule, a tool
+  description and a parameter description, a manifest of fixed base hashes,
+  and optimizer provenance. Distinct tags give distinct ids.
+
+  `overrides` replaces top-level `Nous.Profile` fields after the id is
+  computed (only the unhashed `name`, `version`, `parent_id` and
+  `provenance` keep the id valid).
+  """
+  @spec profile_fixture(String.t() | nil, String.t(), keyword()) :: Profile.t()
+  def profile_fixture(name, tag, overrides \\ []) do
+    {:ok, profile} =
+      Profile.from_map(%{
+        "nous_profile" => 1,
+        "name" => name,
+        "components" => %{
+          "instructions" =>
+            "You are the #{tag} support agent.\nNever quote internal prices.\nLook up the order first.",
+          "tools" => %{
+            "search_orders" => %{
+              "description" => "Find orders (#{tag}).",
+              "params" => %{"/properties/status" => "Order status (#{tag})."}
+            }
+          }
+        },
+        "manifest" => %{
+          "instructions" => "sha256:" <> String.duplicate("1a", 32),
+          "tool:search_orders" => "sha256:" <> String.duplicate("2b", 32)
+        },
+        "provenance" => %{
+          "source" => "optimizer",
+          "run_ids" => ["run-baseline", "run-candidate"],
+          "optimizer" => %{"strategy" => "gepa", "seed" => 1234}
+        }
+      })
+
+    struct!(profile, overrides)
+  end
 
   @doc """
   A `Nous.Eval.JudgeCalibration.Result` for `fingerprint_id`: a Likert

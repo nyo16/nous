@@ -8,10 +8,12 @@ if Code.ensure_loaded?(Duckdbex) do
     Same layout as `Nous.Eval.Store.SQLite`: runs are rows of
     `nous_eval_runs` holding the `Nous.Eval.Codec` JSON text of the run
     (`payload`) and of its summary (`summary`), baselines are rows of
-    `nous_eval_baselines`, only ever inserted, and judge calibrations rows of
-    `nous_eval_calibrations` (latest row per fingerprint id wins). The
-    payload is plain JSON text, so DuckDB's `json_extract` can query stored
-    runs directly.
+    `nous_eval_baselines`, only ever inserted, judge calibrations rows of
+    `nous_eval_calibrations` (latest row per fingerprint id wins), profiles
+    rows of `nous_eval_profiles` (unique by `id` and by `(name, version)`)
+    and profile labels rows of `nous_eval_profile_labels`, only ever
+    inserted. Payloads are plain JSON text, so DuckDB's `json_extract` can
+    query stored runs directly.
 
     ## Options
 
@@ -21,7 +23,7 @@ if Code.ensure_loaded?(Duckdbex) do
     @behaviour Nous.Eval.Store
 
     alias Nous.Eval.{Codec, Run, Store}
-    alias Nous.Eval.Store.{Baseline, RunSummary}
+    alias Nous.Eval.Store.{Baseline, ProfileLabel, RunSummary}
 
     @schema [
       "CREATE SEQUENCE IF NOT EXISTS nous_eval_runs_seq",
@@ -51,6 +53,27 @@ if Code.ensure_loaded?(Duckdbex) do
         seq BIGINT PRIMARY KEY DEFAULT nextval('nous_eval_calibrations_seq'),
         fingerprint_id VARCHAR NOT NULL,
         payload VARCHAR NOT NULL
+      )
+      """,
+      "CREATE SEQUENCE IF NOT EXISTS nous_eval_profiles_seq",
+      """
+      CREATE TABLE IF NOT EXISTS nous_eval_profiles (
+        seq BIGINT PRIMARY KEY DEFAULT nextval('nous_eval_profiles_seq'),
+        id VARCHAR NOT NULL UNIQUE,
+        name VARCHAR,
+        version BIGINT,
+        payload VARCHAR NOT NULL,
+        UNIQUE (name, version)
+      )
+      """,
+      "CREATE SEQUENCE IF NOT EXISTS nous_eval_profile_labels_seq",
+      """
+      CREATE TABLE IF NOT EXISTS nous_eval_profile_labels (
+        seq BIGINT PRIMARY KEY DEFAULT nextval('nous_eval_profile_labels_seq'),
+        name VARCHAR NOT NULL,
+        label VARCHAR NOT NULL,
+        profile_id VARCHAR NOT NULL,
+        set_at VARCHAR NOT NULL
       )
       """
     ]
@@ -207,6 +230,101 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    @impl true
+    def put_profile(%{conn: conn} = state, profile) do
+      with {:ok, profile} <- Store.validate_profile(profile) do
+        transaction(conn, fn ->
+          with {:ok, rows} <-
+                 query(conn, "SELECT payload FROM nous_eval_profiles WHERE id = $1", [profile.id]) do
+            case rows do
+              [[payload]] -> stored_profile(state, profile, payload)
+              [] -> insert_profile(state, profile)
+            end
+          end
+        end)
+        |> case do
+          {:ok, {stored, state}} -> {:ok, stored, state}
+          error -> error
+        end
+      end
+    end
+
+    @impl true
+    def get_profile(%{conn: conn}, ref) do
+      with :ok <- Store.validate_profile_ref(ref),
+           {:ok, rows} <- profile_rows(conn, ref) do
+        case rows do
+          [[payload]] -> decode_profile(payload, ref)
+          [] -> {:error, :not_found}
+        end
+      end
+    end
+
+    @impl true
+    def list_profiles(%{conn: conn}, name) do
+      with :ok <- Store.validate_profile_name(name),
+           {:ok, rows} <-
+             query(
+               conn,
+               "SELECT version, payload FROM nous_eval_profiles WHERE name = $1 ORDER BY version DESC",
+               [name]
+             ) do
+        decode_all(rows, fn [version, payload] ->
+          decode_profile(payload, {:version, name, version})
+        end)
+      end
+    end
+
+    @impl true
+    def put_profile_label(%{conn: conn} = state, name, label, profile_id) do
+      with :ok <- Store.validate_profile_name(name),
+           :ok <- Store.validate_label(label),
+           :ok <- Store.validate_profile_id(profile_id) do
+        transaction(conn, fn ->
+          case query(
+                 conn,
+                 "SELECT 1 FROM nous_eval_profiles WHERE id = $1 AND name = $2",
+                 [profile_id, name]
+               ) do
+            {:ok, []} ->
+              {:error, :not_found}
+
+            {:ok, _rows} ->
+              with {:ok, _} <-
+                     query(
+                       conn,
+                       """
+                       INSERT INTO nous_eval_profile_labels (name, label, profile_id, set_at)
+                       VALUES ($1, $2, $3, $4)
+                       """,
+                       [name, label, profile_id, DateTime.to_iso8601(DateTime.utc_now())]
+                     ),
+                   do: {:ok, state}
+
+            {:error, _} = error ->
+              error
+          end
+        end)
+      end
+    end
+
+    @impl true
+    def list_profile_labels(%{conn: conn}, name, label) do
+      with :ok <- Store.validate_profile_name(name),
+           :ok <- Store.validate_label(label),
+           {:ok, rows} <-
+             query(
+               conn,
+               """
+               SELECT name, label, profile_id, set_at FROM nous_eval_profile_labels
+               WHERE name = $1 AND label = $2 ORDER BY seq DESC
+               """,
+               [name, label]
+             ) do
+        decode_all(rows, &decode_profile_label/1)
+      end
+    end
+
     # -- helpers -------------------------------------------------------------
 
     defp create_schema(conn) do
@@ -216,6 +334,82 @@ if Code.ensure_loaded?(Duckdbex) do
           {:error, _} = error -> {:halt, error}
         end
       end)
+    end
+
+    defp stored_profile(state, profile, payload) do
+      with {:ok, stored} <- decode_profile(payload, {:id, profile.id}) do
+        if profile.name && stored.name != profile.name,
+          do: {:error, {:name_conflict, stored.name}},
+          else: {:ok, {stored, state}}
+      end
+    end
+
+    defp insert_profile(state, %{name: nil} = profile) do
+      write_profile(state, %{profile | version: nil})
+    end
+
+    defp insert_profile(%{conn: conn} = state, profile) do
+      with {:ok, [[latest]]} <-
+             query(
+               conn,
+               "SELECT COALESCE(MAX(version), 0) FROM nous_eval_profiles WHERE name = $1",
+               [profile.name]
+             ) do
+        write_profile(state, %{profile | version: latest + 1})
+      end
+    end
+
+    defp write_profile(%{conn: conn} = state, profile) do
+      with {:ok, payload} <- Codec.encode_profile_json(profile),
+           {:ok, _} <-
+             query(
+               conn,
+               "INSERT INTO nous_eval_profiles (id, name, version, payload) VALUES ($1, $2, $3, $4)",
+               [profile.id, profile.name, profile.version, payload]
+             ) do
+        {:ok, {profile, state}}
+      end
+    end
+
+    defp profile_rows(conn, {:id, id}),
+      do: query(conn, "SELECT payload FROM nous_eval_profiles WHERE id = $1", [id])
+
+    defp profile_rows(conn, {:version, name, version}) do
+      query(
+        conn,
+        "SELECT payload FROM nous_eval_profiles WHERE name = $1 AND version = $2",
+        [name, version]
+      )
+    end
+
+    # The label's latest entry, joined to the profile it names.
+    defp profile_rows(conn, {:label, name, label}) do
+      query(
+        conn,
+        """
+        SELECT p.payload FROM nous_eval_profile_labels l
+        JOIN nous_eval_profiles p ON p.id = l.profile_id
+        WHERE l.name = $1 AND l.label = $2
+        ORDER BY l.seq DESC LIMIT 1
+        """,
+        [name, label]
+      )
+    end
+
+    defp decode_profile(payload, ref) do
+      with {:ok, profile} <- Codec.decode_profile_json(payload),
+           :ok <- Store.check_profile_ref(profile, ref),
+           do: {:ok, profile}
+    end
+
+    defp decode_profile_label([name, label, profile_id, set_at] = row) do
+      case DateTime.from_iso8601(set_at) do
+        {:ok, at, _offset} ->
+          {:ok, %ProfileLabel{name: name, label: label, profile_id: profile_id, set_at: at}}
+
+        {:error, _} ->
+          {:error, {:corrupt_profile_label, row}}
+      end
     end
 
     # `suffix` is a literal from this module, never caller data.
@@ -327,7 +521,12 @@ else
                get_baseline: 2,
                list_baselines: 2,
                put_calibration: 3,
-               get_calibration: 2}
+               get_calibration: 2,
+               put_profile: 2,
+               get_profile: 2,
+               list_profiles: 2,
+               put_profile_label: 4,
+               list_profile_labels: 3}
 
     @error {:error,
             "Duckdbex is not available. Add {:duckdbex, \"~> 0.7\"} to your dependencies."}
@@ -358,5 +557,20 @@ else
 
     @impl true
     def get_calibration(_state, _fingerprint_id), do: @error
+
+    @impl true
+    def put_profile(_state, _profile), do: @error
+
+    @impl true
+    def get_profile(_state, _ref), do: @error
+
+    @impl true
+    def list_profiles(_state, _name), do: @error
+
+    @impl true
+    def put_profile_label(_state, _name, _label, _profile_id), do: @error
+
+    @impl true
+    def list_profile_labels(_state, _name, _label), do: @error
   end
 end
