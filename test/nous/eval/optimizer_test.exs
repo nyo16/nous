@@ -371,20 +371,6 @@ defmodule Nous.Eval.OptimizerTest do
       assert mix_optimize(~w(--task Nous.Eval.OptimizerTest.Task --reflector openai:r)) == 2
       assert mix_optimize(@base_argv ++ ~w(--budget-calls 2)) == 2
     end
-
-    test "unknown flag values exit 2 without creating atoms" do
-      install(reflect_with(@good_description))
-
-      bad = fn ->
-        assert mix_optimize(@base_argv ++ ~w(--strategy no_such_strategy_q --feedback nope_q)) ==
-                 2
-      end
-
-      bad.()
-      before = :erlang.system_info(:atom_count)
-      bad.()
-      assert :erlang.system_info(:atom_count) == before
-    end
   end
 
   defp collect(kind) do
@@ -404,5 +390,39 @@ defmodule Nous.Eval.OptimizerTest do
     after
       0 -> :ok
     end
+  end
+end
+
+defmodule Nous.Eval.OptimizerCLIAtomTest do
+  # async: false - the atom table is global, so concurrent tests would make
+  # the count move. These flags are refused before any model call.
+  use ExUnit.Case, async: false
+
+  test "unknown mix nous.optimize flag values exit 2 without creating atoms" do
+    bad = fn ->
+      Mix.Task.reenable("nous.optimize")
+
+      code =
+        ExUnit.CaptureIO.capture_io(:stderr, fn ->
+          try do
+            Mix.Task.run(
+              "nous.optimize",
+              ~w(--task Nous.Eval.OptimizerTest.Task
+              --reflector openai:r --budget-calls 9 --strategy no_such_strategy_q --feedback nope_q)
+            )
+          catch
+            :exit, {:shutdown, code} -> send(self(), {:code, code})
+          end
+        end)
+
+      assert code =~ "invalid --strategy"
+      assert_received {:code, 2}
+    end
+
+    # The first call loads modules (and their atoms); only later calls count.
+    bad.()
+    before = :erlang.system_info(:atom_count)
+    bad.()
+    assert :erlang.system_info(:atom_count) == before
   end
 end

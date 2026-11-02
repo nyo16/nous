@@ -947,10 +947,10 @@ only what survived.
 ### The old `Nous.Eval` is removed
 
 `Nous.Eval.Suite`, `TestCase`, `Runner`, `Result`, `Metrics`, `Config`,
-the evaluators, the old `Reporter`, `YamlLoader`, `Optimizer`,
-`mix nous.optimize` and the old `mix nous.eval` are gone. The replacement is
-a task module (`use Nous.Eval`), a dataset, and `Nous.Eval.run/2` (or
-`mix nous.eval --task MyApp.Evals.Weather`).
+the evaluators, the old `Reporter`, `YamlLoader`, the scalar `Optimizer` and
+the old `mix nous.eval` are gone, and `mix nous.optimize` now runs a
+different optimizer. The replacement is a task module (`use Nous.Eval`), a
+dataset, and `Nous.Eval.run/2` (or `mix nous.eval --task MyApp.Evals.Weather`).
 
 | Removed | Replacement |
 |---------|-------------|
@@ -966,7 +966,7 @@ a task module (`use Nous.Eval`), a dataset, and `Nous.Eval.run/2` (or
 | `run_ab` | `Nous.Eval.Compare.compare/3` on two stored runs |
 | `retry_failed` | Removed; run `k` samples per case and read the statistics |
 | `Config.cost_config` | Removed; prices come from `Nous.Usage.Pricing` and `config :nous, :model_prices` |
-| `mix nous.optimize` | Removed |
+| `Nous.Eval.Optimizer` (temperature/model/max-tokens search), `mix nous.optimize --suite` | `Nous.Eval.Optimizer.run/2` / `mix nous.optimize --task` search the agent's instructions and tool descriptions and return a `Nous.Profile` (see the [Profiles and Optimization guide](profiles.md)); scalar settings are not searched |
 
 ```elixir
 defmodule MyApp.Evals.Weather do

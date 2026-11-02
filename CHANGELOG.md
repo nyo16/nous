@@ -8,17 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 A new `Nous.Eval` built on per-sample traces, honest statistics and a CI
-gate, plus correlation ids on every telemetry event. The old eval API is
-removed; read the "0.19.3 to 0.20.0" section of the migration guide.
+gate, versioned prompt text (`Nous.Profile`) with an optimizer that
+proposes it, and correlation ids on every telemetry event. The old eval API
+is removed; read the "0.19.3 to 0.20.0" section of the migration guide.
 
 ### Changed — Behavioral / breaking
 
 - **The old `Nous.Eval` is removed.** `Nous.Eval.Suite`, `TestCase`,
   `Runner`, `Result`, `Metrics`, `Config`, `Evaluator` and its evaluators,
-  `Reporter`, `YamlLoader`, `Optimizer` (and its strategies),
-  `mix nous.optimize` and the old `mix nous.eval` are gone, with no shim.
-  The replacement is a task module (`use Nous.Eval`), a dataset file and
-  `Nous.Eval.run/2` (see Added).
+  `Reporter`, `YamlLoader`, the scalar `Optimizer` (and its strategies) and
+  the old `mix nous.eval` / `mix nous.optimize` are gone, with no shim. The
+  replacement is a task module (`use Nous.Eval`), a dataset file and
+  `Nous.Eval.run/2`; `mix nous.optimize` now runs the profile optimizer
+  (see Added).
+- **`Nous.new/2` / `Nous.Agent.new/2` raise `ArgumentError` when both
+  `instructions` and `system_prompt` are given.** One of them was silently
+  ignored.
+- **New struct fields** `%Nous.Agent{profile: nil}`,
+  `%Nous.Tool{base_description: nil}` and `%Nous.Agent.Context{profile_id:
+  nil}`. `Nous.Agent.Context.serialize/1` writes version 4 (with
+  `profile_id`); version 1–3 payloads still load, and older releases refuse
+  version 4.
+- **The tool-schema cache is cleared at the start of every run** and keyed
+  by provider, tool names and profile id, so a continued context or
+  AgentServer turn sends the tools it has now (an edited tool used to keep
+  its old description). `result.context.tool_schema_cache` is always `nil`.
+- **AgentServer seeds the context's system prompt from the built agent**
+  rather than the raw `:instructions` config (function instructions seed
+  `""`).
+- **DecisionGuard reads a tool's base description** (`base_description ||
+  description`), so a profile cannot change what the guard is told.
 - **Plugin `init/2` runs once per context; new optional `before_run/2` runs
   every run.** `run/3` and `run_stream/3` re-initialised plugins on every
   continued run (`context:`), so a skill activated on one turn was
@@ -119,6 +138,47 @@ removed; read the "0.19.3 to 0.20.0" section of the migration guide.
   the seed reaches the provider). Providers expose `seed_param/0`;
   `llamacpp:` declares no seed.
 - AgentServer `agent_config` accepts `:skills`.
+- **Running evals:** `Nous.Eval.run/2` (k samples per case, bounded
+  parallelism, enforced per-sample timeouts with partial traces kept,
+  deterministic per-sample seeds sent as `model_settings[:seed]`, `cases:`
+  and `profile:` options), `Nous.Eval.rescore/3` (re-score stored traces
+  without re-running the agent), run budgets (`budget: [max_tokens:,
+  max_cost:, max_samples:]`, counting failed turns and judge usage; an
+  unpriced model under `max_cost` is refused before any call; unrun
+  samples are flagged `:budget_exhausted`), and the mix tasks `nous.eval`,
+  `nous.eval.compare`, `nous.eval.rescore` and `nous.eval.baseline` (exit 0
+  pass, 1 regression, 2 operational error). `Nous.Eval.Examples.Basic` runs
+  offline.
+- **LLM judge:** `Nous.Eval.Scorers.Judge` (required pinned model,
+  temperature 0, declared closed scale, fenced evidence, its own `:judge`
+  trace, usage in score metadata), `Nous.Eval.JudgeCalibration` and
+  `mix nous.eval.judge.calibrate` (holdout agreement, Cohen's or weighted
+  κ, false-pass rate with Wilson intervals), `Nous.Eval.Stats.cohen_kappa/2`
+  and `weighted_kappa/3`. Stores gain optional calibration callbacks; the
+  runner looks a judge's calibration up by its fingerprint, and
+  `require_calibration` refuses the run before any model call when it is
+  missing or below threshold.
+- **Profiles:** `Nous.Profile`, a versioned, content-addressed replacement
+  for an agent's instructions, tool descriptions and tool parameter
+  descriptions (text only, never the call contract), with
+  `load/1`, `validate/2`, `apply/2`, `seal/2`, `diff/2`; `profile:` on
+  `Nous.new/2`, on every run entry point (`nil` restores the base text), in
+  AgentServer configs and SubAgent templates; `[:nous, :profile, :switched]`
+  and `profile_id` on run events. Stores keep profiles with versions and
+  append-only labels (`Nous.Eval.Profiles.fetch/2` verifies the content
+  hash). `Nous.Eval.ProfileReport` renders a diff report with a removed-text
+  safety section. Mix tasks `nous.profile.check` (CI: refuse stale
+  profiles), `nous.profile.diff`, `nous.profile.promote`,
+  `nous.profile.rebase` and `nous.profile.seal`.
+- **Optimizer:** `Nous.Eval.Optimizer` and `mix nous.optimize` search for
+  better instructions and tool descriptions against an eval task (GEPA with
+  a Pareto pool and reflective mutation, or OPRO) and return a reviewed
+  profile. Train text feeds a fenced reflector under a `:diagnostic`
+  feedback policy (never expected values or rubrics by default), val picks,
+  and test decides once: the candidate must be free of regressions,
+  significantly better and not regress guard-tagged cases. Proposals that
+  repeat held-out text or carry fence markers are rejected; the budget is
+  required and fails closed.
 
 ## [0.19.3] - 2026-11-01
 

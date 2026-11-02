@@ -24,6 +24,7 @@ requests in CI.
 - [Store and baselines](#store-and-baselines)
 - [Comparing runs](#comparing-runs)
 - [CI gate](#ci-gate)
+- [Optimizing the agent's text](#optimizing-the-agents-text)
 - [Re-scoring](#re-scoring)
 - [Examples](#examples)
 
@@ -837,6 +838,15 @@ jobs:
 Before trusting the gate, look at the MDE in the report: if it is larger than
 the regressions you care about, add cases (or samples) before tightening
 `--margin`.
+
+## Optimizing the agent's text
+
+Once a task measures what you care about, `Nous.Eval.Optimizer` (or
+`mix nous.optimize`) can search for better instructions and tool
+descriptions against it. It uses the train split to propose text, val to
+pick a candidate and test once to accept or reject it, and returns a
+reviewed `Nous.Profile` with a diff report instead of editing code. See the
+[Profiles and Optimization guide](profiles.md).
 
 ## Re-scoring
 

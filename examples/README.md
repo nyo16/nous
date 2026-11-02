@@ -92,6 +92,7 @@ Evaluate agents with `Nous.Eval` task modules, datasets and scorers. Every scrip
 | [eval/03_custom_scorer.exs](eval/03_custom_scorer.exs) | A `Nous.Eval.Scorer` module, `Scorers.Function`, required gates vs weighted soft scorers, scorer errors |
 | [eval/04_baseline_compare.exs](eval/04_baseline_compare.exs) | Store runs, set a baseline label, gate a candidate with `Nous.Eval.Compare` |
 | [eval/05_trace_inspection.exs](eval/05_trace_inspection.exs) | Read a failing sample's trace (`Nous.Eval.Trace`) and re-score stored runs with `Nous.Eval.rescore/3` |
+| [eval/06_optimize_profile.exs](eval/06_optimize_profile.exs) | `Nous.Eval.Optimizer` (GEPA) turns a better tool description into an accepted `Nous.Profile`, then loads it into the agent |
 
 ## Decision Model Examples
 

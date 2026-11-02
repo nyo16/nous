@@ -275,6 +275,7 @@ defmodule Nous.MixProject do
         {"docs/guides/migration_guide.md", filename: "migration_guide", title: "Migration Guide"},
         {"docs/guides/evaluation.md",
          filename: "evaluation", title: "Evaluation Framework Guide"},
+        {"docs/guides/profiles.md", filename: "profiles", title: "Profiles & Optimization Guide"},
         {"docs/guides/structured_output.md",
          filename: "structured_output", title: "Structured Output Guide"},
         {"docs/guides/workflows.md", filename: "workflows", title: "Workflow Engine Guide"},
@@ -387,6 +388,7 @@ defmodule Nous.MixProject do
           "troubleshooting.html",
           "migration_guide.html",
           "evaluation.html",
+          "profiles.html",
           "structured_output.html",
           "memory.html",
           "context.html",
@@ -639,7 +641,19 @@ defmodule Nous.MixProject do
           Nous.Profile,
           Nous.Profile.Applied,
           Nous.Eval.Profiles,
-          Nous.Eval.ProfileReport
+          Nous.Eval.ProfileReport,
+          Nous.Eval.Optimizer,
+          Nous.Eval.Optimizer.Result,
+          Nous.Eval.Optimizer.Candidate,
+          Nous.Eval.Optimizer.Strategy,
+          Nous.Eval.Optimizer.Strategies.GEPA,
+          Nous.Eval.Optimizer.Strategies.OPRO,
+          Nous.Eval.Optimizer.Context,
+          Nous.Eval.Optimizer.Adapter,
+          Nous.Eval.Optimizer.AgentAdapter,
+          Nous.Eval.Optimizer.Evaluation,
+          Nous.Eval.Optimizer.Reflector,
+          Nous.Eval.Optimizer.Lint
         ],
         "Hooks System": [
           Nous.Hook,
@@ -836,7 +850,8 @@ defmodule Nous.MixProject do
           Mix.Tasks.Nous.Profile.Diff,
           Mix.Tasks.Nous.Profile.Promote,
           Mix.Tasks.Nous.Profile.Rebase,
-          Mix.Tasks.Nous.Profile.Seal
+          Mix.Tasks.Nous.Profile.Seal,
+          Mix.Tasks.Nous.Optimize
         ]
       ]
     ]

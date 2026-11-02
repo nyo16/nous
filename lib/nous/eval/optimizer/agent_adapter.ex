@@ -14,7 +14,7 @@ defmodule Nous.Eval.Optimizer.AgentAdapter do
 
   ## The reference agent
 
-  `c:agent/1` is the agent the task builds for its first case (sample 0,
+  `c:Nous.Eval.Optimizer.Adapter.agent/1` is the agent the task builds for its first case (sample 0,
   no seed), with the task's `setup/1` state and deps; `setup/1` and
   `teardown/1` run around building it. Profiles are sealed against it, so
   a task whose agents differ in base text between cases cannot be
