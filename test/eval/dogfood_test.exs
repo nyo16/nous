@@ -19,7 +19,10 @@ defmodule Nous.Eval.Dogfood.Basic do
   def agent(%{case: c}) do
     Nous.new(Nous.LLMTestHelper.test_model(),
       instructions: Map.get(c.metadata, "instructions", "You are a helpful assistant."),
-      model_settings: %{temperature: 0}
+      # Bounded: at temperature 0 a reasoning model can loop in its reasoning
+      # (qwen3.5-9b on "exactly 5 words"); a cap turns that into a scored
+      # failure instead of a sample killed at the timeout.
+      model_settings: %{temperature: 0, max_tokens: 4096}
     )
   end
 end
@@ -162,7 +165,7 @@ defmodule Nous.Eval.Dogfood.ToolCalling do
         "You are a helpful assistant. Use the provided tools when they help " <>
           "and report their results faithfully.",
       tools: Enum.filter(tools(), &(&1.name in offered)),
-      model_settings: %{temperature: 0}
+      model_settings: %{temperature: 0, max_tokens: 4096}
     )
   end
 
