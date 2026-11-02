@@ -70,6 +70,16 @@ Guard calibration, simulated users and online evaluation, all additive.
 - `Nous.Eval.Sample.iterations` sums every root run of the trace (one per
   user turn in a simulated episode; unchanged for ordinary samples).
 
+### Fixed
+
+- **A history that already starts with a system message gets no second
+  one.** Continuing with `message_history: result.all_messages` (the pattern
+  the docs show) sent the agent's system prompt twice, and strict chat
+  templates such as Qwen's reject a system message that is not first
+  ("System message must be at the beginning"). The prompt path now follows
+  the `messages:` rule: a leading system message in the conversation is kept
+  and the agent's prompt is not prepended. Found by an LM Studio smoke test.
+
 ## [0.20.0] - 2026-11-01
 
 A new `Nous.Eval` built on per-sample traces, honest statistics and a CI

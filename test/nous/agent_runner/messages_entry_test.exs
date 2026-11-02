@@ -109,4 +109,24 @@ defmodule Nous.AgentRunner.MessagesEntryTest do
     assert system =~ "BASE"
     assert system =~ "yes, no"
   end
+
+  # Strict chat templates (Qwen) reject a system message that is not first;
+  # `message_history: result.all_messages` used to send the agent's prompt
+  # twice. Found with LM Studio.
+  test "continuing with message_history: all_messages sends one system message",
+       %{base_url: base_url} do
+    agent = agent(base_url, instructions: "Remember what the user tells you.")
+
+    {:ok, first} = Nous.run(agent, "My favorite color is blue.")
+    _ = next_request()
+
+    {:ok, second} =
+      Nous.run(agent, "What is my favorite color?", message_history: first.all_messages)
+
+    body = next_request()
+
+    assert system_contents(body) == ["Remember what the user tells you."]
+    assert Enum.map(body["messages"], & &1["role"]) == ["system", "user", "assistant", "user"]
+    assert second.context.system_prompt == "Remember what the user tells you."
+  end
 end

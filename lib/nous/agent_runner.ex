@@ -609,10 +609,8 @@ defmodule Nous.AgentRunner do
         end
 
       nil ->
-        system_prompt = base_system_prompt(agent, opts)
-        message_history = Keyword.get(opts, :message_history, [])
-        messages = build_initial_messages(message_history, prompt, system_prompt)
-        {:ok, fresh_context(agent, messages, system_prompt, opts)}
+        history = Keyword.get(opts, :message_history, []) ++ [Message.user(prompt)]
+        {:ok, fresh_context(agent, history, base_system_prompt(agent, opts), opts)}
     end
   end
 
@@ -652,25 +650,14 @@ defmodule Nous.AgentRunner do
   # The context `Nous.Agent.run(agent, messages: [...])` runs: the same fresh
   # context `run/3` builds for a prompt, so the agent's instructions (or
   # system prompt), todo injection and structured-output suffix reach the model
-  # on this entry point too. A caller whose list already starts with a
-  # `:system` message keeps it and gets no second system prompt;
-  # `ctx.system_prompt` is then nil, because the agent's prompt is not in use.
+  # on this entry point too.
   @spec messages_context(Agent.t(), [Message.t()], keyword()) ::
           {:ok, Context.t()} | {:error, Errors.ProfileError.t()}
   def messages_context(%Agent{} = agent, messages, opts) when is_list(messages) do
     # The run-level overrides (:output_type and :structured_output decide the
     # suffix, :profile the instructions) apply exactly as on the prompt path.
     with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
-      case messages do
-        [%Message{role: :system} | _] ->
-          {:ok, fresh_context(agent, messages, nil, opts)}
-
-        _ ->
-          system_prompt = base_system_prompt(agent, opts)
-
-          {:ok,
-           fresh_context(agent, system_message(system_prompt) ++ messages, system_prompt, opts)}
-      end
+      {:ok, fresh_context(agent, messages, base_system_prompt(agent, opts), opts)}
     end
   end
 
@@ -708,7 +695,11 @@ defmodule Nous.AgentRunner do
     end
   end
 
+  # `messages` is the conversation without the agent's prompt; the prompt is
+  # prepended unless the conversation already starts with a system message.
   defp fresh_context(agent, messages, system_prompt, opts) do
+    {messages, system_prompt} = with_system_prompt(messages, system_prompt)
+
     Context.new(
       messages: messages,
       system_prompt: system_prompt,
@@ -771,9 +762,20 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  defp build_initial_messages(history, prompt, system_prompt) do
-    system_message(system_prompt) ++ history ++ [Message.user(prompt)]
+  # A conversation has at most one system message, and it comes first: strict
+  # chat templates (Qwen, Llama) reject anything else. A list that already
+  # starts with one (`message_history: result.all_messages`, or a caller's own
+  # `messages:`) keeps it and gets no second system prompt. When it is the
+  # agent's own prompt (a continuation), `ctx.system_prompt` still records it;
+  # a different one means the agent's prompt is not in use (nil).
+  defp with_system_prompt([%Message{role: :system} = first | _] = messages, system_prompt) do
+    if Message.extract_text(first) == system_prompt,
+      do: {messages, system_prompt},
+      else: {messages, nil}
   end
+
+  defp with_system_prompt(messages, system_prompt),
+    do: {system_message(system_prompt) ++ messages, system_prompt}
 
   defp system_message(system_prompt) when system_prompt in [nil, ""], do: []
   defp system_message(system_prompt), do: [Message.system(system_prompt)]
