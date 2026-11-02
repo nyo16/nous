@@ -778,7 +778,6 @@ defmodule Nous.Eval.Compare do
   end
 
   defp string_keys(map) when is_map(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
-  defp string_keys(_), do: %{}
 
   defp mean([]), do: nil
   defp mean(values), do: Enum.sum(values) / length(values)

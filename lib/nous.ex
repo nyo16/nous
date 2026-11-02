@@ -118,7 +118,7 @@ defmodule Nous do
       )
 
   """
-  @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  @spec run(Agent.t(), String.t() | keyword(), keyword()) :: {:ok, map()} | {:error, term()}
   defdelegate run(agent, prompt, opts \\ []), to: Agent
 
   @doc """

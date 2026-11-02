@@ -339,7 +339,6 @@ defmodule Nous.Eval.Dataset do
         {:ok, %{} = doc} -> parse_yaml_doc(doc, path, file_name)
         {:ok, _} -> {:error, "#{path}: expected a mapping with \"schema\" and \"cases\""}
         {:error, %{message: message}} -> {:error, "#{path}: invalid YAML: #{message}"}
-        {:error, reason} -> {:error, "#{path}: invalid YAML: #{inspect(reason)}"}
       end
     end
   end

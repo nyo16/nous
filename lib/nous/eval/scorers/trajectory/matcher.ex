@@ -98,19 +98,21 @@ defmodule Nous.Eval.Scorers.Trajectory.Matcher do
     end
 
     Enum.reduce(required ++ optional, %{}, fn slot, owner ->
-      case augment(slot, adj, owner, MapSet.new()) do
+      case augment(slot, adj, owner, %{}) do
         {:ok, owner, _visited} -> owner
         {:fail, _visited} -> owner
       end
     end)
   end
 
+  # `visited` is a plain map used as a set: it is threaded through recursive
+  # calls and an accumulator, where an opaque MapSet trips dialyzer.
   defp augment(slot, adj, owner, visited) do
     Enum.reduce_while(adj.(slot), {:fail, visited}, fn call, {:fail, visited} ->
-      if MapSet.member?(visited, call) do
+      if Map.has_key?(visited, call) do
         {:cont, {:fail, visited}}
       else
-        visited = MapSet.put(visited, call)
+        visited = Map.put(visited, call, true)
 
         case Map.fetch(owner, call) do
           :error ->

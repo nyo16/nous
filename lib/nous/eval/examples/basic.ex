@@ -241,7 +241,7 @@ defmodule Nous.Eval.Examples.Basic do
       }
     end
 
-    defp tokens(%Message{} = message), do: tokens(Message.extract_text(message) || "")
+    defp tokens(%Message{} = message), do: tokens(Message.extract_text(message))
     defp tokens(text) when is_binary(text), do: div(String.length(text), 4) + 1
   end
 end
