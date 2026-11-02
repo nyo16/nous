@@ -483,12 +483,20 @@ defmodule Nous.Plugins.InputGuard.Engine do
     )
   end
 
-  # The survivors' verdict, with drops counted as votes that did not flag.
-  # Whether the drops could change it is apply_fail_closed/6's call, so an
-  # all-dropped run is :safe here and fail-closed there.
-  defp aggregate([], _configured_count, _config), do: %Result{severity: :safe}
+  @doc """
+  The survivors' verdict over strategy `results` under `config[:aggregation]`
+  (`:any`, default; `:majority`; `:all`), against `configured_count`
+  configured strategies: the aggregation `run/4` applies before its
+  fail-closed check for dropped strategies. A configured strategy missing
+  from `results` counts as a vote that did not flag, so a caller holding
+  per-strategy results with drops applies its own fail-closed rule (see the
+  moduledoc). Pure; calibration sweeps (`Nous.Eval.Guard`) re-aggregate
+  recorded per-strategy results with it.
+  """
+  @spec aggregate([Result.t()], non_neg_integer(), map()) :: Result.t()
+  def aggregate([], _configured_count, _config), do: %Result{severity: :safe}
 
-  defp aggregate(results, configured_count, config) do
+  def aggregate(results, configured_count, config) do
     mode = Map.get(config, :aggregation, :any)
     do_aggregate(results, configured_count, mode)
   end

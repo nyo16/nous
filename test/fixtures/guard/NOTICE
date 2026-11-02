@@ -1,0 +1,49 @@
+Nous built-in guard dataset (nous-builtin-guard 2026.11.0)
+
+The cases in this directory are in the nous.guard_case/1 schema. Every case
+records its source, licence, upstream revision and row in its "provenance".
+Third-party material was sampled and reformatted (modified) into that schema;
+labels were mapped from the upstream labels (deepset 1/0 and jackhhao
+jailbreak/benign -> block/allow; Gandalf rows are all prompt injections;
+XSTest "safe" prompts are allow-labelled hard negatives; InjecAgent tool
+responses carrying an attacker instruction are block-labelled).
+
+deepset/prompt-injections (test split), revision 4f61ecb038e9c3fb77e21034b22511b523772cdd
+  https://huggingface.co/datasets/deepset/prompt-injections
+  Copyright deepset GmbH. Licensed under the Apache License, Version 2.0.
+  The dataset card also lists cc-by-4.0 in a nested field; this notice
+  satisfies the attribution that reading would require.
+
+jackhhao/jailbreak-classification (balanced test split), revision 2f2ceeb39658696fd3f462403562b6eea5306287
+  https://huggingface.co/datasets/jackhhao/jailbreak-classification
+  Licensed under the Apache License, Version 2.0. Upstream: jailbreak prompts
+  from verazuo/jailbreak_llms (MIT, Copyright (c) 2023 Vera), benign
+  prompts from OpenOrca (MIT) and GPTeacher (MIT).
+
+Lakera/gandalf_ignore_instructions (validation and test splits), revision 04737b65e90a6794ec227012e4a255a7def6344b
+  https://huggingface.co/datasets/Lakera/gandalf_ignore_instructions
+  Gandalf prompt injections by Lakera (https://www.lakera.ai/).
+  Distributed under the MIT License (dataset card, "Licensing Information").
+
+XSTest v2 prompts (safe prompts only), revision d7bb5bd738c1fcbc36edd83d5e7d1b71a3e2d84d
+  https://github.com/paul-rottger/xstest
+  Paul Röttger, Hannah Rose Kirk, Bertie Vidgen, Giuseppe Attanasio, Federico
+  Bianchi, Dirk Hovy: "XSTest: A Test Suite for Identifying Exaggerated Safety
+  Behaviours in Large Language Models". Licensed under Creative Commons
+  Attribution 4.0 International (https://creativecommons.org/licenses/by/4.0/).
+  Modified: sampled (safe prompts only) and reformatted.
+
+InjecAgent base test cases, revision f19c9f2c79a41046eb13c03c51a24c567a8ffa07
+  https://github.com/uiuc-kang-lab/InjecAgent
+  Copyright (c) 2023 Qiusi Zhan. Licensed under the MIT License.
+  Modified: a deterministic sample of 40 direct-harm and 40 data-stealing
+  cases; e-mail addresses at gmail.com / yahoo.com were moved to the reserved
+  example.com domain (recorded per case in provenance.transforms); "benign
+  twin" cases (ids ending in "~benign") fill the upstream tool-response
+  template with a neutral sentence instead of the attacker instruction.
+
+Nous (cases whose provenance.source is "hand-written (nous)",
+"hand-written hard negative (nous)" or "nous test/...")
+  https://github.com/nyo16/nous
+  Licensed under the Apache License, Version 2.0, as the rest of this
+  repository.
