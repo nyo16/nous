@@ -335,6 +335,25 @@ if Code.ensure_loaded?(Exqlite) do
       end
     end
 
+    # -- retention (online eval) ---------------------------------------------
+
+    @impl true
+    def delete_runs_before(conn, task, before) do
+      sql = """
+      DELETE FROM nous_eval_runs
+      WHERE task = ?1 AND started_at_us IS NOT NULL AND started_at_us < ?2
+      """
+
+      with :ok <- Store.validate_retention(task, before),
+           {:ok, count} <-
+             transaction(conn, fn ->
+               with {:ok, _} <- query(conn, sql, [task, started_at_us(before)]),
+                    do: Sqlite3.changes(conn)
+             end) do
+        {:ok, count, conn}
+      end
+    end
+
     # -- helpers -------------------------------------------------------------
 
     defp create_schema(conn) do
@@ -535,7 +554,8 @@ else
                get_profile: 2,
                list_profiles: 2,
                put_profile_label: 4,
-               list_profile_labels: 3}
+               list_profile_labels: 3,
+               delete_runs_before: 3}
 
     @error {:error, "Exqlite is not available. Add {:exqlite, \"~> 0.43\"} to your dependencies."}
 
@@ -580,5 +600,8 @@ else
 
     @impl true
     def list_profile_labels(_state, _name, _label), do: @error
+
+    @impl true
+    def delete_runs_before(_state, _task, _before), do: @error
   end
 end

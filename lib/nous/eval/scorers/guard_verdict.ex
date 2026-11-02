@@ -70,6 +70,9 @@ defmodule Nous.Eval.Scorers.GuardVerdict do
   def id, do: @id
 
   @impl true
+  def content, do: :none
+
+  @impl true
   def option_keys, do: @option_keys
 
   @impl true

@@ -155,7 +155,7 @@ defmodule Nous.AgentRunner do
   @spec run(Agent.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(%Agent{} = agent, prompt, opts \\ []) do
     with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
-      Instrumentation.scoped(agent, fn run_scope, start_time ->
+      Instrumentation.scoped(agent, opts, fn run_scope, start_time ->
         do_run(agent, prompt, opts, run_scope, start_time)
       end)
     end
@@ -301,7 +301,7 @@ defmodule Nous.AgentRunner do
   @spec run_with_context(Agent.t(), Context.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run_with_context(%Agent{} = agent, %Context{} = ctx, opts \\ []) do
     with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
-      Instrumentation.scoped(agent, fn run_scope, start_time ->
+      Instrumentation.scoped(agent, ctx, fn run_scope, start_time ->
         do_run_with_context(agent, ctx, opts, run_scope, start_time)
       end)
     end
@@ -404,7 +404,7 @@ defmodule Nous.AgentRunner do
       # The stream is enumerated after this returns, possibly in another
       # process, so the run's scope is captured into it (see
       # Streaming.instrument_run/2) and its stop event fires on `{:complete, _}`.
-      Instrumentation.scoped(agent, fn run_scope, start_time ->
+      Instrumentation.scoped(agent, opts, fn run_scope, start_time ->
         run_info = %{agent: agent, run_scope: run_scope, start_time: start_time}
 
         case build_context(agent, prompt, opts) do

@@ -17,6 +17,9 @@ defmodule Nous.Telemetry.RunScope do
   #   * `:tool_call_id` — the provider tool-call id being executed, or nil.
   #   * `:parent_tool_call_id` — the tool call that started this run, or nil.
   #   * `:role` — `:agent | :judge | :simulator | :reflector` (default `:agent`).
+  #   * `:session_id` — the conversation the run belongs to (`deps[:session_id]`
+  #     of the run, or the `Nous.AgentServer` session), or nil; inherited by
+  #     every nested run, so a sub-agent reports its root's session.
   #   * `:profile_id` — the id of the `Nous.Profile` the run's agent applies,
   #     or nil; `Nous.AgentRunner.Instrumentation.scoped/2` sets it from the
   #     agent, so it is never inherited from the parent run.
@@ -136,7 +139,8 @@ defmodule Nous.Telemetry.RunScope do
       parent_agent_run_id: id(Map.get(parent, :agent_run_id)),
       tool_call_id: nil,
       parent_tool_call_id: id(Map.get(parent, :tool_call_id)),
-      role: role(Map.get(parent, :role))
+      role: role(Map.get(parent, :role)),
+      session_id: id(Map.get(parent, :session_id))
     })
   end
 
@@ -157,6 +161,7 @@ defmodule Nous.Telemetry.RunScope do
       parent_tool_call_id: id(Map.get(run, :parent_tool_call_id)),
       profile_id: label(:profile_id, Map.get(run, :profile_id)),
       role: role(Map.get(run, :role)),
+      session_id: id(Map.get(run, :session_id)),
       sub_agent_template: label(:sub_agent_template, Map.get(run, :sub_agent_template)),
       sub_agent_index: label(:sub_agent_index, Map.get(run, :sub_agent_index))
     })

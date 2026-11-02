@@ -30,8 +30,12 @@ defmodule Nous.Telemetry do
   (the tool call that started this run, e.g. a `Nous.Plugins.SubAgent`
   delegation), `role` (`:agent`, or `:judge | :simulator | :reflector` for
   runs Nous starts on its own behalf), `profile_id` (the id of the
-  `Nous.Profile` the run's agent applies, `nil` without one) and, for
-  sub-agent runs, `sub_agent_template` (the template name, `nil` for an
+  `Nous.Profile` the run's agent applies, `nil` without one), `session_id`
+  (the conversation the run belongs to: the run's `deps[:session_id]` when it
+  is a string, else the enclosing run's session, else the `Nous.AgentServer`
+  session id; `nil` when none; a sub-agent reports its root's session; the
+  value is application data, so treat it as content when forwarding) and,
+  for sub-agent runs, `sub_agent_template` (the template name, `nil` for an
   inline model) and `sub_agent_index` (the task's position in a
   `spawn_agents` call, else `nil`).
 
@@ -59,7 +63,7 @@ defmodule Nous.Telemetry do
       * Metadata: `%{agent_name: string, model_provider: atom, model_name: string,
         tool_count: integer, has_tools: boolean, trace_id, agent_run_id,
         parent_agent_run_id, tool_call_id, parent_tool_call_id, role, profile_id,
-        sub_agent_template, sub_agent_index}`
+        session_id, sub_agent_template, sub_agent_index}`
 
     * `[:nous, :agent, :run, :stop]` - an agent run completes. Also fires after
       a successful structured-output retry; for `run_stream/3` it fires when the
@@ -393,6 +397,53 @@ defmodule Nous.Telemetry do
         The correlation keys identify the enclosing agent run, if any — never
         the workflow execution.
 
+  ## Online Eval Events
+
+  Emitted by `Nous.Eval.Online` from its own processes, never from the
+  request path. No metadata key carries content (no prompt, output, tool
+  argument, error message or session id); `instance` is the configured
+  instance name.
+
+    * `[:nous, :eval, :online, :window]` - the coverage of one stats window
+      (`:window_ms`, default one minute), emitted every window.
+      * Measurement: `%{seen_roots, sampled, captured, dropped_admission,
+        dropped_queue, dropped_store, lost, filter_error, session_key_missing,
+        redaction_failed, scored, score_failed, skipped_budget, abandoned,
+        stored}` (integers, counted during the window). `seen_roots` counts
+        root runs (not eval-internal ones); `sampled` those the rate, the
+        `agents` allowlist and the filter admitted; `captured` those admitted
+        under `max_in_flight`; `stored` the samples written. `captured /
+        seen_roots` is the effective capture rate under overload.
+      * Metadata: `%{instance, window_ms}`
+    * `[:nous, :eval, :online, :dropped]` - captures shed during the window,
+      one event per reason with a non-zero count.
+      * Measurement: `%{count}`
+      * Metadata: `%{instance, reason: :admission | :queue | :store | :lost}`
+        (`:admission` - `max_in_flight` reached at run start; `:queue` -
+        `max_queue` reached at run stop; `:store` - the store refused a batch
+        after its retries; `:lost` - the capture vanished with a restarted
+        process)
+    * `[:nous, :eval, :online, :redaction_failed]` - the redactor failed on a
+      sample; the sample is stored without content.
+      * Measurement: `%{count: 1}`
+      * Metadata: `%{instance, kind: :raised | :thrown | :exited | :timeout |
+        :invalid_return | :trace_id_changed | :skeleton_changed |
+        :keys_changed | :not_json | :undecodable}`
+    * `[:nous, :eval, :online, :score, :stop]` - one scorer finished on a
+      sample.
+      * Measurement: `%{duration: native_time, cost: float}` (`cost` in USD,
+        `0.0` for scorers that call no model)
+      * Metadata: `%{instance, rule, scorer, status: :ok | :error | :timeout |
+        :skip | :skipped_budget}`
+    * `[:nous, :eval, :online, :budget_exhausted]` - a model-calling scorer
+      was skipped because the window's budget was spent or reserved.
+      * Measurement: `%{spent: float, max_cost: float}`
+      * Metadata: `%{instance, rule, scorer}`
+    * `[:nous, :eval, :online, :handler_reattached]` - the online telemetry
+      handler was found detached and attached again.
+      * Measurement: `%{count: 1}`
+      * Metadata: `%{instance}`
+
   ## Default Handler
 
   Nous provides a default handler that logs events at appropriate levels:
@@ -550,7 +601,13 @@ defmodule Nous.Telemetry do
     [:nous, :workflow, :run, :exception],
     [:nous, :workflow, :node, :start],
     [:nous, :workflow, :node, :stop],
-    [:nous, :workflow, :node, :exception]
+    [:nous, :workflow, :node, :exception],
+    [:nous, :eval, :online, :window],
+    [:nous, :eval, :online, :dropped],
+    [:nous, :eval, :online, :redaction_failed],
+    [:nous, :eval, :online, :score, :stop],
+    [:nous, :eval, :online, :budget_exhausted],
+    [:nous, :eval, :online, :handler_reattached]
   ]
 
   @doc """

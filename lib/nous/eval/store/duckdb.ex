@@ -325,6 +325,29 @@ if Code.ensure_loaded?(Duckdbex) do
       end
     end
 
+    # -- retention (online eval) ---------------------------------------------
+
+    # DuckDB answers a DELETE with a single `Count` row: the deleted rows.
+    @impl true
+    def delete_runs_before(%{conn: conn} = state, task, before) do
+      sql = """
+      DELETE FROM nous_eval_runs
+      WHERE task = $1 AND started_at_us IS NOT NULL AND started_at_us < $2
+      """
+
+      with :ok <- Store.validate_retention(task, before),
+           {:ok, count} <-
+             transaction(conn, fn ->
+               case query(conn, sql, [task, started_at_us(before)]) do
+                 {:ok, [[count]]} when is_integer(count) and count >= 0 -> {:ok, count}
+                 {:ok, other} -> {:error, {:unexpected_delete_result, other}}
+                 {:error, _} = error -> error
+               end
+             end) do
+        {:ok, count, state}
+      end
+    end
+
     # -- helpers -------------------------------------------------------------
 
     defp create_schema(conn) do
@@ -526,7 +549,8 @@ else
                get_profile: 2,
                list_profiles: 2,
                put_profile_label: 4,
-               list_profile_labels: 3}
+               list_profile_labels: 3,
+               delete_runs_before: 3}
 
     @error {:error,
             "Duckdbex is not available. Add {:duckdbex, \"~> 0.7\"} to your dependencies."}
@@ -572,5 +596,8 @@ else
 
     @impl true
     def list_profile_labels(_state, _name, _label), do: @error
+
+    @impl true
+    def delete_runs_before(_state, _task, _before), do: @error
   end
 end

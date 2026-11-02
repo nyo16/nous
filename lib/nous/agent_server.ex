@@ -1160,7 +1160,13 @@ defmodule Nous.AgentServer do
       | deps: Map.put(state.context.deps, :claim_inbox, claim_inbox_fun(server_pid, generation))
     }
 
-    result = run_agent(state, ctx, kind, server_pid, cancelled_ref, generation)
+    # Every turn reports this session as `session_id` on its run start
+    # (`Nous.Telemetry`), so session-level consumers can group the turns.
+    result =
+      Nous.Telemetry.RunScope.merge_scope(%{session_id: state.session_id}, fn ->
+        run_agent(state, ctx, kind, server_pid, cancelled_ref, generation)
+      end)
+
     report_run(result, server_pid, state, cancelled_ref, generation)
   end
 

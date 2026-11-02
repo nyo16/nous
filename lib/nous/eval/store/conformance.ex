@@ -42,7 +42,10 @@ defmodule Nous.Eval.Store.Conformance do
   version and label, per-name version numbering, idempotent re-puts, name
   conflicts, unnamed profiles, `:not_found` without fallback, append-only
   label history, and validation of names, labels, ids, refs and the
-  profile itself.
+  profile itself. For a store that implements `delete_runs_before/3`: only
+  the task's runs started strictly before the cutoff go (other tasks and
+  runs without `started_at` stay), the count it returns, retention winning
+  over a baseline label, argument validation, and durability.
 
   `run_fixture/2` is the realistic run the suite stores,
   `calibration_fixture/2` the judge calibration and `profile_fixture/3` the
@@ -544,6 +547,103 @@ defmodule Nous.Eval.Store.Conformance do
 
             assert {:ok, %{version: 2}, _} =
                      @store.put_profile(reopened, profile_fixture("support_agent", "b"))
+          end
+        end
+      end
+
+      if Code.ensure_loaded?(store) and function_exported?(store, :delete_runs_before, 3) do
+        @retention_base ~U[2026-03-01 12:00:00.000000Z]
+
+        defp retention_runs(state) do
+          [
+            {"online-old-1", "online:default", -3},
+            {"online-old-2", "online:default", -2},
+            {"online-new", "online:default", 1},
+            {"online-other", "online:other", -3},
+            {"offline-old", "MyApp.SupportEval", -3},
+            {"online-no-start", "online:default", nil}
+          ]
+          |> Enum.reduce(state, fn {id, task, days}, acc ->
+            started = days && DateTime.add(@retention_base, days, :day)
+            put!(acc, run_fixture(id, task: task, started_at: started))
+          end)
+        end
+
+        test "delete_runs_before/3 deletes only the task's runs that started before the cutoff",
+             %{state: state} do
+          state = retention_runs(state)
+
+          assert {:ok, 2, state} =
+                   @store.delete_runs_before(state, "online:default", @retention_base)
+
+          for id <- ["online-old-1", "online-old-2"] do
+            assert {:error, :not_found} = @store.get_run(state, id)
+          end
+
+          for id <- ["online-new", "online-other", "offline-old", "online-no-start"] do
+            assert {:ok, %Nous.Eval.Run{id: ^id}} = @store.get_run(state, id)
+          end
+
+          assert {:ok, summaries} = @store.list_runs(state, task: "online:default")
+          assert Enum.sort(Enum.map(summaries, & &1.id)) == ["online-new", "online-no-start"]
+
+          assert {:ok, 0, _state} =
+                   @store.delete_runs_before(state, "online:default", @retention_base)
+        end
+
+        test "the cutoff is strict: a run started exactly at it is kept", %{state: state} do
+          state =
+            put!(
+              state,
+              run_fixture("online-edge", task: "online:edge", started_at: @retention_base)
+            )
+
+          assert {:ok, 0, state} =
+                   @store.delete_runs_before(state, "online:edge", @retention_base)
+
+          assert {:ok, _run} = @store.get_run(state, "online-edge")
+        end
+
+        test "retention wins over a baseline label: the label's run is deleted, its history kept",
+             %{state: state} do
+          state = retention_runs(state)
+          assert {:ok, state} = @store.put_baseline(state, "online-main", "online-old-1")
+
+          assert {:ok, 2, state} =
+                   @store.delete_runs_before(state, "online:default", @retention_base)
+
+          assert {:ok, %Baseline{run_id: "online-old-1"}} =
+                   @store.get_baseline(state, "online-main")
+
+          assert {:error, :not_found} = @store.get_run(state, "online-old-1")
+        end
+
+        test "delete_runs_before/3 validates its arguments", %{state: state} do
+          state = retention_runs(state)
+
+          assert {:error, {:invalid_argument, {:task, ""}}} =
+                   @store.delete_runs_before(state, "", @retention_base)
+
+          assert {:error, {:invalid_argument, {:task, nil}}} =
+                   @store.delete_runs_before(state, nil, @retention_base)
+
+          assert {:error, {:invalid_argument, {:before, "2026-03-01"}}} =
+                   @store.delete_runs_before(state, "online:default", "2026-03-01")
+
+          assert {:ok, %Nous.Eval.Run{}} = @store.get_run(state, "online-old-1")
+        end
+
+        if tmp_dir do
+          test "deleted runs stay deleted after re-opening the store",
+               %{state: state, init_opts: opts} do
+            state = retention_runs(state)
+
+            assert {:ok, 2, _state} =
+                     @store.delete_runs_before(state, "online:default", @retention_base)
+
+            assert {:ok, reopened} = @store.init(opts)
+            assert {:error, :not_found} = @store.get_run(reopened, "online-old-2")
+            assert {:ok, _run} = @store.get_run(reopened, "online-new")
           end
         end
       end
