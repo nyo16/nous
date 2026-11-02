@@ -30,11 +30,19 @@ defmodule Nous.AgentRunner.Instrumentation do
   # inside the scope. A raise, throw or exit out of `fun` emits
   # `[:nous, :agent, :run, :exception]` with its real stacktrace (unless the
   # run already emitted its terminal event) and is re-raised unchanged.
-  @spec scoped(Nous.Agent.t(), (map(), integer() -> result)) :: result when result: var
-  def scoped(agent, fun) when is_function(fun, 2) do
+  #
+  # `source` is the entry point's options or context: its
+  # `deps[:session_id]` (a string) names the run's session, else the
+  # enclosing scope's session is inherited.
+  @spec scoped(Nous.Agent.t(), keyword() | Context.t(), (map(), integer() -> result)) :: result
+        when result: var
+  def scoped(agent, source \\ [], fun) when is_function(fun, 2) do
     # The run's own profile, never the parent's: a sub-agent's profile is
     # its template's (profiles are not inherited).
-    run_scope = Map.put(RunScope.start_run(), :profile_id, Nous.Profile.applied_id(agent))
+    run_scope =
+      RunScope.start_run()
+      |> Map.put(:profile_id, Nous.Profile.applied_id(agent))
+      |> put_session(session_id(source))
 
     RunScope.with_scope(RunScope.install_scope(run_scope), fn ->
       start_time = run_start(agent, run_scope)
@@ -50,6 +58,25 @@ defmodule Nous.AgentRunner.Instrumentation do
       end
     end)
   end
+
+  defp put_session(run_scope, nil), do: run_scope
+  defp put_session(run_scope, session_id), do: Map.put(run_scope, :session_id, session_id)
+
+  defp session_id(%Context{deps: deps}), do: deps_session(deps)
+
+  defp session_id(opts) when is_list(opts) do
+    with nil <- deps_session(Keyword.get(opts, :deps)) do
+      case Keyword.get(opts, :context) do
+        %Context{deps: deps} -> deps_session(deps)
+        _ -> nil
+      end
+    end
+  end
+
+  defp session_id(_source), do: nil
+
+  defp deps_session(%{session_id: session_id}) when is_binary(session_id), do: session_id
+  defp deps_session(_deps), do: nil
 
   @doc false
   @spec run_start(Nous.Agent.t(), map()) :: integer()

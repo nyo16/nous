@@ -46,8 +46,16 @@ defmodule Nous.Eval.Trace.Collector do
   #     call as `:incomplete` and ignores stops whose outcome is
   #     `:incomplete`, so the call is not counted twice.
   #
-  # Online sampling reuses `register/2`, `finalize/1` and `unregister/1`
-  # with its own lifecycle.
+  # Online sampling (`Nous.Eval.Online`) reuses `register/2`, `finalize/1`
+  # and `unregister/1` with its own lifecycle. It decides to capture a trace
+  # in its own `[:nous, :agent, :run, :start]` handler, which may run before
+  # or after this one, so it feeds that event (and the root's terminal
+  # event, which it acts on) through `handle_event/4` itself. Run lifecycle
+  # events (`run.start`, `run.stop`, `run.exception`) are therefore
+  # deduplicated per `{trace_id, agent_run_id}`: Nous emits each at most
+  # once per run (`Nous.AgentRunner.Instrumentation`), so a second copy is
+  # the same event delivered twice. The markers live in the requests table
+  # and go with the trace's other rows.
 
   alias Nous.Eval.Trace
   alias Nous.Eval.Trace.Collector.TableOwner
@@ -82,6 +90,11 @@ defmodule Nous.Eval.Trace.Collector do
   @tool_start [:nous, :agent, :tool_call, :start]
   @tool_stop [:nous, :agent, :tool_call, :stop]
   @hook_decision [:nous, :hook, :decision]
+  @run_lifecycle [
+    [:nous, :agent, :run, :start],
+    [:nous, :agent, :run, :stop],
+    [:nous, :agent, :run, :exception]
+  ]
 
   @incomplete_keys [
     :trace_id,
@@ -154,7 +167,7 @@ defmodule Nous.Eval.Trace.Collector do
   def handle_event(_name, _measurements, _metadata, _config), do: :ok
 
   defp collect(trace_id, name, measurements, metadata, at) when is_list(name) do
-    unless duplicate?(name, metadata) do
+    unless duplicate?(trace_id, name, metadata) do
       measurements = if is_map(measurements), do: measurements, else: %{}
       {stored, extra, request} = compact(trace_id, name, metadata)
       bytes = content_bytes(stored, extra)
@@ -176,8 +189,13 @@ defmodule Nous.Eval.Trace.Collector do
 
   defp collect(_trace_id, _name, _measurements, _metadata, _at), do: :ok
 
-  defp duplicate?(@hook_decision, %{hook_name: "decision_guard:" <> _}), do: true
-  defp duplicate?(_name, _metadata), do: false
+  defp duplicate?(_trace_id, @hook_decision, %{hook_name: "decision_guard:" <> _}), do: true
+
+  defp duplicate?(trace_id, name, %{agent_run_id: run_id})
+       when name in @run_lifecycle and is_binary(run_id),
+       do: not :ets.insert_new(@requests, {{trace_id, {:run_event, name, run_id}}, true})
+
+  defp duplicate?(_trace_id, _name, _metadata), do: false
 
   # Returns `{metadata_to_store, extra, request_to_remember}`.
   defp compact(trace_id, @model_start, %{messages: messages, agent_run_id: run_id} = metadata)

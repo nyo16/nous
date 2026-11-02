@@ -284,6 +284,51 @@ defmodule Nous.Eval do
   @spec rescore(Run.t(), module(), keyword()) :: {:ok, Run.t()} | {:error, term()}
   def rescore(%Run{} = run, task_module, opts \\ []), do: Runner.rescore(run, task_module, opts)
 
+  @doc """
+  Promotes stored online samples (`Nous.Eval.Online`) into a dataset file.
+
+      {:ok, %{promoted: 2, skipped: [{"4bf9...", :no_content}]}} =
+        Nous.Eval.promote({Nous.Eval.Store.File, store_state}, trace_ids,
+          to: "test/eval/datasets/support.jsonl",
+          redact: MyApp.TraceRedactor,
+          reviewer: "alice")
+
+  `store` is `{store_module, store_state}`; `trace_ids` name the samples.
+  Each promoted sample is **redacted again** with `:redact` (required: a
+  1-arity function or a `Nous.Eval.Online.Redactor` module) before
+  anything is taken from it, and appended to `:to` as one JSONL line;
+  the file is rewritten through a temporary file and a rename.
+
+  Options:
+
+    * `:to` - the dataset file (required)
+    * `:redact` - the redactor (required; `:drop_content` is refused)
+    * `:as` - `:case` (default): a `nous.case/1` line whose `input` is the
+      root run's request (the user message, or its user/assistant turns),
+      `expected` left empty: the production answer is never copied into
+      the expectation. `{:guard_case, surface: s}` with `s` one of
+      `"user_input"`, `"tool_call"`, `"tool_result"`, `"model_output"`
+      (and optionally `tool: name` for the tool surfaces): a
+      `nous.guard_case/1` line with `label: null` and `provenance.review:
+      "pending"`, waiting for a human label (`Nous.Eval.Online.Review`).
+      The guard's own verdict is recorded as
+      `provenance.promoted_from.observed_verdict`, never as the label.
+    * `:reviewer` - recorded in the provenance
+    * `:instance` - the online instance (default `"default"`)
+    * `:redact_timeout` - ms (default 2_000)
+
+  Every line's provenance names the instance, run, trace, redactor and Nous
+  version. A sample is skipped with a reason: `:not_found`, `:no_content`
+  (stored under `:drop_content` or after a failed redaction, or without an
+  input for the target), `:redaction_failed` (the redactor failed now), or
+  `:duplicate` (its trace or its content is already in the file).
+  """
+  @spec promote({module(), term()}, [String.t()], keyword()) ::
+          {:ok, %{promoted: non_neg_integer(), skipped: [{String.t(), atom()}]}}
+          | {:error, term()}
+  def promote(store, trace_ids, opts),
+    do: Nous.Eval.Online.Promote.promote(store, trace_ids, opts)
+
   defmacro __using__(_opts) do
     quote do
       @behaviour Nous.Eval

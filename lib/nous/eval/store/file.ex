@@ -35,6 +35,10 @@ defmodule Nous.Eval.Store.File do
   one writer per root: two processes appending to the manifest at the same
   moment can lose one line.
 
+  `delete_runs_before/3` rewrites the manifest without the expired runs
+  before it removes their files, so a crash in between leaves unlisted
+  orphan files rather than a listed run that cannot be read.
+
   ## Options
 
     * `:root` - the directory (required); created if missing
@@ -261,6 +265,65 @@ defmodule Nous.Eval.Store.File do
         end
       end)
     end
+  end
+
+  # -- retention (online eval) -----------------------------------------------
+
+  @impl true
+  def delete_runs_before(%{root: root} = state, task, before) do
+    manifest = Path.join(root, @manifest)
+
+    with :ok <- Store.validate_retention(task, before),
+         {:ok, lines} <- read_lines(manifest),
+         {:ok, summaries} <- decode_summaries(lines) do
+      {expired, kept} =
+        lines
+        |> Enum.zip(summaries)
+        |> Enum.split_with(fn {_line, summary} -> expired?(summary, task, before) end)
+
+      delete_expired(root, manifest, expired, kept, state)
+    end
+  end
+
+  defp delete_expired(_root, _manifest, [], _kept, state), do: {:ok, 0, state}
+
+  # The manifest is rewritten before any run file is removed: a crash in
+  # between leaves orphan run files (readable by id, never listed), never a
+  # listed run whose file is gone. Ids are checked before anything is
+  # written, so a corrupt id deletes nothing.
+  defp delete_expired(root, manifest, expired, kept, state) do
+    data = Enum.map(kept, fn {line, _summary} -> [line, ?\n] end)
+    ids = Enum.map(expired, fn {_line, %RunSummary{id: id}} -> id end)
+
+    with :ok <- validate_run_ids(ids),
+         :ok <- atomic_write(manifest, data),
+         :ok <- remove_run_files(root, ids) do
+      {:ok, length(ids), state}
+    end
+  end
+
+  defp expired?(%RunSummary{task: task, started_at: %DateTime{} = at}, task, before),
+    do: DateTime.compare(at, before) == :lt
+
+  defp expired?(%RunSummary{}, _task, _before), do: false
+
+  defp validate_run_ids(ids) do
+    Enum.reduce_while(ids, :ok, fn id, :ok ->
+      case Store.validate_run_id(id) do
+        :ok -> {:cont, :ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp remove_run_files(root, ids) do
+    Enum.reduce_while(ids, :ok, fn id, :ok ->
+      case File.rm(run_path(root, id)) do
+        :ok -> {:cont, :ok}
+        {:error, :enoent} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:delete_failed, id, reason}}}
+      end
+    end)
   end
 
   # -- helpers ---------------------------------------------------------------

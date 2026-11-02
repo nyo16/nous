@@ -25,6 +25,13 @@ defmodule Nous.Eval.Scorer do
   enum-valued options (`"superset"` for `:superset`), because file values
   are never turned into atoms.
 
+  `content/0` (optional, default `:required`) declares whether the scorer
+  reads content - the agent's input or output, messages, tool arguments or
+  results, error text - or only the trace skeleton (ids, timings, tokens,
+  cost, tool names and outcomes, guard verdicts). `Nous.Eval.Online` refuses
+  to start a scorer that reads content under `redact: :drop_content`, where
+  it would score empty values.
+
   ## Referencing scorers from dataset files
 
   YAML and JSONL name scorers by string, resolved with `resolve/2` through
@@ -45,8 +52,9 @@ defmodule Nous.Eval.Scorer do
   @callback describe(config :: term()) :: map()
   @callback kind() :: :deterministic | :model_graded
   @callback option_keys() :: [atom()]
+  @callback content() :: :required | :none
 
-  @optional_callbacks [describe: 1, kind: 0, option_keys: 0]
+  @optional_callbacks [describe: 1, kind: 0, option_keys: 0, content: 0]
 
   defmodule Spec do
     @moduledoc """

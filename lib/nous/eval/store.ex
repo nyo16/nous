@@ -73,6 +73,17 @@ defmodule Nous.Eval.Store do
   access to the store is control over the prompts of every agent that
   loads from it.
 
+  ## Retention
+
+  The optional `delete_runs_before/3` deletes one task's runs that started
+  before a cutoff. `Nous.Eval.Online` stores sampled production traffic as
+  runs of task `"online:<instance>"` and uses it to enforce its required
+  retention policy, so it refuses to start with a finite retention against
+  a store without it. Retention is a privacy policy and wins over a
+  baseline label: history entries stay, but `get_run/2` on a deleted run is
+  `{:error, :not_found}`. Backends check the arguments with
+  `validate_retention/2`.
+
   ## Identifiers
 
   Run ids, labels and profile names end up in file names and SQL
@@ -216,13 +227,27 @@ defmodule Nous.Eval.Store do
   @callback list_profile_labels(state :: term(), name :: String.t(), label :: String.t()) ::
               {:ok, [ProfileLabel.t()]} | {:error, term()}
 
+  @doc """
+  Delete every stored run whose `task` equals `task` and whose `started_at`
+  is before `before` (strictly earlier). Runs without `started_at` and runs
+  of other tasks are never deleted. Baseline history entries are kept even
+  when they point at a deleted run (`get_run/2` on it is then
+  `{:error, :not_found}`): retention is a privacy policy and wins over a
+  label. Returns the number of runs deleted. Check the arguments with
+  `validate_retention/2` first. Optional; `Nous.Eval.Online` refuses to
+  start with a finite retention against a store without it.
+  """
+  @callback delete_runs_before(state :: term(), task :: String.t(), before :: DateTime.t()) ::
+              {:ok, non_neg_integer(), term()} | {:error, term()}
+
   @optional_callbacks put_calibration: 3,
                       get_calibration: 2,
                       put_profile: 2,
                       get_profile: 2,
                       list_profiles: 2,
                       put_profile_label: 4,
-                      list_profile_labels: 3
+                      list_profile_labels: 3,
+                      delete_runs_before: 3
 
   @run_id ~r/\A[a-z0-9][a-z0-9._-]{0,127}\z/
   @label ~r/\A[a-z0-9][a-z0-9._-]{0,63}\z/
@@ -256,6 +281,20 @@ defmodule Nous.Eval.Store do
 
       true ->
         :ok
+    end
+  end
+
+  @doc """
+  Checks the arguments of `delete_runs_before/3`: `task` must be a non-empty
+  string and `before` a `DateTime`.
+  """
+  @spec validate_retention(term(), term()) ::
+          :ok | {:error, {:invalid_argument, {:task | :before, term()}}}
+  def validate_retention(task, before) do
+    cond do
+      not (is_binary(task) and task != "") -> {:error, {:invalid_argument, {:task, task}}}
+      not is_struct(before, DateTime) -> {:error, {:invalid_argument, {:before, before}}}
+      true -> :ok
     end
   end
 
