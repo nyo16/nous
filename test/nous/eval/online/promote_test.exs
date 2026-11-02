@@ -207,13 +207,13 @@ defmodule Nous.Eval.Online.PromoteTest do
         )
       end
 
-      # The first call loads the task's modules (and their atoms).
-      assert {:error, "unknown redactor module " <> _} = promote.("NousWarmUp.NeverDefined")
-
-      name = "NousNeverDefined#{System.unique_integer([:positive])}.Redactor"
-      before = :erlang.system_info(:atom_count)
+      suffix = Base.encode32(:crypto.strong_rand_bytes(10), case: :lower, padding: false)
+      name = "NousNeverDefined" <> suffix <> ".Redactor"
       assert {:error, "unknown redactor module " <> _} = promote.(name)
-      assert :erlang.system_info(:atom_count) == before
+
+      for atom_name <- [name, "Elixir." <> name] do
+        assert_raise ArgumentError, fn -> String.to_existing_atom(atom_name) end
+      end
 
       # An existing module that is not a redactor is refused too.
       assert {:error, "Enum is not a redactor (no redact/1)"} =

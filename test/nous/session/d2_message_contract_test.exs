@@ -217,7 +217,8 @@ defmodule Nous.Session.D2MessageContractTest do
         Message.assistant("seeded assistant")
       ]
 
-      {:ok, result} = Nous.run(agent(system_prompt: nil), messages: seeded)
+      {:ok, result} =
+        Nous.run(agent(system_prompt: nil), messages: seeded, system_message: :caller)
 
       # The seeded prefix survives verbatim, in order, at the head.
       assert shape(Enum.take(result.all_messages, 3)) == shape(seeded)

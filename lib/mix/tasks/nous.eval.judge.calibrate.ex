@@ -43,7 +43,7 @@ defmodule Mix.Tasks.Nous.Eval.Judge.Calibrate do
 
   use Mix.Task
 
-  alias Nous.Eval.{Codec, JudgeCalibration}
+  alias Nous.Eval.{CLI, Codec, JudgeCalibration}
 
   @switches [
     judge: :string,
@@ -58,39 +58,24 @@ defmodule Mix.Tasks.Nous.Eval.Judge.Calibrate do
     format: :string
   ]
 
-  @stores %{
-    "file" => {Nous.Eval.Store.File, :root},
-    "sqlite" => {Nous.Eval.Store.SQLite, :path},
-    "duckdb" => {Nous.Eval.Store.DuckDB, :path}
-  }
-
   @formats %{"console" => :console, "json" => :json}
-
-  @default_store "file:.nous/eval"
 
   @impl Mix.Task
   def run(argv) do
     Mix.Task.run("app.start")
-
-    case execute(argv) do
-      :ok ->
-        :ok
-
-      {:error, message} ->
-        Mix.shell().error("mix nous.eval.judge.calibrate: " <> message)
-        exit({:shutdown, 2})
-    end
+    CLI.finish("nous.eval.judge.calibrate", execute(argv))
   end
 
   defp execute(argv) do
     with {:ok, opts} <- parse_args(argv),
          {:ok, format} <- lookup(@formats, Keyword.get(opts, :format, "console"), "format"),
          {:ok, judge_opts} <- judge_opts(opts),
-         {:ok, store, state} <- open_store(Keyword.get(opts, :store, @default_store)),
+         {:ok, store} <- CLI.open_store(opts[:store]),
          {:ok, cases} <- JudgeCalibration.load(Keyword.fetch!(opts, :dataset)),
          {:ok, result} <- calibrate(judge_opts, cases, opts),
-         {:ok, _state} <- put(store, state, result) do
-      report(format, result, Keyword.get(opts, :store, @default_store))
+         :ok <- put(store, result) do
+      report(format, result, store)
+      {:ok, 0}
     end
   end
 
@@ -191,23 +176,6 @@ defmodule Mix.Tasks.Nous.Eval.Judge.Calibrate do
   defp include(nil), do: nil
   defp include(items), do: items |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
 
-  defp open_store(spec) do
-    with [kind, location] when location != "" <- String.split(spec, ":", parts: 2),
-         {:ok, {module, key}} <- lookup(@stores, kind, "store") do
-      case module.init([{key, location}]) do
-        {:ok, state} -> {:ok, module, state}
-        {:error, reason} -> {:error, "cannot open store #{spec}: #{describe(reason)}"}
-      end
-    else
-      {:error, _} = error ->
-        error
-
-      _ ->
-        {:error,
-         "invalid --store #{inspect(spec)}: expected file:DIR, sqlite:PATH or duckdb:PATH"}
-    end
-  end
-
   defp lookup(table, key, name) do
     case Map.fetch(table, key) do
       {:ok, value} ->
@@ -226,16 +194,16 @@ defmodule Mix.Tasks.Nous.Eval.Judge.Calibrate do
     end
   end
 
-  defp put(store, state, result) do
-    case store.put_calibration(state, result.fingerprint_id, result) do
-      {:ok, state} -> {:ok, state}
+  defp put({module, state, _spec}, result) do
+    case module.put_calibration(state, result.fingerprint_id, result) do
+      {:ok, _state} -> :ok
       {:error, reason} -> {:error, "cannot store the calibration: #{describe(reason)}"}
     end
   end
 
-  defp report(:console, result, store) do
+  defp report(:console, result, {_module, _state, spec}) do
     Mix.shell().info(JudgeCalibration.format(result))
-    Mix.shell().info("\nStored in #{store} under #{result.fingerprint_id}")
+    Mix.shell().info("\nStored in #{spec} under #{result.fingerprint_id}")
   end
 
   defp report(:json, result, _store) do

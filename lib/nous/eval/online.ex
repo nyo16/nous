@@ -72,6 +72,13 @@ defmodule Nous.Eval.Online do
       sessions by the run's `session_id` (`deps[:session_id]`, or the
       `Nous.AgentServer` session), falling back to the trace id when a run
       has none
+    * `:sampling_salt` - a secret binary of at least 16 bytes (e.g.
+      `:crypto.strong_rand_bytes(32)`, from runtime config) keying the
+      `sample_by: :session` decision (HMAC-SHA-256 of the session id; only
+      with `sample_by: :session`). Without it the decision is a public
+      function of the session id (`sampled?/2`): a client that picks its
+      own session ids can choose ones that are never sampled. Changing the
+      salt changes which sessions are sampled
     * `:agents` - only capture root runs of these agent names (strings)
     * `:filter` - `fn run_start_metadata -> boolean end`, called on the
       request path for runs the rate admitted: keep it cheap and pure. A
@@ -92,7 +99,13 @@ defmodule Nous.Eval.Online do
       have a price (`Nous.Usage.cost/2`). Before each call its worst case
       (`reserve_tokens` per request, two requests per judge sample) is
       reserved; a call that does not fit the window is skipped
-      (`skipped: {"<rule>/<scorer>", "budget_exhausted"}`), never run
+      (`skipped: {"<rule>/<scorer>", "budget_exhausted"}`), never run.
+      The reservation is fixed, not derived from the judge:
+      `reserve_tokens[:input]` must cover the judge's largest request, about
+      (`max_transcript_bytes` × message-list spans + `max_span_bytes` ×
+      other spans) ÷ ~3 bytes per token. With the judge defaults
+      (`max_transcript_bytes: 40_000`), a transcript judge's ~10k tokens
+      fit the default 16_000
     * `:score_timeout` - ms per scorer (default 30_000)
 
   Bounds (see "Backpressure"):

@@ -9,7 +9,7 @@ defmodule Nous.Eval.Online.PipelineTest do
   import Nous.Eval.OnlineHelpers
 
   alias Nous.Eval.{Online, Sample, Score, Trace}
-  alias Nous.Eval.Online.{Coordinator, OTel, Redactor, Registry}
+  alias Nous.Eval.Online.{Coordinator, OTel, Redactor, Registry, Sampler}
   alias Nous.Eval.Trace.{Collector, Event}
 
   @moduletag :tmp_dir
@@ -240,6 +240,30 @@ defmodule Nous.Eval.Online.PipelineTest do
       groups = samples!(root) |> Enum.map(& &1.info["group"]) |> Enum.frequencies()
       assert map_size(groups) == 2
       assert Enum.all?(Map.values(groups), &(&1 == 3))
+    end
+
+    test "a sampling salt decides which sessions are captured", %{tmp_dir: root} do
+      salt = "pipeline-salt-0123456789"
+      sessions = for i <- 1..80, do: "session-#{i}"
+
+      # Sessions the salt flips either way: the unsalted decision, which a
+      # client can compute, predicts none of them. Two flipped in, one out:
+      # salted capture finds two sessions, unsalted would find one.
+      salted? = &Sampler.sampled?(&1, 0.5, salt)
+      flipped_in = Enum.filter(sessions, &(salted?.(&1) and not Online.sampled?(&1, 0.5)))
+      flipped_out = Enum.filter(sessions, &(Online.sampled?(&1, 0.5) and not salted?.(&1)))
+      assert length(flipped_in) >= 2 and flipped_out != []
+
+      start_online!(base_opts(root, sample_rate: 0.5, sample_by: :session, sampling_salt: salt))
+
+      for session <- Enum.take(flipped_in, 2) ++ Enum.take(flipped_out, 1), _turn <- 1..2 do
+        assert {:ok, _} = run!("turn", deps: %{session_id: session})
+      end
+
+      :ok = Online.drain()
+      groups = samples!(root) |> Enum.map(& &1.info["group"]) |> Enum.frequencies()
+      assert map_size(groups) == 2
+      assert Enum.all?(Map.values(groups), &(&1 == 2))
     end
   end
 
@@ -484,7 +508,9 @@ defmodule Nous.Eval.Online.PipelineTest do
       base_opts(root,
         redact: &scrub_fun/1,
         rules: [[name: "q", scorers: [{Nous.Eval.Scorers.Judge, judge: @judge}]]],
-        budget: [max_cost: reservation * 3 * 1.000001, per: :hour],
+        # Budget windows are aligned to monotonic time: a window of ~30k
+        # years never rolls over mid-test, where `:hour` would at an edge.
+        budget: [max_cost: reservation * 3 * 1.000001, per: 1_000_000_000_000_000],
         max_concurrency: 8
       )
     )
@@ -609,6 +635,74 @@ defmodule Nous.Eval.Online.PipelineTest do
     assert sample.outcome == :killed
     assert info["abandoned"] == true
     assert [%{status: :incomplete}] = Trace.runs(sample.trace)
+
+    %{table: table} = Registry.shared(Online)
+    assert :ets.info(table, :size) == 0
+  end
+
+  test "a backlog older than max_trace_age is processed, not counted lost",
+       %{tmp_dir: root} do
+    test = self()
+
+    start_online!(
+      base_opts(root,
+        max_trace_age: 50,
+        max_concurrency: 1,
+        redact: fn content ->
+          send(test, {:redacting, self()})
+          receive do: (:go -> content)
+        end,
+        redact_timeout: 10_000
+      )
+    )
+
+    for i <- 1..3, do: assert({:ok, _} = run!("hello #{i}"))
+    assert_receive {:redacting, first}, 2_000
+
+    # Two closed traces wait behind the blocked job, older than max_trace_age.
+    Process.sleep(80)
+    flush_online_events()
+    assert %{lost: 0} = window!()
+
+    send(first, :go)
+
+    for _ <- 1..2 do
+      assert_receive {:redacting, next}, 2_000
+      send(next, :go)
+    end
+
+    :ok = Online.drain()
+    assert length(samples!(root)) == 3
+    assert %{lost: 0, stored: 3} = window!()
+  end
+
+  test "traces queued in a coordinator that went away are swept as lost", %{tmp_dir: root} do
+    test = self()
+
+    start_online!(
+      base_opts(root,
+        max_trace_age: 50,
+        max_concurrency: 1,
+        redact: fn content ->
+          send(test, {:redacting, self()})
+          receive do: (:go -> content)
+        end,
+        redact_timeout: 10_000
+      )
+    )
+
+    for i <- 1..3, do: assert({:ok, _} = run!("hello #{i}"))
+    # The first job runs (blocked); the other two are queued in the coordinator.
+    assert_receive {:redacting, _first}, 2_000
+
+    # Both calls return only once the old process is gone and the new one
+    # has finished init/1, which releases the rows queued to the old one.
+    :ok = Supervisor.terminate_child(Online, Coordinator)
+    {:ok, _restarted} = Supervisor.restart_child(Online, Coordinator)
+
+    Process.sleep(80)
+    flush_online_events()
+    assert %{lost: 2} = window!()
 
     %{table: table} = Registry.shared(Online)
     assert :ets.info(table, :size) == 0

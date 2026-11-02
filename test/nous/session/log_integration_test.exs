@@ -165,7 +165,11 @@ defmodule Nous.Session.LogIntegrationTest do
         Message.user("and then this")
       ]
 
-      {:ok, result} = Nous.run(Nous.new("openai:gpt-4o", name: "seed-run"), messages: seeded)
+      {:ok, result} =
+        Nous.run(Nous.new("openai:gpt-4o", name: "seed-run"),
+          messages: seeded,
+          system_message: :caller
+        )
 
       log = result.context.log
 

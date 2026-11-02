@@ -216,22 +216,20 @@ defmodule Nous.AgentRunner.PluginLifecycleTest do
       AgentServer.send_message(pid, "talk like a pirate")
       assert_receive {:model_request, turn1}, 2_000
       assert system_text(turn1) =~ @pirate_instructions
-      await_assistant_count(pid, 1)
+      await_run_stored(pid)
 
       # Prompt run: AgentRunner.run/3 with the session's context.
       AgentServer.send_message(pid, "what is 2+2")
       assert_receive {:model_request, turn2}, 2_000
       assert system_text(turn2) =~ @pirate_instructions
-      await_assistant_count(pid, 2)
-      assert pirate_active?(AgentServer.get_context(pid))
+      assert pirate_active?(await_run_stored(pid))
 
       # A steer on an idle server starts an inbox run (run_with_context/3).
       AgentServer.steer(pid, "and 3+3")
       assert_receive {:model_request, turn3}, 2_000
       assert Enum.any?(turn3, &(&1.role == :user and Message.extract_text(&1) == "and 3+3"))
       assert system_text(turn3) =~ @pirate_instructions
-      await_assistant_count(pid, 3)
-      assert pirate_active?(AgentServer.get_context(pid))
+      assert pirate_active?(await_run_stored(pid))
     end
   end
 
@@ -319,19 +317,19 @@ defmodule Nous.AgentRunner.PluginLifecycleTest do
   defp pirate_active?(%Context{deps: %{skill_registry: registry}}),
     do: Nous.Skill.Registry.active?(registry, "pirate")
 
-  defp await_assistant_count(pid, n, attempts \\ 100) do
-    count = Enum.count(AgentServer.get_context(pid).messages, &(&1.role == :assistant))
+  # The run task broadcasts completion before it hands its context back to
+  # the server. Once the task has exited, that hand-off is already in the
+  # server's mailbox, so the next call is answered from the stored context.
+  defp await_run_stored(pid) do
+    case :sys.get_state(pid) do
+      %{current_task: %Task{pid: task_pid}} ->
+        ref = Process.monitor(task_pid)
+        assert_receive {:DOWN, ^ref, :process, _, _}, 2_000
 
-    cond do
-      count >= n ->
+      %{current_task: nil} ->
         :ok
-
-      attempts == 0 ->
-        flunk("expected #{n} assistant messages, got #{count}")
-
-      true ->
-        Process.sleep(20)
-        await_assistant_count(pid, n, attempts - 1)
     end
+
+    AgentServer.get_context(pid)
   end
 end

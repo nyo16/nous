@@ -250,16 +250,19 @@ defmodule Nous.Eval.CLI do
   end
 
   @doc false
-  @spec put_run({module(), term(), String.t()}, Run.t()) :: :ok | {:error, String.t()}
-  def put_run({module, state, spec}, run) do
-    case module.put_run(state, run) do
-      {:ok, _state} ->
-        Mix.shell().info("Stored run #{run.id} in #{spec}")
+  # The `:store` option of `Nous.Eval.run/2` and `Nous.Eval.rescore/3` for a
+  # store this task opened: the runner looks judge calibrations up and
+  # persists the run through the same handle. Passing the spec instead
+  # would open the file a second time, and a second DuckDB handle in one
+  # process does not see the first one's writes.
+  @spec run_store({module(), term(), String.t()}) :: {:opened, module(), term()}
+  def run_store({module, state, _spec}), do: {:opened, module, state}
 
-      {:error, reason} ->
-        {:error, "cannot store run #{run.id} in #{spec}: #{describe(reason)}"}
-    end
-  end
+  @doc false
+  # Reports a run the runner stored through `run_store/1`.
+  @spec stored({module(), term(), String.t()}, Run.t()) :: :ok
+  def stored({_module, _state, spec}, run),
+    do: Mix.shell().info("Stored run #{run.id} in #{spec}")
 
   @doc false
   @spec set_baseline({module(), term(), String.t()}, String.t(), String.t()) ::

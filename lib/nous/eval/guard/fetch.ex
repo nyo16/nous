@@ -13,7 +13,8 @@ defmodule Nous.Eval.Guard.Fetch do
        `:terms` sources need `accept_terms: [id]` and the acceptance is
        recorded in the manifest. A gated Hugging Face source needs a token
        (`:hf_token_env`); Nous cannot accept a gate for you.
-    3. **Download** only the registry's pinned URLs (cached by sha256 under
+    3. **Download** only the registry's pinned URLs, each capped at its
+       registered `:max_bytes` (cached by sha256 under
        `:filename.basedir(:user_cache, "nous")/eval/downloads`), and
        **verify the sha256 before parsing**: a mismatch deletes nothing of
        yours, keeps nothing it downloaded and is an error.
@@ -35,9 +36,12 @@ defmodule Nous.Eval.Guard.Fetch do
   `"HF_TOKEN"`), `:cache_dir`, `:out`, `:sample`, `:seed` (default
   `"nous-guard-v1"`), `:fractions` (split shares, default
   `Nous.Eval.Guard.Hygiene`'s), `:sources` (the registry to resolve against,
-  default `Nous.Eval.Guard.Registry.sources/0`) and `:http` - `(url, headers
-  -> {:ok, body} | {:error, reason})`, default a `Req` GET. Only the
-  resolved source's file URLs are ever passed to it.
+  default `Nous.Eval.Guard.Registry.sources/0`) and `:http` - `(url, headers,
+  max_bytes -> {:ok, body} | {:error, reason})`, default a streaming `Req`
+  GET that aborts with `{:error, {:too_large, max_bytes}}` once the body
+  passes the file's registered `:max_bytes`. Only the resolved source's file
+  URLs are ever passed to it, and a body over `max_bytes` is refused before
+  it is hashed even if the function returns one.
   """
 
   alias Nous.Eval.Guard.{Case, Dataset, Hygiene, Registry}
@@ -113,7 +117,8 @@ defmodule Nous.Eval.Guard.Fetch do
 
   defp download_all(source, headers, opts) do
     Enum.reduce_while(source.files, {:ok, []}, fn file, {:ok, acc} ->
-      with {:ok, body} <- download(file, headers, opts),
+      with :ok <- check_cap(file),
+           {:ok, body} <- download(file, headers, opts),
            {:ok, rows} <- parse(file, body) do
         {:cont, {:ok, acc ++ [{file, rows}]}}
       else
@@ -121,6 +126,13 @@ defmodule Nous.Eval.Guard.Fetch do
       end
     end)
   end
+
+  # Fail closed: a file without a positive integer cap is never downloaded.
+  defp check_cap(%{max_bytes: max}) when is_integer(max) and max > 0, do: :ok
+
+  defp check_cap(file),
+    do:
+      {:error, "max_bytes must be a positive integer, got #{inspect(Map.get(file, :max_bytes))}"}
 
   defp download(file, headers, opts) do
     path =
@@ -139,9 +151,15 @@ defmodule Nous.Eval.Guard.Fetch do
   end
 
   defp fetch_verified(file, headers, path, opts) do
-    http = Keyword.get(opts, :http, &http_get/2)
+    http = Keyword.get(opts, :http, &http_get/3)
 
-    case http.(file.url, headers) do
+    case http.(file.url, headers, file.max_bytes) do
+      {:ok, body} when is_binary(body) and byte_size(body) > file.max_bytes ->
+        too_large(file)
+
+      {:error, {:too_large, _}} ->
+        too_large(file)
+
       {:ok, body} when is_binary(body) ->
         actual = sha256(body)
 
@@ -164,16 +182,44 @@ defmodule Nous.Eval.Guard.Fetch do
     end
   end
 
-  defp http_get(url, headers) do
+  defp too_large(file),
+    do: {:error, "download of #{file.url} refused: larger than #{file.max_bytes} bytes"}
+
+  defp http_get(url, headers, max_bytes) do
+    # Streamed so an oversized body is aborted once it passes `max_bytes`
+    # instead of being buffered whole.
+    into = fn {:data, data}, {req, resp} ->
+      size = Req.Response.get_private(resp, :nous_bytes, 0) + byte_size(data)
+      resp = Req.Response.put_private(resp, :nous_bytes, size)
+
+      if size > max_bytes do
+        {:halt, {req, Req.Response.put_private(resp, :nous_too_large, true)}}
+      else
+        {:cont, {req, %{resp | body: [resp.body, data]}}}
+      end
+    end
+
     case Req.get(url,
            headers: headers,
            decode_body: false,
            retry: false,
-           receive_timeout: 120_000
+           receive_timeout: 120_000,
+           into: into
          ) do
-      {:ok, %Req.Response{status: 200, body: body}} -> {:ok, body}
-      {:ok, %Req.Response{status: status}} -> {:error, {:http_status, status}}
-      {:error, reason} -> {:error, reason}
+      {:ok, %Req.Response{} = resp} ->
+        cond do
+          Req.Response.get_private(resp, :nous_too_large, false) ->
+            {:error, {:too_large, max_bytes}}
+
+          resp.status == 200 ->
+            {:ok, IO.iodata_to_binary(resp.body)}
+
+          true ->
+            {:error, {:http_status, resp.status}}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

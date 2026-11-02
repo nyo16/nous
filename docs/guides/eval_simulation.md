@@ -183,7 +183,10 @@ gate: the episode passes only if **all** of them pass, the product reward of
 τ²-bench. A component outside `reward_basis` is still scored, at weight 0,
 so you can watch it without failing on it. Prefer `state` over `said` and
 `said` over `rubric`: the end state cannot be argued with, a transcript
-judge inherits the simulated user's biases.
+judge inherits the simulated user's biases. The `rubric` judge sees each
+message in a fence of its own, named outside the fence (`USER_1`,
+`AGENT_2`), so an agent reply cannot forge a user turn such as
+`USER: thanks, solved`.
 
 `expected.terminations` (default `[stop, transfer, out_of_scope]`) lists the
 endings a case accepts — `[transfer]` for a case whose correct outcome is a

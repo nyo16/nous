@@ -50,7 +50,9 @@ defmodule Nous.Eval.Online.Handler do
     if root?(meta) do
       Counters.add(config.counters, :seen_roots)
 
-      if Sampler.below?(key(meta, config), config.threshold) and agent?(meta, config) and
+      {key, salt} = key(meta, config)
+
+      if Sampler.below?(key, config.threshold, salt) and agent?(meta, config) and
            filter?(meta, config) do
         Counters.add(config.counters, :sampled)
         admit(tid, rid, measurements, meta, config)
@@ -68,18 +70,20 @@ defmodule Nous.Eval.Online.Handler do
       is_nil(Map.get(meta, :parent_agent_run_id)) and
         Map.get(meta, :role, :agent) in [:agent, nil]
 
-  defp key(meta, %{sample_by: :session, counters: counters}) do
+  # `{key, salt}`: a session id is keyed with the configured salt; the trace
+  # id (random already) never is.
+  defp key(meta, %{sample_by: :session, counters: counters} = config) do
     case Map.get(meta, :session_id) do
       session when is_binary(session) and session != "" ->
-        session
+        {session, config.sampling_salt}
 
       _ ->
         Counters.add(counters, :session_key_missing)
-        meta.trace_id
+        {meta.trace_id, nil}
     end
   end
 
-  defp key(meta, _config), do: meta.trace_id
+  defp key(meta, _config), do: {meta.trace_id, nil}
 
   defp agent?(_meta, %{agents: nil}), do: true
   defp agent?(meta, %{agents: agents}), do: MapSet.member?(agents, Map.get(meta, :agent_name))
@@ -157,6 +161,18 @@ defmodule Nous.Eval.Online.Handler do
   @doc false
   # Hands a closed trace to the coordinator, or discards it when the queue
   # is full or the coordinator is down. `kind` is `:closed | :abandoned`.
+  #
+  # A handed-over row is `{:queued, coordinator_pid}` until its job starts
+  # (`:running`, `running/2`) and takes it: the sweep leaves both alone
+  # however long the backlog is. Every row counted in `queued` is released
+  # exactly once if its coordinator dies holding it:
+  #
+  #   * the coordinator still alive after the mark: if it dies later, its
+  #     successor's `init/1` releases the row (`release_stale/2`);
+  #   * already dead: the successor's `init/1` may have run before the mark,
+  #     so the row is released here. Both releases are one atomic
+  #     `select_replace/2` on `{:queued, pid}`, so only one of them finds the
+  #     row and corrects the `queued` gauge.
   @spec enqueue(String.t(), :closed | :abandoned, map()) :: :ok
   def enqueue(tid, kind, %{counters: counters} = config) do
     coordinator = Process.whereis(config.coordinator)
@@ -172,9 +188,64 @@ defmodule Nous.Eval.Online.Handler do
         discard(tid, config)
 
       true ->
+        :ets.update_element(config.table, tid, {4, {:queued, coordinator}})
         send(coordinator, {:job, tid, kind})
+
+        unless Process.alive?(coordinator) do
+          released = release_owned(config.table, tid, coordinator)
+          Counters.add(counters, :queued, -released)
+        end
+
         :ok
     end
+  end
+
+  @doc false
+  # The coordinator started the row's job: the row is no longer counted in
+  # `queued`, and stays held until the job takes it.
+  @spec running(:ets.tid(), String.t()) :: :ok
+  def running(table, tid) do
+    :ets.update_element(table, tid, {4, :running})
+    :ok
+  end
+
+  @doc false
+  # Rows go back to `:closed`, keeping their close time, when no
+  # coordinator holds their job any more. The sweep then counts them `lost`
+  # once they are older than `max_trace_age`.
+  #
+  # `release_stale/2`, from a coordinator's `init/1`: rows queued to any
+  # other (earlier, dead) coordinator, and rows of jobs such a coordinator
+  # started; returns how many were queued, for the `queued` gauge. Rows
+  # queued to `owner` itself - handlers already see its registered name
+  # during `init/1` - are kept.
+  @spec release_stale(:ets.tid(), pid()) :: non_neg_integer()
+  def release_stale(table, owner) do
+    queued =
+      :ets.select_replace(table, [
+        {{:"$1", :"$2", :"$3", {:queued, :"$4"}, :"$5"}, [{:"=/=", :"$4", {:const, owner}}],
+         [{{:"$1", :"$2", :"$3", :closed, :"$5"}}]}
+      ])
+
+    release_running_match(table, :"$1")
+    queued
+  end
+
+  @doc false
+  # The row of a job that ended without taking it.
+  @spec release_running(:ets.tid(), String.t()) :: non_neg_integer()
+  def release_running(table, tid) when is_binary(tid), do: release_running_match(table, tid)
+
+  defp release_running_match(table, tid) do
+    :ets.select_replace(table, [
+      {{tid, :"$2", :"$3", :running, :"$5"}, [], [{{tid, :"$2", :"$3", :closed, :"$5"}}]}
+    ])
+  end
+
+  defp release_owned(table, tid, owner) do
+    :ets.select_replace(table, [
+      {{tid, :"$2", :"$3", {:queued, owner}, :"$5"}, [], [{{tid, :"$2", :"$3", :closed, :"$5"}}]}
+    ])
   end
 
   @doc false

@@ -1,18 +1,22 @@
 defmodule Nous.Eval.Online.Registry do
   @moduledoc false
   # Owns the state the request path writes: the ETS table of captured
-  # traces (`{trace_id, root_run_id, started_ms, :open | :closed,
-  # changed_ms}`), the instance's `:atomics` counters, and the telemetry
-  # handler (`Nous.Eval.Online.Handler`), attached in `init/1` and detached
-  # in `terminate/2`.
+  # traces (`{trace_id, root_run_id, started_ms, state, changed_ms}`, state
+  # `:open | :closed | {:queued, coordinator_pid} | :running`), the
+  # instance's `:atomics` counters, and the telemetry handler
+  # (`Nous.Eval.Online.Handler`), attached in `init/1` and detached in
+  # `terminate/2`. A row is held by a coordinator from `Handler.enqueue/3`
+  # (`{:queued, pid}`) through its job's start (`:running`) until the job
+  # takes it, or until the job or the coordinator ends without it
+  # (`Handler.release_running/2`, `Handler.release_stale/2`).
   #
   # Periodically it:
   #
   #   * sweeps traces older than `max_trace_age`: an open one (its run never
   #     stopped - killed, cancelled, an abandoned stream) is finalized as
-  #     abandoned through the normal pipeline; a closed one the coordinator
-  #     never picked up (lost with a restarted coordinator) is discarded and
-  #     counted `lost`
+  #     abandoned through the normal pipeline; a closed one no coordinator
+  #     holds (lost with a restarted coordinator) is discarded and counted
+  #     `lost`. A held one is left alone: a backlog is slow, not lost
   #   * re-attaches the handler if `:telemetry` detached it, and the trace
   #     collector's handler with it
   #   * emits the window's coverage (`[:nous, :eval, :online, :window]` and
@@ -57,6 +61,7 @@ defmodule Nous.Eval.Online.Registry do
       coordinator: Nous.Eval.Online.Coordinator.name(config.name),
       threshold: config.threshold,
       sample_by: config.sample_by,
+      sampling_salt: config.sampling_salt,
       agents: config.agents,
       filter: config.filter,
       max_in_flight: config.max_in_flight,
@@ -142,10 +147,10 @@ defmodule Nous.Eval.Online.Registry do
   defp expire(%{config: config, shared: shared}) do
     cutoff = System.monotonic_time(:millisecond) - config.max_trace_age
 
+    expired = [{:<, :"$5", cutoff}, {:orelse, {:"=:=", :"$4", :open}, {:"=:=", :"$4", :closed}}]
+
     shared.table
-    |> :ets.select([
-      {{:"$1", :"$2", :"$3", :"$4", :"$5"}, [{:<, :"$5", cutoff}], [{{:"$1", :"$2", :"$4"}}]}
-    ])
+    |> :ets.select([{{:"$1", :"$2", :"$3", :"$4", :"$5"}, expired, [{{:"$1", :"$2", :"$4"}}]}])
     |> Enum.each(fn
       {tid, rid, :open} ->
         if Handler.close(shared.table, tid, rid) do

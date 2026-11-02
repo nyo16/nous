@@ -34,10 +34,13 @@ defmodule Nous.Eval.Scorers.Judge do
     * `:threshold` - `passed?` when the normalized value is at least this.
       Required for every scale but `:binary` (whose default is `1.0`)
     * `:include` - what the judge sees (default `[:input, :output]`): any of
-      `:input`, `:output`, `:tool_calls` (the root run's tool calls with
-      their arguments and results), `:transcript` (the root run's messages),
-      `:reference` (the `:reference` option, else the case's
-      `expected["output"]`), `:expected` (the case's whole `expected` map)
+      `:input` (a case input given as a message list is shown one piece
+      per message, like the transcript), `:output`, `:tool_calls` (the root
+      run's tool calls with their arguments and results), `:transcript`
+      (the root run's messages, one piece per message and one per tool
+      call a message made), `:reference` (the `:reference` option, else the
+      case's `expected["output"]`), `:expected` (the case's whole
+      `expected` map)
     * `:samples` - judge calls per sample (default `1`), combined by
       `:reduce`: `:majority` (default; the most frequent label, a tie going
       to the lowest-valued tied label) or `:mean` (the mean value; the
@@ -46,8 +49,15 @@ defmodule Nous.Eval.Scorers.Judge do
       settings; whether the seed reaches the provider depends on the
       provider (see `Nous.Eval.Fingerprint.seed_forwarded?/1`)
     * `:max_span_bytes` - longest piece of evidence sent, in bytes (default
-      `20_000`); longer ones are cut with a `…[truncated N bytes]` marker and
-      the cut is recorded in the score's metadata
+      `20_000`; each message and each tool call is a piece); longer ones
+      are cut with a `…[truncated N bytes]` marker and the cut is recorded
+      in the score's metadata under the piece's name
+    * `:max_transcript_bytes` - most bytes a message list (the transcript,
+      or an input given as messages) may send in total (default `40_000`).
+      A longer one keeps its first message and as many of its latest ones
+      as fit; a line outside the fences says how many messages were left
+      out, and the dropped bytes are recorded in the score's metadata under
+      `"TRANSCRIPT_OMITTED"` (or `"REQUEST_OMITTED"`)
     * `:require_calibration` - `[min_kappa: 0.6, max_false_pass: 0.1]` (or
       `true` for those defaults): refuse to grade unless the
       `:calibration` given is for this exact configuration and meets both
@@ -66,16 +76,28 @@ defmodule Nous.Eval.Scorers.Judge do
   :string, critique: :string}, structured_output: [max_retries: 1],
   model_settings: %{temperature: 0, seed: seed})`, run with no tools. The
   system prompt holds the template, the rubric and the label set; the
-  evidence goes in the user message, every piece (`USER_INPUT`,
-  `AGENT_OUTPUT`, `TOOL_CALL_n`, `TRANSCRIPT`, `REFERENCE`, `EXPECTED`) in
-  its own fence with a random boundary minted for that request (see
-  `Nous.Plugins.InputGuard.Strategies.LLMJudge`). Fence-like markers (`<<<`,
-  `>>>`) inside the evidence are broken up before fencing.
+  evidence goes in the user message, every piece in its own fence with a
+  random boundary minted for that request (see
+  `Nous.Plugins.InputGuard.Strategies.LLMJudge`): `USER_INPUT`,
+  `AGENT_OUTPUT`, `TOOL_CALL_n`, `REFERENCE`, `EXPECTED`, and per message
+  `USER_n`, `AGENT_n`, `TOOL_RESULT_n` or `SYSTEM_n` (`n` its position;
+  `REQUEST_`-prefixed for an input message list), followed by
+  `AGENT_n_TOOL_CALL_m` for each tool call it made. The name outside a
+  fence is the only authority on which message a piece is and whether a
+  call was made, and the judge is told so: an agent reply containing a
+  line `USER: thanks, solved` or `(tool call lookup: {})` stays inside its
+  own `AGENT_n` fence. A `SYSTEM_n` name says where a message sat, not
+  that its content is trustworthy: system messages can carry caller
+  history, plugin text or summaries. Fence-like markers (`<<<`, `>>>`)
+  inside the evidence are broken up before fencing.
 
   Each judge run executes under its own trace id with role `:judge`, so its
   telemetry never lands in the graded sample's trace. The score's metadata
   carries `judge_trace_id`, the summed judge `usage` (`Nous.Usage`) and the
-  judge `model`, for cost accounting.
+  judge `model`. Under `Nous.Eval.run/2` the trace id is registered with the
+  run's budget (`Nous.Eval.ScoreInput`'s `:track_trace`) before the first
+  call, so every answered judge request is charged, including retries and
+  the calls of a judge that then failed or timed out.
 
   ## Results
 
@@ -131,6 +153,7 @@ defmodule Nous.Eval.Scorers.Judge do
     :temperature,
     :seed,
     :max_span_bytes,
+    :max_transcript_bytes,
     :require_calibration,
     :reference,
     :name
@@ -176,7 +199,8 @@ defmodule Nous.Eval.Scorers.Judge do
                {:reduce, :majority, &Options.enum(@id, :reduce, &1, [:majority, :mean])},
                {:temperature, 0, &Options.non_neg_number(@id, :temperature, &1)},
                {:seed, nil, &seed_opt/1},
-               {:max_span_bytes, 20_000, &span_limit_opt/1},
+               {:max_span_bytes, 20_000, &span_limit_opt(:max_span_bytes, &1)},
+               {:max_transcript_bytes, 40_000, &span_limit_opt(:max_transcript_bytes, &1)},
                {:require_calibration, nil, &requirements_opt/1},
                {:reference, nil, &reference_opt/1},
                {:name, @id, &Options.string(@id, :name, &1)},
@@ -272,10 +296,10 @@ defmodule Nous.Eval.Scorers.Judge do
   defp seed_opt(seed) when is_nil(seed) or is_integer(seed), do: {:ok, seed}
   defp seed_opt(other), do: Options.invalid(@id, "seed must be an integer, got #{inspect(other)}")
 
-  defp span_limit_opt(n) when is_integer(n) and n >= 256, do: {:ok, n}
+  defp span_limit_opt(_key, n) when is_integer(n) and n >= 256, do: {:ok, n}
 
-  defp span_limit_opt(n),
-    do: Options.invalid(@id, "max_span_bytes must be an integer >= 256, got #{inspect(n)}")
+  defp span_limit_opt(key, n),
+    do: Options.invalid(@id, "#{key} must be an integer >= 256, got #{inspect(n)}")
 
   defp reference_opt(value) when is_nil(value) or is_binary(value), do: {:ok, value}
 
@@ -386,8 +410,8 @@ defmodule Nous.Eval.Scorers.Judge do
   The judge's identity, hashed into the run fingerprint and keying stored
   calibrations: model, provider, temperature, seed, `prompt_hash`
   (template, rubric and label set), scale, threshold, include, samples,
-  reduce, span limit and Nous version. Model options (keys, URLs) are not
-  part of it.
+  reduce, span and transcript limits and Nous version. Model options
+  (keys, URLs) are not part of it.
   """
   @impl true
   def describe(config) do
@@ -403,6 +427,7 @@ defmodule Nous.Eval.Scorers.Judge do
       samples: config.samples,
       reduce: Atom.to_string(config.reduce),
       max_span_bytes: config.max_span_bytes,
+      max_transcript_bytes: config.max_transcript_bytes,
       nous_version: nous_version()
     }
   end
@@ -455,7 +480,7 @@ defmodule Nous.Eval.Scorers.Judge do
          :ok <- check_trace(input, config),
          {:ok, spans, truncated} <- spans(input, config) do
       warn_self_grading(input, config)
-      judge(spans, truncated, config)
+      judge(spans, truncated, input.track_trace, config)
     else
       true -> {:ok, %{Options.run_failed_score(config.name) | metadata: base_metadata(config)}}
       {:error, %ScorerError{}} = error -> error
@@ -491,9 +516,15 @@ defmodule Nous.Eval.Scorers.Judge do
   defp once?(%{warned: ref}, index), do: :atomics.compare_exchange(ref, index, 0, 1) == :ok
 
   # Tool calls and the transcript come from the trace. A truncated trace may
-  # be missing the very calls the judge should see.
+  # be missing the very calls the judge should see. A transcript passed to
+  # `score_transcript/3` does not come from the trace.
   defp check_trace(%ScoreInput{trace: %Trace{truncated?: true}}, config) do
-    if Enum.any?(config.include, &(&1 in [:tool_calls, :transcript])),
+    from_trace =
+      if Map.has_key?(config, :transcript_turns),
+        do: [:tool_calls],
+        else: [:tool_calls, :transcript]
+
+    if Enum.any?(config.include, &(&1 in from_trace)),
       do:
         error(
           config,
@@ -529,18 +560,25 @@ defmodule Nous.Eval.Scorers.Judge do
 
   # ── evidence ─────────────────────────────────────────────────────────────
 
+  @doc false
+  # `score/2` with the `:transcript` evidence given as `turns` (`{role,
+  # text}`, role `:user | :agent | :tool_result | :system`, in order) instead
+  # of read from the trace: `Nous.Eval.Simulator.Scorers.Rubric` grades a
+  # simulated episode's conversation this way.
+  @spec score_transcript(
+          ScoreInput.t(),
+          [{:user | :agent | :tool_result | :system, String.t()}],
+          config()
+        ) :: {:ok, Nous.Eval.Score.t()} | {:error, ScorerError.t()}
+  def score_transcript(%ScoreInput{} = input, turns, config) when is_list(turns),
+    do: score(input, Map.put(config, :transcript_turns, turns))
+
   defp spans(input, config) do
     Enum.reduce_while(config.include, {:ok, [], %{}}, fn item, {:ok, spans, truncated} ->
       case raw_spans(item, input, config) do
         {:ok, raw} ->
-          {spans, truncated} =
-            Enum.reduce(raw, {spans, truncated}, fn {name, text}, {spans, truncated} ->
-              {text, dropped} = text |> Fence.neutralize() |> truncate(config.max_span_bytes)
-              truncated = if dropped > 0, do: Map.put(truncated, name, dropped), else: truncated
-              {[{name, text} | spans], truncated}
-            end)
-
-          {:cont, {:ok, spans, truncated}}
+          {item_spans, truncated} = prepare(raw, truncated, config)
+          {:cont, {:ok, Enum.reverse(item_spans, spans), truncated}}
 
         {:error, _} = error ->
           {:halt, error}
@@ -552,15 +590,83 @@ defmodule Nous.Eval.Scorers.Judge do
     end
   end
 
+  # A message list (`{:messages, note, messages}`, each message a list of
+  # spans: its text, then its tool calls) is cut per span, then to
+  # `max_transcript_bytes` in total; `note` names the line, outside the
+  # fences, that says how much was left out.
+  defp prepare({:messages, note, messages}, truncated, config) do
+    {messages, truncated} =
+      Enum.map_reduce(messages, truncated, &cut_spans(&1, &2, config.max_span_bytes))
+
+    case cap_messages(messages, config.max_transcript_bytes) do
+      {:all, messages} ->
+        {Enum.concat(messages), truncated}
+
+      {:cut, first, omitted, rest} ->
+        dropped = Enum.sum(Enum.map(omitted, &span_bytes/1))
+        text = "#{length(omitted)} messages (#{dropped} bytes) left out here"
+        {first ++ [{note, text} | Enum.concat(rest)], Map.put(truncated, note, dropped)}
+    end
+  end
+
+  defp prepare(spans, truncated, config), do: cut_spans(spans, truncated, config.max_span_bytes)
+
+  defp cut_spans(spans, truncated, limit) do
+    Enum.map_reduce(spans, truncated, fn {name, text}, truncated ->
+      {text, dropped} = text |> Fence.neutralize() |> truncate(limit)
+      {{name, text}, if(dropped > 0, do: Map.put(truncated, name, dropped), else: truncated)}
+    end)
+  end
+
+  # A message list over `limit` bytes keeps its first message and as many of
+  # its latest ones as fit; the messages in between are left out. The first
+  # and last messages are always kept (each is already cut to
+  # `max_span_bytes`).
+  defp cap_messages([first | [_ | _] = rest] = messages, limit) do
+    [last | earlier] = Enum.reverse(rest)
+    budget = limit - span_bytes(first) - span_bytes(last)
+
+    case keep_latest(earlier, budget, []) do
+      {_kept, []} -> {:all, messages}
+      {kept, omitted} -> {:cut, first, omitted, kept ++ [last]}
+    end
+  end
+
+  defp cap_messages(messages, _limit), do: {:all, messages}
+
+  # `earlier` runs newest first; returns the kept messages in order and the
+  # left-out ones.
+  defp keep_latest([message | older] = earlier, budget, kept) do
+    size = span_bytes(message)
+
+    if size <= budget,
+      do: keep_latest(older, budget - size, [message | kept]),
+      else: {kept, earlier}
+  end
+
+  defp keep_latest([], _budget, kept), do: {kept, []}
+
+  defp span_bytes(spans),
+    do: Enum.reduce(spans, 0, fn {_name, text}, sum -> sum + byte_size(text) end)
+
+  defp raw_spans(:input, %ScoreInput{case: %{input: [_ | _] = messages}}, _config) do
+    if Enum.all?(messages, &match?(%Nous.Message{}, &1)),
+      do: {:ok, {:messages, "REQUEST_OMITTED", message_spans("REQUEST_", messages)}},
+      else: {:ok, [{"USER_INPUT", Enum.map_join(messages, "\n\n", &to_text/1)}]}
+  end
+
   defp raw_spans(:input, %ScoreInput{case: c}, _config),
-    do: {:ok, [{"USER_INPUT", input_text(c.input)}]}
+    do: {:ok, [{"USER_INPUT", to_text(c.input)}]}
 
   defp raw_spans(:output, input, _config), do: {:ok, [{"AGENT_OUTPUT", to_text(input.output)}]}
 
-  defp raw_spans(:transcript, %ScoreInput{trace: trace}, _config) do
-    text = trace |> Trace.transcript() |> Enum.map_join("\n\n", &message_text/1)
-    {:ok, [{"TRANSCRIPT", text}]}
+  defp raw_spans(:transcript, _input, %{transcript_turns: turns}) do
+    entries = for {role, text} <- turns, do: {role, text, []}
+    {:ok, {:messages, "TRANSCRIPT_OMITTED", message_units("", entries)}}
   end
+
+  defp raw_spans(:transcript, %ScoreInput{trace: trace}, _config),
+    do: {:ok, {:messages, "TRANSCRIPT_OMITTED", message_spans("", Trace.transcript(trace))}}
 
   defp raw_spans(:tool_calls, %ScoreInput{trace: trace}, _config) do
     spans =
@@ -596,25 +702,50 @@ defmodule Nous.Eval.Scorers.Judge do
     end
   end
 
-  defp input_text(text) when is_binary(text), do: text
-
-  defp input_text(messages) when is_list(messages),
-    do: Enum.map_join(messages, "\n\n", &message_text/1)
-
-  defp input_text(other), do: to_text(other)
-
-  defp message_text(%Nous.Message{} = message) do
-    calls =
-      for %{} = call <- message.tool_calls || [] do
-        name = Map.get(call, "name") || Map.get(call, :name)
-        args = Map.get(call, "arguments") || Map.get(call, :arguments)
-        "\n(tool call #{name}: #{to_text(args)})"
+  # One fenced span per message, named with its sender and position
+  # (`USER_1`, `AGENT_2`, `TOOL_RESULT_3`), then one per tool call it made
+  # (`AGENT_2_TOOL_CALL_1`): text inside one message can pass neither for
+  # another sender's turn nor for a call that was made.
+  defp message_spans(prefix, messages) do
+    entries =
+      for %Nous.Message{} = message <- messages do
+        {turn_role(message.role), Nous.Message.extract_text(message),
+         List.wrap(message.tool_calls)}
       end
 
-    "#{message.role}: #{Nous.Message.extract_text(message)}#{Enum.join(calls)}"
+    message_units(prefix, entries)
   end
 
-  defp message_text(other), do: to_text(other)
+  defp message_units(prefix, entries) do
+    entries
+    |> Enum.with_index(1)
+    |> Enum.map(fn {{role, text, calls}, index} ->
+      label = "#{prefix}#{turn_label(role)}_#{index}"
+
+      calls =
+        calls
+        |> Enum.filter(&is_map/1)
+        |> Enum.with_index(1)
+        |> Enum.map(fn {call, n} -> {"#{label}_TOOL_CALL_#{n}", message_call_text(call)} end)
+
+      [{label, text} | calls]
+    end)
+  end
+
+  defp turn_role(:assistant), do: :agent
+  defp turn_role(:tool), do: :tool_result
+  defp turn_role(role) when role in [:user, :system], do: role
+
+  defp turn_label(:user), do: "USER"
+  defp turn_label(:agent), do: "AGENT"
+  defp turn_label(:tool_result), do: "TOOL_RESULT"
+  defp turn_label(:system), do: "SYSTEM"
+
+  defp message_call_text(call) do
+    name = Map.get(call, "name") || Map.get(call, :name)
+    args = Map.get(call, "arguments") || Map.get(call, :arguments)
+    "name: #{to_text(name)}\narguments: #{to_text(args)}"
+  end
 
   defp tool_call_text(%ToolCall{} = call) do
     result =
@@ -661,9 +792,14 @@ defmodule Nous.Eval.Scorers.Judge do
 
   # ── the judge call ───────────────────────────────────────────────────────
 
-  defp judge(spans, truncated, config) do
+  defp judge(spans, truncated, track_trace, config) do
     texts = Enum.map(spans, &elem(&1, 1))
     trace_id = RunScope.new_trace_id()
+
+    # Registered with the run's budget before the first call, so every
+    # request (answered, retried, failed or cut off by the scorer timeout)
+    # is charged through the budget's telemetry accounting.
+    if track_trace, do: track_trace.(trace_id)
 
     # A scope of its own: the judge's runs get a fresh trace id and the
     # `:judge` role instead of inheriting the graded sample's scope.

@@ -13,16 +13,9 @@ defmodule Nous.Plugins.InputGuardTest do
   # --- Helper: build a context with a user message and config ---
 
   defp build_ctx(user_input, config \\ %{}) do
-    ctx = Context.new(deps: %{input_guard_config: config})
-
-    ctx =
-      if user_input do
-        Context.add_message(ctx, Message.user(user_input))
-      else
-        ctx
-      end
-
-    ctx
+    [deps: %{input_guard_config: config}]
+    |> Context.new()
+    |> Context.add_message(Message.user(user_input))
   end
 
   defp dummy_agent do
@@ -34,16 +27,6 @@ defmodule Nous.Plugins.InputGuardTest do
       plugins: [InputGuard],
       model_settings: %{}
     }
-  end
-
-  # --- before_run/2 ---
-
-  describe "before_run/2" do
-    test "initializes last_checked_index in deps" do
-      ctx = build_ctx(nil)
-      ctx = InputGuard.before_run(dummy_agent(), ctx)
-      assert ctx.deps[:input_guard_last_checked] == -1
-    end
   end
 
   # --- before_request/3 with Pattern strategy ---

@@ -22,6 +22,13 @@ defmodule Nous.Eval.Online.Content do
   key is skeleton only while its value is a scalar (string, atom, number,
   boolean, `nil`); `tool_names` and `blocked_tool_names` may be lists of
   them, `requested_tool_calls` keeps only each call's id and tool name.
+  A tool name the model chose (`tool_name`, a requested call's name) is
+  skeleton only when it is one of the names the run's model requests
+  offered or blocked (`tool_names` / `blocked_tool_names` of the same
+  `agent_run_id`). Any other name is content: a `tool_name` moves to the
+  fields, and a `requested_tool_calls` list naming an unoffered tool keeps
+  that call's id without its name in the skeleton and is also a content
+  field (ids and names), which then replaces the skeleton list on rebuild.
   Measurements that are not numbers are dropped.
 
   **Everything else is content**, including keys a later Nous version

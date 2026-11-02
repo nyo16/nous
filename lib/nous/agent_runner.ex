@@ -57,6 +57,13 @@ defmodule Nous.AgentRunner do
         message_history: first.new_messages
       )
 
+  The agent's prompt is authoritative: when `:message_history` (or
+  `Nous.Agent.run/3`'s `messages:`) starts with a system message, the agent's
+  assembled prompt replaces it, and further leading copies of that prompt are
+  dropped, so passing `result.all_messages` back is safe too. Other system
+  messages, such as a compaction summary, are kept. Pass
+  `system_message: :caller` to send your own leading system message instead.
+
   `new_messages_truncated?` is `true` when compaction (for example
   `Nous.Plugins.Summarization`) folded part of this run into a summary of
   earlier history; `new_messages` then holds only what survived.
@@ -116,6 +123,19 @@ defmodule Nous.AgentRunner do
   ## Options
     * `:deps` - Dependencies for tools
     * `:message_history` - Previous messages
+    * `:system_message` - Which system message the conversation starts with,
+      `:agent` (default) or `:caller`; anything else raises `ArgumentError`.
+      Under `:agent`, the agent's assembled prompt replaces the first leading
+      `:system` message of `:message_history` (or `Nous.Agent.run/3`'s
+      `messages:`), or is prepended. Further leading system messages that
+      start with the agent's instructions (copies from older histories) are
+      dropped; any other system message stays where it is. So a continuation
+      from `result.all_messages` sends the agent prompt once, with the plugin
+      overlay once. A warning is logged when the agent has instructions and
+      the replaced message does not start with them. An agent with no
+      assembled prompt keeps the caller's messages as given. Under `:caller`,
+      the messages are sent as given and the agent's prompt is only added
+      when they have no leading system message. Ignored with `:context`.
     * `:usage_limits` - Usage limits (not implemented yet)
     * `:model_settings` - Override model settings
     * `:max_iterations` - Maximum model requests for this run (default: the
@@ -530,6 +550,8 @@ defmodule Nous.AgentRunner do
   # the sandbox policy, the router and the profile. Only the profile can fail,
   # and it fails here, before the run starts and before any model call.
   defp apply_runtime_overrides(agent, opts) do
+    validate_system_message!(opts)
+
     agent
     |> then(fn a ->
       case Keyword.fetch(opts, :output_type) do
@@ -609,10 +631,13 @@ defmodule Nous.AgentRunner do
         end
 
       nil ->
-        # The system message is built before the user message, so created_at
-        # stays in conversation order.
         history = Keyword.get(opts, :message_history, [])
-        {messages, system_prompt} = with_system_prompt(history, base_system_prompt(agent, opts))
+        instructions = resolve_instructions(agent, opts)
+        system_prompt = base_system_prompt(agent, instructions, opts)
+
+        {messages, system_prompt} =
+          with_system_prompt(history, instructions, system_prompt, agent, opts)
+
         {:ok, fresh_context(agent, messages ++ [Message.user(prompt)], system_prompt, opts)}
     end
   end
@@ -631,7 +656,8 @@ defmodule Nous.AgentRunner do
     if ctx.profile_id == profile_id do
       {:ok, ctx}
     else
-      prompt = base_system_prompt(agent, Keyword.put_new(opts, :deps, ctx.deps))
+      opts = Keyword.put_new(opts, :deps, ctx.deps)
+      prompt = base_system_prompt(agent, resolve_instructions(agent, opts), opts)
 
       case Context.replace_system_prompt(ctx, prompt) do
         {:ok, switched, action} ->
@@ -660,18 +686,26 @@ defmodule Nous.AgentRunner do
     # The run-level overrides (:output_type and :structured_output decide the
     # suffix, :profile the instructions) apply exactly as on the prompt path.
     with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
-      {messages, system_prompt} = with_system_prompt(messages, base_system_prompt(agent, opts))
+      instructions = resolve_instructions(agent, opts)
+      system_prompt = base_system_prompt(agent, instructions, opts)
+
+      {messages, system_prompt} =
+        with_system_prompt(messages, instructions, system_prompt, agent, opts)
+
       {:ok, fresh_context(agent, messages, system_prompt, opts)}
     end
   end
 
-  # The agent's system prompt for a fresh context: `instructions` (else
-  # `system_prompt`), the todo list when enabled, and the structured-output
-  # instructions for a non-string `output_type`.
-  defp base_system_prompt(agent, opts) do
-    system_prompt =
-      resolve_prompt(agent.instructions, opts) ||
-        resolve_prompt(agent.system_prompt, opts)
+  # `instructions` (else `system_prompt`), resolved once per run: a function
+  # prompt is called here only.
+  defp resolve_instructions(agent, opts),
+    do: resolve_prompt(agent.instructions, opts) || resolve_prompt(agent.system_prompt, opts)
+
+  # The agent's system prompt for a fresh context: the resolved instructions,
+  # the todo list when enabled, and the structured-output instructions for a
+  # non-string `output_type`.
+  defp base_system_prompt(agent, instructions, opts) do
+    system_prompt = instructions
 
     system_prompt =
       if agent.enable_todos do
@@ -762,23 +796,90 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  # A conversation has at most one system message, and it comes first: strict
-  # chat templates (Qwen, Llama) reject anything else. A list that already
-  # starts with one (`message_history: result.all_messages`, or a caller's own
-  # `messages:`) keeps it and gets no second system prompt. When it is the
-  # agent's own prompt (a continuation), `ctx.system_prompt` still records it;
-  # a different one means the agent's prompt is not in use (nil).
-  defp with_system_prompt([%Message{role: :system} = first | _] = messages, system_prompt) do
+  # A conversation has one system message, and it comes first: strict chat
+  # templates (Qwen, Llama) reject anything else. Which one that is depends
+  # on the run's `:system_message` option:
+  #
+  #   * `:agent` (default) - the agent's assembled prompt replaces the first
+  #     leading system message of the caller's list (or is prepended), so
+  #     `ctx.system_prompt` is always that prompt. A continuation's leading
+  #     message carries the plugin overlay (re-applied by Context on every
+  #     materialization) and old todo text, so replacing it, not keeping it,
+  #     is what keeps the overlay in the request exactly once. Further
+  #     leading system messages are dropped only when they are copies of the
+  #     agent's prompt (histories from before this rule); anything else,
+  #     such as the Summarization plugin's `[Conversation Summary]`, stays.
+  #     An agent with no prompt has nothing to put first and keeps the
+  #     caller's list as under `:caller`.
+  #   * `:caller` - the list is kept as it is; `ctx.system_prompt` records the
+  #     agent's prompt only when the leading message is exactly it.
+  #
+  # The system message takes the time of the message it replaces or precedes,
+  # so created_at stays non-decreasing.
+  defp with_system_prompt(messages, instructions, system_prompt, agent, opts) do
+    case Keyword.get(opts, :system_message, :agent) do
+      :agent when system_prompt in [nil, ""] -> caller_system_prompt(messages, system_prompt)
+      :agent -> agent_system_prompt(messages, instructions, system_prompt, agent)
+      :caller -> caller_system_prompt(messages, system_prompt)
+    end
+  end
+
+  defp agent_system_prompt(messages, instructions, system_prompt, agent) do
+    case Enum.split_while(messages, &match?(%Message{role: :system}, &1)) do
+      {[], _rest} ->
+        {[system_message(system_prompt, messages) | messages], system_prompt}
+
+      {[first | more], rest} ->
+        # Logging only: the first message is replaced whatever it contained.
+        # Without instructions there is nothing to recognise it by.
+        if instructions not in [nil, ""] and not own_prompt?(first, instructions) do
+          Logger.warning(
+            "Agent #{agent.name}: the leading system message in the supplied messages is " <>
+              "not the agent's prompt and was replaced by it. Pass `system_message: :caller` " <>
+              "to send your own system message instead."
+          )
+        end
+
+        kept = Enum.reject(more, &own_prompt?(&1, instructions))
+        {[system_message(system_prompt, messages) | kept] ++ rest, system_prompt}
+    end
+  end
+
+  defp caller_system_prompt([%Message{role: :system} = first | _] = messages, system_prompt) do
     if Message.extract_text(first) == system_prompt,
       do: {messages, system_prompt},
       else: {messages, nil}
   end
 
-  defp with_system_prompt(messages, system_prompt),
-    do: {system_message(system_prompt) ++ messages, system_prompt}
+  defp caller_system_prompt(messages, system_prompt) when system_prompt in [nil, ""],
+    do: {messages, system_prompt}
 
-  defp system_message(system_prompt) when system_prompt in [nil, ""], do: []
-  defp system_message(system_prompt), do: [Message.system(system_prompt)]
+  defp caller_system_prompt(messages, system_prompt),
+    do: {[system_message(system_prompt, messages) | messages], system_prompt}
+
+  # A copy of the agent's own prompt starts with its instructions (todo and
+  # overlay text follow them). Without instructions nothing is recognisably
+  # the agent's.
+  defp own_prompt?(_message, instructions) when instructions in [nil, ""], do: false
+
+  defp own_prompt?(message, instructions),
+    do: String.starts_with?(Message.extract_text(message), instructions)
+
+  defp system_message(system_prompt, [%Message{created_at: %DateTime{} = at} | _]),
+    do: %{Message.system(system_prompt) | created_at: at}
+
+  defp system_message(system_prompt, _messages), do: Message.system(system_prompt)
+
+  defp validate_system_message!(opts) do
+    case Keyword.get(opts, :system_message, :agent) do
+      mode when mode in [:agent, :caller] ->
+        :ok
+
+      other ->
+        raise ArgumentError,
+              ":system_message must be :agent or :caller, got: #{inspect(other)}"
+    end
+  end
 
   defp resolve_prompt(nil, _opts), do: nil
   defp resolve_prompt(prompt, _opts) when is_binary(prompt), do: prompt

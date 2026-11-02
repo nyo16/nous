@@ -3,11 +3,12 @@ defmodule Nous.Eval.Simulator.Scorers.Rubric do
   An LLM judge over the episode transcript (`"sim.rubric"`), from a
   simulated case's `expected.rubric` (`judge`, `criteria`, `gate`).
 
-  It is `Nous.Eval.Scorers.Judge` reading the conversation as the agent's
-  output (`include: [:output]`): every `USER:`/`AGENT:` line, fenced as
-  untrusted data. The simulated user's private reasoning and its reason
-  for stopping are not in the transcript. The judge model is priced and
-  budgeted like any model-graded scorer.
+  It is `Nous.Eval.Scorers.Judge` reading the conversation as its
+  transcript (`include: [:transcript]`): every user and agent message in
+  a fence of its own, named outside the fence (`USER_1`, `AGENT_2`), so a
+  message cannot forge another turn. The simulated user's private
+  reasoning and its reason for stopping are not in the transcript. The
+  judge model is priced and budgeted like any model-graded scorer.
 
   It is diagnostic by default (`gate: false`: reported with weight 0): a
   judge reading a transcript inherits the simulator's biases, and
@@ -40,7 +41,7 @@ defmodule Nous.Eval.Simulator.Scorers.Rubric do
   def init(opts) when is_list(opts) do
     if Keyword.has_key?(opts, :include) or Keyword.has_key?(opts, :name),
       do: {:error, "#{@id}: :include and :name are fixed"},
-      else: Judge.init(Keyword.merge(opts, include: [:output], name: @id))
+      else: Judge.init(Keyword.merge(opts, include: [:transcript], name: @id))
   end
 
   @impl true
@@ -49,7 +50,7 @@ defmodule Nous.Eval.Simulator.Scorers.Rubric do
   @impl true
   def score(%ScoreInput{} = input, config) do
     Common.score(input, @id, fn episode ->
-      Judge.score(%{input | output: Simulator.transcript_text(episode)}, config)
+      Judge.score_transcript(input, Simulator.transcript_turns(episode), config)
     end)
   end
 end

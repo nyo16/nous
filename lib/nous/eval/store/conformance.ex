@@ -9,19 +9,36 @@ defmodule Nous.Eval.Store.Conformance do
       defmodule MyApp.Eval.Store.PostgresConformanceTest do
         use Nous.Eval.Store.Conformance,
           store: MyApp.Eval.Store.Postgres,
-          init_opts: [url: "postgres://localhost/eval_test"]
+          # Hypothetical options of your store: `init/1` creates a schema
+          # with a fresh unique name on every call.
+          init_opts: [url: System.fetch_env!("EVAL_TEST_DATABASE_URL"), schema: :unique]
       end
+
+  ## An isolated, empty store per test
+
+  `init/1` runs once per test with the same options, and the store it
+  returns **must be empty and isolated from every other test's store**,
+  including tests of the same module running concurrently (the suite is
+  `async: true`) and earlier runs of the suite. The kit asserts exact
+  `list_runs/2` results and baseline histories, `:not_found` for labels it
+  never set, and that stores refuse to re-put a run id, so a store that
+  reopens the same database fails from the second test on. Use `:tmp_dir`
+  for a file-backed store; for a database server, have `init/1` (or a
+  test-only wrapper module around your store) create a fresh schema or
+  database per call. Tests whose assertions do not depend on the rest of
+  the store use run ids unique per test.
 
   ## Options
 
     * `:store` - the module under test (required)
-    * `:init_opts` - keyword list passed to `init/1`
+    * `:init_opts` - keyword list passed to `init/1` (see above)
     * `:tag` - a module tag, e.g. `:sqlite`, so a suite needing a native
       dependency runs only where it is installed
     * `:tmp_dir` - give every test a fresh directory (ExUnit's `:tmp_dir`)
       and pass it to `init/1`: `:root` sets `root: dir`; `{:path, file}`
-      sets `path: Path.join(dir, file)`. With it the suite also checks that
-      records survive re-opening the store.
+      sets `path: Path.join(dir, file)`. With it each test gets an empty
+      store, and the suite also checks that records survive re-opening the
+      store.
 
           use Nous.Eval.Store.Conformance,
             store: Nous.Eval.Store.File,
@@ -92,11 +109,16 @@ defmodule Nous.Eval.Store.Conformance do
         state
       end
 
+      # A run id no other test, nor an earlier run of the suite, uses.
+      defp unique_id(prefix),
+        do: "#{prefix}-#{Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)}"
+
       test "put_run/2 then get_run/2 round-trips a run with its trace", %{state: state} do
-        run = run_fixture("run-roundtrip")
+        id = unique_id("run-roundtrip")
+        run = run_fixture(id)
         state = put!(state, run)
 
-        assert {:ok, fetched} = @store.get_run(state, "run-roundtrip")
+        assert {:ok, fetched} = @store.get_run(state, id)
         assert fetched == run
 
         [sample | _] = fetched.samples
@@ -108,17 +130,18 @@ defmodule Nous.Eval.Store.Conformance do
       end
 
       test "get_run/2 returns {:error, :not_found} for a missing id", %{state: state} do
-        assert {:error, :not_found} = @store.get_run(state, "no-such-run")
+        assert {:error, :not_found} = @store.get_run(state, unique_id("no-such-run"))
       end
 
       test "put_run/2 refuses an id that is already stored", %{state: state} do
-        original = run_fixture("run-once")
+        id = unique_id("run-once")
+        original = run_fixture(id)
         state = put!(state, original)
 
         assert {:error, :already_exists} =
                  @store.put_run(state, %{original | task: "Other.Task", samples: []})
 
-        assert {:ok, ^original} = @store.get_run(state, "run-once")
+        assert {:ok, ^original} = @store.get_run(state, id)
       end
 
       test "list_runs/2 returns summaries newest first, runs without a start last",
@@ -251,10 +274,11 @@ defmodule Nous.Eval.Store.Conformance do
       end
 
       test "baseline labels are validated", %{state: state} do
-        state = put!(state, run_fixture("run-a"))
+        id = unique_id("run-a")
+        state = put!(state, run_fixture(id))
 
         for label <- ["", "../main", "a/b", "Main", "with space", String.duplicate("l", 65), nil] do
-          assert {:error, {:invalid_label, ^label}} = @store.put_baseline(state, label, "run-a")
+          assert {:error, {:invalid_label, ^label}} = @store.put_baseline(state, label, id)
           assert {:error, {:invalid_label, ^label}} = @store.get_baseline(state, label)
           assert {:error, {:invalid_label, ^label}} = @store.list_baselines(state, label)
         end
@@ -592,16 +616,12 @@ defmodule Nous.Eval.Store.Conformance do
         end
 
         test "the cutoff is strict: a run started exactly at it is kept", %{state: state} do
-          state =
-            put!(
-              state,
-              run_fixture("online-edge", task: "online:edge", started_at: @retention_base)
-            )
+          id = unique_id("online-edge")
+          task = "online:" <> id
+          state = put!(state, run_fixture(id, task: task, started_at: @retention_base))
 
-          assert {:ok, 0, state} =
-                   @store.delete_runs_before(state, "online:edge", @retention_base)
-
-          assert {:ok, _run} = @store.get_run(state, "online-edge")
+          assert {:ok, 0, state} = @store.delete_runs_before(state, task, @retention_base)
+          assert {:ok, _run} = @store.get_run(state, id)
         end
 
         test "retention wins over a baseline label: the label's run is deleted, its history kept",

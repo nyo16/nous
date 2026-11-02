@@ -59,6 +59,33 @@ defmodule Nous.Eval.Online.SamplerTest do
     end
   end
 
+  describe "with a salt" do
+    test "the same session id gets a different decision under a different salt" do
+      # HMAC-SHA-256 gives "session-42" r < 2^55 under "salt-a" and r >= 2^55
+      # under "salt-b".
+      assert Sampler.sampled?("session-42", 0.5, "salt-a")
+      refute Sampler.sampled?("session-42", 0.5, "salt-b")
+    end
+
+    test "the decision is not the unsalted one a client can compute" do
+      ids = ids(256, "salted")
+      unsalted = Enum.map(ids, &Sampler.sampled?(&1, 0.5))
+      salted = Enum.map(ids, &Sampler.sampled?(&1, 0.5, "secret"))
+
+      refute salted == unsalted
+    end
+
+    test "keeps the nesting and the rate edges" do
+      rates = [0.0, 0.01, 0.1, 0.5, 0.9, 1.0]
+
+      for id <- ids(1_000, "salted-nested") do
+        decisions = Enum.map(rates, &Sampler.sampled?(id, &1, "secret"))
+        assert decisions == Enum.sort(decisions)
+        assert hd(decisions) == false and List.last(decisions) == true
+      end
+    end
+  end
+
   defp wilson(k, n, z) do
     p = k / n
     denom = 1 + z * z / n

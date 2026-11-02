@@ -1,6 +1,5 @@
 defmodule Nous.Eval.DatasetTest do
-  # async: false - file scorer names resolve through the :eval_scorers app env,
-  # and the atom-table assertion needs no concurrently running tests.
+  # async: false - file scorer names resolve through the :eval_scorers app env.
   use ExUnit.Case, async: false
 
   alias Nous.Eval.{Case, Dataset}
@@ -387,10 +386,22 @@ defmodule Nous.Eval.DatasetTest do
     end
   end
 
+  defp novel_names do
+    receive do
+      {:novel, name} -> [name | novel_names()]
+    after
+      0 -> []
+    end
+  end
+
   describe "atom safety" do
     test "loading files never creates atoms" do
+      test = self()
+
       novel = fn ->
-        "zz_novel_#{System.unique_integer([:positive])}_#{:rand.uniform(1_000_000_000)}"
+        name = "zz_novel_#{System.unique_integer([:positive])}_#{:rand.uniform(1_000_000_000)}"
+        send(test, {:novel, name})
+        name
       end
 
       write = fn ->
@@ -427,21 +438,14 @@ defmodule Nous.Eval.DatasetTest do
 
       load_all = fn paths -> Enum.map(paths, &Dataset.load/1) end
 
-      # Warm up: the first load pulls in the YAML/JSON code paths and their
-      # atoms. Only the second, with fresh strings, is measured.
-      warm = load_all.(write.())
-      assert [{:ok, _}, {:error, _}, {:error, _}, {:error, _}, {:error, _}] = warm
-
-      paths = write.()
-      before = :erlang.system_info(:atom_count)
-      results = load_all.(paths)
-      after_count = :erlang.system_info(:atom_count)
-
       assert [{:ok, %Dataset{cases: [c]}}, {:error, _}, {:error, _}, {:error, _}, {:error, _}] =
-               results
+               load_all.(write.())
 
       assert [{_, %{}}] = Map.to_list(c.expected)
-      assert after_count == before
+
+      for name <- novel_names() do
+        assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+      end
     end
   end
 end

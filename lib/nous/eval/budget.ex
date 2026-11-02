@@ -14,20 +14,25 @@ defmodule Nous.Eval.Budget do
   # paid for. It runs in the emitting process, before the run's next
   # cancellation check, and the counters are `:atomics`, so the ledger is
   # exact under parallel samples. Model-graded scorers run under their own
-  # trace ids; their usage is charged from what they report (`charge/3`).
+  # trace ids, which they register with `track/2` before their first call,
+  # so every judge request (answered, retried after unparseable output, or
+  # cut off by a scorer timeout) is charged exactly once, the same way.
   #
   # Pricing. Each request is priced with `Nous.Usage.cost/2` against the
   # model that answered (`active_model_*`, which differs from the configured
   # model on a fallback or a route). Cost is kept in pico-dollars, so the
   # integer counter loses nothing a price table can express.
   #
-  # Exhaustion. The first limit reached is recorded once (`exhausted/1`).
-  # `:max_tokens` / `:max_cost` stop spending: no sample is admitted, a
-  # running agent is cancelled at its next step (`cancellation_check/1`),
-  # and model-graded scorers are not called. `:max_samples` only refuses
-  # admission; samples already running finish. With `:max_cost` set, a
-  # request whose model has no price exhausts the budget (`:unknown_price`):
-  # a spend that cannot be measured cannot be bounded.
+  # Exhaustion. Spend limits and the sample limit are recorded in separate
+  # slots, each once (first reason wins within a slot). `:max_tokens` /
+  # `:max_cost` stop spending: no sample is admitted, a running agent is
+  # cancelled at its next step (`cancellation_check/1`), and model-graded
+  # scorers are not called. `:max_samples` only refuses admission; samples
+  # already running finish. With `:max_cost` set, a request whose model has
+  # no price exhausts the budget (`:unknown_price`): a spend that cannot be
+  # measured cannot be bounded. A spend limit reached after `:max_samples`
+  # still stops spending, and `exhausted/1` then reports the spend reason
+  # (spend outranks samples).
   #
   # The handler is total (a raising handler would be detached and stop
   # counting, failing open).
@@ -42,11 +47,11 @@ defmodule Nous.Eval.Budget do
   @cost 2
   @samples 3
   @unpriced 4
-  @reason 5
+  @spend_reason 5
+  @samples_reason 6
 
   @reasons %{1 => :max_tokens, 2 => :max_cost, 3 => :max_samples, 4 => :unknown_price}
   @codes Map.new(@reasons, fn {code, reason} -> {reason, code} end)
-  @spend_reasons [:max_tokens, :max_cost, :unknown_price]
 
   @type limits :: %{
           max_tokens: pos_integer() | nil,
@@ -116,7 +121,7 @@ defmodule Nous.Eval.Budget do
   def start(limits) do
     budget = %__MODULE__{
       limits: limits,
-      counters: :atomics.new(5, signed: true),
+      counters: :atomics.new(6, signed: true),
       traces: :ets.new(__MODULE__, [:set, :public, read_concurrency: true]),
       handler_id: {__MODULE__, make_ref()}
     }
@@ -207,8 +212,13 @@ defmodule Nous.Eval.Budget do
     :ok
   end
 
+  defp exhaust(%__MODULE__{counters: counters}, :max_samples) do
+    :atomics.compare_exchange(counters, @samples_reason, 0, Map.fetch!(@codes, :max_samples))
+    :ok
+  end
+
   defp exhaust(%__MODULE__{counters: counters}, reason) do
-    :atomics.compare_exchange(counters, @reason, 0, Map.fetch!(@codes, reason))
+    :atomics.compare_exchange(counters, @spend_reason, 0, Map.fetch!(@codes, reason))
     :ok
   end
 
@@ -233,16 +243,22 @@ defmodule Nous.Eval.Budget do
   end
 
   @doc false
-  # The limit that ended spending, or `nil`.
+  # The limit that ended the run, or `nil`: the spend reason when spending
+  # stopped, else `:max_samples` when admission was refused.
   @spec exhausted(t()) :: :max_tokens | :max_cost | :max_samples | :unknown_price | nil
-  def exhausted(%__MODULE__{counters: counters}),
-    do: Map.get(@reasons, :atomics.get(counters, @reason))
+  def exhausted(%__MODULE__{counters: counters}) do
+    case :atomics.get(counters, @spend_reason) do
+      0 -> Map.get(@reasons, :atomics.get(counters, @samples_reason))
+      code -> Map.fetch!(@reasons, code)
+    end
+  end
 
   @doc false
   # True once a token or cost limit stopped spending (`:max_samples` does
   # not stop work already admitted).
   @spec spend_exhausted?(t()) :: boolean()
-  def spend_exhausted?(budget), do: exhausted(budget) in @spend_reasons
+  def spend_exhausted?(%__MODULE__{counters: counters}),
+    do: :atomics.get(counters, @spend_reason) != 0
 
   @doc false
   # The agent's `:cancellation_check`: throws `{:cancelled,

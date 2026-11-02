@@ -113,9 +113,13 @@ defmodule Nous.Eval.OptimizerTest do
       )
     end
 
+    # Six test cases: with all improved, the exact sign test gives
+    # p = 0.5^6 = 0.016, below alpha 0.05.
     @impl true
-    def dataset do
-      for {split, n} <- [{"train", 4}, {"val", 4}, {"test", 4}], i <- 1..n do
+    def dataset, do: dataset(6)
+
+    def dataset(test_cases) do
+      for {split, n} <- [{"train", 4}, {"val", 4}, {"test", test_cases}], i <- 1..n do
         %{
           id: "#{split}-#{i}",
           input: "Where is order #{split} #{i}? Please check carefully for me today.",
@@ -128,6 +132,20 @@ defmodule Nous.Eval.OptimizerTest do
 
     @impl true
     def scorers, do: [{Nous.Eval.Scorers.Contains, values: ["found"]}]
+  end
+
+  defmodule SmallTestTask do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def agent(context), do: Nous.Eval.OptimizerTest.Task.agent(context)
+
+    @impl true
+    def dataset, do: Nous.Eval.OptimizerTest.Task.dataset(3)
+
+    @impl true
+    def scorers, do: Nous.Eval.OptimizerTest.Task.scorers()
   end
 
   defp install(reflector) do
@@ -171,10 +189,15 @@ defmodule Nous.Eval.OptimizerTest do
     assert result.profile.provenance["strategy"] == "gepa"
     assert result.improvement.verdict == :regression
     assert result.comparison.verdict == :pass
+    assert %{b: 6, c: 0, p_value: p} = result.sign_test
+    assert p < 0.05
     assert result.run_ids != []
 
     markdown = ProfileReport.render(result.report, format: :markdown)
     assert markdown =~ "ALWAYS call this tool"
+
+    assert ProfileReport.render(result.report, format: :console) =~
+             "exact sign test: 6 improved, 0 worsened"
 
     # The accepted profile, applied to the agent, changes the request body.
     flush()
@@ -189,6 +212,35 @@ defmodule Nous.Eval.OptimizerTest do
     {:ok, _} = Nous.run(agent, "Where is order 9?")
     assert_received {:agent, settings}
     assert inspect(settings[:tools]) =~ @good_description
+  end
+
+  test "an all-improved test split of 3 cases is rejected by the exact sign test" do
+    install(reflect_with(@good_description))
+
+    assert {:ok, %Result{verdict: :rejected} = result} =
+             Optimizer.run(SmallTestTask,
+               reflector: "openai:reflector-model",
+               components: ["tool:lookup"],
+               budget: [max_metric_calls: 400],
+               k: 1,
+               max_steps: 4,
+               minibatch_size: 2,
+               seed: 7
+             )
+
+    assert %{b: 3, c: 0, p_value: p} = result.sign_test
+    assert_in_delta p, 0.125, 1.0e-9
+    assert p >= 0.05
+
+    # The bootstrap alone would accept: the candidate is free of regressions
+    # and the seed is significantly worse. Only the sign test rejects.
+    assert result.comparison.verdict == :pass
+    assert result.improvement.verdict == :regression
+
+    assert [reason] = result.reasons
+    assert reason =~ "no significant improvement on test"
+    assert reason =~ "exact sign test p = 0.1250, n = 3"
+    refute result.stored?
   end
 
   test "the reflector never receives expected values or held-out cases under :diagnostic" do
@@ -222,6 +274,7 @@ defmodule Nous.Eval.OptimizerTest do
     end)
 
     assert {:ok, %Result{verdict: :rejected} = result} = run(max_steps: 2)
+    assert [_ | _] = result.rejections
     assert Enum.all?(result.rejections, &(&1.reason == :unrequested_component))
     assert result.reasons == ["no candidate improved on the seed during the search"]
   end
@@ -247,7 +300,13 @@ defmodule Nous.Eval.OptimizerTest do
   test "a child that is not strictly better on the minibatch is rejected" do
     install(reflect_with("Looks things up, quickly."))
     {:ok, result} = run(max_steps: 2)
+    assert [_ | _] = result.rejections
     assert Enum.all?(result.rejections, &match?(%{reason: {:no_improvement, _, _}}, &1))
+
+    assert Enum.all?(
+             result.rejections,
+             &(&1.proposal == %{"tool:lookup" => "Looks things up, quickly."})
+           )
   end
 
   test "the guard filter keeps a candidate that regresses guard cases out of the pool" do
@@ -256,6 +315,7 @@ defmodule Nous.Eval.OptimizerTest do
 
     {:ok, result} = run(guard: guard, max_steps: 2)
     assert result.verdict == :rejected
+    assert [_ | _] = result.rejections
     assert Enum.all?(result.rejections, &(&1.reason == :guard_says_no))
     assert [%Candidate{step: 0}] = result.candidates
   end
@@ -394,35 +454,33 @@ defmodule Nous.Eval.OptimizerTest do
 end
 
 defmodule Nous.Eval.OptimizerCLIAtomTest do
-  # async: false - the atom table is global, so concurrent tests would make
-  # the count move. These flags are refused before any model call.
+  # async: false - Mix.Task.reenable/run touch global task state.
   use ExUnit.Case, async: false
 
   test "unknown mix nous.optimize flag values exit 2 without creating atoms" do
-    bad = fn ->
+    suffix = Base.encode32(:crypto.strong_rand_bytes(10), case: :lower, padding: false)
+    strategy = "strategy" <> suffix
+    feedback = "feedback" <> suffix
+
+    for flag <- [["--strategy", strategy], ["--feedback", feedback]] do
       Mix.Task.reenable("nous.optimize")
 
-      code =
-        ExUnit.CaptureIO.capture_io(:stderr, fn ->
-          try do
-            Mix.Task.run(
-              "nous.optimize",
-              ~w(--task Nous.Eval.OptimizerTest.Task
-              --reflector openai:r --budget-calls 9 --strategy no_such_strategy_q --feedback nope_q)
-            )
-          catch
-            :exit, {:shutdown, code} -> send(self(), {:code, code})
-          end
-        end)
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
+        try do
+          Mix.Task.run(
+            "nous.optimize",
+            ~w(--task Nous.Eval.OptimizerTest.Task --reflector openai:r --budget-calls 9) ++ flag
+          )
+        catch
+          :exit, {:shutdown, code} -> send(self(), {:code, code})
+        end
+      end)
 
-      assert code =~ "invalid --strategy"
       assert_received {:code, 2}
     end
 
-    # The first call loads modules (and their atoms); only later calls count.
-    bad.()
-    before = :erlang.system_info(:atom_count)
-    bad.()
-    assert :erlang.system_info(:atom_count) == before
+    for name <- [strategy, feedback] do
+      assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+    end
   end
 end

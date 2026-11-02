@@ -26,12 +26,18 @@ defmodule Nous.Eval.Guard.Registry do
 
   @version Mix.Project.config()[:version]
 
+  # Download size caps (`:max_bytes` per file): a download is aborted once it
+  # passes its cap, before it is hashed or parsed.
+  @builtin_max_bytes 16 * 1024 * 1024
+  @upstream_max_bytes 256 * 1024 * 1024
+
   @type file :: %{
           name: String.t(),
           url: String.t(),
           sha256: String.t(),
           format: :csv | :json | :jsonl | :parquet | :guard_jsonl,
-          split: String.t() | nil
+          split: String.t() | nil,
+          max_bytes: pos_integer()
         }
 
   @type source :: %{
@@ -331,7 +337,8 @@ defmodule Nous.Eval.Guard.Registry do
               "https://raw.githubusercontent.com/nyo16/nous/v#{@version}/test/fixtures/guard/#{name}",
             sha256: sha,
             format: :guard_jsonl,
-            split: nil
+            split: nil,
+            max_bytes: @builtin_max_bytes
           }
         end,
       adapter: nil
@@ -349,7 +356,8 @@ defmodule Nous.Eval.Guard.Registry do
       url: "https://huggingface.co/datasets/#{repo}/resolve/#{rev}/#{path}",
       sha256: sha,
       format: format,
-      split: split
+      split: split,
+      max_bytes: @upstream_max_bytes
     }
   end
 
@@ -359,7 +367,8 @@ defmodule Nous.Eval.Guard.Registry do
       url: "https://raw.githubusercontent.com/#{repo}/#{rev}/#{path}",
       sha256: sha,
       format: format,
-      split: split
+      split: split,
+      max_bytes: @upstream_max_bytes
     }
   end
 

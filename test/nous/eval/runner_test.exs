@@ -5,8 +5,10 @@ defmodule Nous.Eval.RunnerTest do
   use ExUnit.Case, async: true
 
   alias Nous.{Message, Usage}
-  alias Nous.Eval.{Run, Score, Store, Trace}
-  alias Nous.Eval.Scorers.{Contains, NoToolErrors, Trajectory}
+  alias Nous.Eval.{Budget, Run, Score, ScoreInput, Store, Trace}
+  alias Nous.Eval.Scorer.Spec
+  alias Nous.Eval.Scorers.{Contains, Judge, NoToolErrors, Trajectory}
+  alias Nous.Telemetry.RunScope
 
   @moduletag :capture_log
 
@@ -191,8 +193,10 @@ defmodule Nous.Eval.RunnerTest do
     def agent(_ctx), do: Tools.agent("openai:no-such-model-xyz")
   end
 
-  # A model-graded scorer that reports 50 tokens of judge usage, the way the
-  # LLM judge does.
+  # A model-graded scorer that makes one 50-token model request under its
+  # own trace, registered with the run's budget the way the LLM judge does,
+  # and also reports the usage in its metadata (which must not be charged a
+  # second time).
   defmodule FakeJudge do
     @moduledoc false
     @behaviour Nous.Eval.Scorer
@@ -207,8 +211,17 @@ defmodule Nous.Eval.RunnerTest do
     def describe(model), do: %{model: model}
 
     @impl true
-    def score(_input, model) do
+    def score(%ScoreInput{track_trace: track_trace}, model) do
       usage = %Usage{requests: 1, input_tokens: 40, output_tokens: 10, total_tokens: 50}
+      trace_id = RunScope.new_trace_id()
+      if track_trace, do: track_trace.(trace_id)
+      %Nous.Model{provider: provider, model: name} = Nous.Model.parse(model)
+
+      :telemetry.execute(
+        [:nous, :agent, :model, :stop],
+        %{input_tokens: 40, output_tokens: 10, total_tokens: 50},
+        %{trace_id: trace_id, model_provider: provider, model_name: name}
+      )
 
       {:ok,
        %Score{
@@ -248,6 +261,107 @@ defmodule Nous.Eval.RunnerTest do
     def agent(_ctx), do: Tools.agent()
   end
 
+  # The LLM judge on one case, once or twice per sample.
+  defmodule JudgedOnce do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def dataset,
+      do: [%{id: "greet", input: "say hi", scorers: [{Judge, judge: "openai:gpt-4o-mini"}]}]
+
+    @impl true
+    def agent(_ctx), do: Tools.agent()
+  end
+
+  defmodule JudgedTwice do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def dataset do
+      [
+        %{
+          id: "greet",
+          input: "say hi",
+          scorers: [{Judge, judge: "openai:gpt-4o-mini", samples: 2}]
+        }
+      ]
+    end
+
+    @impl true
+    def agent(_ctx), do: Tools.agent()
+  end
+
+  # A slow, expensive case, a fast cheap one, and one past `max_samples`.
+  defmodule Spender do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def dataset do
+      for input <- ["slow tool", "fast", "late"],
+          do: %{id: String.replace(input, " ", "_"), input: input}
+    end
+
+    @impl true
+    def scorers, do: [FakeJudge]
+
+    @impl true
+    def agent(_ctx), do: Tools.agent()
+  end
+
+  # Kills the rescore worker that called it.
+  defmodule KillsWorker do
+    @moduledoc false
+    @behaviour Nous.Eval.Scorer
+
+    @impl true
+    def id, do: "kills_worker"
+    @impl true
+    def init(_opts), do: {:ok, nil}
+
+    @impl true
+    def score(_input, _config) do
+      [worker | _] = Process.get(:"$callers")
+      Process.exit(worker, :kill)
+      {:skip, "the worker is gone"}
+    end
+  end
+
+  defmodule CrashesRescore do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def dataset, do: Tools.cases()
+
+    @impl true
+    def scorers, do: [KillsWorker]
+
+    @impl true
+    def agent(_ctx), do: Tools.agent()
+  end
+
+  defmodule SoftScored do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def dataset do
+      soft = %Spec{module: Contains, opts: [values: ["hi"]], required: false}
+
+      [
+        %{id: "implicit-soft", input: "say hi", scorers: [soft]},
+        %{id: "explicit-soft", input: "say hi", threshold: 0.7, scorers: [soft]},
+        %{id: "gated-only", input: "say hi", scorers: [{Contains, values: ["hi"]}]}
+      ]
+    end
+
+    @impl true
+    def agent(_ctx), do: Tools.agent()
+  end
+
   defp stub(script \\ &Stub.default/2) do
     Process.put(@stub_key, %{pid: self(), script: script})
     Nous.ModelDispatcher.put_dispatcher(Stub)
@@ -263,6 +377,82 @@ defmodule Nous.Eval.RunnerTest do
 
   defp sample(run, case_id, index \\ 0),
     do: Enum.find(run.samples, &(&1.case_id == case_id and &1.index == index))
+
+  # Answers the LLM judge's requests with `answer.(call_index)` (the text,
+  # `{:error, reason}`, or `:hang` to never answer in time) and the agent's
+  # with `Stub.default/2`. Every answer costs 10 tokens.
+  defp judge_stub(answer) do
+    calls = :counters.new(1, [])
+
+    stub(fn messages, settings ->
+      if Nous.Eval.JudgeStub.system_prompt(messages) =~ "evaluation judge" do
+        :counters.add(calls, 1, 1)
+
+        case answer.(:counters.get(calls, 1) - 1) do
+          {:error, _} = error ->
+            error
+
+          :hang ->
+            Process.sleep(2_000)
+            Stub.reply(Nous.Eval.JudgeStub.verdict("pass"))
+
+          text ->
+            Stub.reply(text)
+        end
+      else
+        Stub.default(messages, settings)
+      end
+    end)
+  end
+
+  # "slow tool" asks for a tool for a million input tokens, once the run's
+  # samples cap has refused "late"; anything else as `Stub.default/2`.
+  defp spender_script(messages, settings) do
+    last = messages |> Enum.reject(&(&1.role == :system)) |> List.last()
+
+    case Message.extract_text(last) do
+      "slow tool" -> expensive(Stub.call("get_weather", %{"city" => "Paris"}))
+      _ -> Stub.default(messages, settings)
+    end
+  end
+
+  defp expensive({:ok, message}) do
+    await_samples_cap()
+    usage = %Usage{requests: 1, input_tokens: 1_000_000, total_tokens: 1_000_000}
+    {:ok, %{message | metadata: Map.put(message.metadata, :usage, usage)}}
+  end
+
+  # Spender's cost limit, distinctive so its run's budget can be found.
+  @spender_max_cost 0.0123
+
+  # Waits until Spender's run budget has refused "late" (`:max_samples`), so
+  # the cost limit is crossed strictly after it. With parallelism 2, "late"
+  # starts once "fast" frees its worker slot, which this wait never holds.
+  defp await_samples_cap(attempts \\ 1_000) do
+    budget = spender_budget()
+
+    cond do
+      Budget.exhausted(budget) == :max_samples ->
+        :ok
+
+      attempts > 0 ->
+        Process.sleep(5)
+        await_samples_cap(attempts - 1)
+
+      true ->
+        raise "the samples cap never tripped"
+    end
+  end
+
+  defp spender_budget do
+    Enum.find_value(:telemetry.list_handlers([:nous, :agent, :model, :stop]), fn
+      %{id: {Budget, _}, config: %Budget{limits: %{max_cost: @spender_max_cost}} = budget} ->
+        budget
+
+      _ ->
+        nil
+    end)
+  end
 
   describe "run/2" do
     test "runs every case k times and records verdicts, traces, summary and fingerprint" do
@@ -531,6 +721,106 @@ defmodule Nous.Eval.RunnerTest do
       assert run.status == :completed
       assert run.budget.spent.tokens == 20 + 10 + 10 + 3 * 50
     end
+
+    test "a cost limit reached after max_samples still cancels the sample in flight" do
+      stub(&spender_script/2)
+
+      {:ok, run} =
+        Nous.Eval.run(Spender,
+          k: 1,
+          parallelism: 2,
+          budget: [max_samples: 2, max_cost: @spender_max_cost]
+        )
+
+      assert run.status == :budget_exhausted
+      assert run.budget.exhausted == :max_cost
+      assert run.budget.spent.samples == 2
+
+      assert sample(run, "fast").verdict == :pass
+      # Refused admission by max_samples before any spend limit was reached:
+      # its reason was recorded while only the samples cap had tripped.
+      late = sample(run, "late")
+      assert %{outcome: :budget_exhausted, verdict: nil} = late
+      assert late.error =~ "(max_samples)"
+      # In flight when the cost limit tripped: cancelled at its next step,
+      # so neither the tool's follow-up request nor its scorers ran.
+      slow = sample(run, "slow_tool")
+      assert slow.outcome == :budget_exhausted and slow.scores == []
+      assert [%{name: "get_weather", outcome: :executed}] = Trace.tool_calls(slow.trace)
+      assert slow.usage.total_tokens == 1_000_000
+    end
+  end
+
+  describe "budgets and the LLM judge" do
+    test "a successful judge call is charged exactly once" do
+      judge_stub(fn _ -> Nous.Eval.JudgeStub.verdict("pass") end)
+
+      {:ok, run} = Nous.Eval.run(JudgedOnce, k: 1)
+
+      assert [%{verdict: :pass, scores: [judge]}] = run.samples
+      assert judge.metadata.usage.total_tokens == 10
+      # The agent's request and the judge's.
+      assert run.budget.spent.tokens == 10 + 10
+    end
+
+    test "unparseable judge answers are charged" do
+      judge_stub(fn _ -> "not a verdict" end)
+
+      {:ok, run} = Nous.Eval.run(JudgedOnce, k: 1)
+
+      assert [%{verdict: :error, scorer_errors: [%{kind: :judge_unparseable}]}] = run.samples
+      # The agent's request, the judge's answer and its structured-output retry.
+      assert run.budget.spent.tokens == 10 + 2 * 10
+    end
+
+    test "the answered calls of a judge whose later call fails are charged" do
+      judge_stub(fn
+        0 -> Nous.Eval.JudgeStub.verdict("pass")
+        _ -> {:error, :service_unavailable}
+      end)
+
+      {:ok, run} = Nous.Eval.run(JudgedTwice, k: 1)
+
+      assert [%{verdict: :error, scorer_errors: [%{kind: :judge_call_failed}]}] = run.samples
+      assert run.budget.spent.tokens == 10 + 10
+    end
+
+    test "the answered calls of a judge cut off by the scorer timeout are charged" do
+      judge_stub(fn
+        0 -> Nous.Eval.JudgeStub.verdict("pass")
+        _ -> :hang
+      end)
+
+      {:ok, run} =
+        Nous.Eval.run(JudgedTwice,
+          k: 1,
+          scorer_timeout: %{deterministic: 5_000, model_graded: 500}
+        )
+
+      assert [%{verdict: :error, scorer_errors: [%{kind: :timeout}]}] = run.samples
+      assert run.budget.spent.tokens == 10 + 10
+    end
+  end
+
+  describe "run diagnostics" do
+    test "one warning per run names the soft-scored cases left at the implicit threshold" do
+      stub()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, %Run{}} = Nous.Eval.run(SoftScored, k: 2)
+        end)
+
+      assert length(String.split(log, "implicit-soft")) == 2
+      assert log =~ "default weighted mean of 0.5"
+      refute log =~ "explicit-soft"
+      refute log =~ "gated-only"
+    end
+
+    test "an unexpected agent-build error term is reported, not a worker crash" do
+      assert Nous.Eval.Runner.sample_error({:unexpected, %{reason: :boom}}) ==
+               "{:unexpected, %{reason: :boom}}"
+    end
   end
 
   describe "rescore/3" do
@@ -595,6 +885,26 @@ defmodule Nous.Eval.RunnerTest do
       assert rescored.status == :budget_exhausted
       assert rescored.budget.spent.tokens == 100
       assert rescored.budget.exhausted == :max_tokens
+    end
+
+    test "a crashed rescore worker keeps none of the source sample's scores" do
+      stub()
+      {:ok, run} = Nous.Eval.run(Basic, k: 1)
+      assert Enum.all?(run.samples, &(&1.scores != []))
+
+      # Every list the reset clears is non-empty on the source samples.
+      error = %Nous.Eval.ScorerError{scorer: "old", kind: :raised, reason: "old error"}
+
+      samples = Enum.map(run.samples, &%{&1 | scorer_errors: [error], skipped: [{"old", "n/a"}]})
+      run = %{run | samples: samples}
+
+      {:ok, rescored} = Nous.Eval.rescore(run, CrashesRescore)
+
+      for sample <- rescored.samples do
+        assert sample.verdict == :error and sample.case_score == nil
+        assert sample.error =~ "the eval worker crashed"
+        assert sample.scores == [] and sample.scorer_errors == [] and sample.skipped == []
+      end
     end
 
     test "a case missing from the task is an error" do

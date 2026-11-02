@@ -561,7 +561,7 @@ defmodule Nous.Profile.WireTest do
       assert search_text(next_request()) == {"EDITED DESCRIPTION", F.base_param()}
     end
 
-    test "a leading system message the caller wrote is never replaced", %{
+    test "a leading system message the caller kept is never replaced", %{
       bypass: bypass,
       test_pid: pid
     } do
@@ -569,7 +569,10 @@ defmodule Nous.Profile.WireTest do
       agent = base_agent()
 
       assert {:ok, first} =
-               Agent.run(agent, messages: [Message.system("CALLER SYSTEM"), Message.user("hi")])
+               Agent.run(agent,
+                 messages: [Message.system("CALLER SYSTEM"), Message.user("hi")],
+                 system_message: :caller
+               )
 
       next_request()
 

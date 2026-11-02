@@ -7,6 +7,7 @@ defmodule Nous.Eval.Online.ConfigTest do
   import Nous.Eval.OnlineHelpers
 
   alias Nous.Eval.Online
+  alias Nous.Eval.Online.{Coordinator, Registry}
 
   @moduletag :tmp_dir
 
@@ -182,6 +183,43 @@ defmodule Nous.Eval.Online.ConfigTest do
                  rules: [[name: "r", scorers: [{Nous.Eval.Scorers.MaxLatency, bogus: 1}]]]
                )
              )
+  end
+
+  test "a sampling salt must be a binary of 16+ bytes used with sample_by: :session",
+       %{tmp_dir: root} do
+    for opts <- [
+          [sample_by: :session, sampling_salt: ""],
+          [sample_by: :session, sampling_salt: "secret-15-bytes"],
+          [sample_by: :session, sampling_salt: :secret],
+          [sample_by: :trace, sampling_salt: "secret-value-of-24-bytes"]
+        ] do
+      reason = refused(base_opts(root, opts))
+      assert {:invalid_option, :sampling_salt, _} = reason
+      # The salt is a secret: the refusal never echoes it.
+      refute inspect(reason) =~ "secret"
+    end
+
+    start_online!(base_opts(root, sample_by: :session, sampling_salt: "secret-16-bytes!"))
+  end
+
+  test "the sampling salt never shows in process state, handler config or reports",
+       %{tmp_dir: root} do
+    salt = "salt-#{System.unique_integer([:positive])}-0123456789abcdef"
+    start_online!(base_opts(root, sample_by: :session, sampling_salt: salt))
+
+    exposed = [
+      Registry.shared(Online),
+      :telemetry.list_handlers([:nous, :agent, :run, :start]),
+      :sys.get_state(Registry.name(Online)),
+      :sys.get_state(Coordinator.name(Online))
+    ]
+
+    for term <- exposed do
+      refute inspect(term, limit: :infinity, printable_limit: :infinity) =~ salt
+      # Erlang term formatting (no line wrapping), as a logger handler
+      # without Elixir's translator would print a crash report.
+      refute IO.iodata_to_binary(:io_lib.format(~c"~999999p", [term])) =~ salt
+    end
   end
 
   test "one instance per name", %{tmp_dir: root} do

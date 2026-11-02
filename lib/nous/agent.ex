@@ -255,6 +255,14 @@ defmodule Nous.Agent do
   ## Options
     * `:deps` - Dependencies to pass to tools and prompts
     * `:message_history` - Previous messages to continue conversation
+    * `:system_message` - `:agent` (default) or `:caller`. Under `:agent` the
+      agent's prompt comes first: it replaces the first leading system
+      message of `:message_history` or `:messages` (with a warning when that
+      message does not start with the agent's instructions), further leading
+      copies of it are dropped, and other system messages (such as a
+      `[Conversation Summary]`) stay. An agent with no prompt keeps your
+      messages as given. Under `:caller` your own leading system message is
+      sent instead. Any other value raises `ArgumentError`
     * `:usage_limits` - Usage limits for this run
     * `:model_settings` - Override model settings for this run
     * `:callbacks` - Map of callback functions for events
@@ -272,8 +280,8 @@ defmodule Nous.Agent do
       any model call. When it differs from the profile a continued
       `:context` was started with, the conversation's leading system message
       is replaced (a logged message event) and
-      `[:nous, :profile, :switched]` is emitted; a system message the runner
-      did not write returns `{:error, %ProfileError{reason:
+      `[:nous, :profile, :switched]` is emitted; a caller's system message
+      kept with `system_message: :caller` returns `{:error, %ProfileError{reason:
       :system_message_diverged}}` instead
 
   ## Examples
@@ -288,14 +296,16 @@ defmodule Nous.Agent do
       )
 
       # Message list directly. The agent's instructions (or system prompt) and
-      # any structured-output instructions are prepended, as for a string
-      # prompt; a list that already starts with a system message keeps it
-      # instead.
+      # any structured-output instructions go first, as for a string prompt.
+      {:ok, result} = Agent.run(agent, messages: [Message.user("What is 2+2?")])
+
+      # Your own system message instead of the agent's prompt
       {:ok, result} = Agent.run(agent,
         messages: [
           Message.system("Be concise"),
           Message.user("What is 2+2?")
-        ]
+        ],
+        system_message: :caller
       )
 
       # Continue from previous context

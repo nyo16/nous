@@ -1,6 +1,7 @@
 defmodule Nous.Eval.Guard.FetchTest do
-  # No test touches the network: every download goes through a stubbed
-  # `:http` that records the URLs it was asked for.
+  # No test reaches a remote host: downloads go through a stubbed `:http`
+  # that records the URLs it was asked for, or, for the default streaming
+  # client, a local Bypass server.
   use ExUnit.Case, async: true
 
   alias Nous.Eval.Guard.{Dataset, Fetch, Registry}
@@ -40,7 +41,8 @@ defmodule Nous.Eval.Guard.FetchTest do
             url: "https://example.com/abc123/xstest.csv",
             sha256: sha(@csv),
             format: :csv,
-            split: nil
+            split: nil,
+            max_bytes: 1_000_000
           }
         ],
         adapter: &Adapters.xstest/3
@@ -58,7 +60,7 @@ defmodule Nous.Eval.Guard.FetchTest do
   defp http(body) do
     test = self()
 
-    fn url, headers ->
+    fn url, headers, _max_bytes ->
       send(test, {:http, url, headers})
       {:ok, body}
     end
@@ -216,6 +218,7 @@ defmodule Nous.Eval.Guard.FetchTest do
   end
 
   if Code.ensure_loaded?(Nous.Eval.Guard.Parquet) do
+    @tag :duckdb
     test "parquet sources are read through duckdbex" do
       dir = tmp()
       File.mkdir_p!(dir)
@@ -241,7 +244,8 @@ defmodule Nous.Eval.Guard.FetchTest do
               url: "https://example.com/test.parquet",
               sha256: sha(body),
               format: :parquet,
-              split: "test"
+              split: "test",
+              max_bytes: 1_000_000
             }
           ],
           adapter: &Adapters.deepset/3
@@ -259,6 +263,90 @@ defmodule Nous.Eval.Guard.FetchTest do
     end
   end
 
+  defp served(url, max_bytes) do
+    put_in(source(), [:files, Access.at(0)], %{
+      name: "xstest.csv",
+      url: url,
+      sha256: sha(@csv),
+      format: :csv,
+      split: nil,
+      max_bytes: max_bytes
+    })
+  end
+
+  describe "the default streaming download" do
+    setup do
+      bypass = Bypass.open()
+      {:ok, bypass: bypass, url: "http://localhost:#{bypass.port}/abc123/xstest.csv"}
+    end
+
+    test "a body under the cap is fetched, verified and cached", %{bypass: bypass, url: url} do
+      Bypass.expect_once(bypass, "GET", "/abc123/xstest.csv", fn conn ->
+        Plug.Conn.resp(conn, 200, @csv)
+      end)
+
+      dir = tmp()
+      run_opts = opts(dir, sources: [served(url, 1_000_000)]) |> Keyword.delete(:http)
+
+      assert {:ok, %{cases: 6}} = Fetch.run("test/xstest", run_opts)
+      assert File.read!(Path.join([dir, "cache", "eval", "downloads", sha(@csv)])) == @csv
+
+      # Served from the cache: Bypass allows only the one request.
+      assert {:ok, %{cases: 6}} = Fetch.run("test/xstest", run_opts)
+    end
+
+    test "a body over the cap is refused and nothing is cached", %{bypass: bypass, url: url} do
+      # One response the handler has finished sending before the client hangs
+      # up; a handler still writing chunks would be killed by the disconnect.
+      Bypass.stub(bypass, "GET", "/abc123/xstest.csv", fn conn ->
+        Plug.Conn.resp(conn, 200, String.duplicate("a", 4_096))
+      end)
+
+      dir = tmp()
+      run_opts = opts(dir, sources: [served(url, 100)]) |> Keyword.delete(:http)
+
+      assert {:error, message} = Fetch.run("test/xstest", run_opts)
+      assert message =~ "larger than 100 bytes"
+      refute File.exists?(Path.join([dir, "cache", "eval", "downloads", sha(@csv)]))
+      refute File.exists?(Path.join(dir, "out"))
+    end
+  end
+
+  test "a file without a positive integer max_bytes is never downloaded" do
+    for bad <- [nil, 0, -1, 1.5, "100"] do
+      dir = tmp()
+      uncapped = put_in(source(), [:files, Access.at(0), :max_bytes], bad)
+
+      assert {:error, message} = Fetch.run("test/xstest", opts(dir, sources: [uncapped]))
+      assert message =~ "max_bytes must be a positive integer"
+      refute_received {:http, _, _}
+    end
+  end
+
+  test "a download over the file's max_bytes is refused before it is hashed, parsed or cached" do
+    dir = tmp()
+    test = self()
+    small = put_in(source(), [:files, Access.at(0), :max_bytes], 10)
+
+    streaming = fn _url, _headers, max_bytes ->
+      send(test, {:max_bytes, max_bytes})
+      {:error, {:too_large, max_bytes}}
+    end
+
+    assert {:error, message} =
+             Fetch.run("test/xstest", opts(dir, sources: [small], http: streaming))
+
+    assert_received {:max_bytes, 10}
+    assert message =~ "larger than 10 bytes"
+    refute message =~ "sha256"
+
+    # A stub that ignores the cap and returns the whole body is refused too.
+    assert {:error, message} = Fetch.run("test/xstest", opts(dir, sources: [small]))
+    assert message =~ "larger than 10 bytes"
+    refute File.exists?(Path.join([dir, "cache", "eval", "downloads", sha(@csv)]))
+    refute File.exists?(Path.join(dir, "out"))
+  end
+
   test "every registry source is pinned, licensed and adaptable" do
     for s <- Registry.sources() do
       assert s.status in [:allowed, :terms, :denied]
@@ -272,6 +360,7 @@ defmodule Nous.Eval.Guard.FetchTest do
 
           for f <- s.files do
             assert f.sha256 =~ ~r/^[0-9a-f]{64}$/
+            assert is_integer(f.max_bytes) and f.max_bytes > 0
 
             assert String.contains?(f.url, s.revision),
                    "#{s.id}: #{f.url} is not pinned to #{s.revision}"

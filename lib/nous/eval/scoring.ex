@@ -31,7 +31,8 @@ defmodule Nous.Eval.Scoring do
     2. `:fail` if any required scorer's score has `passed?: false`
     3. `:fail` if the soft scores (`required: false`, `weight > 0`) exist
        and their weighted mean is below the threshold (the case's
-       `threshold`, default `0.5`)
+       `threshold`, default `0.5`; `Nous.Eval.run/2` logs one warning per
+       run naming the soft-scored cases that rely on the default)
     4. `:pass` otherwise
 
   `weight: 0` tracks a metric without affecting the verdict. Skipped soft

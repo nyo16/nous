@@ -4,8 +4,6 @@ defmodule Nous.Eval.Examples.BasicTest do
   use ExUnit.Case, async: true
 
   alias Nous.Eval.Examples.Basic
-  alias Nous.Eval.Examples.Basic.ScriptedModel
-  alias Nous.Message
 
   @moduletag :capture_log
 
@@ -31,18 +29,5 @@ defmodule Nous.Eval.Examples.BasicTest do
     assert {:ok, %{installed?: false} = state} = Basic.setup([])
     Basic.teardown(state)
     assert Nous.ModelDispatcher.resolve() == __MODULE__
-  end
-
-  test "the scripted model calls the weather tool only when its description says so" do
-    question = [Message.user("What is the weather in Paris?")]
-    tool = Nous.Tool.to_openai_schema(Basic.weather_tool())
-    vague = put_in(tool, ["function", "description"], "Look up current conditions for a city.")
-
-    {:ok, called} = ScriptedModel.request(nil, question, %{tools: [tool]})
-    {:ok, answered} = ScriptedModel.request(nil, question, %{tools: [vague]})
-
-    assert [%{name: "get_weather", arguments: %{"city" => "Paris"}}] = called.tool_calls
-    assert answered.tool_calls == []
-    assert Message.extract_text(answered) =~ "cannot look up the weather in Paris"
   end
 end

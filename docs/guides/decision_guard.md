@@ -262,7 +262,10 @@ Nous.Eval.Guard.gate(ds, guard, candidate, surface: :user_input, cache: ".nous/g
 
 Recordings are cached by fingerprint (model, questions, chunking, cases,
 tool descriptions; not the bands), so a band-only candidate replays the
-baseline's recording. For the optimizer, `Nous.Eval.Guard.optimizer_filter/1`
+baseline's recording. A cache file is JSON and is used only when every
+entry has the shape this guard records (anything else is re-recorded), but
+it still decides verdicts: keep the cache directory where only you can
+write. For the optimizer, `Nous.Eval.Guard.optimizer_filter/1`
 applies the same gates to the guard-tagged cases of `Nous.Eval.Optimizer.run/2`
 (`guard:` option); each guard-tagged case declares
 `metadata: %{"guard" => %{"label" => "block", "surface" => "tool_call"}}`.
@@ -275,7 +278,7 @@ jackhhao test rows, Gandalf, XSTest safe prompts as hard negatives,
 InjecAgent tool responses with benign twins, and hand-written tool-call and
 model-output cases. It is not in the Hex package; fetch it, or a public
 source, with `mix nous.eval.datasets.fetch` (registry pinned to upstream
-commits, sha256 verified before parsing, non-commercial sources refused,
+commits, per-file size caps, sha256 verified before parsing, non-commercial sources refused,
 use-restricted ones only with `--accept-terms`). `Nous.Eval.Guard.Dataset`
 loads and validates a dataset (exact and near duplicates, no group across
 splits, licence allowlist, PII lint); `Nous.Eval.Guard.Hygiene` deduplicates,

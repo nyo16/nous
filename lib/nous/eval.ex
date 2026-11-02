@@ -204,8 +204,13 @@ defmodule Nous.Eval do
       this way
     * `:budget` - `[max_tokens: n, max_cost: usd, max_samples: n]`, see
       "Budgets"
-    * `:store` - `{store_module, init_opts}`: the run is persisted with
-      `c:Nous.Eval.Store.put_run/2` (see `Nous.Eval.Store`)
+    * `:store` - `{store_module, init_opts}`, or `{:opened, store_module,
+      state}` for a store the caller already opened (and keeps owning; the
+      run never closes it): the run is persisted with
+      `c:Nous.Eval.Store.put_run/2` and LLM judges look up their stored
+      calibration there (see `Nous.Eval.Store`). Pass a store you hold open
+      as `:opened`: a second open of the same DuckDB file in one process
+      does not see the first handle's writes
     * `:scorer_timeout` - per-scorer limit, as `Nous.Eval.Scoring.score/3`'s
       `:timeout`
     * `:max_trace_events` / `:max_trace_bytes` - per-sample trace caps
@@ -245,9 +250,10 @@ defmodule Nous.Eval do
 
   `:max_tokens` and `:max_cost` (USD) bound what the run's model requests
   spend, counted from every answered request of every sample's trace
-  (including turns that failed afterwards and samples later killed) plus
-  the usage model-graded scorers report in `Nous.Eval.Score`'s
-  `metadata.usage` (the LLM judge does). Requests are priced with
+  (including turns that failed afterwards and samples later killed) and of
+  every model-graded scorer's own trace (the LLM judge registers it through
+  `Nous.Eval.ScoreInput`'s `:track_trace`, so every answered request of a
+  judge that retried, failed or timed out is paid for). Requests are priced with
   `Nous.Usage.cost/2` at the model that answered (a fallback or a route
   counts at its own price). `:max_samples` bounds how many samples start.
 
@@ -268,7 +274,8 @@ defmodule Nous.Eval do
   run. A sample that finishes normally after the limit was crossed is kept,
   so the spend can exceed a limit by the requests already in flight. The
   run's `:budget` holds `limits`, what was `spent` (`tokens`, `cost`,
-  `samples`, `unpriced_requests`) and which limit `exhausted` it.
+  `samples`, `unpriced_requests`) and which limit `exhausted` it: a token
+  or cost limit when one was reached, even after `:max_samples`.
 
   ## Errors
 

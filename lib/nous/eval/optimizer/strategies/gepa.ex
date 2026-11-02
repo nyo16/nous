@@ -77,10 +77,21 @@ defmodule Nous.Eval.Optimizer.Strategies.GEPA do
     {batch, queue, rng} = minibatch(state.queue, ctx.train, ctx.minibatch_size, rng)
     state = %{state | rng: rng, rr: rr, queue: queue}
 
+    info = %{parent_id: Candidate.id(parent), components: keys}
+
+    with {:ok, before} <- Context.evaluate(ctx, parent.profile, batch, "train"),
+         {:ok, updates} <- Context.propose(ctx, parent, before, keys) do
+      try_proposal(state, ctx, parent, batch, before, updates, info)
+    else
+      error -> settle(error, state, ctx, info)
+    end
+  end
+
+  # Rejections from here on carry the proposed text, so a failed search can
+  # be diagnosed from `Result.rejections`.
+  defp try_proposal(state, ctx, parent, batch, before, updates, info) do
     result =
-      with {:ok, before} <- Context.evaluate(ctx, parent.profile, batch, "train"),
-           {:ok, updates} <- Context.propose(ctx, parent, before, keys),
-           {:ok, child} <- Context.derive(ctx, parent.profile, updates, %{"step" => ctx.step}),
+      with {:ok, child} <- Context.derive(ctx, parent.profile, updates, %{"step" => ctx.step}),
            :ok <- new_candidate(state.pool, child),
            {:ok, after_} <- Context.evaluate(ctx, child, batch, "train"),
            :ok <- improved(before, after_),
@@ -97,7 +108,7 @@ defmodule Nous.Eval.Optimizer.Strategies.GEPA do
          }}
       end
 
-    settle(result, state, ctx, %{parent_id: Candidate.id(parent), components: keys})
+    settle(result, state, ctx, Map.put(info, :proposal, updates))
   end
 
   defp settle({:accept, child}, state, _ctx, _info),

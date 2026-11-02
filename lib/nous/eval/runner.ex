@@ -60,7 +60,9 @@ defmodule Nous.Eval.Runner do
     :scorer_timeout,
     :max_trace_events,
     :max_trace_bytes,
-    :metadata
+    :metadata,
+    # Internal: the optimizer warns once per optimization instead.
+    :warn_implicit_threshold
   ]
 
   @rescore_keys [:parallelism, :store, :scorer_timeout, :budget, :metadata]
@@ -135,6 +137,7 @@ defmodule Nous.Eval.Runner do
   defp execute(task, dataset, state, config, started_at, store) do
     with {:ok, deps} <- EvalTask.deps(task, state),
          {:ok, scorers} <- init_scorers(task, dataset, store),
+         :ok <- maybe_warn_implicit_threshold(config, task, dataset),
          {:ok, sim} <- Simulator.preflight(task.module, dataset),
          {:ok, agent} <- fingerprint_agent(task, dataset, deps, state, config),
          {:ok, fingerprint} <-
@@ -247,6 +250,46 @@ defmodule Nous.Eval.Runner do
   end
 
   defp calibrated_spec(spec, _store), do: {:ok, spec}
+
+  # A case with soft scorers and no `threshold` passes at the default 0.5
+  # weighted mean, which is rarely a deliberate choice: one warning per run
+  # names those cases. The optimizer evaluates through many runs, so it
+  # turns the per-run warning off (`warn_implicit_threshold: false`) and
+  # calls this once per optimization instead.
+  @warn_case_ids 20
+
+  @doc false
+  @spec warn_implicit_threshold([Case.t()], [Spec.t()]) :: :ok
+  def warn_implicit_threshold(cases, task_scorers) do
+    task_soft? = Enum.any?(task_scorers, &soft?/1)
+
+    ids =
+      for %Case{threshold: nil} = c <- cases,
+          task_soft? or Enum.any?(c.scorers, &soft?/1),
+          do: c.id
+
+    if ids != [] do
+      shown = Enum.take(ids, @warn_case_ids)
+      more = if length(ids) > @warn_case_ids, do: " and #{length(ids) - @warn_case_ids} more"
+
+      Logger.warning(
+        "[Nous.Eval] #{length(ids)} case(s) have soft scorers (required: false) and no " <>
+          "threshold, so they pass at the default weighted mean of 0.5: " <>
+          Enum.join(shown, ", ") <> "#{more}. Set the case's threshold to choose it"
+      )
+    end
+
+    :ok
+  end
+
+  defp maybe_warn_implicit_threshold(%{warn_implicit_threshold: false}, _task, _dataset),
+    do: :ok
+
+  defp maybe_warn_implicit_threshold(_config, task, dataset),
+    do: warn_implicit_threshold(dataset.cases, task.scorers)
+
+  defp soft?(%Spec{required: false, weight: weight}), do: weight > 0
+  defp soft?(_spec), do: false
 
   defp judge_config(spec) do
     case Judge.init(spec.opts) do
@@ -404,10 +447,14 @@ defmodule Nous.Eval.Runner do
     end
   end
 
-  defp sample_error({:profile, error}),
+  @doc false
+  # The error text of a sample whose agent could not be built.
+  @spec sample_error(term()) :: String.t()
+  def sample_error({:profile, error}),
     do: "the profile does not apply: " <> Exception.message(error)
 
-  defp sample_error(message) when is_binary(message), do: message
+  def sample_error(message) when is_binary(message), do: message
+  def sample_error(other), do: inspect(other, limit: 50)
 
   defp inject_seed(agent, nil), do: agent
 
@@ -434,8 +481,16 @@ defmodule Nous.Eval.Runner do
   defp invoke(agent, %Case{input: input}, _sample, ctx, check) when is_binary(input),
     do: Nous.run(agent, input, deps: ctx.deps, cancellation_check: check)
 
+  # A case's own leading system message is deliberate dataset input, not a
+  # stale continuation, so it is sent instead of the agent's prompt.
   defp invoke(agent, %Case{input: messages}, _sample, ctx, check) when is_list(messages),
-    do: Nous.run(agent, messages: messages, deps: ctx.deps, cancellation_check: check)
+    do:
+      Nous.run(agent,
+        messages: messages,
+        system_message: :caller,
+        deps: ctx.deps,
+        cancellation_check: check
+      )
 
   defp sample_opts(config, trace_id) do
     [
@@ -528,18 +583,14 @@ defmodule Nous.Eval.Runner do
         do: Enum.split_with(prepared, &(&1.kind != :model_graded)),
         else: {prepared, []}
 
+    # Model-graded scorers register their own trace ids (`track_trace`), so
+    # the budget's telemetry accounting charges each of their answered
+    # requests once, whether the scorer then succeeds, fails or times out.
+    input = %{input | track_trace: &Budget.track(ctx.budget, &1)}
     result = Scoring.score(runnable, input, scoring_opts(ctx.config))
-
-    for %{metadata: %{usage: %Nous.Usage{} = usage} = metadata} <- result.scores do
-      Budget.charge(ctx.budget, usage, model_of(metadata[:model]))
-    end
 
     starve(result, starved, Budget.exhausted(ctx.budget))
   end
-
-  defp model_of(%Nous.Model{} = model), do: model
-  defp model_of(model) when is_binary(model), do: model
-  defp model_of(_), do: nil
 
   defp scoring_opts(%{scorer_timeout: nil}), do: []
   defp scoring_opts(%{scorer_timeout: timeout}), do: [timeout: timeout]
@@ -680,6 +731,7 @@ defmodule Nous.Eval.Runner do
          {:ok, dataset} <- rescore_dataset(task.dataset, source),
          {:ok, store} <- open_store(config.store),
          {:ok, scorers} <- init_scorers(task, dataset, store),
+         :ok <- maybe_warn_implicit_threshold(config, task, dataset),
          {:ok, fingerprint} <- rescore_fingerprint(source, task, dataset),
          :ok <- Budget.preflight(config.budget, judge_models(scorers)) do
       started_at = DateTime.utc_now()
@@ -703,11 +755,16 @@ defmodule Nous.Eval.Runner do
             {{:ok, sample}, _source} ->
               sample
 
+            # The source sample's scores are not this rescore's: a crashed
+            # worker leaves none.
             {{:exit, reason}, sample} ->
               %{
                 sample
                 | verdict: :error,
                   case_score: nil,
+                  scores: [],
+                  scorer_errors: [],
+                  skipped: [],
                   error: "the eval worker crashed: " <> Exception.format_exit(reason)
               }
           end)
@@ -833,7 +890,8 @@ defmodule Nous.Eval.Runner do
       scorer_timeout: nil,
       max_trace_events: nil,
       max_trace_bytes: nil,
-      metadata: %{}
+      metadata: %{},
+      warn_implicit_threshold: true
     }
 
     opts
@@ -873,6 +931,7 @@ defmodule Nous.Eval.Runner do
   defp valid_option?(:budget, budget), do: is_list(budget)
 
   defp valid_option?(:store, {module, opts}), do: is_atom(module) and is_list(opts)
+  defp valid_option?(:store, {:opened, module, _state}), do: is_atom(module)
 
   defp valid_option?(:scorer_timeout, nil), do: true
   defp valid_option?(:scorer_timeout, ms) when is_integer(ms) and ms > 0, do: true
@@ -887,9 +946,18 @@ defmodule Nous.Eval.Runner do
     do: is_nil(value) or (is_integer(value) and value > 0)
 
   defp valid_option?(:metadata, metadata), do: is_map(metadata) and not is_struct(metadata)
+  defp valid_option?(:warn_implicit_threshold, warn), do: is_boolean(warn)
   defp valid_option?(_key, _value), do: false
 
   defp open_store(nil), do: {:ok, nil}
+
+  # An already-open store is used as given: a second open of the same
+  # DuckDB file in one process would not see the first handle's writes.
+  defp open_store({:opened, module, state}) do
+    if Code.ensure_loaded?(module) and function_exported?(module, :put_run, 2),
+      do: {:ok, {module, state}},
+      else: {:error, {:store, {:not_a_store, module}}}
+  end
 
   defp open_store({module, opts}) do
     if Code.ensure_loaded?(module) and function_exported?(module, :init, 1) do

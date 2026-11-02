@@ -360,15 +360,19 @@ defmodule Nous.Agent.Context do
     ctx = sync(ctx)
 
     case Log.derive_messages(ctx.log) do
-      [%Message{role: :system, content: content} | _] when content != ctx.system_prompt ->
-        {:error, "the conversation's leading system message is not the agent's system prompt"}
+      [%Message{role: :system} = system | _] ->
+        cond do
+          Message.extract_text(system) != ctx.system_prompt ->
+            {:error, "the conversation's leading system message is not the agent's system prompt"}
 
-      [%Message{role: :system} | _] when prompt in [nil, ""] ->
-        {:error, "the new system prompt is empty, and a logged system message cannot be removed"}
+          prompt in [nil, ""] ->
+            {:error,
+             "the new system prompt is empty, and a logged system message cannot be removed"}
 
-      [%Message{role: :system} | _] ->
-        replaced = replace_message_range(ctx, 0, 0, Message.system(prompt))
-        {:ok, %{replaced | system_prompt: prompt}, :replaced}
+          true ->
+            replaced = replace_message_range(ctx, 0, 0, Message.system(prompt))
+            {:ok, %{replaced | system_prompt: prompt}, :replaced}
+        end
 
       _no_system_message ->
         {:ok, %{ctx | system_prompt: prompt}, :updated}

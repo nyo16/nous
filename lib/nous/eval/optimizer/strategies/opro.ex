@@ -101,7 +101,7 @@ defmodule Nous.Eval.Optimizer.Strategies.OPRO do
         {:halt, reason, state}
 
       {:error, reason} ->
-        score_versions(rest, reject(state, ctx, [reason]), ctx)
+        score_versions(rest, reject(state, ctx, [reason], %{proposal: version}), ctx)
     end
   end
 
@@ -109,10 +109,17 @@ defmodule Nous.Eval.Optimizer.Strategies.OPRO do
     if Enum.any?(history, &(Candidate.id(&1) == child.id)), do: {:error, :duplicate}, else: :ok
   end
 
-  defp reject(state, _ctx, []), do: state
+  defp reject(state, ctx, reasons, extra \\ %{})
 
-  defp reject(state, ctx, reasons) do
-    entries = Enum.map(reasons, &%{step: ctx.step, reason: &1, components: ctx.components})
+  defp reject(state, _ctx, [], _extra), do: state
+
+  defp reject(state, ctx, reasons, extra) do
+    entries =
+      Enum.map(
+        reasons,
+        &Map.merge(%{step: ctx.step, reason: &1, components: ctx.components}, extra)
+      )
+
     %{state | rejections: state.rejections ++ entries}
   end
 

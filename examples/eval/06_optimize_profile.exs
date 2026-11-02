@@ -89,11 +89,12 @@ defmodule Examples.Eval.Optimize.Task do
     )
   end
 
-  # 12 cases: 4 each for train (reflection), val (selection) and test
-  # (the one-time accept/reject decision).
+  # 14 cases: 4 each for train (reflection) and val (selection), 6 for test
+  # (the one-time accept/reject decision). The accept gate's exact sign test
+  # needs at least 5 test cases, all improved, to pass at alpha 0.05.
   @impl true
   def dataset do
-    for {split, n} <- [{"train", 4}, {"val", 4}, {"test", 4}], i <- 1..n do
+    for {split, n} <- [{"train", 4}, {"val", 4}, {"test", 6}], i <- 1..n do
       %{id: "#{split}-#{i}", input: "Where is my order number #{100 * i}?", split: split}
     end
   end

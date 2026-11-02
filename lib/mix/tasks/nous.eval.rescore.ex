@@ -20,7 +20,8 @@ defmodule Mix.Tasks.Nous.Eval.Rescore do
     * `--task MODULE` - the task whose scorers to use (default: the task
       recorded on the run)
     * `--store SPEC` - `file:DIR` (default `file:.nous/eval`),
-      `sqlite:PATH` or `duckdb:PATH`; the new run is stored there too
+      `sqlite:PATH` or `duckdb:PATH`; the new run is stored there too, and
+      LLM judges look up their stored calibration there
     * `--parallelism N` - samples scored at once (default: schedulers online)
     * `--scorer-timeout MS` - per-scorer limit
     * `--budget-cost USD`, `--budget-tokens N` - bound what model-graded
@@ -69,8 +70,8 @@ defmodule Mix.Tasks.Nous.Eval.Rescore do
          {:ok, store} <- CLI.open_store(opts[:store]),
          {:ok, source} <- CLI.fetch_run(store, ref),
          {:ok, module} <- CLI.task_module(opts[:task] || source.task),
-         {:ok, run} <- rescore(source, module, opts),
-         :ok <- CLI.put_run(store, run),
+         {:ok, run} <- rescore(source, module, opts, store),
+         :ok <- CLI.stored(store, run),
          :ok <- CLI.emit([run], format, opts[:output]) do
       Mix.shell().info("Re-scored #{source.id} as #{run.id}")
       {:ok, CLI.exit_code(run, nil, gate.max_error_rate)}
@@ -80,12 +81,13 @@ defmodule Mix.Tasks.Nous.Eval.Rescore do
   defp ref([ref]), do: {:ok, ref}
   defp ref(_), do: {:error, "expected one run: RUN (an id or baseline:LABEL)"}
 
-  defp rescore(source, module, opts) do
+  defp rescore(source, module, opts, store) do
     rescore_opts =
       [
         parallelism: opts[:parallelism],
         scorer_timeout: opts[:scorer_timeout],
-        budget: CLI.budget(opts)
+        budget: CLI.budget(opts),
+        store: CLI.run_store(store)
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 

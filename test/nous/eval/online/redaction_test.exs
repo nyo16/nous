@@ -148,6 +148,76 @@ defmodule Nous.Eval.Online.RedactionTest do
       assert image == "https://img.example/[R].png"
       assert user.role == :user
     end
+
+    test "a tool name the run did not offer is content, not skeleton" do
+      chosen = "exfil " <> @canary
+      other_run = %{trace_id: @tid, agent_run_id: "11f067aa0ba902b7", parent_agent_run_id: @rid}
+
+      # Another run in the same trace offers the name; it does not count for @rid.
+      offered_elsewhere =
+        event(
+          5,
+          [:nous, :agent, :model, :start],
+          %{system_time: 3},
+          Map.merge(other_run, %{tool_names: [chosen]})
+        )
+
+      unoffered =
+        event(
+          6,
+          [:nous, :agent, :model, :stop],
+          %{input_tokens: 1},
+          %{
+            trace_id: @tid,
+            agent_run_id: @rid,
+            requested_tool_calls: [
+              %{tool_call_id: "c1", tool_name: "lookup"},
+              %{tool_call_id: "c2", tool_name: chosen}
+            ]
+          }
+        )
+
+      tool_stop =
+        event(
+          7,
+          [:nous, :agent, :tool_call, :stop],
+          %{duration: 1},
+          %{trace_id: @tid, agent_run_id: @rid, tool_call_id: "c2", tool_name: chosen}
+        )
+
+      trace = %{trace() | events: trace().events ++ [offered_elsewhere, unoffered, tool_stop]}
+      {content, keys} = Redaction.split(trace)
+
+      skeleton = Enum.drop(content.skeleton, 6)
+      refute inspect(skeleton, limit: :infinity, printable_limit: :infinity) =~ @canary
+
+      [stop_entry, tool_entry] = skeleton
+
+      assert stop_entry.metadata.requested_tool_calls == [
+               %{tool_call_id: "c1", tool_name: "lookup"},
+               %{tool_call_id: "c2"}
+             ]
+
+      refute Map.has_key?(tool_entry.metadata, :tool_name)
+      assert Map.has_key?(content.fields, {6, "requested_tool_calls"})
+      assert Map.has_key?(content.fields, {7, "tool_name"})
+
+      # The redactor decides what survives; dropping content keeps only the ids.
+      assert {:ok, redacted, :redacted} = Redaction.redact(&scrub/1, content, 1_000, @sup)
+      assert {:ok, rebuilt} = Redaction.rebuild(trace, redacted, keys)
+      [rebuilt_stop, rebuilt_tool] = Enum.drop(rebuilt.events, 6)
+      assert rebuilt_tool.metadata.tool_name == "exfil [R]"
+
+      assert rebuilt_stop.metadata.requested_tool_calls == [
+               %{tool_call_id: "c1", tool_name: "lookup"},
+               %{tool_call_id: "c2", tool_name: "exfil [R]"}
+             ]
+
+      [dropped_stop, dropped_tool] = Enum.drop(Redaction.skeleton_trace(trace, content).events, 6)
+      ids_only = stop_entry.metadata.requested_tool_calls
+      assert dropped_stop.metadata.requested_tool_calls == ids_only
+      refute Map.has_key?(dropped_tool.metadata, :tool_name)
+    end
   end
 
   describe "redact/4 contract (F2, F3, F4)" do

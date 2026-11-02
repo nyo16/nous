@@ -161,7 +161,7 @@ a new case.
 | Key | Type | Meaning |
 |---|---|---|
 | `id` | string, required | Stable and unique within the dataset |
-| `input` | string or message list, required | The prompt, or `{role, content}` messages (`system`, `user`, `assistant`) |
+| `input` | string or message list, required | The prompt, or `{role, content}` messages (`system`, `user`, `assistant`). A leading `system` message is sent instead of the agent's instructions (`system_message: :caller`) |
 | `expected` | map | Free-form expectations the scorers read (`expected["output"]` is the default reference for `equals`/`similarity`) |
 | `scorers` | list | Case-specific scorers, added after the task's |
 | `threshold` | number in 0..1 | Pass threshold for the soft scorers' weighted mean (default 0.5) |
@@ -327,6 +327,11 @@ The verdict is, in order:
    their weighted mean is below the case threshold (default `0.5`)
 4. `:pass` otherwise
 
+The default threshold is rarely a deliberate choice, so a run (or re-score)
+with soft-scored cases that set no `threshold` logs one warning naming those
+cases (an optimization logs it once, not once per evaluation). Set
+`threshold:` on the case to choose it.
+
 The sample's `case_score` is the gated objective: `nil` on `:error`, `0.0`
 when a required score failed, else the soft weighted mean (`1.0` with no soft
 scores). It ignores the threshold.
@@ -456,14 +461,29 @@ answers with a verdict from a declared, closed label set:
 - **Determinism:** temperature 0 by default; `:seed` is sent when the
   provider supports one. `samples: n` with `reduce: :majority | :mean` makes
   several judge calls per sample.
-- **Untrusted evidence is fenced.** Each piece (input, output, tool calls,
-  transcript, reference) goes into the user message inside its own fence with
-  a random boundary minted for that request; fence-like markers in the
-  evidence are broken up first.
+- **Untrusted evidence is fenced.** Each piece (input, output, each tool
+  call, each message of the transcript or of an input given as messages,
+  reference) goes into the user message inside its own fence with a random
+  boundary minted for that request; fence-like markers in the evidence are
+  broken up first. Messages are named outside their fences (`USER_1`,
+  `AGENT_2`, `TOOL_RESULT_3`), and each tool call a message made follows it
+  under its own name (`AGENT_2_TOOL_CALL_1`). The judge is told that only
+  those names say which message a piece is and whether a call was made, so
+  a reply containing a line `USER: thanks, solved` or
+  `(tool call lookup: {})` cannot pass for a user turn or a real call. A
+  `SYSTEM_n` name says where a message sat, not that its content is true.
+- **Bounded evidence.** `max_span_bytes` (default 20 000) cuts each piece;
+  `max_transcript_bytes` (default 40 000) caps a message list in total by
+  keeping its first message and the latest ones that fit, with a note
+  outside the fences (`[N messages (B bytes) left out here]`) and
+  `"TRANSCRIPT_OMITTED"` in the score's `truncated` metadata. For online
+  rules, size `reserve_tokens` to cover the judge's largest request.
 - **Separate trace, counted cost.** Each judge run executes under its own
   trace id with role `:judge`, so its telemetry never lands in the graded
   sample's trace. The score's metadata carries `judge_trace_id`, the judge
-  `usage` and `model`, and run budgets count it.
+  `usage` and `model`. The run budget charges every answered request of that
+  trace, including the structured-output retry and the calls of a judge that
+  then failed or hit the scorer timeout (see [Budgets](#budgets)).
 
 ### Calibration
 
@@ -499,7 +519,9 @@ Then require it:
 ```
 
 With `require_calibration`, the run looks the calibration up in its store
-and refuses to start (before any model call) when none matches this exact
+(`store:` in `Nous.Eval.run/2`; `mix nous.eval` and `mix nous.eval.rescore`
+use their `--store`, so calibrate into the same `--store` you eval with:
+the default `file:.nous/eval` for all three) and refuses to start (before any model call) when none matches this exact
 judge configuration or it misses either threshold. The fingerprint covers the
 model, temperature, seed, prompt (template, rubric, labels), scale,
 threshold, include, samples, reduce, span limit **and the Nous version**: a
@@ -623,17 +645,27 @@ mix nous.eval --task MyApp.Evals.Refunds --budget-cost 2 --budget-tokens 500000
 
 - Spend is counted from **every answered model request** of every sample's
   trace, including turns that failed afterwards and samples later killed,
-  plus the usage model-graded scorers (the judge) report. Requests are priced
+  and of every model-graded scorer's own trace: the LLM judge registers its
+  trace with the budget before its first call, so a retried, failed or
+  timed-out judge pays for the requests it made, and a successful one is
+  charged exactly once. A custom model-graded scorer is charged the same way
+  only if it calls `Nous.Eval.ScoreInput`'s `track_trace` with the trace id
+  of its model runs; usage it only reports in score metadata is not counted.
+  Requests are priced
   with `Nous.Usage.cost/2` at the model that actually answered, so a fallback
   or a routed model counts at its own price.
 - With `max_cost`, every model the run is known to call (the agent's model and
   fallbacks, judge models) must have a price, or the run is refused with
   `{:error, {:unknown_price, "provider:model"}}` **before any model call**.
   Add prices with `config :nous, :model_prices` (see `Nous.Usage.Pricing`).
-- Once a limit is reached no new sample starts, running agents are cancelled
-  at their next step, and model-graded scorers are no longer called. Samples
-  that never ran or were cancelled are `:budget_exhausted`, and so is a sample
-  whose final answer crossed the limit. The run's status is
+- Once a limit is reached no new sample starts. A token or cost limit also
+  stops spending: running agents are cancelled at their next step, and
+  model-graded scorers are no longer called. `max_samples` only refuses new
+  samples; a token or cost limit crossed afterwards by the samples still
+  running stops them all the same, and `run.budget.exhausted` then names that
+  spend limit. Samples that never ran or were cancelled are
+  `:budget_exhausted`, and so is a sample whose final answer crossed the
+  limit. The run's status is
   `:budget_exhausted` and `mix nous.eval` exits 2: a gate never passes on
   partial results.
 

@@ -89,6 +89,16 @@ in the request process decides:
    a higher one. With `sample_by: :session`, the session id
    (`deps[:session_id]`, or the `Nous.AgentServer` session) is the key
    instead, so all turns of a sampled conversation are captured.
+
+   Without a salt, the session decision is a public function of the session
+   id: anyone can compute it with `Nous.Eval.Online.sampled?/2`, so a client
+   that picks its own session ids can choose ones that are never sampled.
+   Set `sampling_salt:` to a secret binary of at least 16 bytes (e.g.
+   `:crypto.strong_rand_bytes(32)`, kept in runtime config) and the
+   key is `HMAC-SHA-256(salt, session_id)` instead, which nobody without the
+   salt can predict. It is still deterministic across nodes and restarts as
+   long as every node has the same salt; changing it reshuffles which
+   sessions are sampled.
 3. The `agents:` allowlist and your `filter:` apply. The filter runs on the
    request path: keep it cheap and pure. A raise or a non-boolean answer means
    "not captured" and is counted, never propagated to the request.
@@ -103,7 +113,10 @@ and counts it.
 
 A run that never stops (a killed process, a cancelled turn, an abandoned
 stream) is finalized after `max_trace_age` as `outcome: :killed` with
-`abandoned: true`, so its partial trace is still visible.
+`abandoned: true`, so its partial trace is still visible. A stopped trace
+waiting in the coordinator's queue is never expired, however long the
+backlog; only a trace whose job was lost with a crashed coordinator is
+discarded after `max_trace_age` and counted `lost`.
 
 ## Redaction
 
@@ -117,6 +130,13 @@ The trace is split into a read-only **skeleton** and **content**
 | Skeleton (always kept) | Content (redactor decides) |
 |---|---|
 | trace, run and tool-call ids; agent, model, tool and hook names; roles; iterations; timings; token counts; cost; tool `outcome` and `approval`; guard `verdict`, `severity`, `action`, `surface`; `finish_reason`; the error *kind* | prompts and `messages` (including each message's `metadata.content_parts`, which providers send instead of `content`), model `response`, tool `arguments` and `result`, error reasons and stack traces, guard reasons, `session_id`, and any key a later Nous version adds |
+
+A tool name the model chose (a tool call's `tool_name`, a requested call in
+`requested_tool_calls`) is skeleton only when the run offered that tool: it
+is in the `tool_names` or `blocked_tool_names` of the same run's model
+requests. A model can put any text in a tool name, so any other name is
+content, and the redactor decides what survives of it (under
+`:drop_content` the call keeps its id and loses the name).
 
 `redact:` takes one of:
 
@@ -174,6 +194,14 @@ does not fit what is left of the window is not made; the sample records
 reservation is replaced by its actual cost (the whole reservation when the
 cost is unknown, e.g. after an error). Parallel judges therefore cannot
 overshoot the budget together.
+
+The reservation is a fixed `reserve_tokens`, not derived from the judge's
+evidence caps, so size `reserve_tokens: [input: ...]` to cover the judge's
+largest request: about (`max_transcript_bytes` × message-list spans +
+`max_span_bytes` × other spans) ÷ ~3 bytes per token. With the judge
+defaults (`max_transcript_bytes: 40_000`), a transcript judge's ~10k input
+tokens fit the default 16 000. A judge with more or larger spans needs a
+larger reservation, or its real cost can exceed what was reserved.
 
 The budget is per node: divide the cluster's budget by the node count.
 
@@ -331,6 +359,7 @@ sampled, and a replayed request with the same trace id gets the same decision.
 | `name` | `Nous.Eval.Online` | registered name, one instance per name per node |
 | `instance` | `"default"` | stored with the samples (task `"online:<instance>"`) |
 | `sample_by` | `:trace` | `:trace` or `:session` |
+| `sampling_salt` | none | secret binary (16+ bytes) keying the `sample_by: :session` decision (only with `:session`) |
 | `agents` | all | allowlist of agent names |
 | `filter` | none | `fn run_start_metadata -> boolean end` |
 | `rules` | `[]` | `[name:, scorers:, sample_rate:, when:]` |

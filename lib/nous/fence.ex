@@ -61,11 +61,13 @@ defmodule Nous.Fence do
   @doc false
   # Breaks up fence-like markers (`<<<`, `>>>`) in untrusted text, so text that
   # imitates a fence (a fake opener or closer with a guessed boundary) reads as
-  # plain characters. The text stays legible for the model.
+  # plain characters. Every run of three or more `<` (or `>`) is spaced out
+  # whole, whatever its length: replacing only the first three of `<<<<<`
+  # would leave a fresh `<<<`. The text stays legible for the model.
   @spec neutralize(String.t()) :: String.t()
   def neutralize(text) when is_binary(text) do
-    text
-    |> String.replace("<<<", "< < <")
-    |> String.replace(">>>", "> > >")
+    Regex.replace(~r/<{3,}|>{3,}/, text, fn run ->
+      run |> String.graphemes() |> Enum.join(" ")
+    end)
   end
 end

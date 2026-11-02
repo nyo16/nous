@@ -67,7 +67,12 @@ defmodule Nous.Eval.Online.Job do
     report_redaction(redaction, config, shared)
 
     sample = build_sample(trace, rid, started_ms, kind)
-    sampling_key = if config.sample_by == :session and is_binary(session), do: session, else: tid
+    # The capture decision's key and salt, so a rule samples a subset of it.
+    sampling_key =
+      if config.sample_by == :session and is_binary(session) and session != "",
+        do: {session, config.sampling_salt},
+        else: {tid, nil}
+
     {sample, rules} = score(ctx, sample, sampling_key)
 
     {scores, errors, explanations} =
@@ -265,8 +270,8 @@ defmodule Nous.Eval.Online.Job do
   defp run_outcome(%Sample{outcome: :killed}), do: :killed
   defp run_outcome(%Sample{error: error}), do: {:error, error}
 
-  defp applies?(rule, key, sample) do
-    Sampler.below?(key, rule.threshold) and when?(rule.when, sample)
+  defp applies?(rule, {key, salt}, sample) do
+    Sampler.below?(key, rule.threshold, salt) and when?(rule.when, sample)
   end
 
   defp when?(nil, _sample), do: true

@@ -840,12 +840,21 @@ were double counting and now add up correctly.
 ### `Nous.run(agent, messages: [...])` sends the agent's prompt
 
 The agent's `instructions` (or `system_prompt`), todo list and
-structured-output instructions are now prepended, exactly as for a string
-prompt. If your list already starts with a `:system` message, it is kept
-and nothing is prepended, so code that worked around the old behaviour by
-supplying its own system message is unaffected. Code that relied on this
-path sending *no* system prompt should pass its own leading system
-message.
+structured-output instructions are now sent, exactly as for a string
+prompt. The agent's prompt is authoritative: if your list (or
+`message_history:`) starts with a `:system` message, the agent's assembled
+prompt replaces it, and a warning is logged when the agent has
+instructions and the replaced message does not start with them. Further
+leading system messages that start with the agent's instructions (copies
+left by older continuations) are dropped; any other system message, such as
+the Summarization plugin's `[Conversation Summary]` or one in the middle of
+the conversation, is kept. Passing `result.all_messages` back as
+`message_history:` therefore sends the agent prompt once, with plugin
+fragments once. An agent with no prompt of its own sends your list as
+given. To send your own system message instead of the agent's, pass
+`system_message: :caller`; the messages are then sent as given (any other
+value raises `ArgumentError`). Code that relied on this path sending *no*
+system prompt should use an agent without instructions.
 
 ### Plugin system prompts on continued runs
 
@@ -937,7 +946,7 @@ only what survived.
   its old description.
 - When a continued context's profile differs from the agent's, the system
   prompt is rebuilt. A leading system message the runner wrote is replaced;
-  one you wrote yourself makes the run return
+  one you kept with `system_message: :caller` makes the run return
   `{:error, %Nous.Errors.ProfileError{reason: :system_message_diverged}}`.
 - AgentServer seeds the context's system prompt from the built agent
   (function instructions seed `""`).

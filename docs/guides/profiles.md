@@ -170,12 +170,20 @@ bootstrap over cases, Holm across both metrics):
 
 1. no metric significantly worse, and the candidate's error rate within
    `max_error_rate` (default 0);
-2. at least one metric significantly better (`alpha`, default 0.05);
+2. at least one metric significantly better (`alpha`, default 0.05),
+   and an exact one-sided sign test on the test cases the candidate
+   improved versus worsened (by pass rate) with p below `alpha`. The
+   bootstrap alone is too optimistic on a handful of cases; the sign test
+   sets the floor. At alpha 0.05 the smallest test split that can pass is
+   5 cases, all improved (p = 0.5^5 = 0.03125); the gate reports `b`, `c`
+   and `p` in `result.sign_test` and in the report's gate line;
 3. no regression on the test split's guard cases.
 
 Only then is the verdict `:accepted` and, with `store:`, the profile
 stored. A small test split cannot show a small improvement: read the MDE
-in the report before concluding the search failed.
+in the report before concluding the search failed. Each entry of
+`result.rejections` that followed a proposal carries the rejected text as
+`proposal: %{component => text}`.
 
 ## Feedback policy and safety
 
@@ -188,7 +196,10 @@ reflector is treated as an attack surface:
   or a judge prompt; reasons that quote them are withheld. This keeps
   answers and grader wording out of the agent's text.
   **`feedback: :with_expected`** adds train cases' expected maps (GEPA's
-  default); it is recorded in the profile's provenance.
+  default); it is recorded in the profile's provenance. Use it when a case
+  checks a value the reflector cannot otherwise see (an exact figure, an
+  id, a required wording): under `:diagnostic` it only learns that the
+  check failed, not what was expected.
 - **Fenced evidence.** Case inputs, agent outputs, tool arguments and
   results, critiques and the current component text are rendered inside
   random-boundary fences the reflector is told never to obey. Scores come

@@ -157,7 +157,27 @@ defmodule Nous.Eval.BudgetTest do
     assert Budget.report(budget).spent.samples == 2
   end
 
-  test "charge/3 adds reported usage, such as a judge's" do
+  test "a spend limit reached after max_samples still stops spending" do
+    budget = start(max_samples: 1, max_cost: 0.000_001)
+    id = trace_id()
+    :ok = Budget.track(budget, id)
+    check = Budget.cancellation_check(budget)
+
+    assert Budget.admit(budget) == :ok
+    assert Budget.admit(budget) == :exhausted
+    assert Budget.exhausted(budget) == :max_samples
+    refute Budget.spend_exhausted?(budget)
+
+    # The admitted sample is still running and overspends.
+    model_stop(id, 10_000)
+
+    assert Budget.spend_exhausted?(budget)
+    assert catch_throw(check.()) == {:cancelled, :budget_exhausted}
+    assert Budget.exhausted(budget) == :max_cost
+    assert Budget.report(budget).exhausted == :max_cost
+  end
+
+  test "charge/3 adds usage and enforces the limits" do
     budget = start(max_tokens: 50)
 
     Budget.charge(

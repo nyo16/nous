@@ -4,6 +4,7 @@ defmodule Nous.Eval.Online.Config do
   # check fails closed: `{:error, {:invalid_config, reason}}` and the
   # instance does not start.
 
+  alias Nous.Eval.Online.Salt
   alias Nous.Eval.Scorer.Spec
   alias Nous.Eval.Scoring
   alias Nous.Eval.Scoring.Prepared
@@ -18,6 +19,7 @@ defmodule Nous.Eval.Online.Config do
     :filter,
     :agents,
     :sample_by,
+    :sampling_salt,
     :rules,
     :budget,
     :max_in_flight,
@@ -43,6 +45,7 @@ defmodule Nous.Eval.Online.Config do
     filter: nil,
     agents: nil,
     sample_by: :trace,
+    sampling_salt: nil,
     rules: [],
     budget: nil,
     max_in_flight: 200,
@@ -127,7 +130,8 @@ defmodule Nous.Eval.Online.Config do
            store_opts: store_opts,
            rules: rules,
            budget: budget,
-           agents: opts[:agents] && MapSet.new(opts[:agents])
+           agents: opts[:agents] && MapSet.new(opts[:agents]),
+           sampling_salt: opts[:sampling_salt] && Salt.new(opts[:sampling_salt])
          )
        )}
     else
@@ -225,6 +229,9 @@ defmodule Nous.Eval.Online.Config do
       opts[:sample_by] not in [:trace, :session] ->
         {:error, {:invalid_option, :sample_by, opts[:sample_by]}}
 
+      not salt?(opts[:sampling_salt], opts[:sample_by]) ->
+        {:error, {:invalid_option, :sampling_salt, :redacted}}
+
       not optional_fun?(opts[:filter]) ->
         {:error, {:invalid_option, :filter, opts[:filter]}}
 
@@ -238,6 +245,15 @@ defmodule Nous.Eval.Online.Config do
         :ok
     end
   end
+
+  # A salt only keys session sampling (trace ids are random already); with
+  # `sample_by: :trace` it would silently do nothing. Shorter than 16 bytes
+  # it could be brute-forced from a few observed decisions. The value is a
+  # secret, so the error never carries it; past validation it travels
+  # wrapped (`Nous.Eval.Online.Salt`).
+  defp salt?(nil, _sample_by), do: true
+  defp salt?(salt, :session), do: is_binary(salt) and byte_size(salt) >= 16
+  defp salt?(_salt, _sample_by), do: false
 
   defp pos_int?(value), do: is_integer(value) and value > 0
   defp optional_fun?(value), do: is_nil(value) or is_function(value, 1)

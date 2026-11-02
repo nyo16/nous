@@ -34,8 +34,18 @@ defmodule Nous.Eval.Guard.Recording do
   builder, chunking, cases and tool descriptions, not the bands) and served
   from there by the next `record/3` with the same fingerprint, so a baseline
   is recorded once however many candidates are compared with it.
+
+  A cache file is JSON (`nous.guard_recording/1`). It is read back only
+  when every item has exactly the shape this subject records; anything else
+  (a tampered, truncated or foreign file) is a miss and the cases are
+  recorded again, and nothing in it ever becomes an atom. Still, a cache
+  file decides verdicts: keep the cache directory somewhere only you can
+  write. Cache files from earlier releases (binary term format) are
+  ignored and re-recorded.
   """
 
+  alias Nous.DecisionModel.Answer
+  alias Nous.Eval.Codec
   alias Nous.Eval.Guard.{Case, Subject}
   alias Nous.Hook.Decision
   alias Nous.Plugins.InputGuard.{Engine, Result}
@@ -99,7 +109,7 @@ defmodule Nous.Eval.Guard.Recording do
     cases = Enum.filter(cases, &(&1.kind == :classifier and &1.surface == subject.surface))
     fingerprint = Subject.recording_fingerprint(subject, cases, tools)
 
-    case cached(opts[:cache], fingerprint) do
+    case cached(opts[:cache], subject, cases, fingerprint) do
       {:ok, recording} ->
         {:ok, recording}
 
@@ -194,33 +204,43 @@ defmodule Nous.Eval.Guard.Recording do
   end
 
   # ── cache ─────────────────────────────────────────────────────────────────
+  #
+  # A cache file is the recording as JSON (`nous.guard_recording/1`), read
+  # back only against the subject and cases being recorded: every item must
+  # have exactly the shape `record_case/3` produces for that subject, or the
+  # whole file is a miss and the recording is made again. Atoms are never
+  # created from it. Cases are not stored; an item names its case by id and
+  # the case given to `record/3` is used.
 
-  defp cached(nil, _fingerprint), do: :miss
+  @cache_schema "nous.guard_recording/1"
+  @floors %{"allow" => :allow, "escalate" => :escalate, "deny" => :deny}
+  @canaries %{"passed" => :passed, "failed" => :failed}
+  @result_severities %{"safe" => :safe, "suspicious" => :suspicious, "blocked" => :blocked}
+  @answer_types %{"noul" => :noul, "choice" => :choice, "score" => :score}
+  @answer_keys ~w(type noul choice score confidence probabilities)
+  @item_keys ~w(case_id decision pattern strategies error)
 
-  defp cached(dir, fingerprint) do
-    with {:ok, binary} <- File.read(cache_path(dir, fingerprint)),
-         %__MODULE__{fingerprint: ^fingerprint} = recording <- decode(binary) do
+  defp cached(nil, _subject, _cases, _fingerprint), do: :miss
+
+  defp cached(dir, subject, cases, fingerprint) do
+    with {:ok, text} <- File.read(cache_path(dir, fingerprint)),
+         {:ok, data} <- JSON.decode(text),
+         {:ok, recording} <- decode_cache(data, subject, cases, fingerprint) do
       {:ok, recording}
     else
       _ -> :miss
     end
   end
 
-  # `:safe` refuses to create atoms: a tampered or foreign cache file cannot
-  # grow the atom table, it is just a miss.
-  defp decode(binary) do
-    :erlang.binary_to_term(binary, [:safe])
-  rescue
-    ArgumentError -> nil
-  end
-
   defp store(nil, _recording), do: :ok
 
   defp store(dir, recording) do
     path = cache_path(dir, recording.fingerprint)
+    # `JSON` keeps `1.0` a float, so a cached recording replays identically.
+    json = JSON.encode!(encode_cache(recording))
 
     with :ok <- File.mkdir_p(dir),
-         :ok <- File.write(path <> ".tmp", :erlang.term_to_binary(recording)),
+         :ok <- File.write(path <> ".tmp", json),
          :ok <- File.rename(path <> ".tmp", path) do
       :ok
     else
@@ -231,7 +251,234 @@ defmodule Nous.Eval.Guard.Recording do
     end
   end
 
-  defp cache_path(dir, "sha256:" <> hex), do: Path.join(dir, hex <> ".guard_recording")
+  defp cache_path(dir, "sha256:" <> hex), do: Path.join(dir, hex <> ".guard_recording.json")
+
+  defp encode_cache(%__MODULE__{} = r) do
+    %{
+      "schema" => @cache_schema,
+      "kind" => Atom.to_string(r.kind),
+      "surface" => Atom.to_string(r.surface),
+      "fingerprint" => r.fingerprint,
+      "items" => Enum.map(r.items, &encode_item/1)
+    }
+  end
+
+  defp encode_item(item) do
+    %{
+      "case_id" => item.case.id,
+      "decision" => item.decision && encode_decision(item.decision),
+      "pattern" => item.pattern && encode_result(item.pattern),
+      "strategies" =>
+        item.strategies &&
+          Enum.map(item.strategies, fn
+            {:ok, result} -> %{"ok" => encode_result(result)}
+            {:error, reason} -> %{"error" => Codec.encode_value(reason)}
+          end),
+      "error" => Codec.encode_value(item.error)
+    }
+  end
+
+  defp encode_decision(%{chunks: chunks, floor: floor}) do
+    %{
+      "floor" => Atom.to_string(floor),
+      "chunks" =>
+        Enum.map(chunks, fn chunk ->
+          %{
+            "canary" => chunk.canary && Atom.to_string(chunk.canary),
+            "answers" =>
+              chunk.answers
+              |> Enum.map(fn {id, answer} -> [Codec.encode_value(id), encode_answer(answer)] end)
+              |> Enum.sort()
+          }
+        end)
+    }
+  end
+
+  defp encode_answer(%Answer{} = a) do
+    %{
+      "type" => Atom.to_string(a.type),
+      "noul" => a.noul,
+      "choice" => Codec.encode_value(a.choice),
+      "score" => a.score,
+      "confidence" => a.confidence,
+      "probabilities" => Enum.map(a.probabilities, fn {id, p} -> [Codec.encode_value(id), p] end)
+    }
+  end
+
+  defp encode_result(%Result{} = r) do
+    %{
+      "severity" => Atom.to_string(r.severity),
+      "reason" => r.reason,
+      "strategy" => r.strategy && Atom.to_string(r.strategy),
+      "metadata" => Codec.encode_value(r.metadata)
+    }
+  end
+
+  defp decode_cache(
+         %{"schema" => @cache_schema, "fingerprint" => fingerprint, "items" => items} = data,
+         %Subject{} = s,
+         cases,
+         fingerprint
+       )
+       when is_list(items) and length(items) == length(cases) do
+    if data["kind"] == Atom.to_string(s.kind) and data["surface"] == Atom.to_string(s.surface) do
+      {:ok,
+       %__MODULE__{
+         kind: s.kind,
+         surface: s.surface,
+         fingerprint: fingerprint,
+         items: items |> Enum.zip(cases) |> Enum.map(fn {i, c} -> decode_item!(i, c, s) end)
+       }}
+    else
+      :error
+    end
+  catch
+    :invalid_cache -> :error
+  end
+
+  defp decode_cache(_data, _subject, _cases, _fingerprint), do: :error
+
+  defp decode_item!(%{"case_id" => id} = item, %Case{id: id} = c, s)
+       when map_size(item) == length(@item_keys) do
+    unless Enum.all?(@item_keys, &Map.has_key?(item, &1)), do: throw(:invalid_cache)
+    error = value!(item["error"])
+
+    case s.kind do
+      :decision_guard ->
+        decision = if item["decision"], do: decode_decision!(item["decision"], s)
+        pattern = if item["pattern"], do: decode_result!(item["pattern"], s)
+
+        # Exactly one of a recorded decision and an error.
+        unless item["strategies"] == nil and is_nil(decision) != is_nil(error),
+          do: throw(:invalid_cache)
+
+        %{case: c, decision: decision, pattern: pattern, strategies: nil, error: error}
+
+      :input_guard ->
+        strategies = decode_strategies!(item["strategies"], s)
+
+        first_error =
+          Enum.find_value(strategies, fn
+            {:error, reason} -> reason
+            _ -> nil
+          end)
+
+        unless item["decision"] == nil and item["pattern"] == nil and error == first_error,
+          do: throw(:invalid_cache)
+
+        %{case: c, decision: nil, pattern: nil, strategies: strategies, error: error}
+    end
+  end
+
+  defp decode_item!(_item, _case, _subject), do: throw(:invalid_cache)
+
+  defp decode_decision!(%{"floor" => floor, "chunks" => chunks} = d, s)
+       when map_size(d) == 2 and is_list(chunks) do
+    questions = Map.new(s.decision.questions, &{Codec.encode_value(&1.id), &1})
+    %{floor: lookup!(@floors, floor), chunks: Enum.map(chunks, &decode_chunk!(&1, questions))}
+  end
+
+  defp decode_decision!(_decision, _subject), do: throw(:invalid_cache)
+
+  defp decode_chunk!(%{"canary" => canary, "answers" => answers} = chunk, questions)
+       when map_size(chunk) == 2 and is_list(answers) do
+    decoded =
+      Map.new(answers, fn
+        [id, answer] ->
+          case Map.fetch(questions, id) do
+            {:ok, q} -> {q.id, decode_answer!(answer, q)}
+            :error -> throw(:invalid_cache)
+          end
+
+        _ ->
+          throw(:invalid_cache)
+      end)
+
+    if map_size(decoded) != length(answers), do: throw(:invalid_cache)
+    %{answers: decoded, canary: if(canary, do: lookup!(@canaries, canary))}
+  end
+
+  defp decode_chunk!(_chunk, _questions), do: throw(:invalid_cache)
+
+  defp decode_answer!(%{"probabilities" => probabilities} = a, q)
+       when map_size(a) == length(@answer_keys) and is_list(probabilities) do
+    unless Enum.all?(@answer_keys, &Map.has_key?(a, &1)), do: throw(:invalid_cache)
+    type = lookup!(@answer_types, a["type"])
+    if type != q.type, do: throw(:invalid_cache)
+
+    %Answer{
+      type: type,
+      noul: number!(a["noul"]),
+      choice: value!(a["choice"]),
+      score: number!(a["score"]),
+      confidence: number!(a["confidence"]),
+      probabilities:
+        Enum.map(probabilities, fn
+          [id, p] when is_number(p) -> {value!(id), p}
+          _ -> throw(:invalid_cache)
+        end)
+    }
+  end
+
+  defp decode_answer!(_answer, _question), do: throw(:invalid_cache)
+
+  defp decode_strategies!(entries, s)
+       when is_list(entries) and length(entries) == length(s.strategies) do
+    Enum.map(entries, fn
+      %{"ok" => result} = entry when map_size(entry) == 1 -> {:ok, decode_result!(result, s)}
+      %{"error" => reason} = entry when map_size(entry) == 1 -> {:error, value!(reason)}
+      _ -> throw(:invalid_cache)
+    end)
+  end
+
+  defp decode_strategies!(_entries, _subject), do: throw(:invalid_cache)
+
+  # A strategy module is matched against the subject's own modules (and
+  # Pattern, DecisionGuard's ensemble), never turned into an atom.
+  defp decode_result!(%{"reason" => reason} = r, s)
+       when map_size(r) == 4 and (is_binary(reason) or is_nil(reason)) do
+    unless Enum.all?(~w(severity strategy metadata), &Map.has_key?(r, &1)),
+      do: throw(:invalid_cache)
+
+    %{"severity" => severity, "strategy" => strategy, "metadata" => meta} = r
+
+    modules =
+      Map.new([Pattern | Enum.map(s.strategies, &elem(&1, 0))], &{Atom.to_string(&1), &1})
+
+    metadata =
+      case value!(meta) do
+        %{} = map -> map
+        _ -> throw(:invalid_cache)
+      end
+
+    %Result{
+      severity: lookup!(@result_severities, severity),
+      reason: reason,
+      strategy: if(strategy, do: lookup!(modules, strategy)),
+      metadata: metadata
+    }
+  end
+
+  defp decode_result!(_result, _subject), do: throw(:invalid_cache)
+
+  defp lookup!(table, key) when is_binary(key) do
+    case Map.fetch(table, key) do
+      {:ok, value} -> value
+      :error -> throw(:invalid_cache)
+    end
+  end
+
+  defp lookup!(_table, _key), do: throw(:invalid_cache)
+
+  defp number!(v) when is_number(v) or is_nil(v), do: v
+  defp number!(_v), do: throw(:invalid_cache)
+
+  defp value!(v) do
+    case Codec.decode_value(v) do
+      {:ok, value} -> value
+      {:error, _} -> throw(:invalid_cache)
+    end
+  end
 
   # ── replay ────────────────────────────────────────────────────────────────
 

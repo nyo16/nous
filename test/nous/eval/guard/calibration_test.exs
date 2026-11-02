@@ -257,4 +257,96 @@ defmodule Nous.Eval.Guard.CalibrationTest do
     assert second.fingerprint == first.fingerprint
     assert second.items == first.items
   end
+
+  test "a tampered or misshapen cache file is refused and the cases are recorded again" do
+    dir = Path.join(System.tmp_dir!(), "nous_guard_cache_#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(dir) end)
+    cases = dataset()
+
+    {:ok, first} = Guard.record(cases, guard(), cache: dir)
+    assert calls() == length(cases)
+    [path] = Path.wildcard(Path.join(dir, "*"))
+    valid = JSON.decode!(File.read!(path))
+
+    tampered = [
+      # an unknown enumerated value
+      put_in(valid, ["items", Access.at(0), "decision", "floor"], "never"),
+      # a strategy module the subject does not run
+      put_in(valid, ["items", Access.at(0), "pattern"], %{
+        "severity" => "blocked",
+        "reason" => nil,
+        "strategy" => "Elixir.Evil",
+        "metadata" => %{}
+      }),
+      # an extra key on an item
+      put_in(valid, ["items", Access.at(1), "extra"], true),
+      # a missing item
+      update_in(valid, ["items"], &tl/1),
+      # an item for another case
+      put_in(valid, ["items", Access.at(0), "case_id"], "someone-else")
+    ]
+
+    for data <- tampered do
+      File.write!(path, JSON.encode!(data))
+      {:ok, again} = Guard.record(cases, guard(), cache: dir)
+      assert calls() == length(cases)
+      assert again.items == first.items
+    end
+
+    # Unknown keys and values anywhere in the file never become atoms.
+    suffix = Base.encode32(:crypto.strong_rand_bytes(10), case: :lower, padding: false)
+
+    pattern = %{
+      "severity" => "zz_severity_" <> suffix,
+      "reason" => nil,
+      "strategy" => "Elixir.ZzModule" <> suffix,
+      "metadata" => %{
+        "$amap" => %{("zz_meta_" <> suffix) => %{"$atom" => "zz_meta_value_" <> suffix}}
+      }
+    }
+
+    # One file per field, so each is reached by the reader before it refuses.
+    hostile = [
+      put_in(valid, ["items", Access.at(0), "zz_key_" <> suffix], 1),
+      put_in(valid, ["items", Access.at(0), "error"], %{"$atom" => "zz_error_" <> suffix}),
+      put_in(valid, ["items", Access.at(0), "pattern"], pattern),
+      put_in(valid, ["items", Access.at(0), "decision", "floor"], "zz_floor_" <> suffix)
+    ]
+
+    for data <- hostile do
+      File.write!(path, JSON.encode!(data))
+      {:ok, _} = Guard.record(cases, guard(), cache: dir)
+      assert calls() == length(cases)
+    end
+
+    for name <-
+          ~w(zz_key_ zz_error_ zz_severity_ zz_meta_ zz_meta_value_ zz_floor_)
+          |> Enum.map(&(&1 <> suffix))
+          |> Enum.concat(["Elixir.ZzModule" <> suffix]) do
+      assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+    end
+
+    File.write!(path, "not json")
+    {:ok, _} = Guard.record(cases, guard(), cache: dir)
+    assert calls() == length(cases)
+
+    # The rewritten cache is served again.
+    {:ok, _} = Guard.record(cases, guard(), cache: dir)
+    assert calls() == 0
+  end
+
+  test "a cache file in the old binary term format is ignored and re-recorded" do
+    dir = Path.join(System.tmp_dir!(), "nous_guard_cache_#{System.unique_integer([:positive])}")
+    on_exit(fn -> File.rm_rf!(dir) end)
+    cases = dataset()
+
+    {:ok, first} = Guard.record(cases, guard())
+    assert calls() == length(cases)
+    "sha256:" <> hex = first.fingerprint
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, hex <> ".guard_recording"), :erlang.term_to_binary(first))
+
+    {:ok, _} = Guard.record(cases, guard(), cache: dir)
+    assert calls() == length(cases)
+  end
 end

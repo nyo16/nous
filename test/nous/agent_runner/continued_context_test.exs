@@ -143,7 +143,7 @@ defmodule Nous.AgentRunner.ContinuedContextTest do
     for turn <- 1..4 do
       AgentServer.send_message(pid, "turn #{turn}")
       assert_receive {:model_request, ^turn, _system}, 2_000
-      await_assistant_count(pid, turn)
+      await_run_stored(pid)
     end
 
     users =
@@ -153,19 +153,19 @@ defmodule Nous.AgentRunner.ContinuedContextTest do
     assert users == ["turn 1", "turn 2", "turn 3", "turn 4"]
   end
 
-  defp await_assistant_count(pid, n, attempts \\ 100) do
-    count = Enum.count(AgentServer.get_context(pid).messages, &(&1.role == :assistant))
+  # The run task broadcasts completion before it hands its context back to
+  # the server. Once the task has exited, that hand-off is already in the
+  # server's mailbox, so the next call is answered from the stored context.
+  defp await_run_stored(pid) do
+    case :sys.get_state(pid) do
+      %{current_task: %Task{pid: task_pid}} ->
+        ref = Process.monitor(task_pid)
+        assert_receive {:DOWN, ^ref, :process, _, _}, 2_000
 
-    cond do
-      count >= n ->
+      %{current_task: nil} ->
         :ok
-
-      attempts == 0 ->
-        flunk("expected #{n} assistant messages, got #{count}")
-
-      true ->
-        Process.sleep(20)
-        await_assistant_count(pid, n, attempts - 1)
     end
+
+    AgentServer.get_context(pid)
   end
 end

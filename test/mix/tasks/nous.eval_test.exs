@@ -99,6 +99,50 @@ defmodule Mix.Tasks.Nous.EvalTest do
     def agent(_ctx), do: Nous.new("openai:no-such-model-xyz")
   end
 
+  # Stub's agent answers, and LLM judge answers: the label a calibration
+  # case's output names ("judge says: LABEL"), else "pass".
+  defmodule JudgingStub do
+    @moduledoc false
+
+    def request(model, messages, settings) do
+      if Nous.Eval.JudgeStub.system_prompt(messages) =~ "evaluation judge" do
+        user = Nous.Eval.JudgeStub.user_prompt(messages)
+
+        label =
+          case Regex.run(~r/judge says: (\w+)/, user) do
+            [_, label] -> label
+            nil -> "pass"
+          end
+
+        usage = %Usage{requests: 1, input_tokens: 7, output_tokens: 3, total_tokens: 10}
+        text = Nous.Eval.JudgeStub.verdict(label)
+        {:ok, Message.assistant(text, metadata: %{usage: usage, finish_reason: "stop"})}
+      else
+        Stub.request(model, messages, settings)
+      end
+    end
+
+    def request_stream(_model, _messages, _settings), do: {:error, :not_supported}
+    def count_tokens(_messages), do: 10
+  end
+
+  # Good's cases, graded by an LLM judge that refuses to grade without a
+  # passing stored calibration.
+  defmodule Calibrated do
+    @moduledoc false
+    use Nous.Eval
+
+    @impl true
+    def dataset, do: Good.dataset()
+
+    @impl true
+    def scorers,
+      do: [{Nous.Eval.Scorers.Judge, judge: "openai:gpt-4o-mini", require_calibration: true}]
+
+    @impl true
+    def agent(_ctx), do: Nous.new("openai:gpt-4o-mini")
+  end
+
   setup %{tmp_dir: dir} do
     Mix.shell(Mix.Shell.Process)
     on_exit(fn -> Mix.shell(Mix.Shell.IO) end)
@@ -145,6 +189,68 @@ defmodule Mix.Tasks.Nous.EvalTest do
 
   defp task_args(module, store, extra),
     do: ["--task", inspect(module), "--k", "2", "--seed", "1", "--store", store | extra]
+
+  # Calibrates Calibrated's judge into `store` with `mix
+  # nous.eval.judge.calibrate`: it agrees with every holdout label.
+  defp calibrate(store, dir) do
+    dataset = Path.join(dir, "judge_cases.jsonl")
+
+    lines =
+      for {label, i} <- Enum.with_index(~w(pass fail pass fail pass fail), 1) do
+        JSON.encode!(%{
+          "id" => "c#{i}",
+          "input" => "question #{i}",
+          "output" => "answer #{i}; judge says: #{label}",
+          "human_label" => label,
+          "annotator" => "ana",
+          "split" => "holdout",
+          "group" => "c#{i}",
+          "provenance" => "fixture"
+        })
+      end
+
+    File.write!(dataset, Enum.join(lines, "\n") <> "\n")
+
+    assert {0, out} =
+             run_task(Mix.Tasks.Nous.Eval.Judge.Calibrate, [
+               "--judge",
+               "openai:gpt-4o-mini",
+               "--dataset",
+               dataset,
+               "--store",
+               store
+             ])
+
+    assert out =~ "Stored in #{store} under "
+  end
+
+  # A stored calibration reaches the judge in `mix nous.eval` and
+  # `mix nous.eval.rescore`, through the store the task opened.
+  defp calibrated_flow(store, dir) do
+    Nous.ModelDispatcher.put_dispatcher(JudgingStub)
+    calibrate(store, dir)
+    # Each mix task runs in its own OS process in real use; collecting the
+    # previous task's store handle closes it, as that process's exit would.
+    :erlang.garbage_collect()
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        {code, out} = run_task(EvalTask, task_args(Calibrated, store, ["--set-baseline", "main"]))
+
+        assert code == 0, out
+        source = run_id(out)
+        assert out =~ "Baseline main -> #{source}"
+        :erlang.garbage_collect()
+
+        {code, out} = run_task(Mix.Tasks.Nous.Eval.Rescore, [source, "--store", store])
+
+        assert code == 0, out
+        assert out =~ "Re-scored #{source} as "
+      end)
+
+    refute log =~ "requires a calibration"
+    refute log =~ "without a calibration"
+  end
 
   describe "mix nous.eval" do
     test "baseline flow: pass, regression, pass", %{store: store} do
@@ -339,6 +445,30 @@ defmodule Mix.Tasks.Nous.EvalTest do
 
       assert {0, out} = run_task(Mix.Tasks.Nous.Eval.Rescore, ["baseline:main", "--store", store])
       assert out =~ "Re-scored #{source} as "
+    end
+  end
+
+  describe "judge calibrations" do
+    test "a stored calibration is used by eval and rescore", %{store: store, dir: dir} do
+      calibrated_flow(store, dir)
+    end
+
+    test "without a stored calibration the run is refused before grading", %{store: store} do
+      Nous.ModelDispatcher.put_dispatcher(JudgingStub)
+
+      {code, out} = run_task(EvalTask, task_args(Calibrated, store, []))
+      assert code == 2
+      assert out =~ "requires a calibration"
+      assert out =~ "mix nous.eval.judge.calibrate"
+    end
+
+    if Code.ensure_loaded?(Duckdbex) do
+      # One DuckDB handle per task: the runner stores through the handle the
+      # task opened, so the baseline set afterwards sees the run.
+      @tag :duckdb
+      test "the same flow on a DuckDB store", %{dir: dir} do
+        calibrated_flow("duckdb:" <> Path.join(dir, "eval.duckdb"), dir)
+      end
     end
   end
 

@@ -47,7 +47,12 @@ defmodule Nous.Eval.Optimizer do
        `max_error_rate`, default 0).
     2. **Improvement**: `compare(candidate, seed)` must be `:regression`,
        i.e. on at least one gate metric the seed is significantly worse
-       than the candidate (Holm-adjusted one-sided test at `alpha`).
+       than the candidate (Holm-adjusted one-sided test at `alpha`), and
+       an exact one-sided sign test on the test cases the candidate
+       improved versus worsened (by pass rate) must have p below `alpha`.
+       The bootstrap alone is anti-conservative on tiny splits; the sign
+       test sets the floor: at alpha 0.05 the smallest test split that can
+       pass is 5 cases, all improved (p = 0.5^5 = 0.03125).
     3. **Guard non-regression** on the test split's guard cases.
 
   Only then is the verdict `:accepted` and, with a `:store`, the profile
@@ -123,6 +128,7 @@ defmodule Nous.Eval.Optimizer do
 
   alias Nous.Eval.Optimizer.Strategies.{GEPA, OPRO}
   alias Nous.Eval.{Compare, ProfileReport}
+  alias Nous.Eval.Stats.Hypothesis
   alias Nous.Profile
 
   @gate_metrics [:case_score, :pass_rate]
@@ -331,13 +337,15 @@ defmodule Nous.Eval.Optimizer do
              seed: opts[:seed]
            ) do
       guard = test_guard(ctx, seed_test, best_test, splits)
+      sign_test = sign_test(improvement)
+      improved? = improvement.verdict == :regression and sign_test.p_value < opts[:alpha]
 
       reasons =
         [
           comparison.verdict != :pass &&
             "the candidate is not free of regressions on test (#{comparison.verdict}: #{Enum.join(comparison.reasons, "; ")})",
-          improvement.verdict != :regression &&
-            "no significant improvement on test (#{Enum.join(Enum.map(@gate_metrics, &Atom.to_string/1), ", ")}, Holm, alpha #{opts[:alpha]})",
+          not improved? &&
+            "no significant improvement on test (#{Enum.join(Enum.map(@gate_metrics, &Atom.to_string/1), ", ")}, Holm, alpha #{opts[:alpha]}; exact sign test p = #{format_p(sign_test.p_value)}, n = #{sign_test.b + sign_test.c})",
           match?({:error, _}, guard) && "guard cases regressed: #{inspect(elem(guard, 1))}"
         ]
         |> Enum.filter(& &1)
@@ -350,6 +358,7 @@ defmodule Nous.Eval.Optimizer do
           reasons: reasons,
           comparison: comparison,
           improvement: improvement,
+          sign_test: sign_test,
           guard: guard
       }
 
@@ -357,8 +366,8 @@ defmodule Nous.Eval.Optimizer do
         %{name: "no regression on test", passed?: comparison.verdict == :pass, detail: nil},
         %{
           name: "significant improvement on test",
-          passed?: improvement.verdict == :regression,
-          detail: nil
+          passed?: improved?,
+          detail: sign_test_detail(sign_test)
         },
         %{
           name: "guard non-regression",
@@ -380,6 +389,22 @@ defmodule Nous.Eval.Optimizer do
         )
     end
   end
+
+  # Exact one-sided sign test on the per-case discordant pairs. `improvement`
+  # compares the candidate (baseline) with the seed (candidate), so a negative
+  # delta is a case the candidate improved.
+  defp sign_test(improvement) do
+    deltas = for %{delta: d} <- improvement.cases, is_number(d), do: d
+    b = Enum.count(deltas, &(&1 < 0))
+    c = Enum.count(deltas, &(&1 > 0))
+    {:ok, %{p_value: two_sided}} = Hypothesis.mcnemar(b, c)
+    %{b: b, c: c, p_value: if(b > c, do: two_sided / 2, else: 1.0)}
+  end
+
+  defp sign_test_detail(%{b: b, c: c, p_value: p}),
+    do: "exact sign test: #{b} improved, #{c} worsened, one-sided p = #{format_p(p)}"
+
+  defp format_p(p), do: :erlang.float_to_binary(p * 1.0, decimals: 4)
 
   defp test_guard(%Context{guard: nil}, _seed_test, _best_test, _splits), do: :skipped
 

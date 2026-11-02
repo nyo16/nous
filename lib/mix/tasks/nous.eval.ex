@@ -25,7 +25,9 @@ defmodule Mix.Tasks.Nous.Eval do
       budget (see "Budgets" in `Nous.Eval.run/2`). `--budget-cost` refuses
       to start when a model has no known price
     * `--store SPEC` - `file:DIR` (default `file:.nous/eval`),
-      `sqlite:PATH` or `duckdb:PATH`
+      `sqlite:PATH` or `duckdb:PATH`. The run is stored there, and LLM
+      judges look up the calibration `mix nous.eval.judge.calibrate` stored
+      there (`require_calibration`)
     * `--baseline LABEL` - compare against the run the label points at
       (checked before the eval starts)
     * `--gate METRICS` - comma-separated gate metrics: `pass_rate`
@@ -104,8 +106,8 @@ defmodule Mix.Tasks.Nous.Eval do
          {:ok, label} <- CLI.label(opts[:set_baseline], "--set-baseline"),
          {:ok, store} <- CLI.open_store(opts[:store]),
          {:ok, baseline} <- baseline(store, opts[:baseline]),
-         {:ok, run} <- eval(module, opts, splits),
-         :ok <- CLI.put_run(store, run),
+         {:ok, run} <- eval(module, opts, splits, store),
+         :ok <- CLI.stored(store, run),
          {:ok, comparison} <- compare(baseline, run, task, gate, opts),
          :ok <- CLI.emit(subjects(run, comparison, format), format, opts[:output]) do
       code = CLI.exit_code(run, comparison, gate.max_error_rate)
@@ -124,7 +126,7 @@ defmodule Mix.Tasks.Nous.Eval do
   defp baseline(_store, nil), do: {:ok, nil}
   defp baseline(store, label), do: CLI.baseline_run(store, label)
 
-  defp eval(module, opts, splits) do
+  defp eval(module, opts, splits, store) do
     run_opts =
       [
         k: opts[:k],
@@ -133,7 +135,8 @@ defmodule Mix.Tasks.Nous.Eval do
         timeout: opts[:timeout],
         splits: splits,
         tags: CLI.tags(opts),
-        budget: CLI.budget(opts)
+        budget: CLI.budget(opts),
+        store: CLI.run_store(store)
       ]
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 

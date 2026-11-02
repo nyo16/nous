@@ -56,7 +56,6 @@ defmodule Nous.Eval.Online.Redaction do
                    :provider,
                    :message_count,
                    :has_tool_calls,
-                   :tool_name,
                    :tool_module,
                    :attempt,
                    :max_retries,
@@ -106,6 +105,11 @@ defmodule Nous.Eval.Online.Redaction do
 
   @name_lists [:tool_names, :blocked_tool_names]
 
+  # Keys whose value is a tool name the model chose. Skeleton only when the
+  # name is one the run offered (`tool_names` / `blocked_tool_names` of the
+  # run's model requests); any other name is content.
+  @chosen_tool_name_keys [:tool_name]
+
   # Score metadata that describes the instrument, not the sample.
   @score_metadata_keys [
     :label,
@@ -128,9 +132,11 @@ defmodule Nous.Eval.Online.Redaction do
   # metadata key of each field name, for `rebuild/3`.
   @spec split(Trace.t()) :: {Content.t(), %{String.t() => term()}}
   def split(%Trace{trace_id: trace_id, events: events}) do
+    offered = offered_tools(events)
+
     {skeleton, fields, keys} =
       Enum.reduce(events, {[], %{}, %{}}, fn %Event{} = event, {skel, fields, keys} ->
-        {meta, content} = split_metadata(event.metadata)
+        {meta, content} = split_metadata(event.metadata, offered)
 
         entry = %{
           seq: event.seq,
@@ -154,34 +160,68 @@ defmodule Nous.Eval.Online.Redaction do
     {%Content{trace_id: trace_id, skeleton: Enum.reverse(skeleton), fields: fields}, keys}
   end
 
-  defp split_metadata(metadata) when is_map(metadata) do
+  # `%{agent_run_id => MapSet of tool names}`: every name a run's model
+  # requests offered or blocked. A model can answer with any string as a tool
+  # name; only these names are the developer's, not the model's.
+  defp offered_tools(events) do
+    for %Event{metadata: %{} = meta} <- events,
+        key <- @name_lists,
+        names when is_list(names) <- [Map.get(meta, key)],
+        name when is_binary(name) <- names,
+        reduce: %{} do
+      acc ->
+        Map.update(acc, Map.get(meta, :agent_run_id), MapSet.new([name]), &MapSet.put(&1, name))
+    end
+  end
+
+  defp split_metadata(metadata, offered) when is_map(metadata) do
+    offered = Map.get(offered, Map.get(metadata, :agent_run_id), MapSet.new())
+
     Enum.reduce(metadata, {error_kind(metadata), []}, fn {key, value}, {meta, content} ->
-      case skeleton_value(key, value) do
+      case skeleton_value(key, value, offered) do
         {:ok, kept} -> {Map.put(meta, key, kept), content}
+        {:both, kept, also} -> {Map.put(meta, key, kept), [{key, also} | content]}
         :content -> {meta, [{key, value} | content]}
       end
     end)
   end
 
-  defp split_metadata(_metadata), do: {%{}, []}
+  defp split_metadata(_metadata, _offered), do: {%{}, []}
 
-  defp skeleton_value(:requested_tool_calls, calls) when is_list(calls) do
-    {:ok,
-     for %{} = call <- calls do
-       for key <- [:tool_call_id, :tool_name],
-           is_binary(Map.get(call, key)),
-           into: %{},
-           do: {key, Map.fetch!(call, key)}
-     end}
+  # Each requested call's id is skeleton, its tool name only when offered.
+  # When a call names any other tool, the ids and names are content as well,
+  # so the redactor decides what survives of them.
+  defp skeleton_value(:requested_tool_calls, calls, offered) when is_list(calls) do
+    calls =
+      for %{} = call <- calls do
+        for key <- [:tool_call_id, :tool_name],
+            is_binary(Map.get(call, key)),
+            into: %{},
+            do: {key, Map.fetch!(call, key)}
+      end
+
+    kept = Enum.map(calls, &offered_name(&1, offered))
+
+    if kept == calls, do: {:ok, kept}, else: {:both, kept, calls}
   end
 
-  defp skeleton_value(key, names) when key in @name_lists and is_list(names) do
+  defp skeleton_value(key, name, offered) when key in @chosen_tool_name_keys do
+    if is_binary(name) and MapSet.member?(offered, name), do: {:ok, name}, else: :content
+  end
+
+  defp skeleton_value(key, names, _offered) when key in @name_lists and is_list(names) do
     if Enum.all?(names, &scalar?/1), do: {:ok, names}, else: :content
   end
 
-  defp skeleton_value(key, value) do
+  defp skeleton_value(key, value, _offered) do
     if MapSet.member?(@skeleton_keys, key) and scalar?(value), do: {:ok, value}, else: :content
   end
+
+  defp offered_name(%{tool_name: name} = call, offered) do
+    if MapSet.member?(offered, name), do: call, else: Map.delete(call, :tool_name)
+  end
+
+  defp offered_name(call, _offered), do: call
 
   defp scalar?(value),
     do: is_nil(value) or is_binary(value) or is_atom(value) or is_number(value)

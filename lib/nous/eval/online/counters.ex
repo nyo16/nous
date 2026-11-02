@@ -51,9 +51,6 @@ defmodule Nous.Eval.Online.Counters do
   @spec get(t(), atom()) :: integer()
   def get(ref, key), do: :atomics.get(ref, Map.fetch!(@index, key))
 
-  @spec put(t(), atom(), integer()) :: :ok
-  def put(ref, key, value), do: :atomics.put(ref, Map.fetch!(@index, key), value)
-
   # Takes the window counters, resetting them.
   @spec take_window(t()) :: %{atom() => non_neg_integer()}
   def take_window(ref),

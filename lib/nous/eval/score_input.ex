@@ -11,6 +11,12 @@ defmodule Nous.Eval.ScoreInput do
     * `:trace` - the sample's `Nous.Eval.Trace`
     * `:usage` - `Nous.Usage` summed over the whole run tree
     * `:duration_ms` - wall time of the sample
+    * `:track_trace` - `nil`, or a function the eval runner sets that
+      charges a trace id's model requests to the run's budget
+      (`Nous.Eval.run/2`'s `:budget`). A model-graded scorer calls it with
+      the trace id of its own model runs before the first request, so
+      every request, answered or failed, is paid for. Spend a scorer only
+      reports in `Score` metadata is not charged.
 
   A failed run is not a scorer error: output scorers fail the sample with
   `reason: "run_failed"`, trace scorers score the partial trace.
@@ -28,7 +34,8 @@ defmodule Nous.Eval.ScoreInput do
           run_outcome: run_outcome(),
           trace: Trace.t(),
           usage: Nous.Usage.t(),
-          duration_ms: non_neg_integer()
+          duration_ms: non_neg_integer(),
+          track_trace: (String.t() -> :ok) | nil
         }
 
   @enforce_keys [:case, :sample, :run_outcome, :trace]
@@ -40,6 +47,7 @@ defmodule Nous.Eval.ScoreInput do
     seed: nil,
     output: nil,
     usage: %Nous.Usage{},
-    duration_ms: 0
+    duration_ms: 0,
+    track_trace: nil
   ]
 end

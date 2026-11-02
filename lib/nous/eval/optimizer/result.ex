@@ -13,11 +13,19 @@ defmodule Nous.Eval.Optimizer.Result do
     * `:improvement` - the comparison the other way round: a `:regression`
       verdict there means the seed is significantly worse than the
       candidate, i.e. the candidate improves on it
+    * `:sign_test` - `%{b:, c:, p_value:}`: test cases the candidate improved
+      (`b`) and worsened (`c`) by pass rate, and the exact one-sided sign-test
+      p-value (McNemar's exact binomial halved when `b > c`, else `1.0`). The
+      improvement gate needs both a `:regression` verdict in `:improvement`
+      and this p below alpha, so at alpha 0.05 the smallest test split that
+      can pass is 5 cases, all improved (p = 0.5^5 = 0.03125)
     * `:guard` - the guard filter's verdict on the test split's guard cases
       (`:ok`, `:skipped` or `{:error, reason}`)
     * `:report` - the `Nous.Eval.ProfileReport` (render it with
       `Nous.Eval.ProfileReport.render/2`), or `nil` without a candidate
-    * `:candidates` / `:rejections` - the strategy's pool and rejection log
+    * `:candidates` / `:rejections` - the strategy's pool and rejection log.
+      A rejection made after the reflector proposed text carries
+      `proposal: %{component => text}` with the rejected proposal
     * `:steps` / `:stop_reason` - search steps run and why the search ended
       (`:max_steps`, `:budget_exhausted`, ...)
     * `:budget` - limits, spend and reserve
@@ -34,6 +42,7 @@ defmodule Nous.Eval.Optimizer.Result do
           seed_profile: Nous.Profile.t(),
           comparison: Nous.Eval.Compare.t() | nil,
           improvement: Nous.Eval.Compare.t() | nil,
+          sign_test: %{b: non_neg_integer(), c: non_neg_integer(), p_value: float()} | nil,
           guard: :ok | :skipped | {:error, term()},
           report: Nous.Eval.ProfileReport.t() | nil,
           candidates: [Candidate.t()],
@@ -53,6 +62,7 @@ defmodule Nous.Eval.Optimizer.Result do
     profile: nil,
     comparison: nil,
     improvement: nil,
+    sign_test: nil,
     guard: :skipped,
     report: nil,
     candidates: [],

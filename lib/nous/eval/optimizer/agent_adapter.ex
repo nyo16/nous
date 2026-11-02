@@ -44,6 +44,7 @@ defmodule Nous.Eval.Optimizer.AgentAdapter do
 
   alias Nous.Eval.{Case, Run, Sample, Score, Trace}
   alias Nous.Eval.Optimizer.Evaluation
+  alias Nous.Eval.Runner
   alias Nous.Eval.Task, as: EvalTask
 
   @run_option_keys [:parallelism, :timeout, :scorer_timeout, :max_trace_events, :max_trace_bytes]
@@ -61,6 +62,9 @@ defmodule Nous.Eval.Optimizer.AgentAdapter do
     with :ok <- no_unknown(rest),
          {:ok, task} <- EvalTask.load(task_module),
          {:ok, agent} <- reference_agent(task) do
+      # Once per optimization: each evaluation's run has the warning off.
+      Runner.warn_implicit_threshold(task.dataset.cases, task.scorers)
+
       {:ok,
        %{
          module: task_module,
@@ -106,7 +110,8 @@ defmodule Nous.Eval.Optimizer.AgentAdapter do
         budget: batch.budget,
         metadata: %{
           "optimizer" => %{"split" => batch.split, "profile_id" => profile.id}
-        }
+        },
+        warn_implicit_threshold: false
       ] ++ state.run_opts
 
     with {:ok, %Run{} = run} <- Nous.Eval.run(state.module, opts) do

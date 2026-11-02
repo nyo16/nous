@@ -748,16 +748,28 @@ defmodule Nous.Eval.Simulator do
   defp field(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 
   @doc false
-  # The transcript of an episode output as plain text, for judges and the
-  # optimizer's reflector.
-  @spec transcript_text(map()) :: String.t()
-  def transcript_text(%{"transcript" => transcript}) when is_list(transcript) do
-    Enum.map_join(transcript, "\n\n", fn
-      %{"role" => "user", "text" => text} -> "USER: " <> to_string(text)
-      %{"role" => "agent", "text" => text} -> "AGENT: " <> to_string(text)
-      _ -> ""
-    end)
+  # The conversation of an episode output as `{:user | :agent, text}` turns,
+  # in order: `sim.rubric` hands them to the judge, which fences each one on
+  # its own (`Nous.Eval.Scorers.Judge.score_transcript/3`).
+  @spec transcript_turns(map()) :: [{:user | :agent, String.t()}]
+  def transcript_turns(%{"transcript" => transcript}) when is_list(transcript) do
+    for %{"role" => role, "text" => text} <- transcript, role in ["user", "agent"] do
+      {if(role == "user", do: :user, else: :agent), to_string(text)}
+    end
   end
 
-  def transcript_text(_episode), do: ""
+  def transcript_turns(_episode), do: []
+
+  @doc false
+  # The conversation of an episode output as plain text, for the optimizer's
+  # reflector.
+  @spec transcript_text(map()) :: String.t()
+  def transcript_text(episode) do
+    episode
+    |> transcript_turns()
+    |> Enum.map_join("\n\n", fn
+      {:user, text} -> "USER: " <> text
+      {:agent, text} -> "AGENT: " <> text
+    end)
+  end
 end

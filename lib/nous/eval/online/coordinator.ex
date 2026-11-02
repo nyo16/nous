@@ -25,7 +25,7 @@ defmodule Nous.Eval.Online.Coordinator do
 
   require Logger
 
-  alias Nous.Eval.Online.{Counters, Job, Registry}
+  alias Nous.Eval.Online.{Counters, Handler, Job, Registry}
   alias Nous.Eval.{Run, Sample}
 
   @budget_event [:nous, :eval, :online, :budget_exhausted]
@@ -48,8 +48,12 @@ defmodule Nous.Eval.Online.Coordinator do
 
     with {:ok, store} <- init_store(config) do
       shared = Registry.shared(config.name)
-      # Jobs sent to a previous incarnation died with its mailbox.
-      Counters.put(shared.counters, :queued, 0)
+      # Jobs queued to a previous incarnation died with its mailbox: their
+      # rows are no longer held, so the sweep may count them lost, and they
+      # leave the `queued` gauge. Rows already queued to this process (its
+      # name is registered before `init/1` runs) stay held and counted.
+      released = Handler.release_stale(shared.table, self())
+      Counters.add(shared.counters, :queued, -released)
 
       state = %{
         config: config,
@@ -143,8 +147,10 @@ defmodule Nous.Eval.Online.Coordinator do
       {nil, _running} ->
         {:noreply, state}
 
-      {_tid, running} ->
+      {tid, running} ->
         if reason not in [:normal, :shutdown], do: Counters.add(state.shared.counters, :lost)
+        # A job that ended before taking its row leaves the row to the sweep.
+        Handler.release_running(state.shared.table, tid)
         state = pump(%{state | running: running})
         {:noreply, maybe_release(state)}
     end
@@ -178,7 +184,10 @@ defmodule Nous.Eval.Online.Coordinator do
       {{:value, {tid, kind}}, rest} ->
         case start_job(state, tid, kind) do
           {:ok, ref} ->
+            # Not atomic with a crash of this process between the two steps;
+            # only that would leave the gauge off by one.
             Counters.add(state.shared.counters, :queued, -1)
+            Handler.running(state.shared.table, tid)
             pump(%{state | queue: rest, running: Map.put(state.running, ref, tid)})
 
           :busy ->

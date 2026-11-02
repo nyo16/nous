@@ -256,9 +256,7 @@ defmodule Nous.Eval.Store.CodecTest do
 end
 
 defmodule Nous.Eval.Store.CodecAtomTableTest do
-  # async: false - asserts on the VM-global atom count, so nothing else may
-  # be creating atoms while it runs.
-  use ExUnit.Case, async: false
+  use ExUnit.Case, async: true
 
   alias Nous.Eval.Codec
   alias Nous.Eval.Store.Conformance
@@ -287,16 +285,11 @@ defmodule Nous.Eval.Store.CodecAtomTableTest do
   end
 
   test "decoding stored data never creates atoms" do
-    # Warm up: load every module the decode path touches.
-    {:ok, _} = Codec.decode_run_json(hostile_payload("warmup"))
+    suffix = Base.encode32(:crypto.strong_rand_bytes(10), case: :lower, padding: false)
+    assert {:ok, run} = Codec.decode_run_json(hostile_payload(suffix))
 
-    payload = hostile_payload("x9k2")
-    before = :erlang.system_info(:atom_count)
-    assert {:ok, run} = Codec.decode_run_json(payload)
-    assert :erlang.system_info(:atom_count) == before
-
-    for name <- ~w(evil_event_x9k2 evil_key_x9k2 evil_value_x9k2 evil_outcome_x9k2) do
-      assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+    for prefix <- ~w(evil_event_ evil_key_ evil_value_ evil_outcome_) do
+      assert_raise ArgumentError, fn -> String.to_existing_atom(prefix <> suffix) end
     end
 
     [%{trace: trace} | _] = run.samples
@@ -305,8 +298,8 @@ defmodule Nous.Eval.Store.CodecAtomTableTest do
     [tampered | _] = trace.events
 
     assert tampered.metadata == %{
-             "evil_key_x9k2" => %{"$atom" => "evil_value_x9k2"},
-             outcome: %{"$atom" => "evil_outcome_x9k2"}
+             ("evil_key_" <> suffix) => %{"$atom" => "evil_value_" <> suffix},
+             outcome: %{"$atom" => "evil_outcome_" <> suffix}
            }
   end
 end

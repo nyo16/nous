@@ -100,59 +100,61 @@ defmodule Mix.Tasks.Nous.Eval.Judge.CalibrateTest do
              )
   end
 
-  @tag :sqlite
-  test "a Likert judge with a rubric file, JSON output and an SQLite store", %{tmp_dir: dir} do
-    dataset =
-      write_cases(dir, [
-        {"1", "1", "holdout"},
-        {"2", "3", "holdout"},
-        {"3", "3", "holdout"},
-        {"1", "2", "holdout"},
-        {"3", "3", "holdout"}
+  if Code.ensure_loaded?(Exqlite) do
+    @tag :sqlite
+    test "a Likert judge with a rubric file, JSON output and an SQLite store", %{tmp_dir: dir} do
+      dataset =
+        write_cases(dir, [
+          {"1", "1", "holdout"},
+          {"2", "3", "holdout"},
+          {"3", "3", "holdout"},
+          {"1", "2", "holdout"},
+          {"3", "3", "holdout"}
+        ])
+
+      rubric = Path.join(dir, "rubric.md")
+      File.write!(rubric, "Score how completely the answer resolves the question.")
+      db = Path.join(dir, "eval.sqlite3")
+
+      Calibrate.run([
+        "--judge",
+        @judge,
+        "--dataset",
+        dataset,
+        "--scale",
+        "likert:1:3",
+        "--threshold",
+        "0.5",
+        "--rubric-file",
+        rubric,
+        "--seed",
+        "11",
+        "--store",
+        "sqlite:" <> db,
+        "--format",
+        "json"
       ])
 
-    rubric = Path.join(dir, "rubric.md")
-    File.write!(rubric, "Score how completely the answer resolves the question.")
-    db = Path.join(dir, "eval.sqlite3")
+      [json] = output_lines()
+      assert {:ok, printed} = Codec.decode_calibration_json(json)
+      assert printed.kappa_kind == :quadratic_weighted
+      assert_in_delta printed.kappa, 0.75, 1.0e-12
 
-    Calibrate.run([
-      "--judge",
-      @judge,
-      "--dataset",
-      dataset,
-      "--scale",
-      "likert:1:3",
-      "--threshold",
-      "0.5",
-      "--rubric-file",
-      rubric,
-      "--seed",
-      "11",
-      "--store",
-      "sqlite:" <> db,
-      "--format",
-      "json"
-    ])
+      # The CLI judge is the same judge an eval declares with these options.
+      {:ok, config} =
+        Judge.init(
+          judge: @judge,
+          rubric: "Score how completely the answer resolves the question.",
+          scale: {:likert, 1, 3},
+          threshold: 0.5,
+          seed: 11
+        )
 
-    [json] = output_lines()
-    assert {:ok, printed} = Codec.decode_calibration_json(json)
-    assert printed.kappa_kind == :quadratic_weighted
-    assert_in_delta printed.kappa, 0.75, 1.0e-12
+      assert printed.fingerprint_id == Judge.fingerprint_id(config)
 
-    # The CLI judge is the same judge an eval declares with these options.
-    {:ok, config} =
-      Judge.init(
-        judge: @judge,
-        rubric: "Score how completely the answer resolves the question.",
-        scale: {:likert, 1, 3},
-        threshold: 0.5,
-        seed: 11
-      )
-
-    assert printed.fingerprint_id == Judge.fingerprint_id(config)
-
-    {:ok, store} = Store.SQLite.init(path: db)
-    assert {:ok, ^printed} = Store.SQLite.get_calibration(store, printed.fingerprint_id)
+      {:ok, store} = Store.SQLite.init(path: db)
+      assert {:ok, ^printed} = Store.SQLite.get_calibration(store, printed.fingerprint_id)
+    end
   end
 
   test "operational errors exit with status 2", %{tmp_dir: dir} do
@@ -177,7 +179,7 @@ defmodule Mix.Tasks.Nous.Eval.Judge.CalibrateTest do
              ~s(unknown --scale "stars")
 
     assert run_failing(["--judge", @judge, "--dataset", dataset, "--store", "s3:bucket"]) =~
-             ~s(unknown store "s3")
+             ~s(unknown store kind "s3")
 
     assert run_failing([
              "--judge",
