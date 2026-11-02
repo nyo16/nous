@@ -1,0 +1,65 @@
+schema: nous.case/1
+name: dogfood_basic
+# Plain question answering, no tools. Loaded by Nous.Eval.Dogfood.Basic in
+# test/eval/dogfood_test.exs; `metadata.instructions` becomes the agent's
+# instructions for that case.
+cases:
+  - id: simple-greeting
+    input: Say hello in exactly 5 words.
+    metadata: {instructions: Be concise. No explanations.}
+    scorers:
+      - scorer: contains
+        values: [hello, hi, greetings, hey]
+        mode: any
+        case_sensitive: false
+
+  - id: math-basic
+    input: What is 15 + 27? Answer with just the number.
+    expected: {output: "42"}
+    metadata: {instructions: Be concise. Answer with just the number.}
+    scorers:
+      - scorer: contains
+        values: ["42"]
+      # Exact-format compliance, tracked without affecting the verdict.
+      - scorer: equals
+        required: false
+        weight: 0
+
+  - id: instructions-following
+    input:
+      - {role: system, content: "You are a pirate. Always respond in pirate speak with words like 'arr' and 'matey'."}
+      - {role: user, content: What is Elixir?}
+    scorers:
+      # Persona adherence is soft: models do not always stay in character.
+      - scorer: contains
+        values: [arr, matey, ahoy, pirate, ye]
+        mode: any
+        case_sensitive: false
+        required: false
+
+  - id: primary-color
+    input: Name exactly one primary color. Just the color name, nothing else.
+    scorers:
+      - scorer: regex
+        patterns: ['^\W*(red|blue|yellow)\W*$']
+        case_sensitive: false
+
+  - id: json-response
+    input: Give me a JSON object with keys 'name' and 'age'. Just the JSON, nothing else.
+    scorers:
+      - scorer: regex
+        patterns: ['\{[\s\S]*"name"[\s\S]*"age"[\s\S]*\}']
+
+  - id: list-generation
+    input: List 5 programming languages. Number them 1-5, one per line.
+    scorers:
+      - scorer: regex
+        patterns: ['(?m)^\W*1[.)]', '(?m)^\W*2[.)]', '(?m)^\W*3[.)]', '(?m)^\W*4[.)]', '(?m)^\W*5[.)]']
+
+  - id: repeat-sentence
+    input: "Repeat this sentence exactly, with nothing else: The quick brown fox jumps over the lazy dog."
+    expected: {output: The quick brown fox jumps over the lazy dog.}
+    metadata: {instructions: Be concise.}
+    scorers:
+      - scorer: similarity
+        threshold: 0.9

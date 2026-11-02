@@ -1,0 +1,4 @@
+{"schema": "nous.case/1", "id": "return-window", "input": "How long do I have to return an item?", "tags": ["returns"], "scorers": [{"scorer": "contains", "values": ["30 days"]}]}
+{"id": "late-refund", "input": "Can I get a refund after 60 days?", "tags": ["returns"], "scorers": [{"scorer": "contains", "values": ["30 days"]}, {"scorer": "not_contains", "values": ["yes"], "case_sensitive": false}]}
+{"id": "shipping-time", "input": "How long does shipping take?", "tags": ["shipping"], "split": "test", "scorers": [{"scorer": "regex", "patterns": ["\\d+-\\d+ business days"]}]}
+{"id": "greeting", "input": [{"role": "system", "content": "Reply in one short sentence."}, {"role": "user", "content": "Hi there!"}], "expected": {"output": "Hello! How can I help you today?"}, "tags": ["smalltalk"], "scorers": [{"scorer": "similarity", "threshold": 0.8, "required": false}]}

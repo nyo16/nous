@@ -104,9 +104,18 @@ Nous.new("openai:gpt-4o",
   fallback: ["anthropic:claude-sonnet-4-5", "groq:llama-3.1-70b-versatile"],
 
   # Vendor-specific body params (vLLM/SGLang/LM Studio/llama.cpp)
-  extra_body: %{top_k: 50, repetition_penalty: 1.1}
+  extra_body: %{top_k: 50, repetition_penalty: 1.1},
+
+  # Versioned prompt + tool-description text (a %Nous.Profile{} only; an
+  # invalid or stale profile raises Nous.Errors.ProfileError). The agent keeps
+  # its base text: `Nous.run(agent, prompt, profile: other)` switches for one
+  # run, `profile: nil` runs with the base text.
+  profile: Nous.Profile.load!("priv/profiles/support.json")
 )
 ```
+
+`instructions:` and `system_prompt:` are alternatives: setting both raises
+`ArgumentError`.
 
 Pluggable **backends** are not `Nous.new/2` options — they are maps in `deps`,
 read by the plugin or subsystem that owns them. Passing them to `Nous.new/2`
@@ -276,6 +285,21 @@ these, it will be rejected.
    can withhold or replace it) and SubAgent re-adds the DecisionGuard plugin
    to the child. Hooks otherwise do not inherit; a template can only add its
    own, and those do not reach grandchildren.
+8. **Every telemetry event Nous emits is listed in `Nous.Telemetry.events/0`**
+   and the `Nous.Telemetry` moduledoc catalog. If you add an emitter (in a
+   fork or a contribution), add the event to both: the eval trace collector
+   attaches only to that list, and stored traces drop event names they do not
+   know.
+9. **Untrusted text sent to an LLM is fenced.** Agent output, tool results or
+   user input that a judge or classifier prompt quotes goes inside a
+   random-boundary fence (the internal `Nous.Fence`, used by the InputGuard
+   LLM judge and `Nous.Eval.Scorers.Judge`), never pasted raw into the prompt.
+10. **Data files never mint atoms.** Eval datasets (`nous.case/1`) and judge
+    calibration files (`nous.judge_case/1`) are parsed against literal
+    allowlists: unknown keys, roles, splits or scorer names are errors, and
+    scorers named in a file resolve through `config :nous, :eval_scorers`.
+    Content hashes go through `Nous.Eval.CanonicalJSON`, so the same data
+    hashes the same regardless of key order or file format.
 
 ## Common workflows
 
@@ -426,7 +450,46 @@ test "agent calls the model", %{bypass: bypass, base: base} do
 end
 ```
 
-Don't mock `Req`/`hackney` directly — Bypass is the supported test seam.
+Don't mock `Req`/`hackney` directly — Bypass is the supported test seam for
+wire-level assertions. When you only need a scripted model (no HTTP), install
+a process-scoped dispatcher instead; it reaches the tasks the runner spawns
+through `$callers`, so `async: true` tests can each have their own:
+
+```elixir
+defmodule MyApp.StubModel do
+  alias Nous.{Message, Usage}
+
+  # The runner reads the response's `metadata.usage`; always set it.
+  def request(_model, _messages, _settings) do
+    {:ok, Message.assistant("hi!", metadata: %{usage: %Usage{total_tokens: 3}})}
+  end
+
+  def request_stream(_model, _messages, _settings), do: {:error, :not_supported}
+  def count_tokens(_messages), do: 0
+end
+
+test "agent answers" do
+  Nous.ModelDispatcher.put_dispatcher(MyApp.StubModel)
+  assert {:ok, %{output: "hi!"}} = Nous.run(Nous.new("openai:gpt-4o-mini"), "hello")
+end
+```
+
+`put_dispatcher/1` does not cross `GenServer.start_link/3`: runs driven
+through `Nous.AgentServer` need `config :nous, :model_dispatcher` and an
+`async: false` test.
+
+### Evaluating agent quality
+
+Unit tests check that the code works; evals measure how well the agent
+behaves across many inputs. Write a task module (`use Nous.Eval`) with a
+dataset and scorers, run it with `Nous.Eval.run/2` or
+`mix nous.eval --task MyApp.Evals.Refunds`, and gate CI on a stored baseline
+(`--set-baseline main` on main, `--baseline main` on pull requests). Exit
+status: 0 pass, 1 regression, 2 operational error (including any scorer
+error, an exhausted budget or an aborted run, which never count as a pass).
+`Nous.Eval.Examples.Basic` runs offline; see `docs/guides/evaluation.md`.
+Tag live-model evals (e.g. `@moduletag :llm`) and exclude them from the
+default `mix test`.
 
 ## What NOT to use
 
@@ -460,7 +523,27 @@ Currently hidden, do not call:
   backends; use `Nous.DecisionModel.parse/2` / `decide/4`
 - `Nous.AgentRunner.Routing` — the runner's router integration (covered by
   the `Nous.AgentRunner.*` rule above); configure routing with `router:` and
-  `Nous.Router`
+  `Nous.Router`. `Nous.AgentRunner.Instrumentation` (the runner's telemetry
+  emission) falls under the same rule
+- `Nous.Telemetry.RunScope` — the run-scope seam that stamps correlation
+  ids; read them from event metadata instead
+- `Nous.CallerLookup` — `$callers` lookups shared by the dispatcher and
+  run-scope seams; use `Nous.ModelDispatcher.put_dispatcher/1`
+- `Nous.Fence` — the random-boundary fence for untrusted text in LLM prompts
+- `Nous.Message.Codec` — message (de)serialization behind
+  `Nous.Agent.Context` serialization
+- `Nous.KnowledgeBase.LinkScope` — knowledge-base link scoping internals
+- `Nous.Eval.Runner`, `Nous.Eval.Budget`, `Nous.Eval.CLI` — the eval
+  runner, its budget accounting and the shared `mix nous.eval*` plumbing;
+  use `Nous.Eval.run/2`, `Nous.Eval.rescore/3` and the mix tasks
+- `Nous.Eval.Trace.Collector`, `Nous.Eval.Trace.Collector.TableOwner` — the
+  per-sample trace collector; read traces through `Nous.Eval.Trace`
+- `Nous.Eval.Scorers.Options`, `Nous.Eval.Scorers.Args`,
+  `Nous.Eval.Scorers.Trajectory.Matcher`, `Nous.Eval.Scorers.Judge.Scale`,
+  `Nous.Eval.Scorers.Judge.Prompt` — option validation, argument matching,
+  trajectory matching and judge prompt/scale internals of the built-in
+  scorers
+- `Nous.Eval.Stats.Guards` — input checks shared by `Nous.Eval.Stats`
 
 Up to 0.17.0 this section also claimed `Nous.AgentRunner`, `Nous.AgentServer`,
 `Nous.Providers.HTTP`, `Nous.HTTP.Backend.*`, `Nous.HTTP.StreamBackend.*` and
