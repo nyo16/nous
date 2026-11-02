@@ -609,8 +609,11 @@ defmodule Nous.AgentRunner do
         end
 
       nil ->
-        history = Keyword.get(opts, :message_history, []) ++ [Message.user(prompt)]
-        {:ok, fresh_context(agent, history, base_system_prompt(agent, opts), opts)}
+        # The system message is built before the user message, so created_at
+        # stays in conversation order.
+        history = Keyword.get(opts, :message_history, [])
+        {messages, system_prompt} = with_system_prompt(history, base_system_prompt(agent, opts))
+        {:ok, fresh_context(agent, messages ++ [Message.user(prompt)], system_prompt, opts)}
     end
   end
 
@@ -657,7 +660,8 @@ defmodule Nous.AgentRunner do
     # The run-level overrides (:output_type and :structured_output decide the
     # suffix, :profile the instructions) apply exactly as on the prompt path.
     with {:ok, agent} <- apply_runtime_overrides(agent, opts) do
-      {:ok, fresh_context(agent, messages, base_system_prompt(agent, opts), opts)}
+      {messages, system_prompt} = with_system_prompt(messages, base_system_prompt(agent, opts))
+      {:ok, fresh_context(agent, messages, system_prompt, opts)}
     end
   end
 
@@ -695,11 +699,7 @@ defmodule Nous.AgentRunner do
     end
   end
 
-  # `messages` is the conversation without the agent's prompt; the prompt is
-  # prepended unless the conversation already starts with a system message.
   defp fresh_context(agent, messages, system_prompt, opts) do
-    {messages, system_prompt} = with_system_prompt(messages, system_prompt)
-
     Context.new(
       messages: messages,
       system_prompt: system_prompt,
