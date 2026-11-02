@@ -87,6 +87,11 @@ Guard calibration, simulated users and online evaluation, all additive.
 
 ### Changed
 
+- **Locked `llama_cpp_ex` 0.8.63 → 0.8.65**, which fixes the macOS / Metal
+  abort at VM halt while a model is still referenced
+  (nyo16/llama_cpp_ex#116, noted under 0.19.0). The `~> 0.8.63` requirement
+  already allows it, so apps pick up the fix with
+  `mix deps.update llama_cpp_ex`.
 - **The optimizer accepts a candidate only if an exact sign test agrees.**
   On top of the bootstrap, the "significant improvement on test" gate needs
   a one-sided exact sign test over the per-case results (improved vs
