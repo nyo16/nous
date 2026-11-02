@@ -355,6 +355,34 @@ defmodule Nous.Telemetry do
       * Measurement: `%{count: 1}`
       * Metadata: the violation details (`kind`, …) plus `agent_name, mode`
 
+  ## Simulator Events
+
+  Emitted by `Nous.Eval.Simulator` during a simulated eval episode, under
+  the episode's trace (so the eval trace collector stores them in order with
+  the agent's runs). The simulator's own model calls run under another
+  trace id (`sim_trace_id`) with role `:simulator`. `message` and `thought`
+  are content keys.
+
+    * `[:nous, :eval, :sim, :turn]` - one simulated user turn.
+      * Measurement: `%{input_tokens, output_tokens, total_tokens}` (the
+        simulator call; `0` for a scripted opener)
+      * Metadata: `%{turn: integer (messages sent before it), source: :scripted |
+        :llm, action: :message | :stop | :transfer | :out_of_scope, sent:
+        boolean (the message went to the agent), message: string | nil,
+        thought: string | nil, sim_model: string, sim_trace_id: string,
+        template_version: string}`
+    * `[:nous, :eval, :sim, :error]` - the simulator could not produce a turn;
+      the episode ends as `:user_error`.
+      * Measurement: `%{count: 1}`
+      * Metadata: `%{turn, kind: :invalid_output | :run_failed |
+        :fence_collision, reason: string}`
+    * `[:nous, :eval, :sim, :episode, :stop]` - an episode ended.
+      * Measurement: `%{duration: native_time, turns, agent_iterations,
+        simulator_tokens}`
+      * Metadata: `%{case_kind: :task | :adversarial, termination: :stop |
+        :transfer | :out_of_scope | :max_turns | :agent_error | :user_error |
+        :setup_error | :budget, end_state_status: :ok | :error | :none}`
+
   ## Workflow Events
 
     * `[:nous, :workflow, :run, :start]` / `[:nous, :workflow, :run, :stop]`
@@ -514,6 +542,9 @@ defmodule Nous.Telemetry do
     [:nous, :decision_model, :decide, :exception],
     [:nous, :profile, :switched],
     [:nous, :session, :invariant, :violation],
+    [:nous, :eval, :sim, :turn],
+    [:nous, :eval, :sim, :error],
+    [:nous, :eval, :sim, :episode, :stop],
     [:nous, :workflow, :run, :start],
     [:nous, :workflow, :run, :stop],
     [:nous, :workflow, :run, :exception],

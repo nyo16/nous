@@ -33,6 +33,9 @@ defmodule Nous.Eval.Fingerprint do
     * `"nous_version"`, `"schema_version"` - the Nous release and the run
       record format (`Nous.Eval.Run.schema_version/0`)
     * `"task"` - the task module
+    * `"simulator"` - only for a run with simulated cases: the simulated
+      user's model, settings and prompt template version
+      (`Nous.Eval.Simulator`)
     * `"id"` - `Nous.Eval.CanonicalJSON.hash/1` of all of the above
 
   Model credentials and base URLs are never part of the fingerprint.
@@ -54,6 +57,7 @@ defmodule Nous.Eval.Fingerprint do
     * `:seed` - the run's base seed (default `nil`)
     * `:deps` - the deps the agent runs with; guard configurations are read
       from them (default `%{}`)
+    * `:simulator` - the `"simulator"` entry (`nil`, the default, adds none)
 
   Scorers that export `describe/1` are initialized with their options to
   describe them; an `init/1` error is returned as `{:error, _}`.
@@ -80,10 +84,18 @@ defmodule Nous.Eval.Fingerprint do
           "nous_version" => nous_version(),
           "schema_version" => Run.schema_version()
         })
+        |> put_simulator(Keyword.get(opts, :simulator))
 
       {:ok, Map.put(fingerprint, "id", CanonicalJSON.hash(fingerprint))}
     end
   end
+
+  # Only runs with simulated cases carry the key, so every other run keeps
+  # the fingerprint id it always had.
+  defp put_simulator(fingerprint, nil), do: fingerprint
+
+  defp put_simulator(fingerprint, %{} = simulator),
+    do: Map.put(fingerprint, "simulator", simulator)
 
   @doc """
   Whether `model`'s provider sends `model_settings[:seed]` to the API.

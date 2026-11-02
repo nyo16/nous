@@ -11,7 +11,9 @@ defmodule Nous.Eval.Case do
 
     * `:id` - stable, unique within the dataset (string)
     * `:input` - the prompt (string) or a message list (`[Nous.Message.t()]`)
-      sent with `Nous.run(agent, messages: ...)`
+      sent with `Nous.run(agent, messages: ...)`; for a simulated case
+      (`nous.sim_case/1`), the `Nous.Eval.Simulator.Scenario` the simulated
+      user plays (see `Nous.Eval.Simulator`)
     * `:expected` - free-form expectations the scorers read (string keys
       when loaded from YAML/JSONL)
     * `:scorers` - case-specific scorers (`Nous.Eval.Scorer.Spec`), added to
@@ -32,7 +34,7 @@ defmodule Nous.Eval.Case do
 
   @type t :: %__MODULE__{
           id: String.t(),
-          input: String.t() | [Nous.Message.t()],
+          input: String.t() | [Nous.Message.t()] | Nous.Eval.Simulator.Scenario.t(),
           expected: map(),
           scorers: [Scorer.Spec.t()],
           threshold: float() | nil,

@@ -229,7 +229,16 @@ defmodule Nous.Eval.Optimizer.AgentAdapter do
     end)
   end
 
+  # A simulated case: the user the simulator played (never `expected`).
+  defp input_text(%Nous.Eval.Simulator.Scenario{} = scenario),
+    do: Nous.Eval.Simulator.describe(scenario)
+
   defp output_text(%Sample{outcome: :ok, output: output}) when is_binary(output), do: output
+
+  # A simulated episode: the conversation, without the simulator's reasoning.
+  defp output_text(%Sample{outcome: :ok, output: %{"schema" => "nous.sim_episode/1"} = episode}),
+    do: "(#{episode["termination"]})\n" <> Nous.Eval.Simulator.transcript_text(episode)
+
   defp output_text(%Sample{outcome: :ok, output: output}), do: inspect(output, limit: 50)
 
   defp output_text(%Sample{outcome: outcome, error: error}),

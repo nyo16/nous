@@ -14,6 +14,9 @@ defmodule Nous.Eval.ScorerError do
       the LLM judge's answer could not be used
     * `:budget_exhausted` - a model-graded scorer had no budget left
     * `:non_finite` - a score value was NaN, infinite or outside `0.0..1.0`
+    * `:unscoreable` - the sample is not evidence about the agent: a
+      simulated episode ended on a simulator or setup failure, or an attack
+      that could not run to an end (see `Nous.Eval.Simulator`)
   """
 
   @type kind ::
@@ -26,6 +29,7 @@ defmodule Nous.Eval.ScorerError do
           | :judge_call_failed
           | :budget_exhausted
           | :non_finite
+          | :unscoreable
 
   @type t :: %__MODULE__{
           scorer: String.t(),
@@ -45,7 +49,8 @@ defmodule Nous.Eval.ScorerError do
     :judge_out_of_range,
     :judge_call_failed,
     :budget_exhausted,
-    :non_finite
+    :non_finite,
+    :unscoreable
   ]
 
   @doc "Every error kind."

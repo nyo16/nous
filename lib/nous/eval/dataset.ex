@@ -58,6 +58,14 @@ defmodule Nous.Eval.Dataset do
   non-string object key, an unknown role, split or scorer, or an unknown
   scorer option is an `{:error, message}`. Nothing in a file becomes an atom.
 
+  ## Simulated cases
+
+  A YAML document with `schema: nous.sim_case/1`, or a JSONL line with
+  `"schema": "nous.sim_case/1"`, holds simulated multi-turn cases: a user
+  description and `max_turns` instead of an `input`. They load into the same
+  dataset as any case (their `input` is a `Nous.Eval.Simulator.Scenario`);
+  see `Nous.Eval.Simulator` for the keys.
+
   ## Splits
 
   A case without a `split` gets one from its `group` (default: its id):
@@ -80,9 +88,12 @@ defmodule Nous.Eval.Dataset do
   alias Nous.Eval.{CanonicalJSON, Case, Fingerprint}
   alias Nous.Eval.Scorer
   alias Nous.Eval.Scorer.Spec
+  alias Nous.Eval.Simulator
+  alias Nous.Eval.Simulator.Scenario
   alias Nous.Message
 
   @schema "nous.case/1"
+  @sim_schema "nous.sim_case/1"
 
   @type t :: %__MODULE__{
           name: String.t() | nil,
@@ -328,6 +339,8 @@ defmodule Nous.Eval.Dataset do
       else: {:error, "input messages must be %Nous.Message{} structs"}
   end
 
+  defp elixir_input(%Scenario{} = scenario), do: {:ok, scenario}
+
   defp elixir_input(other),
     do: {:error, "input must be a string or a non-empty message list, got #{inspect(other)}"}
 
@@ -352,10 +365,10 @@ defmodule Nous.Eval.Dataset do
 
   defp parse_yaml_doc(doc, path, file_name) do
     with :ok <- check_known_keys(doc, ["schema", "name", "cases"]),
-         :ok <- check_schema(Map.fetch(doc, "schema"), :required),
+         {:ok, schema} <- check_schema(Map.fetch(doc, "schema"), :required),
          {:ok, name} <- yaml_name(Map.get(doc, "name"), file_name),
          {:ok, cases} <- yaml_cases(Map.get(doc, "cases")),
-         {:ok, parsed} <- parse_all(Enum.with_index(cases, 1), &parse_file_case/1) do
+         {:ok, parsed} <- parse_all(Enum.with_index(cases, 1), &parse_file_case(&1, schema)) do
       {:ok, parsed, name}
     end
     |> prefix_error(path)
@@ -384,8 +397,8 @@ defmodule Nous.Eval.Dataset do
 
   defp parse_jsonl_line({line, number}) do
     with {:ok, decoded} <- decode_json_line(line),
-         {:ok, fields} <- take_line_schema(decoded),
-         {:ok, c} <- parse_file_case({fields, :line}) do
+         {:ok, schema, fields} <- take_line_schema(decoded),
+         {:ok, c} <- parse_file_case({fields, :line}, schema) do
       {:ok, c}
     end
     |> label_error("line #{number}")
@@ -402,21 +415,24 @@ defmodule Nous.Eval.Dataset do
   defp take_line_schema(fields) do
     {schema, rest} = Map.pop(fields, "schema")
 
-    with :ok <- check_schema(if(schema, do: {:ok, schema}, else: :error), :optional) do
-      {:ok, rest}
+    with {:ok, schema} <- check_schema(if(schema, do: {:ok, schema}, else: :error), :optional) do
+      {:ok, schema, rest}
     end
   end
 
-  defp check_schema({:ok, @schema}, _), do: :ok
-  defp check_schema(:error, :optional), do: :ok
+  defp check_schema({:ok, schema}, _) when schema in [@schema, @sim_schema], do: {:ok, schema}
+  defp check_schema(:error, :optional), do: {:ok, @schema}
 
   defp check_schema(:error, :required),
     do: {:error, "missing schema marker \"schema: #{@schema}\""}
 
   defp check_schema({:ok, other}, _),
-    do: {:error, "unsupported schema #{inspect(other)} (expected #{inspect(@schema)})"}
+    do:
+      {:error,
+       "unsupported schema #{inspect(other)} (expected #{inspect(@schema)} or " <>
+         "#{inspect(@sim_schema)})"}
 
-  defp parse_file_case({fields, index}) when is_map(fields) do
+  defp parse_file_case({fields, index}, @schema) when is_map(fields) do
     label = if index == :line, do: nil, else: case_label(index, file_id(fields))
 
     with :ok <- check_string_keys(fields, "case"),
@@ -431,7 +447,22 @@ defmodule Nous.Eval.Dataset do
     |> label_error(label || "case #{inspect(file_id(fields))}")
   end
 
-  defp parse_file_case({other, index}) do
+  # A simulated case: the sim keys are parsed by `Nous.Eval.Simulator`, the
+  # common ones (and named scorers) exactly as for any other case.
+  defp parse_file_case({fields, index}, @sim_schema) when is_map(fields) do
+    label = if index == :line, do: nil, else: case_label(index, file_id(fields))
+
+    with :ok <- check_string_keys(fields, "case"),
+         {:ok, scorers} <- file_scorers(Map.get(fields, "scorers", [])),
+         {:ok, c} <- Simulator.build_case(Map.delete(fields, "scorers")),
+         c = %{c | scorers: c.scorers ++ scorers},
+         {:ok, common} <- common_fields(c) do
+      {:ok, struct!(c, common)}
+    end
+    |> label_error(label || "case #{inspect(file_id(fields))}")
+  end
+
+  defp parse_file_case({other, index}, _schema) do
     {:error, "#{case_label(index, nil)}: a case must be a mapping, got #{inspect(other)}"}
   end
 
@@ -702,6 +733,8 @@ defmodule Nous.Eval.Dataset do
   end
 
   defp canonical_input(text) when is_binary(text), do: text
+
+  defp canonical_input(%Scenario{} = scenario), do: Scenario.canonical(scenario)
 
   defp canonical_input(messages) do
     Enum.map(messages, fn %Message{} = m ->

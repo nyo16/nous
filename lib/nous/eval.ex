@@ -63,6 +63,12 @@ defmodule Nous.Eval do
       `{:error, reason}` (which aborts the run)
     * `c:deps/1` - the deps every sample runs with, from the setup state
       (default `%{}`)
+    * `c:simulator/0`, `c:episode_setup/1`, `c:episode_state/1`,
+      `c:episode_teardown/1` - for simulated multi-turn cases
+      (`nous.sim_case/1`): the simulated user's model, and the environment
+      of each episode (see `Nous.Eval.Simulator`). `simulator/0` is required
+      when the dataset holds simulated cases, `episode_state/1` when one of
+      them checks an end state; the others are optional (no environment)
 
   `use Nous.Eval` sets `@behaviour Nous.Eval` and defines overridable
   defaults for `c:scorers/0`, `c:setup/1`, `c:teardown/1` and `c:deps/1`.
@@ -128,7 +134,42 @@ defmodule Nous.Eval do
   @doc "The deps every sample's agent run receives."
   @callback deps(state :: term()) :: map()
 
-  @optional_callbacks scorers: 0, setup: 1, teardown: 1, deps: 1
+  @typedoc "The context `c:episode_setup/1` receives for one simulated episode."
+  @type episode_context :: %{
+          required(:case) => Case.t(),
+          required(:sample) => non_neg_integer(),
+          required(:seed) => integer() | nil,
+          required(:deps) => map(),
+          required(:state) => term(),
+          required(:fixture) => String.t() | nil
+        }
+
+  @doc """
+  The simulated user's configuration (see `Nous.Eval.Simulator.new/1`):
+  `[model: "provider:model", model_settings: %{...}, max_retries: n]`.
+  """
+  @callback simulator() :: keyword()
+
+  @doc """
+  Builds the environment of one simulated episode. `env.deps` (a map,
+  optional) is merged over the run deps for the agent.
+  """
+  @callback episode_setup(episode_context()) :: {:ok, env :: map()} | {:error, term()}
+
+  @doc "The end state of an episode's environment, read after the conversation."
+  @callback episode_state(env :: map()) :: {:ok, map()} | {:error, term()}
+
+  @doc "Releases the episode's environment; runs after `c:episode_state/1`."
+  @callback episode_teardown(env :: map()) :: term()
+
+  @optional_callbacks scorers: 0,
+                      setup: 1,
+                      teardown: 1,
+                      deps: 1,
+                      simulator: 0,
+                      episode_setup: 1,
+                      episode_state: 1,
+                      episode_teardown: 1
 
   @doc """
   Runs an eval task and returns the run record.
