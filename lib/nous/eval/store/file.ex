@@ -12,20 +12,28 @@ defmodule Nous.Eval.Store.File do
       <root>/calibrations/sha256-<hex>.json
                                   the latest judge calibration for a fingerprint id,
                                   as Nous.Eval.Codec.encode_calibration_json/1 text
+      <root>/profiles/sha256-<hex>.json
+                                  one profile, as Nous.Eval.Codec.encode_profile_json/1 text
+      <root>/profiles.jsonl       one line per named profile: name, version, id
+      <root>/profile_labels.jsonl one profile label entry per line, in insertion order
 
   `list_runs/2` reads only the manifest, so listing never decodes a trace.
   Every file is replaced atomically (written to a temporary file in the same
   directory, synced, then renamed over the target), so a reader never sees a
   half-written run or a torn manifest line.
 
-  A run's file is written before its manifest line. If the process dies in
-  between, the run is readable by id but not listed, and putting the same
-  run again completes the write instead of failing with `:already_exists`.
+  A run's file is written before its manifest line, and a named profile's
+  file before its `profiles.jsonl` line. If the process dies in between,
+  the record is readable by id but not listed, and putting the same run or
+  profile again completes the write instead of failing with
+  `:already_exists` or assigning another version.
 
-  Run ids and labels are checked with `Nous.Eval.Store.validate_run_id/1` /
-  `validate_label/1` before any path is built, so neither can escape the
-  root. The store assumes one writer per root: two processes appending to
-  the manifest at the same moment can lose one line.
+  Run ids, labels and profile names are checked with
+  `Nous.Eval.Store.validate_run_id/1` / `validate_label/1` /
+  `validate_profile_name/1`, and profile ids with `validate_profile_id/1`,
+  before any path is built, so none can escape the root. The store assumes
+  one writer per root: two processes appending to the manifest at the same
+  moment can lose one line.
 
   ## Options
 
@@ -35,10 +43,13 @@ defmodule Nous.Eval.Store.File do
   @behaviour Nous.Eval.Store
 
   alias Nous.Eval.{Codec, Run, Store}
-  alias Nous.Eval.Store.{Baseline, RunSummary}
+  alias Nous.Eval.Store.{Baseline, ProfileLabel, RunSummary}
+  alias Nous.Profile
 
   @manifest "manifest.jsonl"
   @baselines "baselines.jsonl"
+  @profile_index "profiles.jsonl"
+  @profile_labels "profile_labels.jsonl"
 
   @impl true
   def init(opts) do
@@ -164,6 +175,94 @@ defmodule Nous.Eval.Store.File do
     end
   end
 
+  @impl true
+  def put_profile(%{root: root} = state, profile) do
+    with {:ok, profile} <- Store.validate_profile(profile),
+         {:ok, lines} <- read_lines(Path.join(root, @profile_index)),
+         {:ok, index} <- decode_index(lines),
+         {:ok, stored} <- read_profile(root, profile.id) do
+      store_profile(state, profile, stored, index, lines)
+    end
+  end
+
+  @impl true
+  def get_profile(%{root: root}, ref) do
+    with :ok <- Store.validate_profile_ref(ref),
+         {:ok, id} <- resolve_ref(root, ref),
+         {:ok, profile} <- fetch_profile(root, id),
+         :ok <- Store.check_profile_ref(profile, ref) do
+      {:ok, profile}
+    end
+  end
+
+  @impl true
+  def list_profiles(%{root: root}, name) do
+    with :ok <- Store.validate_profile_name(name),
+         {:ok, lines} <- read_lines(Path.join(root, @profile_index)),
+         {:ok, index} <- decode_index(lines) do
+      index
+      |> Enum.filter(&(&1.name == name))
+      |> Enum.sort_by(& &1.version, :desc)
+      |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+        ref = {:version, name, entry.version}
+
+        with {:ok, profile} <- fetch_profile(root, entry.id),
+             :ok <- Store.check_profile_ref(profile, ref) do
+          {:cont, {:ok, [profile | acc]}}
+        else
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, profiles} -> {:ok, Enum.reverse(profiles)}
+        error -> error
+      end
+    end
+  end
+
+  @impl true
+  def put_profile_label(%{root: root} = state, name, label, profile_id) do
+    path = Path.join(root, @profile_labels)
+
+    with :ok <- Store.validate_profile_name(name),
+         :ok <- Store.validate_label(label),
+         :ok <- Store.validate_profile_id(profile_id),
+         {:ok, %Profile{name: ^name}} <- named_profile(root, profile_id),
+         {:ok, lines} <- read_lines(path) do
+      entry = %{
+        "name" => name,
+        "label" => label,
+        "profile_id" => profile_id,
+        "set_at" => DateTime.to_iso8601(DateTime.utc_now())
+      }
+
+      with :ok <- atomic_write(path, append_line(lines, JSON.encode!(entry))), do: {:ok, state}
+    else
+      {:ok, %Profile{}} -> {:error, :not_found}
+      {:error, _} = error -> error
+    end
+  end
+
+  @impl true
+  def list_profile_labels(%{root: root}, name, label) do
+    with :ok <- Store.validate_profile_name(name),
+         :ok <- Store.validate_label(label),
+         {:ok, lines} <- read_lines(Path.join(root, @profile_labels)) do
+      Enum.reduce_while(lines, {:ok, []}, fn line, {:ok, acc} ->
+        case decode_profile_label(line) do
+          {:ok, %ProfileLabel{name: ^name, label: ^label} = entry} ->
+            {:cont, {:ok, [entry | acc]}}
+
+          {:ok, _other} ->
+            {:cont, {:ok, acc}}
+
+          {:error, _} = error ->
+            {:halt, error}
+        end
+      end)
+    end
+  end
+
   # -- helpers ---------------------------------------------------------------
 
   defp run_path(root, id), do: Path.join([root, "runs", id <> ".json"])
@@ -172,6 +271,149 @@ defmodule Nous.Eval.Store.File do
   # fixed-length hex and cannot escape the directory.
   defp calibration_path(root, "sha256:" <> hex),
     do: Path.join([root, "calibrations", "sha256-" <> hex <> ".json"])
+
+  # `id` was validated as "sha256:<64 hex>", so the file name is fixed-length
+  # hex and cannot escape the directory.
+  defp profile_path(root, "sha256:" <> hex),
+    do: Path.join([root, "profiles", "sha256-" <> hex <> ".json"])
+
+  # `{:ok, profile | nil}`: nil when no file is stored under `id`.
+  defp read_profile(root, id) do
+    case fetch_profile(root, id) do
+      {:ok, profile} -> {:ok, profile}
+      {:error, :not_found} -> {:ok, nil}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp fetch_profile(root, id) do
+    case File.read(profile_path(root, id)) do
+      {:ok, text} ->
+        with {:ok, profile} <- Codec.decode_profile_json(text),
+             :ok <- Store.check_profile_ref(profile, {:id, id}),
+             do: {:ok, profile}
+
+      {:error, :enoent} ->
+        {:error, :not_found}
+
+      {:error, reason} ->
+        {:error, {:read_failed, reason}}
+    end
+  end
+
+  defp named_profile(root, id) do
+    with {:ok, lines} <- read_lines(Path.join(root, @profile_index)),
+         {:ok, index} <- decode_index(lines) do
+      case Enum.find(index, &(&1.id == id)) do
+        nil ->
+          {:error, :not_found}
+
+        entry ->
+          with {:ok, profile} <- fetch_profile(root, id),
+               :ok <- Store.check_profile_ref(profile, {:version, entry.name, entry.version}),
+               do: {:ok, profile}
+      end
+    end
+  end
+
+  # An id already indexed (or an unnamed profile already written) is
+  # returned as stored. A named profile's file without an index line is a
+  # put that died half-way: it is indexed under the version it was written
+  # with.
+  defp store_profile(state, profile, stored, index, lines) do
+    indexed = Enum.find(index, &(&1.id == profile.id))
+
+    cond do
+      stored && profile.name && stored.name != profile.name ->
+        {:error, {:name_conflict, stored.name}}
+
+      stored && (indexed || is_nil(stored.name)) ->
+        {:ok, stored, state}
+
+      stored ->
+        with :ok <- append_index(state.root, lines, stored), do: {:ok, stored, state}
+
+      is_nil(profile.name) ->
+        write_profile(state, %{profile | version: nil}, lines, false)
+
+      true ->
+        version =
+          index
+          |> Enum.filter(&(&1.name == profile.name))
+          |> Enum.map(& &1.version)
+          |> Enum.max(fn -> 0 end)
+
+        write_profile(state, %{profile | version: version + 1}, lines, true)
+    end
+  end
+
+  defp write_profile(%{root: root} = state, profile, lines, index?) do
+    with {:ok, payload} <- Codec.encode_profile_json(profile),
+         :ok <- mkdir(Path.join(root, "profiles")),
+         :ok <- atomic_write(profile_path(root, profile.id), payload),
+         :ok <- if(index?, do: append_index(root, lines, profile), else: :ok) do
+      {:ok, profile, state}
+    end
+  end
+
+  defp append_index(root, lines, profile) do
+    line =
+      JSON.encode!(%{"name" => profile.name, "version" => profile.version, "id" => profile.id})
+
+    atomic_write(Path.join(root, @profile_index), append_line(lines, line))
+  end
+
+  # Index lines are read back from disk, so the id is checked again before it
+  # becomes a path.
+  defp decode_index(lines) do
+    lines
+    |> Enum.reduce_while({:ok, []}, fn line, {:ok, acc} ->
+      with {:ok, %{"name" => name, "version" => version, "id" => id}}
+           when is_binary(name) and is_integer(version) <- JSON.decode(line),
+           :ok <- Store.validate_profile_id(id) do
+        {:cont, {:ok, [%{name: name, version: version, id: id} | acc]}}
+      else
+        _ -> {:halt, {:error, {:corrupt_profile_index, line}}}
+      end
+    end)
+    |> case do
+      {:ok, entries} -> {:ok, Enum.reverse(entries)}
+      error -> error
+    end
+  end
+
+  defp resolve_ref(_root, {:id, id}), do: {:ok, id}
+
+  defp resolve_ref(root, {:version, name, version}) do
+    with {:ok, lines} <- read_lines(Path.join(root, @profile_index)),
+         {:ok, index} <- decode_index(lines) do
+      case Enum.find(index, &(&1.name == name and &1.version == version)) do
+        nil -> {:error, :not_found}
+        entry -> {:ok, entry.id}
+      end
+    end
+  end
+
+  defp resolve_ref(root, {:label, name, label}) do
+    with {:ok, history} <- list_profile_labels(%{root: root}, name, label) do
+      case history do
+        [latest | _] -> {:ok, latest.profile_id}
+        [] -> {:error, :not_found}
+      end
+    end
+  end
+
+  defp decode_profile_label(line) do
+    with {:ok, %{"name" => name, "label" => label, "profile_id" => id, "set_at" => set_at}}
+         when is_binary(name) and is_binary(label) and is_binary(id) and is_binary(set_at) <-
+           JSON.decode(line),
+         :ok <- Store.validate_profile_id(id),
+         {:ok, set_at, _offset} <- DateTime.from_iso8601(set_at) do
+      {:ok, %ProfileLabel{name: name, label: label, profile_id: id, set_at: set_at}}
+    else
+      _ -> {:error, {:corrupt_profile_label, line}}
+    end
+  end
 
   defp decode_calibration(text, fingerprint_id) do
     case Codec.decode_calibration_json(text) do

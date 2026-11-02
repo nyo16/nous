@@ -44,18 +44,58 @@ defmodule Nous.Eval.Store do
   judge's calibration up before it grades, so a judge with
   `require_calibration:` refuses to run against a store without them.
 
+  ## Profiles
+
+  The optional profile callbacks keep `Nous.Profile`s, the versioned prompt
+  text an optimizer produces and a human promotes:
+
+    * `put_profile/2` stores a profile **by id** (its content hash).
+      Profiles are immutable: putting an id that is already stored returns
+      the stored profile unchanged (the first put's `name`, `version`,
+      `parent_id` and `provenance` win), and putting it under another
+      `name` is `{:error, {:name_conflict, stored_name}}`. A named profile
+      gets the next `version` under its name on its first put (1, 2, ...);
+      a `version` on the given struct is ignored.
+    * `get_profile/2` resolves a `t:profile_ref/0`: `{:id, id}`,
+      `{:version, name, n}` or `{:label, name, label}` (the label's latest
+      entry). There is no "latest version" ref, and an unknown ref is
+      `{:error, :not_found}`, never a fallback.
+    * `put_profile_label/4` points `label` of profile `name` at a stored
+      profile of that name; labels are append-only like baselines and
+      `list_profile_labels/3` returns the history.
+
+  Every read decodes the stored record with
+  `Nous.Eval.Codec.decode_profile_json/1`, which recomputes the content hash:
+  a record whose text no longer matches its id is refused
+  (`:id_mismatch`), and one that does not match the ref it was read by is
+  `{:error, {:corrupt_profile, ref}}` (see `check_profile_ref/2`). The hash
+  catches corruption and naive edits, not a writer who re-hashes: write
+  access to the store is control over the prompts of every agent that
+  loads from it.
+
   ## Identifiers
 
-  Run ids and labels end up in file names and SQL parameters, so every
-  backend validates them with `validate_run_id/1` and `validate_label/1`
-  before touching storage. Both are lowercase so that two ids can never
-  collide on a case-insensitive file system. Calibration keys go through
-  `validate_calibration/2`.
+  Run ids, labels and profile names end up in file names and SQL
+  parameters, so every backend validates them with `validate_run_id/1`,
+  `validate_label/1` and `validate_profile_name/1` before touching storage.
+  All are lowercase so that two ids can never collide on a case-insensitive
+  file system. Calibration keys go through `validate_calibration/2`,
+  profile refs through `validate_profile_ref/1`.
   """
 
-  alias Nous.Eval.JudgeCalibration
+  alias Nous.Eval.{Codec, JudgeCalibration}
   alias Nous.Eval.Run
-  alias Nous.Eval.Store.{Baseline, RunSummary}
+  alias Nous.Eval.Store.{Baseline, ProfileLabel, RunSummary}
+  alias Nous.Profile
+
+  @typedoc """
+  How `get_profile/2` finds a profile: by content hash, by `name` and
+  store-assigned version, or by the latest entry of a label.
+  """
+  @type profile_ref ::
+          {:id, String.t()}
+          | {:version, String.t(), pos_integer()}
+          | {:label, String.t(), String.t()}
 
   @typedoc """
   Filters for `list_runs/2`:
@@ -138,7 +178,51 @@ defmodule Nous.Eval.Store do
   @callback get_calibration(state :: term(), fingerprint_id :: String.t()) ::
               {:ok, JudgeCalibration.Result.t()} | {:error, :not_found | term()}
 
-  @optional_callbacks put_calibration: 3, get_calibration: 2
+  @doc """
+  Store `profile` (see "Profiles"). Returns the stored profile, with the
+  `version` assigned under its name, and the new state. Check it with
+  `validate_profile/1` first. Optional.
+  """
+  @callback put_profile(state :: term(), profile :: Profile.t()) ::
+              {:ok, Profile.t(), term()} | {:error, term()}
+
+  @doc """
+  The profile `ref` resolves to, verified against its id and the ref.
+  `{:error, :not_found}` when nothing matches. Optional.
+  """
+  @callback get_profile(state :: term(), ref :: profile_ref()) ::
+              {:ok, Profile.t()} | {:error, :not_found | term()}
+
+  @doc "Every stored profile named `name`, newest version first. Optional."
+  @callback list_profiles(state :: term(), name :: String.t()) ::
+              {:ok, [Profile.t()]} | {:error, term()}
+
+  @doc """
+  Point `label` of profile `name` at `profile_id` by appending a history
+  entry stamped with the current time. The profile must be stored under
+  `name`: `{:error, :not_found}` otherwise. Optional.
+  """
+  @callback put_profile_label(
+              state :: term(),
+              name :: String.t(),
+              label :: String.t(),
+              profile_id :: String.t()
+            ) :: {:ok, term()} | {:error, term()}
+
+  @doc """
+  Every entry for `label` of profile `name`, newest first. `{:ok, []}` when
+  never set. Optional.
+  """
+  @callback list_profile_labels(state :: term(), name :: String.t(), label :: String.t()) ::
+              {:ok, [ProfileLabel.t()]} | {:error, term()}
+
+  @optional_callbacks put_calibration: 3,
+                      get_calibration: 2,
+                      put_profile: 2,
+                      get_profile: 2,
+                      list_profiles: 2,
+                      put_profile_label: 4,
+                      list_profile_labels: 3
 
   @run_id ~r/\A[a-z0-9][a-z0-9._-]{0,127}\z/
   @label ~r/\A[a-z0-9][a-z0-9._-]{0,63}\z/
@@ -197,6 +281,75 @@ defmodule Nous.Eval.Store do
   end
 
   def validate_label(label), do: {:error, {:invalid_label, label}}
+
+  @doc """
+  Checks a profile name: the `Nous.Profile` name grammar, 1-64 characters
+  of `a-z`, `0-9`, `.`, `_`, `-`, starting with a letter or digit.
+  """
+  @spec validate_profile_name(term()) :: :ok | {:error, {:invalid_profile_name, term()}}
+  def validate_profile_name(name) when is_binary(name) do
+    if Regex.match?(@label, name), do: :ok, else: {:error, {:invalid_profile_name, name}}
+  end
+
+  def validate_profile_name(name), do: {:error, {:invalid_profile_name, name}}
+
+  @doc "Checks a profile id: `\"sha256:\"` and 64 lowercase hex digits."
+  @spec validate_profile_id(term()) :: :ok | {:error, {:invalid_profile_id, term()}}
+  def validate_profile_id(id) do
+    if is_binary(id) and Regex.match?(@fingerprint_id, id),
+      do: :ok,
+      else: {:error, {:invalid_profile_id, id}}
+  end
+
+  @doc """
+  Checks a `t:profile_ref/0`: its shape, then the id, name, version or
+  label in it.
+  """
+  @spec validate_profile_ref(term()) :: :ok | {:error, term()}
+  def validate_profile_ref({:id, id}), do: validate_profile_id(id)
+
+  def validate_profile_ref({:version, name, version} = ref) do
+    with :ok <- validate_profile_name(name) do
+      if is_integer(version) and version > 0,
+        do: :ok,
+        else: {:error, {:invalid_profile_ref, ref}}
+    end
+  end
+
+  def validate_profile_ref({:label, name, label}) do
+    with :ok <- validate_profile_name(name), do: validate_label(label)
+  end
+
+  def validate_profile_ref(ref), do: {:error, {:invalid_profile_ref, ref}}
+
+  @doc """
+  Checks a profile before it is stored: a `Nous.Profile` that passes every
+  check that needs no agent, with a declared `id` equal to its content hash
+  (`Nous.Errors.ProfileError` `:id_mismatch` otherwise). Returns it with the
+  id filled in.
+  """
+  @spec validate_profile(term()) :: {:ok, Profile.t()} | {:error, term()}
+  def validate_profile(%Profile{} = profile) do
+    with {:ok, encoded} <- Codec.encode_profile(profile),
+         {:ok, decoded} <- Profile.from_map(encoded) do
+      {:ok, decoded}
+    end
+  end
+
+  def validate_profile(other), do: {:error, {:invalid_profile, other}}
+
+  @doc """
+  Checks that `profile`, read back by `ref`, is what `ref` names: the same
+  id, the same name and version, or the label's name.
+  `{:error, {:corrupt_profile, ref}}` otherwise, e.g. a record copied over
+  another one.
+  """
+  @spec check_profile_ref(Profile.t(), profile_ref()) ::
+          :ok | {:error, {:corrupt_profile, profile_ref()}}
+  def check_profile_ref(%Profile{id: id}, {:id, id}), do: :ok
+  def check_profile_ref(%Profile{name: name, version: v}, {:version, name, v}), do: :ok
+  def check_profile_ref(%Profile{name: name}, {:label, name, _label}), do: :ok
+  def check_profile_ref(_profile, ref), do: {:error, {:corrupt_profile, ref}}
 
   @doc """
   Validates `list_runs/2` filters, returning them as a map.

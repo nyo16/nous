@@ -291,6 +291,193 @@ defmodule Nous.Profile do
   def applied_id(%Agent{profile: %Applied{profile: %__MODULE__{id: id}}}), do: id
   def applied_id(%Agent{}), do: nil
 
+  # ── components and diff ─────────────────────────────────────────────────────
+
+  @doc """
+  The addressable text as a flat component map (key => text).
+
+  For a profile, its `components`. For an agent, the text it runs with now
+  (its profile's text where it has one, else its base text): the static
+  instructions, and the description of every tool a profile may address
+  (not built-in, uniquely named, no `"#"` in the name) plus each parameter
+  schema node's description, keyed by pointer. Dynamic (function)
+  instructions and absent descriptions have no entry. Use
+  `components(Nous.Profile.apply!(nil, agent))` for the base text.
+  """
+  @spec components(t() | Agent.t()) :: %{optional(String.t()) => String.t()}
+  def components(%__MODULE__{components: components}), do: components
+
+  def components(%Agent{} = agent) do
+    instructions =
+      case base_instructions(agent) do
+        text when is_binary(text) -> [{"instructions", text}]
+        _dynamic_or_nil -> []
+      end
+
+    names = Enum.frequencies_by(agent.tools, & &1.name)
+
+    tools =
+      for %Tool{name: name} = tool <- agent.tools,
+          is_binary(name),
+          name != "",
+          names[name] == 1,
+          not String.contains?(name, "#"),
+          not builtin?(tool),
+          entry <- tool_components(tool),
+          do: entry
+
+    Map.new(instructions ++ tools)
+  end
+
+  defp tool_components(%Tool{name: name, description: description, parameters: parameters}) do
+    key = "tool:" <> name
+    own = if text?(description), do: [{key, description}], else: []
+    params = if is_map(parameters), do: schema_descriptions(parameters, ""), else: []
+    own ++ Enum.map(params, fn {pointer, text} -> {key <> "#" <> pointer, text} end)
+  end
+
+  # Every {pointer, description} below `node`, in the pointer grammar of the
+  # component keys.
+  defp schema_descriptions(node, pointer) when is_map(node) do
+    own =
+      case Map.get(node, "description", Map.get(node, :description)) do
+        text when is_binary(text) -> if text?(text), do: [{pointer, text}], else: []
+        _ -> []
+      end
+
+    children =
+      Enum.flat_map(@schema_keys, fn {keyword, _atom} ->
+        case fetch_schema_key(node, keyword) do
+          {:ok, _key, value} -> schema_children(keyword, value, pointer)
+          :error -> []
+        end
+      end)
+
+    own ++ children
+  end
+
+  defp schema_descriptions(_node, _pointer), do: []
+
+  defp schema_children("properties", props, pointer) when is_map(props) do
+    props
+    |> Enum.flat_map(fn
+      {name, child} when is_binary(name) or is_atom(name) ->
+        segment = name |> to_string() |> escape_segment()
+        schema_descriptions(child, pointer <> "/properties/" <> segment)
+
+      _other ->
+        []
+    end)
+  end
+
+  defp schema_children(keyword, list, pointer)
+       when keyword in ["anyOf", "oneOf", "allOf"] and is_list(list) do
+    list
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {child, index} ->
+      schema_descriptions(child, "#{pointer}/#{keyword}/#{index}")
+    end)
+  end
+
+  defp schema_children(keyword, child, pointer) when keyword in ["items", "additionalProperties"],
+    do: schema_descriptions(child, pointer <> "/" <> keyword)
+
+  defp schema_children(_keyword, _value, _pointer), do: []
+
+  defp escape_segment(segment),
+    do: segment |> String.replace("~", "~0") |> String.replace("/", "~1")
+
+  defp text?(text), do: is_binary(text) and String.trim(text) != ""
+
+  @doc """
+  Component-level difference from `a` to `b`.
+
+  Each side is a profile, a component map (as `components/1` returns) or
+  `nil` (no components). Returns the keys `:added` (only in `b`),
+  `:removed` (only in `a`), `:changed` and `:unchanged`, each sorted, and
+  `:components`, one entry per added, removed or changed key in key order:
+
+    * `:key`, `:change` (`:added | :removed | :changed`), `:before` and
+      `:after` (the texts, `nil` on the missing side)
+    * `:lines` - the line diff (`List.myers_difference/2` over lines) as
+      `{:eq | :del | :ins, line}` tuples
+    * `:lines_added` / `:lines_removed` - counts of `:ins` / `:del` lines
+    * `:chars_delta` - characters of `b` minus characters of `a`
+    * `:tokens_delta` - `:chars_delta` / 4, rounded: a rough estimate of
+      the prompt-size change, not a tokenizer count
+  """
+  @spec diff(t() | map() | nil, t() | map() | nil) :: %{
+          added: [String.t()],
+          removed: [String.t()],
+          changed: [String.t()],
+          unchanged: [String.t()],
+          components: [map()]
+        }
+  def diff(a, b) do
+    before = diff_side(a)
+    after_ = diff_side(b)
+    keys = before |> Map.keys() |> Enum.concat(Map.keys(after_)) |> Enum.uniq() |> Enum.sort()
+
+    entries =
+      Enum.map(keys, fn key ->
+        {key, change(Map.get(before, key), Map.get(after_, key))}
+      end)
+
+    keys_with = fn change -> for {key, ^change} <- entries, do: key end
+
+    components =
+      for {key, change} <- entries,
+          change != :unchanged,
+          do: component_diff(key, change, Map.get(before, key), Map.get(after_, key))
+
+    %{
+      added: keys_with.(:added),
+      removed: keys_with.(:removed),
+      changed: keys_with.(:changed),
+      unchanged: keys_with.(:unchanged),
+      components: components
+    }
+  end
+
+  @chars_per_token 4
+
+  defp diff_side(nil), do: %{}
+  defp diff_side(%__MODULE__{components: components}), do: components
+  defp diff_side(%{} = components) when not is_struct(components), do: components
+
+  defp change(nil, _after), do: :added
+  defp change(_before, nil), do: :removed
+  defp change(same, same), do: :unchanged
+  defp change(_before, _after), do: :changed
+
+  defp component_diff(key, change, before, after_) do
+    lines =
+      before
+      |> text_lines()
+      |> List.myers_difference(text_lines(after_))
+      |> Enum.flat_map(fn {op, lines} -> Enum.map(lines, &{op, &1}) end)
+
+    chars_delta = text_length(after_) - text_length(before)
+
+    %{
+      key: key,
+      change: change,
+      before: before,
+      after: after_,
+      lines: lines,
+      lines_added: Enum.count(lines, &match?({:ins, _}, &1)),
+      lines_removed: Enum.count(lines, &match?({:del, _}, &1)),
+      chars_delta: chars_delta,
+      tokens_delta: round(chars_delta / @chars_per_token)
+    }
+  end
+
+  defp text_lines(nil), do: []
+  defp text_lines(text), do: String.split(text, ~r/\r\n|\n/)
+
+  defp text_length(nil), do: 0
+  defp text_length(text), do: String.length(text)
+
   # ── apply internals ─────────────────────────────────────────────────────────
 
   defp base_agent(%Agent{profile: %Applied{} = applied} = agent) do

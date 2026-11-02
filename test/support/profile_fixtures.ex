@@ -37,6 +37,19 @@ defmodule NousTest.ProfileFixtures do
     )
   end
 
+  # Agent factories for the `mix nous.profile.*` tasks (`--agent Mod.fun`).
+  def agent, do: build_agent(@base_instructions, [search_tool()])
+
+  def edited_agent,
+    do: build_agent("EDITED BASE INSTRUCTIONS: answer politely and briefly.", [search_tool()])
+
+  def toolless_agent, do: build_agent(@base_instructions, [])
+  def not_an_agent, do: :not_an_agent
+  def raising_agent, do: raise("agent factory is down")
+
+  defp build_agent(instructions, tools),
+    do: Nous.Agent.new("openai:test-model", instructions: instructions, tools: tools)
+
   # `components` in the file form (`"instructions"`, `"tools"`), sealed
   # against `agent`.
   def sealed(components, agent, extra \\ %{}) do

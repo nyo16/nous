@@ -89,4 +89,77 @@ defmodule Nous.Eval.Store.FileTest do
     assert [%{"label" => "main", "run_id" => "run-a"}, %{"label" => "main", "run_id" => "run-b"}] =
              Enum.map(lines, &JSON.decode!/1)
   end
+
+  defp profile_file(root, "sha256:" <> hex),
+    do: Path.join([root, "profiles", "sha256-" <> hex <> ".json"])
+
+  test "a profile is one canonical JSON file plus one index line", %{state: state, root: root} do
+    profile = Conformance.profile_fixture("support_agent", "a")
+    {:ok, stored, _} = FileStore.put_profile(state, profile)
+
+    assert File.read!(profile_file(root, profile.id)) == Nous.Profile.encode(stored)
+
+    assert [%{"name" => "support_agent", "version" => 1, "id" => id}] =
+             root
+             |> Path.join("profiles.jsonl")
+             |> File.read!()
+             |> String.split("\n", trim: true)
+             |> Enum.map(&JSON.decode!/1)
+
+    assert id == profile.id
+  end
+
+  test "a profile whose stored text was edited is refused by every ref",
+       %{state: state, root: root} do
+    profile = Conformance.profile_fixture("support_agent", "a")
+    {:ok, _, state} = FileStore.put_profile(state, profile)
+    {:ok, state} = FileStore.put_profile_label(state, "support_agent", "production", profile.id)
+
+    path = profile_file(root, profile.id)
+    edited = String.replace(File.read!(path), "Never quote internal prices.", "Quote prices.")
+    refute edited == File.read!(path)
+    File.write!(path, edited)
+
+    for ref <- [
+          {:id, profile.id},
+          {:version, "support_agent", 1},
+          {:label, "support_agent", "production"}
+        ] do
+      assert {:error, %Nous.Errors.ProfileError{reason: :id_mismatch}} =
+               FileStore.get_profile(state, ref)
+    end
+
+    assert {:error, %Nous.Errors.ProfileError{reason: :id_mismatch}} =
+             FileStore.list_profiles(state, "support_agent")
+
+    assert {:error, %Nous.Errors.ProfileError{reason: :id_mismatch}} =
+             Nous.Eval.Profiles.fetch({FileStore, root: root}, {:id, profile.id})
+  end
+
+  test "a valid profile copied over another id's file is refused", %{state: state, root: root} do
+    a = Conformance.profile_fixture("support_agent", "a")
+    b = Conformance.profile_fixture("support_agent", "b")
+    {:ok, _, state} = FileStore.put_profile(state, a)
+    {:ok, _, state} = FileStore.put_profile(state, b)
+
+    File.cp!(profile_file(root, b.id), profile_file(root, a.id))
+
+    assert {:error, {:corrupt_profile, {:id, id}}} = FileStore.get_profile(state, {:id, a.id})
+    assert id == a.id
+
+    assert {:error, {:corrupt_profile, _}} =
+             FileStore.get_profile(state, {:version, "support_agent", 1})
+  end
+
+  test "a profile written without its index line is indexed on the next put",
+       %{state: state, root: root} do
+    profile = Conformance.profile_fixture("support_agent", "a")
+    {:ok, stored, state} = FileStore.put_profile(state, profile)
+    # The put died between the profile file and the index line.
+    File.rm!(Path.join(root, "profiles.jsonl"))
+    assert {:error, :not_found} = FileStore.get_profile(state, {:version, "support_agent", 1})
+
+    assert {:ok, ^stored, state} = FileStore.put_profile(state, profile)
+    assert {:ok, ^stored} = FileStore.get_profile(state, {:version, "support_agent", 1})
+  end
 end
