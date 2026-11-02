@@ -1,5 +1,8 @@
 defmodule Nous.Eval.FingerprintTest do
-  use ExUnit.Case, async: true
+  # async: false - two tests assert on what was (not) logged, and
+  # capture_log also sees warnings from concurrently running modules (any
+  # eval run whose agent has anonymous instructions logs the same warning).
+  use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
 
