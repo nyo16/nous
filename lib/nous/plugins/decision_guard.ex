@@ -614,6 +614,17 @@ defmodule Nous.Plugins.DecisionGuard do
   # ── hook surfaces ──────────────────────────────────────────────────────────
 
   defp hook(config, surface, opts) do
+    Hook.new(Map.fetch!(@events, surface),
+      name: "decision_guard:#{surface}",
+      handler: hook_decision(config, surface, opts),
+      priority: @priority,
+      fail_closed: true,
+      timeout: opts[:timeout] || config.timeout,
+      matcher: opts[:matcher]
+    )
+  end
+
+  defp hook_decision(config, surface, opts) do
     pack = Map.fetch!(@packs, surface)
 
     pack_opts =
@@ -622,29 +633,76 @@ defmodule Nous.Plugins.DecisionGuard do
       |> Map.to_list()
       |> Keyword.put(:model_family, config.model_family)
 
-    decision =
-      Decision.new(
-        [
-          model: config.model,
-          state: &pack.state/2,
-          on_error: opts[:on_error] || config.on_error,
-          oversize: opts[:oversize] || config.oversize,
-          max_chunks: opts[:max_chunks] || config.max_chunks,
-          canary: Map.get(opts, :canary, config.canary),
-          on_escalate: Map.get(opts, :on_escalate, config.on_escalate),
-          on_verdict: &hook_verdict(surface, &1)
-        ] ++ Pack.build(pack, pack_opts)
-      )
-
-    Hook.new(Map.fetch!(@events, surface),
-      name: "decision_guard:#{surface}",
-      handler: decision,
-      priority: @priority,
-      fail_closed: true,
-      timeout: opts[:timeout] || config.timeout,
-      matcher: opts[:matcher]
+    Decision.new(
+      [
+        model: config.model,
+        state: &pack.state/2,
+        on_error: opts[:on_error] || config.on_error,
+        oversize: opts[:oversize] || config.oversize,
+        max_chunks: opts[:max_chunks] || config.max_chunks,
+        canary: Map.get(opts, :canary, config.canary),
+        on_escalate: Map.get(opts, :on_escalate, config.on_escalate),
+        on_verdict: &hook_verdict(surface, &1)
+      ] ++ Pack.build(pack, pack_opts)
     )
   end
+
+  # ── calibration ────────────────────────────────────────────────────────────
+
+  @doc """
+  The `Nous.Hook.Decision` this guard classifies `surface` with, built from a
+  `:decision_guard_config` (map or keyword list, as in `deps`) by the same
+  code the plugin runs: the guard as configured, not a re-derivation.
+
+  A surface the config does not list gets its default options. On
+  `:user_input` the decision is what `Strategies.DecisionModel` builds (with
+  the surface's `:on_error`); the plugin also runs `Strategies.Pattern` beside
+  it when `:pattern_ensemble` is on. Raises `ArgumentError` on an invalid
+  config, as the plugin does.
+
+  `Nous.Eval.Guard` records the guard's answers with
+  `Nous.Hook.Decision.verdict/3` (`record: :all_chunks`) and replays them
+  under candidate bands with `Nous.Hook.Decision.replay/2`.
+  """
+  @spec decision(map() | keyword(), :user_input | :tool_call | :tool_result | :model_output) ::
+          Decision.t()
+  def decision(config, surface), do: surface_settings(config, surface).decision
+
+  @doc false
+  # `decision/2` plus what the guard runs around it on that surface:
+  # `%{decision, pattern_ensemble, timeout, on_error}` (`pattern_ensemble` is
+  # false on hook surfaces).
+  @spec surface_settings(map() | keyword(), atom()) :: %{
+          decision: Decision.t(),
+          pattern_ensemble: boolean(),
+          timeout: non_neg_integer() | :infinity,
+          on_error: :deny | :escalate | :allow
+        }
+  def surface_settings(config, surface) when surface in @surfaces do
+    config = normalize(Map.new(config))
+    opts = config.surfaces[surface] || %{}
+    on_error = opts[:on_error] || config.on_error
+
+    decision =
+      case surface do
+        :user_input -> %{user_input_decision(config, opts) | on_error: on_error}
+        hook_surface -> hook_decision(config, hook_surface, opts)
+      end
+
+    %{
+      decision: decision,
+      pattern_ensemble: surface == :user_input and config.pattern_ensemble,
+      timeout: opts[:timeout] || config.timeout,
+      on_error: on_error
+    }
+  end
+
+  def surface_settings(_config, surface),
+    do:
+      raise(
+        ArgumentError,
+        "unknown DecisionGuard surface #{inspect(surface)}; expected one of #{inspect(@surfaces)}"
+      )
 
   defp hook_verdict(surface, report) do
     canary_telemetry(surface, report.canary_failed)
