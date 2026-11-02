@@ -432,14 +432,18 @@ defmodule Nous.Eval.Guard.Hygiene do
 
   # ── PII lint ──────────────────────────────────────────────────────────────
 
-  @pii [
-    email: ~r/[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}/,
-    phone: ~r/(?<![\w.])(?:\+\d{1,3}[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?![\w])/,
-    card: ~r/(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/,
-    iban: ~r/\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/,
-    secret:
-      ~r/\bsk-[A-Za-z0-9_-]{20,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/
-  ]
+  # A function, not a module attribute: on OTP 28 a compiled regex holds a
+  # reference, and Elixir 1.18 cannot inject a list of them into a function.
+  defp pii_patterns do
+    [
+      email: ~r/[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}/,
+      phone: ~r/(?<![\w.])(?:\+\d{1,3}[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?![\w])/,
+      card: ~r/(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/,
+      iban: ~r/\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/,
+      secret:
+        ~r/\bsk-[A-Za-z0-9_-]{20,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/
+    ]
+  end
 
   @doc """
   PII findings `%{id, kind, value}` over every string in each case's input
@@ -449,7 +453,7 @@ defmodule Nous.Eval.Guard.Hygiene do
   def pii_lint(cases) do
     for c <- cases,
         text <- strings(c.input),
-        {kind, regex} <- @pii,
+        {kind, regex} <- pii_patterns(),
         [value | _] <- Regex.scan(regex, text),
         valid_hit?(kind, value),
         not allowed?(c, kind, value),

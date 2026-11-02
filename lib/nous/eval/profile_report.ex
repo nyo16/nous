@@ -62,19 +62,23 @@ defmodule Nous.Eval.ProfileReport do
 
   @evidence_keys [:comparison, :decision, :split, :gates]
 
-  @attention [
-    {"never", ~r/\bnever\b/iu},
-    {"do not", ~r/\b(do not|don'?t|does not|doesn'?t)\b/iu},
-    {"must", ~r/\b(must|mustn'?t|shall|may not|should not|shouldn'?t|cannot|can'?t)\b/iu},
-    {"refuse", ~r/\b(refus\w*|declin\w*|reject\w*|deny|denied)\b/iu},
-    {"confirm", ~r/\b(confirm\w*|verif\w*|approv\w*|permission\w*|consent)\b/iu},
-    {"always", ~r/\balways\b/iu},
-    {"only", ~r/\bonly\b/iu},
-    {"forbidden",
-     ~r/\b(forbid\w*|prohibit\w*|not allowed|disallow\w*|under no circumstances)\b/iu},
-    {"sensitive",
-     ~r/\b(secret\w*|password\w*|credential\w*|confidential|privacy|private|personal|pii|safety|unsafe|policy|policies|legal|compliance)\b/iu}
-  ]
+  # A function, not a module attribute: on OTP 28 a compiled regex holds a
+  # reference, and Elixir 1.18 cannot inject a list of them into a function.
+  defp attention_patterns do
+    [
+      {"never", ~r/\bnever\b/iu},
+      {"do not", ~r/\b(do not|don'?t|does not|doesn'?t)\b/iu},
+      {"must", ~r/\b(must|mustn'?t|shall|may not|should not|shouldn'?t|cannot|can'?t)\b/iu},
+      {"refuse", ~r/\b(refus\w*|declin\w*|reject\w*|deny|denied)\b/iu},
+      {"confirm", ~r/\b(confirm\w*|verif\w*|approv\w*|permission\w*|consent)\b/iu},
+      {"always", ~r/\balways\b/iu},
+      {"only", ~r/\bonly\b/iu},
+      {"forbidden",
+       ~r/\b(forbid\w*|prohibit\w*|not allowed|disallow\w*|under no circumstances)\b/iu},
+      {"sensitive",
+       ~r/\b(secret\w*|password\w*|credential\w*|confidential|privacy|private|personal|pii|safety|unsafe|policy|policies|legal|compliance)\b/iu}
+    ]
+  end
 
   @typedoc """
   * `:base` / `:candidate` - `%{id, name, version, parent_id}` of each
@@ -225,7 +229,7 @@ defmodule Nous.Eval.ProfileReport do
   """
   @spec attention(String.t()) :: [String.t()]
   def attention(text) when is_binary(text) do
-    for {name, regex} <- @attention, Regex.match?(regex, text), do: name
+    for {name, regex} <- attention_patterns(), Regex.match?(regex, text), do: name
   end
 
   # ── build ───────────────────────────────────────────────────────────────

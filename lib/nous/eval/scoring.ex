@@ -305,7 +305,8 @@ defmodule Nous.Eval.Scoring do
       end)
 
     soft =
-      for {%Prepared{spec: %Spec{required: false, weight: weight}}, {:scores, scores}} <- outcomes,
+      for {%Prepared{spec: %Spec{required: false, weight: weight}}, {:scores, scores}} <-
+            outcomes,
           weight > 0,
           score <- scores,
           {:ok, value} <- [value_to_float(score.value, label_values(score))],

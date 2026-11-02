@@ -397,7 +397,8 @@ defmodule Nous.Eval.Guard do
     do: Map.get(@input_verdicts, severity, :deny)
 
   defp verdict_of(:decision_guard, %{verdict: verdict})
-       when verdict in [:allow, :escalate, :deny], do: verdict
+       when verdict in [:allow, :escalate, :deny],
+       do: verdict
 
   defp verdict_of(:decision_guard, _other), do: :deny
 end

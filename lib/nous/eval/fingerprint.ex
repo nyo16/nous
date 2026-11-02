@@ -274,9 +274,10 @@ defmodule Nous.Eval.Fingerprint do
   # The behaviour's tool list is what the model sees (ReAct adds its own
   # tools to the agent's).
   defp visible_tools(%Nous.Agent{behaviour_module: behaviour} = agent) do
-    if behaviour && Code.ensure_loaded?(behaviour) && function_exported?(behaviour, :get_tools, 1),
-      do: behaviour.get_tools(agent),
-      else: agent.tools
+    if behaviour && Code.ensure_loaded?(behaviour) &&
+         function_exported?(behaviour, :get_tools, 1),
+       do: behaviour.get_tools(agent),
+       else: agent.tools
   end
 
   defp tool_schema(%Nous.Tool{} = tool, where) do

@@ -473,7 +473,8 @@ defmodule Nous.Telemetry.AgentEventsTest do
 
     assert [{_, hook}] =
              for(
-               {_, %{event: :pre_tool_use}} = e <- named(events, [:nous, :hook, :execute, :start]),
+               {_, %{event: :pre_tool_use}} = e <-
+                 named(events, [:nous, :hook, :execute, :start]),
                do: e
              )
 
