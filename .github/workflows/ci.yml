@@ -385,6 +385,9 @@ jobs:
         dialyzer
       ]
     if: startsWith(github.ref, 'refs/tags/v')
+    # HEX_API_KEY lives in the `hex` environment, not in repo secrets, so only
+    # this job can read it.
+    environment: hex
     steps:
       - uses: actions/checkout@v6
 
